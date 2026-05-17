@@ -1,0 +1,103 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node.js / Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+package-lock.json
+!frontend/package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Frontend build output
+frontend/dist/
+frontend/.nuxt/
+frontend/.output/
+frontend/.vite/
+.next/
+out/
+
+# IDE
+.vscode/
+.idea/
+.claude/settings.local.json
+*.swp
+*.swo
+*~
+.history/
+
+# OS
+.DS_Store
+Thumbs.db
+*.tmp
+*.temp
+
+# Data files
+*.csv
+!sample_import.csv
+*.xlsx
+*.db
+*.sqlite
+*.db-journal
+*.db.backup*
+data/*
+!data/.gitkeep
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# Logs
+*.log
+logs/
+npm-debug.log
+yarn-error.log
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+frontend/.e2e-work/
+frontend/playwright-report/
+frontend/test-results/
+
+# Docker
+certbot-webroot/
+*.pem
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~

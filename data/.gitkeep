@@ -1,0 +1,6 @@
+# Legacy Data Directory
+
+The application now uses PostgreSQL via `DATABASE_URL`.
+
+Keep this directory only for optional one-time imports from an old SQLite
+`investment.db` file. Database backups should use `pg_dump` against PostgreSQL.

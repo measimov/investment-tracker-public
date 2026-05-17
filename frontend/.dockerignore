@@ -1,0 +1,13 @@
+.env
+.env.*
+node_modules/
+dist/
+.vite/
+.e2e-work/
+test-results/
+playwright-report/
+coverage/
+npm-debug.log*
+yarn-error.log*
+*.log
+.DS_Store

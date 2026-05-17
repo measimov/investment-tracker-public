@@ -1,0 +1,8 @@
+symbol,name,market,transaction_type,quantity,price,fee,transaction_date,currency,notes
+AAPL,Apple Inc.,美股,BUY,100,150.25,5.00,2024-01-15,USD,定投
+MSFT,Microsoft,美股,BUY,50,380.50,3.50,2024-01-20,USD,
+600000,浦发银行,A股,BUY,1000,8.50,15.00,2024-01-22,CNY,
+900901,上海电力,B股,BUY,500,1.25,8.00,2024-01-23,USD,B股示例
+00700,腾讯控股,港股,BUY,200,350.00,50.00,2024-01-25,HKD,
+D05,星展银行,新加坡股,BUY,100,35.50,12.00,2024-01-26,SGD,新加坡股示例
+BTC,Bitcoin,加密货币,BUY,0.5,42000.00,20.00,2024-02-01,USD,
