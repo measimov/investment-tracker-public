@@ -2,7 +2,6 @@
 汇率服务模块
 提供汇率查询和货币转换功能
 """
-import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from decimal import Decimal
@@ -10,10 +9,11 @@ from datetime import date, datetime
 from typing import Dict, Optional
 import requests
 from ..models.exchange_rate import ExchangeRate
+from ..core.logging import get_app_logger
 
 
 BASE_CURRENCY = "CNY"  # 基准货币
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 def get_latest_rate(

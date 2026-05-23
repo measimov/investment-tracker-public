@@ -1,6 +1,6 @@
 # Speed rate limiting zone definitions
 limit_req_zone $binary_remote_addr zone=login_limit:10m rate=5r/m;
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=100r/m;
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=300r/m;
 
 # HTTP redirect to HTTPS
 server {
@@ -73,7 +73,7 @@ server {
     }
 
     location /api/ {
-        limit_req zone=api_limit burst=20 nodelay;
+        limit_req zone=api_limit burst=40 nodelay;
 
         proxy_pass http://backend:8000/api/;
         proxy_http_version 1.1;

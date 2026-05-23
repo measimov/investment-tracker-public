@@ -4,7 +4,6 @@ import csv
 import hashlib
 import io
 import re
-import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
@@ -16,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..models.corporate_action import CorporateAction
 from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.transaction import Transaction
+from ..core.logging import get_app_logger
 from ..services.holding_service import recalculate_holdings
 from ..services.stock_price_service import (
     to_tushare_a_code,
@@ -66,7 +66,7 @@ HASH_FIELDS = [
 ]
 HASH_DUPLICATE_OCCURRENCE_FIELD = "duplicate_occurrence"
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 
 @dataclass
@@ -545,7 +545,9 @@ def flow_to_sample(flow: ParsedIbkrFlow, duplicate: bool) -> Dict[str, Any]:
     mapped_type = flow.transaction_type or (
         "CASH_DIVIDEND"
         if flow.is_cash_dividend
-        else "DIVIDEND_TAX" if flow.is_withholding_tax else flow.skip_reason or ""
+        else "DIVIDEND_TAX"
+        if flow.is_withholding_tax
+        else flow.skip_reason or ""
     )
     return {
         "row_number": flow.source_row_number,

@@ -95,7 +95,12 @@
               <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
               <el-tag v-else type="info" size="small">普通用户</el-tag>
             </div>
-            <el-button :icon="Close" circle aria-label="关闭导航" @click="mobileNavVisible = false" />
+            <el-button
+              :icon="Close"
+              circle
+              aria-label="关闭导航"
+              @click="mobileNavVisible = false"
+            />
           </div>
           <el-menu
             :default-active="activeMenu"
@@ -136,12 +141,28 @@
               <span>用户管理</span>
             </el-menu-item>
           </el-menu>
-          <el-button class="mobile-logout-button" :icon="SwitchButton" @click="handleUserCommand('logout')">
+          <el-button
+            class="mobile-logout-button"
+            :icon="SwitchButton"
+            @click="handleUserCommand('logout')"
+          >
             退出登录
           </el-button>
         </div>
       </el-drawer>
     </el-header>
+    <transition name="status-banner">
+      <div v-if="appStatus.hasBlockingIssue" class="status-overlay">
+        <div class="status-content">
+          <el-icon><WarningFilled /></el-icon>
+          <div>
+            <strong>{{ appStatus.statusTitle }}</strong>
+            <span>{{ appStatus.message }}</span>
+          </div>
+        </div>
+        <el-button size="small" @click="appStatus.clear">关闭</el-button>
+      </div>
+    </transition>
     <el-main class="app-main">
       <router-view />
     </el-main>
@@ -152,12 +173,14 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
+import { useAppStatusStore } from './stores/appStatus'
 import { ElMessage } from 'element-plus'
-import { Close, Menu, SwitchButton } from '@element-plus/icons-vue'
+import { Close, Menu, SwitchButton, WarningFilled } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const appStatus = useAppStatusStore()
 const mobileNavVisible = ref(false)
 
 // 应用启动时恢复认证状态
@@ -183,42 +206,43 @@ const handleUserCommand = (command) => {
 <style scoped>
 .app-container {
   min-height: 100vh;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0, rgba(255, 255, 255, 0) 150px),
-    var(--app-bg);
+  background: var(--app-bg);
 }
 
 .app-header {
   position: sticky;
   top: 0;
-  z-index: 20;
+  z-index: 100;
   height: auto;
-  min-height: 64px;
-  background-color: rgba(255, 255, 255, 0.96);
-  border-bottom: 1px solid var(--app-border-soft);
-  box-shadow: 0 1px 10px rgba(15, 23, 42, 0.05);
-  backdrop-filter: blur(12px);
+  min-height: 52px;
+  background-color: rgba(255, 255, 255, 0.72);
+  border-bottom: 1px solid var(--app-separator);
+  backdrop-filter: saturate(180%) blur(20px);
   padding: 0;
 }
 
 .header-content {
-  max-width: 1480px;
+  max-width: 1440px;
   margin: 0 auto;
   display: flex;
   align-items: center;
   height: 100%;
-  min-height: 64px;
-  padding: 0 32px;
-  gap: 26px;
+  min-height: 52px;
+  padding: 0 24px;
+  gap: 20px;
 }
 
 .brand-link {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  min-width: 190px;
+  min-width: 170px;
   color: var(--app-text);
   text-decoration: none;
+}
+
+.brand-link:hover .brand-mark {
+  transform: scale(1.05);
 }
 
 .brand-mark {
@@ -229,9 +253,11 @@ const handleUserCommand = (command) => {
   width: 26px;
   height: 26px;
   padding: 4px;
-  background: #f8fafc;
+  background: var(--app-surface);
   border: 1px solid var(--app-border);
   border-radius: 6px;
+  box-shadow: var(--app-shadow-sm);
+  transition: transform var(--app-duration) var(--apple-spring);
 }
 
 .brand-mark span {
@@ -256,16 +282,18 @@ const handleUserCommand = (command) => {
 }
 
 .brand-title {
-  font-size: 20px;
-  font-weight: 750;
-  letter-spacing: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.022em;
   white-space: nowrap;
+  color: var(--app-text);
 }
 
 .header-menu {
   flex: 1;
   min-width: 0;
   border-bottom: none;
+  background: transparent !important;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -276,19 +304,30 @@ const handleUserCommand = (command) => {
 }
 
 :deep(.header-menu.el-menu--horizontal) {
-  height: 64px;
+  height: 52px;
+  background: transparent !important;
 }
 
 :deep(.header-menu.el-menu--horizontal > .el-menu-item) {
-  height: 64px;
+  height: 52px;
   padding: 0 12px;
-  border-bottom-width: 2px;
-  color: #4b5563;
-  font-weight: 600;
+  border-bottom: 2px solid transparent !important;
+  color: var(--app-text-muted) !important;
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  background: transparent !important;
+  transition: color var(--app-duration) var(--apple-ease),
+              border-color var(--app-duration) var(--apple-ease);
 }
 
 :deep(.header-menu.el-menu--horizontal > .el-menu-item.is-active) {
-  color: var(--app-primary);
+  color: var(--app-primary) !important;
+  border-bottom: 2px solid var(--app-primary) !important;
+}
+
+:deep(.header-menu.el-menu--horizontal > .el-menu-item:hover) {
+  color: var(--app-text) !important;
 }
 
 .user-info {
@@ -305,30 +344,91 @@ const handleUserCommand = (command) => {
 .user-dropdown {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   cursor: pointer;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  transition: background-color 0.2s, border-color 0.2s;
+  padding: 5px 10px;
+  border-radius: var(--app-radius-sm);
+  transition: background-color var(--app-duration) var(--apple-ease);
 }
 
 .user-dropdown:hover {
-  background-color: var(--app-surface-muted);
-  border-color: var(--app-border-soft);
+  background-color: rgba(0, 0, 0, 0.04);
 }
 
 .username {
   font-size: 14px;
   color: var(--app-text);
-  font-weight: 650;
+  font-weight: 500;
 }
 
 .app-main {
   width: 100%;
-  max-width: 1480px;
+  max-width: 1440px;
   margin: 0 auto;
-  padding: 32px;
+  padding: 28px 24px;
+  animation: fadeIn 0.4s var(--apple-spring);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.status-overlay {
+  position: sticky;
+  top: 64px;
+  z-index: 19;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(100%, 1480px);
+  margin: 0 auto;
+  padding: 12px 32px;
+  color: #7f1d1d;
+  background: #fef2f2;
+  border-bottom: 1px solid #fecaca;
+  box-shadow: 0 8px 20px rgba(127, 29, 29, 0.08);
+}
+
+.status-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.status-content strong,
+.status-content span {
+  display: block;
+}
+
+.status-content strong {
+  font-size: 14px;
+}
+
+.status-content span {
+  color: #991b1b;
+  font-size: 13px;
+}
+
+.status-banner-enter-active,
+.status-banner-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+
+.status-banner-enter-from,
+.status-banner-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 .mobile-nav-panel {
@@ -342,16 +442,16 @@ const handleUserCommand = (command) => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 16px 14px;
-  border-bottom: 1px solid var(--app-border-soft);
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--app-separator);
 }
 
 .mobile-nav-name {
   max-width: 180px;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   color: var(--app-text);
-  font-size: 18px;
-  font-weight: 760;
+  font-size: 17px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -364,26 +464,31 @@ const handleUserCommand = (command) => {
 }
 
 .mobile-nav-menu :deep(.el-menu-item) {
-  height: 46px;
-  margin: 4px 0;
-  border-radius: 8px;
-  font-weight: 650;
+  height: 44px;
+  margin: 2px 0;
+  border-radius: var(--app-radius-inner);
+  font-weight: 500;
+}
+
+.mobile-nav-menu :deep(.el-menu-item.is-active) {
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
 }
 
 .mobile-logout-button {
-  margin: 14px 16px 18px;
+  margin: 12px 16px 20px;
 }
 
 @media (max-width: 1100px) {
   .header-content {
     align-items: stretch;
     flex-wrap: wrap;
-    gap: 0 16px;
-    padding: 12px 20px 0;
+    gap: 0 12px;
+    padding: 10px 16px 0;
   }
 
   .brand-link {
-    min-height: 40px;
+    min-height: 36px;
   }
 
   .header-menu {
@@ -393,19 +498,24 @@ const handleUserCommand = (command) => {
   }
 
   .user-info {
-    min-height: 40px;
+    min-height: 36px;
   }
 
   .app-main {
-    padding: 20px;
+    padding: 20px 16px;
+  }
+
+  .status-overlay {
+    top: 104px;
+    padding-inline: 20px;
   }
 }
 
 @media (max-width: 640px) {
   .header-content {
-    gap: 0 10px;
-    min-height: 58px;
-    padding: 0 12px;
+    gap: 0 8px;
+    min-height: 48px;
+    padding: 0 16px;
   }
 
   .brand-link {
@@ -421,7 +531,7 @@ const handleUserCommand = (command) => {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 17px;
+    font-size: 16px;
   }
 
   .user-info {
@@ -442,7 +552,15 @@ const handleUserCommand = (command) => {
   }
 
   .app-main {
-    padding: 12px;
+    padding: 16px;
+  }
+
+  .status-overlay {
+    position: static;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 12px;
   }
 }
 </style>

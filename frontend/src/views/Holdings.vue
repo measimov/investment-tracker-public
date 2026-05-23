@@ -65,7 +65,7 @@
               <span v-if="currentPrices[row.symbol]" style="font-weight: bold">
                 {{ formatCurrency(currentPrices[row.symbol] * row.quantity, row.currency) }}
               </span>
-              <span v-else style="color: #909399">-</span>
+              <span v-else style="color: var(--app-text-soft)">-</span>
             </template>
           </el-table-column>
           <el-table-column label="浮动盈亏" width="140" align="right">
@@ -76,7 +76,7 @@
               >
                 {{ formatCurrency(calculateProfitAmount(row), row.currency) }}
               </span>
-              <span v-else style="color: #909399">-</span>
+              <span v-else style="color: var(--app-text-soft)">-</span>
             </template>
           </el-table-column>
           <el-table-column label="收益率" width="100" align="right">
@@ -87,7 +87,7 @@
               >
                 {{ formatNumber(calculateProfitRate(row), 2) }}%
               </span>
-              <span v-else style="color: #909399">-</span>
+              <span v-else style="color: var(--app-text-soft)">-</span>
             </template>
           </el-table-column>
           <el-table-column prop="currency" label="币种" width="80" />
@@ -100,7 +100,11 @@
       </div>
 
       <div v-else v-loading="loading" class="mobile-holding-list">
-        <article v-for="row in holdings" :key="`${row.market}-${row.symbol}`" class="mobile-holding-card">
+        <article
+          v-for="row in holdings"
+          :key="`${row.market}-${row.symbol}`"
+          class="mobile-holding-card"
+        >
           <div class="mobile-row-head">
             <div class="asset-title">
               <span class="asset-symbol">{{ row.symbol }}</span>
@@ -123,20 +127,14 @@
             </div>
             <div>
               <span class="metric-label">浮动盈亏</span>
-              <strong
-                v-if="currentPrices[row.symbol]"
-                :style="{ color: getProfitColor(row) }"
-              >
+              <strong v-if="currentPrices[row.symbol]" :style="{ color: getProfitColor(row) }">
                 {{ formatCurrency(calculateProfitAmount(row), row.currency) }}
               </strong>
               <strong v-else>-</strong>
             </div>
             <div>
               <span class="metric-label">收益率</span>
-              <strong
-                v-if="currentPrices[row.symbol]"
-                :style="{ color: getProfitColor(row) }"
-              >
+              <strong v-if="currentPrices[row.symbol]" :style="{ color: getProfitColor(row) }">
                 {{ formatNumber(calculateProfitRate(row), 2) }}%
               </strong>
               <strong v-else>-</strong>
@@ -219,10 +217,13 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import api from '../api'
+import { useHoldingsStore } from '../stores/holdings'
+import { getApiErrorMessage } from '../utils/apiErrors'
 import { formatNumber, formatCurrency } from '../utils/helpers'
 
 const loading = ref(false)
 const refreshing = ref(false)
+const holdingsStore = useHoldingsStore()
 const holdings = ref([])
 const selectedMarket = ref('')
 const currentPrices = reactive({})
@@ -272,14 +273,15 @@ const totalProfitRate = computed(() => {
   return (totalProfit.value / totalCost.value) * 100
 })
 
-async function loadHoldings() {
+async function loadHoldings(options = {}) {
   loading.value = true
   try {
     const params = {}
     if (selectedMarket.value) params.market = selectedMarket.value
 
-    const response = await api.getHoldings(params)
-    holdings.value = response.data
+    holdings.value = await holdingsStore.fetchHoldings(params, {
+      force: options?.force === true
+    })
 
     // Initialize current prices from persisted market prices only.
     holdings.value.forEach((h) => {
@@ -290,7 +292,7 @@ async function loadHoldings() {
       }
     })
   } catch (error) {
-    ElMessage.error('加载持仓数据失败')
+    ElMessage.error(getApiErrorMessage(error, '加载持仓数据失败'))
   } finally {
     loading.value = false
   }
@@ -314,10 +316,10 @@ async function savePriceToDatabase(row) {
     const price = currentPrices[row.symbol]
     if (!price || price <= 0) return
 
-    await api.updateHoldingPrice(row.id, price)
+    await holdingsStore.updateHoldingPrice(row.id, price)
     // Silent success - don't show message for every input
   } catch (error) {
-    ElMessage.error(`保存${row.symbol}价格失败: ${error.message}`)
+    ElMessage.error(`保存${row.symbol}价格失败: ${getApiErrorMessage(error)}`)
   }
 }
 
@@ -332,13 +334,13 @@ async function refreshPrices() {
   })
 
   try {
-    const response = await api.refreshAllPrices()
+    const response = await holdingsStore.refreshAllPrices()
     const job = response.data
     const result = await pollPriceRefreshJob(job.id)
 
     loadingMsg.close()
 
-    await loadHoldings()
+    await loadHoldings({ force: true })
 
     let message = `成功更新 ${result.success_count} 只股票`
 
@@ -533,7 +535,7 @@ onUnmounted(() => {
 
 .summary-value {
   font-size: 25px;
-  font-weight: 760;
+  font-weight: 600;
   color: var(--app-text);
   line-height: 1.2;
 }
@@ -606,7 +608,7 @@ onUnmounted(() => {
     display: block;
     color: var(--app-text);
     font-size: 18px;
-    font-weight: 760;
+    font-weight: 600;
     line-height: 1.2;
   }
 

@@ -33,7 +33,13 @@
           />
         </el-form-item>
         <el-form-item label="市场">
-          <el-select v-model="filters.market" placeholder="选择市场" clearable @change="handleSearch" @clear="handleSearch">
+          <el-select
+            v-model="filters.market"
+            placeholder="选择市场"
+            clearable
+            @change="handleSearch"
+            @clear="handleSearch"
+          >
             <el-option label="A股" value="A股" />
             <el-option label="B股" value="B股" />
             <el-option label="港股" value="港股" />
@@ -43,7 +49,13 @@
           </el-select>
         </el-form-item>
         <el-form-item label="类型">
-          <el-select v-model="filters.transaction_type" placeholder="交易类型" clearable @change="handleSearch" @clear="handleSearch">
+          <el-select
+            v-model="filters.transaction_type"
+            placeholder="交易类型"
+            clearable
+            @change="handleSearch"
+            @clear="handleSearch"
+          >
             <el-option label="买入" value="BUY" />
             <el-option label="卖出" value="SELL" />
           </el-select>
@@ -56,13 +68,7 @@
 
       <!-- Table -->
       <div v-if="!isMobileView" class="responsive-table desktop-data-table">
-        <el-table
-          :data="transactions"
-          v-loading="loading"
-          stripe
-          row-key="id"
-          max-height="560"
-        >
+        <el-table :data="transactions" v-loading="loading" stripe row-key="id" max-height="560">
           <el-table-column prop="transaction_date" label="交易日期" width="120" sortable>
             <template #default="{ row }">
               {{ formatDate(row.transaction_date) }}
@@ -117,7 +123,9 @@
           </div>
 
           <div class="transaction-amount">
-            <span>{{ formatDate(row.transaction_date) }} · {{ row.market }} · {{ row.currency }}</span>
+            <span
+              >{{ formatDate(row.transaction_date) }} · {{ row.market }} · {{ row.currency }}</span
+            >
             <strong>{{ formatNumber(row.quantity, 4) }} × {{ formatNumber(row.price, 4) }}</strong>
           </div>
 
@@ -151,11 +159,7 @@
     </el-card>
 
     <!-- Transaction Form Dialog -->
-    <el-dialog
-      v-model="dialogVisible"
-      :title="isEdit ? '编辑交易' : '新增交易'"
-      width="600px"
-    >
+    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑交易' : '新增交易'" width="600px">
       <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
         <el-form-item label="股票代码" prop="symbol">
           <el-input v-model="form.symbol" placeholder="如: AAPL, 600000" />
@@ -211,8 +215,8 @@
       </el-form>
       <template #footer>
         <div class="mobile-dialog-footer">
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
+          <el-button @click="dialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
         </div>
       </template>
     </el-dialog>
@@ -234,22 +238,23 @@
         :accept="importAccept"
       >
         <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
-        <div class="el-upload__text">
-          拖拽文件到此处或 <em>点击上传</em>
-        </div>
+        <div class="el-upload__text">拖拽文件到此处或 <em>点击上传</em></div>
         <template #tip>
           <div v-if="importMode === 'standard'" class="el-upload__tip">
-            支持 CSV 或 Excel 文件，需包含以下列：symbol, market, transaction_type, quantity, price, transaction_date
+            支持 CSV 或 Excel 文件，需包含以下列：symbol, market, transaction_type, quantity, price,
+            transaction_date
           </div>
           <div v-else class="el-upload__tip">
             <span v-if="importMode === 'cmb'">
               支持招商证券导出的历史资金流水，仅导入“证券买入”和“证券卖出”，重复流水会自动跳过
             </span>
             <span v-else-if="importMode === 'ibkr'">
-              支持 IBKR Activity Statement CSV，导入普通股票/ETF买卖、股息和外国预扣税；期权、外汇、利息暂不导入
+              支持 IBKR Activity Statement
+              CSV，导入普通股票/ETF买卖、股息和外国预扣税；期权、外汇、利息暂不导入
             </span>
             <span v-else>
-              支持已解密的东方财富 PDF 股票明细对账单，仅导入股票买卖、红利入账和红利税；基金、逆回购、银证流水暂不导入
+              支持已解密的东方财富 PDF
+              股票明细对账单，仅导入股票买卖、红利入账和红利税；基金、逆回购、银证流水暂不导入
             </span>
           </div>
         </template>
@@ -259,18 +264,42 @@
         <el-descriptions :column="3" border size="small" class="responsive-descriptions">
           <el-descriptions-item label="券商">{{ brokerPreview.broker }}</el-descriptions-item>
           <el-descriptions-item label="总行数">{{ brokerPreview.total_rows }}</el-descriptions-item>
-          <el-descriptions-item label="买卖记录">{{ brokerPreview.eligible_trade_rows }}</el-descriptions-item>
-          <el-descriptions-item label="股息分红">{{ brokerPreview.eligible_dividend_rows }}</el-descriptions-item>
-          <el-descriptions-item label="红利税">{{ brokerPreview.eligible_tax_rows }}</el-descriptions-item>
-          <el-descriptions-item label="重复跳过">{{ brokerPreview.duplicate_rows }}</el-descriptions-item>
-          <el-descriptions-item label="非买卖跳过">{{ brokerPreview.skipped_non_trade_rows }}</el-descriptions-item>
-          <el-descriptions-item label="无效跳过">{{ brokerPreview.skipped_invalid_rows }}</el-descriptions-item>
-          <el-descriptions-item v-if="importMode === 'ibkr'" label="期权跳过">{{ brokerPreview.skipped_option_rows }}</el-descriptions-item>
-          <el-descriptions-item v-if="importMode === 'ibkr'" label="外汇跳过">{{ brokerPreview.skipped_fx_rows }}</el-descriptions-item>
-          <el-descriptions-item v-if="importMode === 'ibkr'" label="现金类跳过">{{ brokerPreview.skipped_cash_rows }}</el-descriptions-item>
-          <el-descriptions-item v-if="importMode === 'eastmoney'" label="基金跳过">{{ brokerPreview.skipped_cash_rows }}</el-descriptions-item>
-          <el-descriptions-item v-if="importMode === 'eastmoney'" label="不支持跳过">{{ brokerPreview.skipped_unsupported_rows }}</el-descriptions-item>
-          <el-descriptions-item label="日期范围">{{ brokerPreview.date_start }} ~ {{ brokerPreview.date_end }}</el-descriptions-item>
+          <el-descriptions-item label="买卖记录">{{
+            brokerPreview.eligible_trade_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item label="股息分红">{{
+            brokerPreview.eligible_dividend_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item label="红利税">{{
+            brokerPreview.eligible_tax_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item label="重复跳过">{{
+            brokerPreview.duplicate_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item label="非买卖跳过">{{
+            brokerPreview.skipped_non_trade_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item label="无效跳过">{{
+            brokerPreview.skipped_invalid_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item v-if="importMode === 'ibkr'" label="期权跳过">{{
+            brokerPreview.skipped_option_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item v-if="importMode === 'ibkr'" label="外汇跳过">{{
+            brokerPreview.skipped_fx_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item v-if="importMode === 'ibkr'" label="现金类跳过">{{
+            brokerPreview.skipped_cash_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item v-if="importMode === 'eastmoney'" label="基金跳过">{{
+            brokerPreview.skipped_cash_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item v-if="importMode === 'eastmoney'" label="不支持跳过">{{
+            brokerPreview.skipped_unsupported_rows
+          }}</el-descriptions-item>
+          <el-descriptions-item label="日期范围"
+            >{{ brokerPreview.date_start }} ~ {{ brokerPreview.date_end }}</el-descriptions-item
+          >
         </el-descriptions>
 
         <el-alert
@@ -292,16 +321,18 @@
       </div>
       <template #footer>
         <div class="mobile-dialog-footer">
-        <el-button @click="showImportDialog = false">取消</el-button>
-        <el-button
-          v-if="importMode !== 'standard' && !brokerPreview"
-          type="primary"
-          @click="handleImportPreview"
-          :loading="importing"
-        >
-          预览
-        </el-button>
-        <el-button v-else type="primary" @click="handleImport" :loading="importing">导入</el-button>
+          <el-button @click="showImportDialog = false">取消</el-button>
+          <el-button
+            v-if="importMode !== 'standard' && !brokerPreview"
+            type="primary"
+            @click="handleImportPreview"
+            :loading="importing"
+          >
+            预览
+          </el-button>
+          <el-button v-else type="primary" @click="handleImport" :loading="importing"
+            >导入</el-button
+          >
         </div>
       </template>
     </el-dialog>
@@ -312,9 +343,12 @@
 import { computed, ref, reactive, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { useTransactionsStore } from '../stores/transactions'
+import { getApiErrorMessage } from '../utils/apiErrors'
 import { formatNumber, formatDate, downloadFile } from '../utils/helpers'
 
 const loading = ref(false)
+const transactionsStore = useTransactionsStore()
 const transactions = ref([])
 const pagination = reactive({
   page: 1,
@@ -369,20 +403,22 @@ const rules = {
   transaction_date: [{ required: true, message: '请选择交易日期', trigger: 'change' }]
 }
 
-async function loadTransactions() {
+async function loadTransactions(options = {}) {
   loading.value = true
   try {
     const params = buildQueryParams()
     params.skip = (pagination.page - 1) * pagination.pageSize
     params.limit = pagination.pageSize
 
-    const [transactionsRes, countRes] = await Promise.all([
-      api.getTransactions(params),
-      api.getTransactionsCount(buildQueryParams())
+    const [transactionsData, total] = await Promise.all([
+      transactionsStore.fetchTransactions(params, { force: options?.force === true }),
+      transactionsStore.fetchTransactionsCount(buildQueryParams(), {
+        force: options?.force === true
+      })
     ])
 
-    transactions.value = transactionsRes.data
-    pagination.total = countRes.data.total || 0
+    transactions.value = transactionsData
+    pagination.total = total
 
     const maxPage = Math.max(1, Math.ceil(pagination.total / pagination.pageSize))
     if (pagination.page > maxPage) {
@@ -390,7 +426,7 @@ async function loadTransactions() {
       await loadTransactions()
     }
   } catch (error) {
-    ElMessage.error('加载交易记录失败')
+    ElMessage.error(getApiErrorMessage(error, '加载交易记录失败'))
   } finally {
     loading.value = false
   }
@@ -406,7 +442,7 @@ function buildQueryParams() {
 
 function handleSearch() {
   pagination.page = 1
-  loadTransactions()
+  loadTransactions({ force: true })
 }
 
 function handlePageSizeChange() {
@@ -452,16 +488,16 @@ async function handleSubmit() {
   submitting.value = true
   try {
     if (isEdit.value) {
-      await api.updateTransaction(form.id, form)
+      await transactionsStore.updateTransaction(form.id, form)
       ElMessage.success('更新成功')
     } else {
-      await api.createTransaction(form)
+      await transactionsStore.createTransaction(form)
       ElMessage.success('创建成功')
     }
     dialogVisible.value = false
     handleSearch()
   } catch (error) {
-    ElMessage.error(isEdit.value ? '更新失败' : '创建失败')
+    ElMessage.error(getApiErrorMessage(error, isEdit.value ? '更新失败' : '创建失败'))
   } finally {
     submitting.value = false
   }
@@ -474,11 +510,11 @@ function handleDelete(row) {
     type: 'warning'
   }).then(async () => {
     try {
-      await api.deleteTransaction(row.id)
+      await transactionsStore.deleteTransaction(row.id)
       ElMessage.success('删除成功')
       loadTransactions()
     } catch (error) {
-      ElMessage.error('删除失败')
+      ElMessage.error(getApiErrorMessage(error, '删除失败'))
     }
   })
 }
@@ -489,7 +525,7 @@ async function handleExport() {
     downloadFile(response.data, `transactions_${new Date().toISOString().split('T')[0]}.xlsx`)
     ElMessage.success('导出成功')
   } catch (error) {
-    ElMessage.error('导出失败')
+    ElMessage.error(getApiErrorMessage(error, '导出失败'))
   }
 }
 
@@ -527,7 +563,7 @@ async function handleImportPreview() {
     brokerPreview.value = response.data
     ElMessage.success('预览完成')
   } catch (error) {
-    ElMessage.error('预览失败：' + (error.response?.data?.detail || error.message))
+    ElMessage.error('预览失败：' + getApiErrorMessage(error))
   } finally {
     importing.value = false
   }
@@ -546,28 +582,29 @@ async function handleImport() {
       response = await api.importCmbFundFlows(uploadFile.value)
       ElMessage.success(
         `导入交易 ${response.data.imported_transactions} 条，` +
-        `公司行动 ${response.data.imported_corporate_actions} 条，` +
-        `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
-        `跳过重复 ${response.data.duplicate_rows} 条`
+          `公司行动 ${response.data.imported_corporate_actions} 条，` +
+          `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
+          `跳过重复 ${response.data.duplicate_rows} 条`
       )
     } else if (importMode.value === 'ibkr') {
       response = await api.importIbkrActivity(uploadFile.value)
       ElMessage.success(
         `导入交易 ${response.data.imported_transactions} 条，` +
-        `公司行动 ${response.data.imported_corporate_actions} 条，` +
-        `预扣税调整 ${response.data.imported_tax_adjustments} 条，` +
-        `跳过重复 ${response.data.duplicate_rows} 条`
+          `公司行动 ${response.data.imported_corporate_actions} 条，` +
+          `预扣税调整 ${response.data.imported_tax_adjustments} 条，` +
+          `跳过重复 ${response.data.duplicate_rows} 条`
       )
     } else if (importMode.value === 'eastmoney') {
       response = await api.importEastmoneyStatement(uploadFile.value)
       ElMessage.success(
         `导入交易 ${response.data.imported_transactions} 条，` +
-        `公司行动 ${response.data.imported_corporate_actions} 条，` +
-        `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
-        `跳过重复 ${response.data.duplicate_rows} 条`
+          `公司行动 ${response.data.imported_corporate_actions} 条，` +
+          `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
+          `跳过重复 ${response.data.duplicate_rows} 条`
       )
     } else {
-      const isExcel = uploadFile.value.name.endsWith('.xlsx') || uploadFile.value.name.endsWith('.xls')
+      const isExcel =
+        uploadFile.value.name.endsWith('.xlsx') || uploadFile.value.name.endsWith('.xls')
       response = isExcel
         ? await api.importExcel(uploadFile.value)
         : await api.importCSV(uploadFile.value)
@@ -577,9 +614,10 @@ async function handleImport() {
     showImportDialog.value = false
     uploadFile.value = null
     brokerPreview.value = null
+    transactionsStore.invalidateDependentData()
     loadTransactions()
   } catch (error) {
-    ElMessage.error('导入失败：' + (error.response?.data?.detail || error.message))
+    ElMessage.error('导入失败：' + getApiErrorMessage(error))
   } finally {
     importing.value = false
   }
@@ -731,7 +769,7 @@ onUnmounted(() => {
     display: block;
     color: var(--app-text);
     font-size: 18px;
-    font-weight: 760;
+    font-weight: 600;
     line-height: 1.2;
   }
 

@@ -31,6 +31,9 @@ export default defineConfig({
         '&&',
         'alembic upgrade head',
         '&&',
+        'python manage.py seed',
+        '&&',
+        '&&',
         'cd ..',
         '&&',
         `PYTHONPATH=${backendSourcePath} uvicorn app.main:app --host 127.0.0.1 --port ${backendPort}`

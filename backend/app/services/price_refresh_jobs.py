@@ -1,13 +1,13 @@
 from datetime import datetime
-import logging
 from threading import Lock
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from .stock_price_service import update_all_holdings_prices
 
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 
 _jobs: Dict[str, Dict[str, Any]] = {}
 _active_job_by_user: Dict[int, str] = {}

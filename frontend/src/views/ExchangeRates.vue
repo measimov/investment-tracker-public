@@ -388,7 +388,7 @@ onMounted(() => {
 
 .currency-code {
   font-weight: bold;
-  color: #409EFF;
+  color: var(--app-primary);
   margin-right: 5px;
 }
 
@@ -405,13 +405,14 @@ onMounted(() => {
 }
 
 :deep(.el-statistic__head) {
-  font-size: 14px;
-  color: #606266;
+  font-size: 13px;
+  color: var(--app-text-muted);
 }
 
 :deep(.el-statistic__content) {
   font-size: 20px;
   font-weight: 600;
+  letter-spacing: -0.022em;
 }
 
 @media (max-width: 900px) {

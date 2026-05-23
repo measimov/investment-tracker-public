@@ -63,16 +63,23 @@
           style="margin-top: 10px"
         />
       </el-form>
+
+      <component :is="LoginMockHint" v-if="LoginMockHint" @fill-account="fillAccount" />
     </section>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { defineAsyncComponent, ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { User, Lock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+
+const USE_MOCK = import.meta.env.MODE === 'mock' && import.meta.env.VITE_USE_MOCK === 'true'
+const LoginMockHint = USE_MOCK
+  ? defineAsyncComponent(() => import('../components/LoginMockHint.vue'))
+  : null
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -86,10 +93,13 @@ const loginForm = reactive({
   password: ''
 })
 
+const fillAccount = (username, password) => {
+  loginForm.username = username
+  loginForm.password = password
+}
+
 const rules = {
-  username: [
-    { required: true, message: '请输入用户名', trigger: 'blur' }
-  ],
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
     { min: 6, message: '密码长度至少为6位', trigger: 'blur' }
@@ -130,27 +140,26 @@ const handleLogin = async () => {
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: calc(100vh - 64px);
+  min-height: calc(100vh - 52px);
   padding: 48px 20px;
 }
 
 .login-shell {
   width: 100%;
-  max-width: 430px;
-  padding: 34px;
+  max-width: 400px;
+  padding: 36px;
   background: var(--app-surface);
-  border: 1px solid var(--app-border-soft);
-  border-radius: 8px;
-  box-shadow: var(--app-shadow);
+  border-radius: 14px;
+  box-shadow: var(--app-shadow-md);
 }
 
 .login-brand {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding-bottom: 24px;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--app-border-soft);
+  gap: 12px;
+  padding-bottom: 20px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--app-separator);
 }
 
 .brand-mark {
@@ -161,7 +170,7 @@ const handleLogin = async () => {
   width: 34px;
   height: 34px;
   padding: 6px;
-  background: #f8fafc;
+  background: var(--app-surface-secondary);
   border: 1px solid var(--app-border);
   border-radius: 8px;
 }
@@ -188,9 +197,11 @@ const handleLogin = async () => {
 }
 
 .login-brand h1 {
-  margin: 0 0 4px;
+  margin: 0 0 3px;
   color: var(--app-text);
-  font-size: 24px;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
   line-height: 1.2;
 }
 
@@ -201,18 +212,21 @@ const handleLogin = async () => {
 }
 
 .login-form :deep(.el-form-item) {
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 .login-form :deep(.el-form-item__label) {
   justify-content: flex-start;
-  padding-bottom: 6px;
-  color: var(--app-text);
-  font-weight: 650;
+  padding-bottom: 4px;
+  color: var(--app-text-muted);
+  font-weight: 500;
+  font-size: 13px;
 }
 
 .login-form :deep(.el-button) {
-  height: 42px;
+  height: 44px;
+  font-size: 16px;
+  font-weight: 500;
 }
 
 @media (max-width: 640px) {

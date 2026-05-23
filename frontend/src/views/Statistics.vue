@@ -44,32 +44,43 @@
           <div class="stat-detail">
             <div class="stat-item">
               <span>净投入本金：</span>
-              <span class="value">{{ formatCurrency(accountReturn.net_invested_principal_cny) }}</span>
+              <span class="value">{{
+                formatCurrency(accountReturn.net_invested_principal_cny)
+              }}</span>
             </div>
             <div class="stat-item">
               <span>当前市值：</span>
-              <span class="value">{{ formatCurrency(accountReturn.current_market_value_cny) }}</span>
+              <span class="value">{{
+                formatCurrency(accountReturn.current_market_value_cny)
+              }}</span>
             </div>
             <div class="stat-item">
               <span>已平仓资本利得：</span>
-              <span class="value" :style="{ color: getProfitColor(accountReturn.realized_trading_pnl_cny) }">
+              <span
+                class="value"
+                :style="{ color: getProfitColor(accountReturn.realized_trading_pnl_cny) }"
+              >
                 {{ formatCurrency(accountReturn.realized_trading_pnl_cny) }}
               </span>
             </div>
             <div class="stat-item">
               <span>未实现盈亏：</span>
-              <span class="value" :style="{ color: getProfitColor(accountReturn.unrealized_pnl_cny) }">
+              <span
+                class="value"
+                :style="{ color: getProfitColor(accountReturn.unrealized_pnl_cny) }"
+              >
                 {{ formatCurrency(accountReturn.unrealized_pnl_cny) }}
               </span>
             </div>
             <div class="stat-item">
               <span>税后股息：</span>
-              <span class="value" style="color: #67C23A">
+              <span class="value" style="color: #67c23a">
                 {{ formatCurrency(accountReturn.net_dividend_income_cny) }}
               </span>
             </div>
             <div class="stat-note">
-              总收益 = 已平仓资本利得 + 未实现盈亏 + 税后股息；总收益率分母为净投入本金，年化收益率使用 XIRR。
+              总收益 = 已平仓资本利得 + 未实现盈亏 +
+              税后股息；总收益率分母为净投入本金，年化收益率使用 XIRR。
             </div>
           </div>
         </el-card>
@@ -77,7 +88,7 @@
     </el-row>
 
     <!-- 新增：投资表现卡片 -->
-    <el-row :gutter="20" class="performance-cards" style="margin-bottom: 20px;">
+    <el-row :gutter="20" class="performance-cards" style="margin-bottom: 20px">
       <!-- 卡片1：当前持仓表现 -->
       <el-col :xs="24" :md="12">
         <el-card class="stat-card" shadow="hover">
@@ -129,7 +140,11 @@
             <div class="stat-item">
               <span>当前持仓成本：</span>
               <span class="value">
-                {{ formatCurrency(currentPerformance.current_holdings_cost || summaryStats.total_invested_cny || 0) }}
+                {{
+                  formatCurrency(
+                    currentPerformance.current_holdings_cost || summaryStats.total_invested_cny || 0
+                  )
+                }}
               </span>
             </div>
             <div class="stat-item">
@@ -180,13 +195,19 @@
           <div class="stat-detail">
             <div class="stat-item">
               <span>含股息已实现收益：</span>
-              <span class="value" :style="{ color: getProfitColor(totalRealizedReturn.total_realized_return) }">
+              <span
+                class="value"
+                :style="{ color: getProfitColor(totalRealizedReturn.total_realized_return) }"
+              >
                 {{ formatCurrency(totalRealizedReturn.total_realized_return) }}
               </span>
             </div>
             <div class="stat-item">
               <span>含股息已实现收益率：</span>
-              <span class="value" :style="{ color: getProfitColor(totalRealizedReturn.total_realized_return) }">
+              <span
+                class="value"
+                :style="{ color: getProfitColor(totalRealizedReturn.total_realized_return) }"
+              >
                 {{ formatNumber(totalRealizedReturn.total_realized_return_rate, 2) }}%
               </span>
             </div>
@@ -202,7 +223,7 @@
             </div>
             <div class="stat-item">
               <span>税后股息：</span>
-              <span class="value" style="color: #67C23A">
+              <span class="value" style="color: #67c23a">
                 {{ formatCurrency(totalRealizedReturn.net_dividend_income_cny) }}
               </span>
             </div>
@@ -215,7 +236,7 @@
     </el-row>
 
     <!-- 股息统计（独立卡片） -->
-    <el-row :gutter="20" style="margin-bottom: 20px;">
+    <el-row :gutter="20" style="margin-bottom: 20px">
       <el-col :span="24">
         <el-card class="stat-card" shadow="hover">
           <template #header>
@@ -296,7 +317,7 @@
     </el-row>
 
     <!-- Transaction Timeline -->
-    <el-row :gutter="20" style="margin-top: 20px;">
+    <el-row :gutter="20" style="margin-top: 20px">
       <el-col :span="24">
         <el-card class="stat-card">
           <template #header>
@@ -314,7 +335,7 @@
     </el-row>
 
     <!-- Holdings Ranking -->
-    <el-row :gutter="20" style="margin-top: 20px;">
+    <el-row :gutter="20" style="margin-top: 20px">
       <el-col :span="24">
         <el-card class="stat-card">
           <template #header>
@@ -338,17 +359,22 @@
               </el-table-column>
               <el-table-column prop="total_cost" label="总成本" width="140" align="right">
                 <template #default="{ row }">
-                  <span style="font-weight: bold; color: #409EFF">
+                  <span style="font-weight: bold; color: #409eff">
                     {{ formatCurrency(row.total_cost, row.currency) }}
                   </span>
-                  <div v-if="row.currency !== 'CNY'" style="font-size: 12px; color: #909399; margin-top: 2px">
+                  <div v-if="row.currency !== 'CNY'" style="font-size: 12px; color: var(--app-text-soft); margin-top: 2px">
                     ≈ {{ formatCurrency(convertToCNY(row.total_cost, row.currency)) }}
                   </div>
                 </template>
               </el-table-column>
               <el-table-column label="占比" width="100" align="right">
                 <template #default="{ row }">
-                  {{ formatNumber((convertToCNY(row.total_cost, row.currency) / totalInvestedCNY) * 100, 2) }}%
+                  {{
+                    formatNumber(
+                      (convertToCNY(row.total_cost, row.currency) / totalInvestedCNY) * 100,
+                      2
+                    )
+                  }}%
                 </template>
               </el-table-column>
             </el-table>
@@ -358,11 +384,7 @@
     </el-row>
 
     <!-- 价格输入对话框 -->
-    <el-dialog
-      v-model="showPriceDialog"
-      title="输入当前价格"
-      width="800px"
-    >
+    <el-dialog v-model="showPriceDialog" title="输入当前价格" width="800px">
       <div class="responsive-table">
         <el-table :data="priceInputData" max-height="500" v-loading="loading">
           <el-table-column prop="symbol" label="代码" width="100" />
@@ -394,9 +416,11 @@
 
       <template #footer>
         <div class="mobile-dialog-footer price-dialog-footer">
-        <el-button @click="showPriceDialog = false">取消</el-button>
-        <el-button @click="savePrices" :loading="saving">保存价格</el-button>
-        <el-button type="primary" @click="calculatePerformance" :loading="loading">计算</el-button>
+          <el-button @click="showPriceDialog = false">取消</el-button>
+          <el-button @click="savePrices" :loading="saving">保存价格</el-button>
+          <el-button type="primary" @click="calculatePerformance" :loading="loading"
+            >计算</el-button
+          >
         </div>
       </template>
     </el-dialog>
@@ -404,20 +428,36 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { PieChart, BarChart } from 'echarts/charts'
-import { TitleComponent, TooltipComponent, LegendComponent, GridComponent } from 'echarts/components'
+import {
+  TitleComponent,
+  TooltipComponent,
+  LegendComponent,
+  GridComponent
+} from 'echarts/components'
 import VChart from 'vue-echarts'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import api from '../api'
+import { useHoldingsStore } from '../stores/holdings'
+import { getApiErrorMessage } from '../utils/apiErrors'
 import { formatNumber, formatCurrency } from '../utils/helpers'
 
-use([CanvasRenderer, PieChart, BarChart, TitleComponent, TooltipComponent, LegendComponent, GridComponent])
+use([
+  CanvasRenderer,
+  PieChart,
+  BarChart,
+  TitleComponent,
+  TooltipComponent,
+  LegendComponent,
+  GridComponent
+])
 
 const marketStats = ref([])
+const holdingsStore = useHoldingsStore()
 const timeStats = ref([])
 const profitLossData = ref([])
 const timeGroupBy = ref('month')
@@ -471,6 +511,7 @@ const loading = ref(false)
 const saving = ref(false)
 const refreshing = ref(false)
 const exchangeRates = ref({})
+let isUnmounted = false
 
 const totalInvested = computed(() => {
   return marketStats.value.reduce((sum, item) => sum + item.total_cost, 0)
@@ -519,7 +560,7 @@ const marketChartOption = computed(() => ({
           fontWeight: 'bold'
         }
       },
-      data: marketStats.value.map(item => ({
+      data: marketStats.value.map((item) => ({
         name: item.market,
         value: item.total_cost
       }))
@@ -528,9 +569,9 @@ const marketChartOption = computed(() => ({
 }))
 
 const timeChartOption = computed(() => {
-  const periods = timeStats.value.map(item => item.period)
-  const buyAmounts = timeStats.value.map(item => item.buy_amount)
-  const sellAmounts = timeStats.value.map(item => item.sell_amount)
+  const periods = timeStats.value.map((item) => item.period)
+  const buyAmounts = timeStats.value.map((item) => item.buy_amount)
+  const sellAmounts = timeStats.value.map((item) => item.sell_amount)
 
   return {
     tooltip: {
@@ -631,22 +672,26 @@ async function loadAllData() {
 }
 
 // 新增：性能统计方法
-async function loadHoldingsForPrice() {
+async function loadHoldingsForPrice(options = {}) {
   try {
-    const response = await api.getHoldings()
-    priceInputData.value = response.data.map(h => ({
+    const holdings = await holdingsStore.fetchHoldings(
+      {},
+      {
+        force: options?.force === true
+      }
+    )
+    priceInputData.value = holdings.map((h) => ({
       symbol: h.symbol,
       name: h.name,
       market: h.market,
       avg_cost: parseFloat(h.avg_cost),
       // Use the database price if available; missing prices should stay empty.
-      current_price: h.current_price && parseFloat(h.current_price) > 0
-        ? parseFloat(h.current_price)
-        : null,
+      current_price:
+        h.current_price && parseFloat(h.current_price) > 0 ? parseFloat(h.current_price) : null,
       quantity: parseFloat(h.quantity)
     }))
   } catch (error) {
-    ElMessage.error('加载持仓失败')
+    ElMessage.error(getApiErrorMessage(error, '加载持仓失败'))
   }
 }
 
@@ -654,7 +699,7 @@ async function calculatePerformance(showSuccess = true) {
   loading.value = true
   try {
     const prices = {}
-    priceInputData.value.forEach(item => {
+    priceInputData.value.forEach((item) => {
       if (item.current_price > 0) {
         prices[item.symbol] = item.current_price
       }
@@ -669,7 +714,7 @@ async function calculatePerformance(showSuccess = true) {
       ElMessage.success('计算完成')
     }
   } catch (error) {
-    ElMessage.error('计算失败：' + (error.response?.data?.detail || error.message))
+    ElMessage.error('计算失败：' + getApiErrorMessage(error))
   } finally {
     loading.value = false
   }
@@ -680,7 +725,7 @@ async function savePrices() {
   try {
     // Build updates array with symbol, market, and price
     const updates = []
-    priceInputData.value.forEach(item => {
+    priceInputData.value.forEach((item) => {
       if (item.current_price > 0) {
         updates.push({
           symbol: item.symbol,
@@ -695,15 +740,16 @@ async function savePrices() {
       return
     }
 
-    const response = await api.batchUpdatePrices(updates)
+    const response = await holdingsStore.batchUpdatePrices(updates)
     const result = response.data
     ElMessage.success(`成功保存 ${result.success_count} 个价格`)
+    await loadHoldingsForPrice({ force: true })
 
     if (result.failed_count > 0) {
       console.error('保存失败的项:', result.failed_list)
     }
   } catch (error) {
-    ElMessage.error('保存失败：' + (error.response?.data?.detail || error.message))
+    ElMessage.error('保存失败：' + getApiErrorMessage(error))
   } finally {
     saving.value = false
   }
@@ -713,11 +759,13 @@ async function refreshPricesAndCalculate() {
   refreshing.value = true
   try {
     // Step 1: Refresh prices from API
-    const refreshResponse = await api.refreshAllPrices()
-    const refreshResult = refreshResponse.data
+    const refreshResponse = await holdingsStore.refreshAllPrices()
+    const refreshJob = refreshResponse.data
+    const refreshResult = await pollPriceRefreshJob(refreshJob.id)
+    if (!refreshResult) return
 
     // Step 2: Reload holdings with updated prices
-    await loadHoldingsForPrice()
+    await loadHoldingsForPrice({ force: true })
 
     // Step 3: Auto-calculate performance
     await calculatePerformance(false)
@@ -725,17 +773,46 @@ async function refreshPricesAndCalculate() {
     // Show success message
     const successMsg = `股价已更新 (成功${refreshResult.success_count}只`
     const failedMsg = refreshResult.failed_count > 0 ? `, 失败${refreshResult.failed_count}只` : ''
-    const skippedMsg = refreshResult.skipped_count > 0 ? `, 跳过${refreshResult.skipped_count}只` : ''
+    const skippedMsg =
+      refreshResult.skipped_count > 0 ? `, 跳过${refreshResult.skipped_count}只` : ''
     ElMessage.success(successMsg + failedMsg + skippedMsg + ') 并完成计算')
 
     if (refreshResult.failed_list && refreshResult.failed_list.length > 0) {
       console.error('刷新失败的股票:', refreshResult.failed_list)
     }
   } catch (error) {
-    ElMessage.error('刷新失败：' + (error.response?.data?.detail || error.message))
+    if (!isUnmounted) {
+      ElMessage.error('刷新失败：' + getApiErrorMessage(error))
+    }
   } finally {
-    refreshing.value = false
+    if (!isUnmounted) {
+      refreshing.value = false
+    }
   }
+}
+
+async function pollPriceRefreshJob(jobId) {
+  const maxAttempts = 240
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (isUnmounted) return null
+
+    const response = await api.getPriceRefreshJob(jobId)
+    const job = response.data
+    if (isUnmounted) return null
+
+    if (job.status === 'succeeded') {
+      return job.result
+    }
+
+    if (job.status === 'failed') {
+      throw new Error(job.error || job.result?.error || '后台刷新失败')
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
+
+  throw new Error('刷新仍在后台运行，请稍后重新查看持仓价格')
 }
 
 async function loadRealizedPnL() {
@@ -783,7 +860,12 @@ function getProfitColor(value) {
 }
 
 onMounted(() => {
+  isUnmounted = false
   loadAllData()
+})
+
+onUnmounted(() => {
+  isUnmounted = true
 })
 </script>
 
@@ -835,7 +917,7 @@ onMounted(() => {
   padding: 8px 0;
   font-size: 14px;
   color: var(--app-text-muted);
-  border-bottom: 1px solid var(--app-border-soft);
+  border-bottom: 1px solid var(--app-separator);
 }
 
 .stat-item:last-of-type {
@@ -844,7 +926,7 @@ onMounted(() => {
 
 .stat-item .value {
   color: var(--app-text);
-  font-weight: 700;
+  font-weight: 600;
   text-align: right;
 }
 
@@ -862,8 +944,8 @@ onMounted(() => {
   line-height: 1.5;
   padding: 10px 12px;
   margin-top: 8px;
-  background: var(--app-surface-muted);
-  border-radius: 6px;
+  background: var(--app-surface-secondary);
+  border-radius: var(--app-radius-sm);
 }
 
 :deep(.el-statistic__head) {
@@ -872,7 +954,8 @@ onMounted(() => {
 }
 
 :deep(.el-statistic__content) {
-  font-weight: 760;
+  font-weight: 600;
+  letter-spacing: -0.022em;
 }
 
 @media (max-width: 760px) {

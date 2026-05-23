@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     admin_initial_password: str
     demo_initial_password: str
 
+    app_version: str = "1.0.0"
+    build_sha: str = "unknown"
+
     # Market data
     tushare_token: str = ""
 
@@ -26,7 +29,7 @@ class Settings(BaseSettings):
 
     def get_cors_origins_list(self) -> List[str]:
         """Convert comma-separated CORS origins to list"""
-        origins = [origin.strip() for origin in self.cors_origins.split(",")]
+        origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
         # Production: do not use wildcard for security
         # Only add wildcard for local development
         # origins.append("*")

@@ -242,8 +242,8 @@ onMounted(() => {
 
 .summary-stats {
   padding: 20px;
-  background-color: #f5f7fa;
-  border-radius: 4px;
+  background-color: var(--app-surface-secondary);
+  border-radius: var(--app-radius);
   margin-bottom: 20px;
 }
 
@@ -252,13 +252,13 @@ onMounted(() => {
 }
 
 .profit-positive {
-  color: #67c23a;
-  font-weight: bold;
+  color: var(--app-success);
+  font-weight: 600;
 }
 
 .profit-negative {
-  color: #f56c6c;
-  font-weight: bold;
+  color: var(--app-danger);
+  font-weight: 600;
 }
 
 @media (max-width: 900px) {

@@ -17,10 +17,10 @@ from ..core.security import (
 )
 from ..core.deps import get_current_active_user
 from ..config import settings
-import logging
+from ..core.logging import get_app_logger
 
 # Get logger
-logger = logging.getLogger("investment_tracker.auth")
+logger = get_app_logger("auth")
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 

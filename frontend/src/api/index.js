@@ -1,4 +1,68 @@
 import axios from 'axios'
+import { ElNotification } from 'element-plus'
+import { useAppStatusStore } from '../stores/appStatus'
+import { getApiErrorMessage, normalizeApiError } from '../utils/apiErrors'
+
+const USE_MOCK = import.meta.env.MODE === 'mock' && import.meta.env.VITE_USE_MOCK === 'true'
+
+if (USE_MOCK) {
+  console.log(
+    '%c📊 [Investment Tracker] Frontend Mock Mode Active!',
+    'color: #67C23A; font-weight: bold; font-size: 14px;'
+  )
+}
+
+let mockHandlersPromise = null
+
+async function getMockHandlers() {
+  if (!USE_MOCK) return null
+  if (!mockHandlersPromise) {
+    mockHandlersPromise = import('./mockData').then((module) => module.handlers)
+  }
+  return mockHandlersPromise
+}
+
+let lastGlobalErrorKey = ''
+let lastGlobalErrorAt = 0
+
+function getStatusStore() {
+  try {
+    return useAppStatusStore()
+  } catch (error) {
+    if (import.meta.env.DEV) {
+      console.warn('Failed to access app status store:', error)
+    }
+    return null
+  }
+}
+
+function notifyGlobalError(error) {
+  if (error.config?.skipGlobalErrorNotification) return
+
+  const status = error.response?.status
+  const shouldNotify =
+    !error.response ||
+    error.code === 'ECONNABORTED' ||
+    status === 403 ||
+    status === 500 ||
+    status === 503
+
+  if (!shouldNotify) return
+
+  const message = getApiErrorMessage(error)
+  const key = `${status || error.code || 'network'}:${message}`
+  const now = Date.now()
+  if (key === lastGlobalErrorKey && now - lastGlobalErrorAt < 5000) return
+
+  lastGlobalErrorKey = key
+  lastGlobalErrorAt = now
+
+  ElNotification.error({
+    title: status === 503 ? '服务不可用' : '请求失败',
+    message,
+    duration: 4500
+  })
+}
 
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
@@ -11,14 +75,19 @@ const apiClient = axios.create({
 // Add request interceptor for authentication and logging
 apiClient.interceptors.request.use(
   (config) => {
+    config.metadata = {
+      ...config.metadata,
+      startedAt: Date.now()
+    }
+
     // Add Authorization header if token exists
     const token = localStorage.getItem('token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
 
-    if (import.meta.env.DEV && (config.url.includes('refresh') || config.url.includes('batch'))) {
-      console.log(`[API Request] ${config.method.toUpperCase()} ${config.url}`)
+    if (import.meta.env.DEV && (config.url?.includes('refresh') || config.url?.includes('batch'))) {
+      console.log(`[API Request] ${config.method?.toUpperCase()} ${config.url}`)
     }
     return config
   },
@@ -29,10 +98,19 @@ apiClient.interceptors.request.use(
 
 // Add response interceptor for better error handling and authentication
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const statusStore = getStatusStore()
+    if (statusStore?.shouldClearForRequest(response.config?.metadata?.startedAt)) {
+      statusStore.clear()
+    }
+    return response
+  },
   (error) => {
+    const normalizedError = normalizeApiError(error)
+    const statusStore = getStatusStore()
+
     // Handle 401 Unauthorized - clear auth and redirect to login
-    if (error.response?.status === 401) {
+    if (normalizedError.response?.status === 401) {
       // Clear authentication
       localStorage.removeItem('token')
       localStorage.removeItem('user')
@@ -43,19 +121,18 @@ apiClient.interceptors.response.use(
       }
     }
 
-    // Better error messages
-    if (error.code === 'ECONNABORTED') {
-      error.message = '请求超时，请稍后重试'
-    } else if (!error.response) {
-      error.message = '网络连接失败，请检查网络'
-    } else if (error.response.status >= 500) {
-      error.message = '服务器错误，请稍后重试'
+    if (!normalizedError.response || normalizedError.code === 'ECONNABORTED') {
+      statusStore?.markConnectionLost(normalizedError.userMessage)
+    } else if (normalizedError.response.status === 503) {
+      statusStore?.markMaintenance(normalizedError.userMessage)
     }
-    return Promise.reject(error)
+
+    notifyGlobalError(normalizedError)
+    return Promise.reject(normalizedError)
   }
 )
 
-export default {
+const api = {
   // Authentication
   login(username, password) {
     return apiClient.post('/auth/login', { username, password })
@@ -292,3 +369,28 @@ export default {
     return apiClient.get(`/holdings/admin/users/${userId}`)
   }
 }
+
+const apiWithMock = new Proxy(api, {
+  get(target, prop, receiver) {
+    if (USE_MOCK) {
+      return async function (...args) {
+        const handlers = await getMockHandlers()
+        if (handlers?.[prop]) {
+          if (import.meta.env.DEV) {
+            console.log(
+              `%c[Mock API Call] ${String(prop)}`,
+              'color: #409EFF; font-weight: bold;',
+              ...args
+            )
+          }
+          return handlers[prop](...args)
+        }
+        const apiMethod = Reflect.get(target, prop, receiver)
+        return typeof apiMethod === 'function' ? apiMethod(...args) : apiMethod
+      }
+    }
+    return Reflect.get(target, prop, receiver)
+  }
+})
+
+export default apiWithMock

@@ -21,7 +21,6 @@ from decimal import Decimal
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
-import logging
 import os
 import random
 from importlib import import_module
@@ -33,9 +32,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from ..config import settings
+from ..core.logging import get_app_logger
 
 # Configure logging
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__)
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q={codes}"
 
 

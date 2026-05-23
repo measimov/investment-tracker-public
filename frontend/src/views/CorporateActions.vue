@@ -25,7 +25,13 @@
           />
         </el-form-item>
         <el-form-item label="市场">
-          <el-select v-model="filters.market" placeholder="选择市场" clearable @change="handleSearch" @clear="handleSearch">
+          <el-select
+            v-model="filters.market"
+            placeholder="选择市场"
+            clearable
+            @change="handleSearch"
+            @clear="handleSearch"
+          >
             <el-option label="A股" value="A股" />
             <el-option label="B股" value="B股" />
             <el-option label="港股" value="港股" />
@@ -34,7 +40,13 @@
           </el-select>
         </el-form-item>
         <el-form-item label="类型">
-          <el-select v-model="filters.action_type" placeholder="行动类型" clearable @change="handleSearch" @clear="handleSearch">
+          <el-select
+            v-model="filters.action_type"
+            placeholder="行动类型"
+            clearable
+            @change="handleSearch"
+            @clear="handleSearch"
+          >
             <el-option label="现金股息" value="CASH_DIVIDEND" />
             <el-option label="股票股息" value="STOCK_DIVIDEND" />
             <el-option label="配股" value="RIGHTS_ISSUE" />
@@ -68,13 +80,28 @@
           <el-statistic title="总记录数" :value="summary.total_count" />
         </el-col>
         <el-col :xs="12" :md="6">
-          <el-statistic title="股息总额" :value="summary.cash_dividends?.total_dividend || 0" :precision="2" suffix="元" />
+          <el-statistic
+            title="股息总额"
+            :value="summary.cash_dividends?.total_dividend || 0"
+            :precision="2"
+            suffix="元"
+          />
         </el-col>
         <el-col :xs="12" :md="6">
-          <el-statistic title="预扣税" :value="summary.cash_dividends?.total_tax || 0" :precision="2" suffix="元" />
+          <el-statistic
+            title="预扣税"
+            :value="summary.cash_dividends?.total_tax || 0"
+            :precision="2"
+            suffix="元"
+          />
         </el-col>
         <el-col :xs="12" :md="6">
-          <el-statistic title="税后净额" :value="summary.cash_dividends?.net_dividend || 0" :precision="2" suffix="元" />
+          <el-statistic
+            title="税后净额"
+            :value="summary.cash_dividends?.net_dividend || 0"
+            :precision="2"
+            suffix="元"
+          />
         </el-col>
       </el-row>
 
@@ -99,19 +126,25 @@
           <el-table-column label="详情" min-width="220">
             <template #default="{ row }">
               <div v-if="row.action_type === 'CASH_DIVIDEND'">
-                每股: {{ formatNumber(row.dividend_per_share, 4) }}
-                | 总额: {{ formatNumber(row.total_dividend, 2) }}
-                | 税后: {{ formatNumber(row.net_dividend, 2) }}
+                每股: {{ formatNumber(row.dividend_per_share, 4) }} | 总额:
+                {{ formatNumber(row.total_dividend, 2) }} | 税后:
+                {{ formatNumber(row.net_dividend, 2) }}
               </div>
-              <div v-else-if="row.action_type === 'STOCK_DIVIDEND' || row.action_type === 'BONUS_ISSUE'">
-                获得股数: {{ formatNumber(row.shares_received, 2) }}
-                | 比例: {{ row.distribution_ratio }}
+              <div
+                v-else-if="
+                  row.action_type === 'STOCK_DIVIDEND' || row.action_type === 'BONUS_ISSUE'
+                "
+              >
+                获得股数: {{ formatNumber(row.shares_received, 2) }} | 比例:
+                {{ row.distribution_ratio }}
               </div>
               <div v-else-if="row.action_type === 'RIGHTS_ISSUE'">
-                认购价: {{ formatNumber(row.subscription_price, 2) }}
-                | 数量: {{ formatNumber(row.subscription_quantity, 2) }}
+                认购价: {{ formatNumber(row.subscription_price, 2) }} | 数量:
+                {{ formatNumber(row.subscription_quantity, 2) }}
               </div>
-              <div v-else-if="row.action_type === 'STOCK_SPLIT' || row.action_type === 'REVERSE_SPLIT'">
+              <div
+                v-else-if="row.action_type === 'STOCK_SPLIT' || row.action_type === 'REVERSE_SPLIT'"
+              >
                 拆分比例: {{ row.split_ratio }}
               </div>
             </template>
@@ -169,7 +202,12 @@
         </el-form-item>
 
         <el-form-item label="行动类型" prop="action_type">
-          <el-select v-model="form.action_type" placeholder="选择类型" style="width: 100%" @change="handleActionTypeChange">
+          <el-select
+            v-model="form.action_type"
+            placeholder="选择类型"
+            style="width: 100%"
+            @change="handleActionTypeChange"
+          >
             <el-option label="现金股息" value="CASH_DIVIDEND" />
             <el-option label="股票股息/红股" value="STOCK_DIVIDEND" />
             <el-option label="配股" value="RIGHTS_ISSUE" />
@@ -194,25 +232,48 @@
           <el-divider content-position="left">现金股息</el-divider>
 
           <el-form-item label="每股股息" prop="dividend_per_share">
-            <el-input-number v-model="form.dividend_per_share" :min="0" :precision="8" style="width: 100%" />
+            <el-input-number
+              v-model="form.dividend_per_share"
+              :min="0"
+              :precision="8"
+              style="width: 100%"
+            />
           </el-form-item>
 
           <el-form-item label="股息总额" prop="total_dividend">
-            <el-input-number v-model="form.total_dividend" :min="0" :precision="2" style="width: 100%" />
+            <el-input-number
+              v-model="form.total_dividend"
+              :min="0"
+              :precision="2"
+              style="width: 100%"
+            />
           </el-form-item>
 
           <el-form-item label="税率 (%)" prop="tax_rate">
-            <el-input-number v-model="form.tax_rate_percent" :min="0" :max="100" :precision="2" style="width: 100%" />
+            <el-input-number
+              v-model="form.tax_rate_percent"
+              :min="0"
+              :max="100"
+              :precision="2"
+              style="width: 100%"
+            />
             <div class="form-tip">常见税率：10% (红利税), 20% (利息税)</div>
           </el-form-item>
         </template>
 
         <!-- 股票股息/送股专用字段 -->
-        <template v-if="form.action_type === 'STOCK_DIVIDEND' || form.action_type === 'BONUS_ISSUE'">
+        <template
+          v-if="form.action_type === 'STOCK_DIVIDEND' || form.action_type === 'BONUS_ISSUE'"
+        >
           <el-divider content-position="left">股票股息</el-divider>
 
           <el-form-item label="获得股数" prop="shares_received">
-            <el-input-number v-model="form.shares_received" :min="0" :precision="2" style="width: 100%" />
+            <el-input-number
+              v-model="form.shares_received"
+              :min="0"
+              :precision="2"
+              style="width: 100%"
+            />
           </el-form-item>
 
           <el-form-item label="分配比例" prop="distribution_ratio">
@@ -225,11 +286,21 @@
           <el-divider content-position="left">配股信息</el-divider>
 
           <el-form-item label="认购价格" prop="subscription_price">
-            <el-input-number v-model="form.subscription_price" :min="0" :precision="4" style="width: 100%" />
+            <el-input-number
+              v-model="form.subscription_price"
+              :min="0"
+              :precision="4"
+              style="width: 100%"
+            />
           </el-form-item>
 
           <el-form-item label="认购数量" prop="subscription_quantity">
-            <el-input-number v-model="form.subscription_quantity" :min="0" :precision="2" style="width: 100%" />
+            <el-input-number
+              v-model="form.subscription_quantity"
+              :min="0"
+              :precision="2"
+              style="width: 100%"
+            />
           </el-form-item>
 
           <el-form-item label="配股比例" prop="distribution_ratio">
@@ -242,7 +313,10 @@
           <el-divider content-position="left">拆股/合股</el-divider>
 
           <el-form-item label="拆分比例" prop="split_ratio">
-            <el-input v-model="form.split_ratio" placeholder="如: 1:2 表示1股拆成2股, 10:1 表示10股合成1股" />
+            <el-input
+              v-model="form.split_ratio"
+              placeholder="如: 1:2 表示1股拆成2股, 10:1 表示10股合成1股"
+            />
           </el-form-item>
         </template>
 
@@ -265,8 +339,8 @@
 
       <template #footer>
         <div class="mobile-dialog-footer">
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
+          <el-button @click="dialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
         </div>
       </template>
     </el-dialog>
@@ -277,9 +351,12 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { useHoldingsStore } from '../stores/holdings'
+import { getApiErrorMessage } from '../utils/apiErrors'
 import { formatNumber, formatDate } from '../utils/helpers'
 
 const loading = ref(false)
+const holdingsStore = useHoldingsStore()
 const actions = ref([])
 const summary = ref(null)
 const dialogVisible = ref(false)
@@ -331,21 +408,21 @@ const rules = {
 }
 
 const actionTypeNames = {
-  'CASH_DIVIDEND': '现金股息',
-  'STOCK_DIVIDEND': '股票股息',
-  'RIGHTS_ISSUE': '配股',
-  'STOCK_SPLIT': '拆股',
-  'REVERSE_SPLIT': '合股',
-  'BONUS_ISSUE': '送股'
+  CASH_DIVIDEND: '现金股息',
+  STOCK_DIVIDEND: '股票股息',
+  RIGHTS_ISSUE: '配股',
+  STOCK_SPLIT: '拆股',
+  REVERSE_SPLIT: '合股',
+  BONUS_ISSUE: '送股'
 }
 
 const actionTypeTags = {
-  'CASH_DIVIDEND': 'success',
-  'STOCK_DIVIDEND': 'warning',
-  'RIGHTS_ISSUE': 'info',
-  'STOCK_SPLIT': 'primary',
-  'REVERSE_SPLIT': 'primary',
-  'BONUS_ISSUE': 'warning'
+  CASH_DIVIDEND: 'success',
+  STOCK_DIVIDEND: 'warning',
+  RIGHTS_ISSUE: 'info',
+  STOCK_SPLIT: 'primary',
+  REVERSE_SPLIT: 'primary',
+  BONUS_ISSUE: 'warning'
 }
 
 function getActionTypeName(type) {
@@ -373,7 +450,7 @@ async function loadActions() {
     actions.value = listResponse.data
     pagination.total = countResponse.data.total || 0
   } catch (error) {
-    ElMessage.error('加载公司行动记录失败')
+    ElMessage.error(getApiErrorMessage(error, '加载公司行动记录失败'))
   } finally {
     loading.value = false
   }
@@ -505,10 +582,11 @@ async function handleSubmit() {
       ElMessage.success('创建成功')
     }
 
+    holdingsStore.invalidate()
     dialogVisible.value = false
     loadActions()
   } catch (error) {
-    ElMessage.error(isEdit.value ? '更新失败' : '创建失败')
+    ElMessage.error(getApiErrorMessage(error, isEdit.value ? '更新失败' : '创建失败'))
     console.error(error)
   } finally {
     submitting.value = false
@@ -523,10 +601,11 @@ function handleDelete(row) {
   }).then(async () => {
     try {
       await api.deleteCorporateAction(row.id)
+      holdingsStore.invalidate()
       ElMessage.success('删除成功')
       loadActions()
     } catch (error) {
-      ElMessage.error('删除失败')
+      ElMessage.error(getApiErrorMessage(error, '删除失败'))
     }
   })
 }
@@ -589,7 +668,7 @@ onMounted(() => {
 
 .form-tip {
   font-size: 12px;
-  color: #909399;
+  color: var(--app-text-soft);
   margin-top: 5px;
 }
 

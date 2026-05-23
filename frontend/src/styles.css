@@ -1,22 +1,52 @@
 :root {
-  --app-bg: #f3f5f8;
+  /* ── Apple System Color Palette ─────────────────────────────── */
+  --app-bg: #f5f5f7;
   --app-surface: #ffffff;
-  --app-surface-muted: #f8fafc;
-  --app-border: #e4e7ed;
-  --app-border-soft: #edf0f5;
-  --app-text: #1f2937;
-  --app-text-muted: #6b7280;
-  --app-text-soft: #9ca3af;
-  --app-primary: #2563eb;
-  --app-primary-soft: #eff6ff;
-  --app-success: #16a34a;
-  --app-danger: #dc2626;
-  --app-warning: #d97706;
-  --app-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
-  --app-shadow-soft: 0 4px 14px rgba(15, 23, 42, 0.06);
-  --app-radius: 8px;
+  --app-surface-muted: #fbfbfd;
+  --app-surface-secondary: #f5f5f7;
+  --app-border: rgba(0, 0, 0, 0.06);
+  --app-border-soft: rgba(0, 0, 0, 0.04);
+  --app-separator: rgba(0, 0, 0, 0.09);
+
+  --app-text: #1d1d1f;
+  --app-text-muted: #6e6e73;
+  --app-text-soft: #86868b;
+  --app-text-tertiary: #aeaeb2;
+
+  /* Apple SF System Colors */
+  --app-primary: #007AFF;
+  --app-primary-soft: rgba(0, 122, 255, 0.08);
+  --app-primary-tint: rgba(0, 122, 255, 0.12);
+
+  --app-success: #34C759;
+  --app-success-soft: rgba(52, 199, 89, 0.1);
+
+  --app-danger: #FF3B30;
+  --app-danger-soft: rgba(255, 59, 48, 0.1);
+
+  --app-warning: #FF9500;
+  --app-warning-soft: rgba(255, 149, 0, 0.1);
+
+  --app-info: #5856D6;
+
+  /* ── Apple-style Natural Shadows ────────────────────────────── */
+  --app-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --app-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --app-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
+  --app-shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
+
+  /* ── Geometry ───────────────────────────────────────────────── */
+  --app-radius: 12px;
+  --app-radius-inner: 8px;
+  --app-radius-sm: 6px;
+
+  /* ── Motion ─────────────────────────────────────────────────── */
+  --apple-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  --apple-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  --app-duration: 0.3s;
 }
 
+/* ── Reset & Base ─────────────────────────────────────────────── */
 * {
   box-sizing: border-box;
 }
@@ -36,76 +66,231 @@ body {
   margin: 0;
   background: var(--app-bg);
   color: var(--app-text);
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  letter-spacing: 0;
-  text-rendering: optimizeLegibility;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+               'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.47;
+  letter-spacing: -0.022em;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
+/* ── Scrollbar — macOS native feel ────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 100px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ── Cards — borderless, shadow-separated ─────────────────────── */
 .el-card {
-  border: 1px solid var(--app-border-soft);
+  border: none;
   border-radius: var(--app-radius);
-  box-shadow: var(--app-shadow-soft);
+  box-shadow: var(--app-shadow);
+  background: var(--app-surface);
+  transition: box-shadow var(--app-duration) var(--apple-ease);
+}
+
+.el-card:hover {
+  box-shadow: var(--app-shadow-md);
 }
 
 .el-card__header {
-  padding: 16px 20px;
-  border-bottom-color: var(--app-border-soft);
-  font-weight: 650;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--app-separator);
+  font-weight: 600;
+  font-size: 15px;
   color: var(--app-text);
+  background: none;
 }
 
 .el-card__body {
-  padding: 20px;
+  padding: 24px;
 }
 
+/* ── Buttons — Apple flat style ───────────────────────────────── */
 .el-button {
-  border-radius: 6px;
-  font-weight: 600;
+  border-radius: var(--app-radius-inner);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  padding: 8px 16px;
+  transition: opacity var(--app-duration) var(--apple-ease),
+              transform 0.15s var(--apple-ease),
+              background-color var(--app-duration) var(--apple-ease),
+              box-shadow var(--app-duration) var(--apple-ease);
+}
+
+.el-button:hover {
+  opacity: 0.85;
+}
+
+.el-button:active {
+  transform: scale(0.97);
+  opacity: 0.7;
+}
+
+.el-button--primary {
+  background: var(--app-primary);
+  border-color: var(--app-primary);
+  box-shadow: none;
+}
+
+.el-button--primary:hover {
+  background: var(--app-primary);
+  border-color: var(--app-primary);
+  box-shadow: none;
+}
+
+.el-button--success {
+  background: var(--app-success);
+  border-color: var(--app-success);
+}
+
+.el-button--danger {
+  background: var(--app-danger);
+  border-color: var(--app-danger);
+}
+
+.el-button--warning {
+  background: var(--app-warning);
+  border-color: var(--app-warning);
 }
 
 .el-button + .el-button {
   margin-left: 8px;
 }
 
+/* ── Form Elements — clean inset fields ───────────────────────── */
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner,
 .el-input-number .el-input__wrapper {
-  border-radius: 6px;
+  border-radius: var(--app-radius-inner);
   box-shadow: 0 0 0 1px var(--app-border) inset;
+  background-color: var(--app-surface);
+  transition: box-shadow var(--app-duration) var(--apple-ease);
 }
 
 .el-input__wrapper:hover,
 .el-select__wrapper:hover,
 .el-textarea__inner:hover {
-  box-shadow: 0 0 0 1px #cbd5e1 inset;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset;
 }
 
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focus {
+  box-shadow: 0 0 0 3px var(--app-primary-tint), 0 0 0 1px var(--app-primary) inset !important;
+}
+
+/* ── Tables — refined, no uppercase headers ───────────────────── */
 .el-table {
-  --el-table-header-bg-color: #fafbfc;
-  --el-table-header-text-color: #4b5563;
-  --el-table-border-color: var(--app-border-soft);
-  border-radius: 6px;
+  --el-table-header-bg-color: var(--app-surface-muted);
+  --el-table-header-text-color: var(--app-text-muted);
+  --el-table-border-color: var(--app-separator);
+  --el-table-row-hover-bg-color: var(--app-surface-secondary);
+  border-radius: var(--app-radius-inner);
+  overflow: hidden;
+  font-size: 14px;
 }
 
 .el-table th.el-table__cell {
-  font-weight: 650;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  color: var(--app-text-muted);
 }
 
 .el-table .el-table__cell {
-  padding: 11px 0;
+  padding: 12px 0;
+  transition: background-color var(--app-duration) var(--apple-ease);
 }
 
+.el-table tr {
+  transition: background-color var(--app-duration) var(--apple-ease);
+}
+
+.el-table__row:hover td.el-table__cell {
+  background-color: var(--el-table-row-hover-bg-color) !important;
+}
+
+/* ── Tags — Apple capsule style ───────────────────────────────── */
 .el-tag {
-  border-radius: 6px;
-  font-weight: 600;
+  border-radius: 980px;
+  font-weight: 500;
+  font-size: 12px;
+  padding: 2px 10px;
+  height: auto;
+  border: none;
 }
 
+.el-tag--success {
+  background-color: var(--app-success-soft);
+  color: var(--app-success);
+}
+
+.el-tag--danger {
+  background-color: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+.el-tag--warning {
+  background-color: var(--app-warning-soft);
+  color: var(--app-warning);
+}
+
+.el-tag--info {
+  background-color: rgba(0, 0, 0, 0.05);
+  color: var(--app-text-muted);
+}
+
+/* ── Dialogs — Apple sheet style ──────────────────────────────── */
 .el-dialog {
-  border-radius: var(--app-radius);
+  border-radius: 14px;
+  box-shadow: var(--app-shadow-lg);
+  border: none;
+  overflow: hidden;
 }
 
+.el-dialog__header {
+  padding: 20px 24px 14px;
+  margin-right: 0;
+  border-bottom: 1px solid var(--app-separator);
+}
+
+.el-dialog__title {
+  font-weight: 600;
+  font-size: 17px;
+  letter-spacing: -0.022em;
+}
+
+.el-dialog__body {
+  padding: 24px;
+}
+
+.el-dialog__footer {
+  padding: 14px 24px 20px;
+  border-top: 1px solid var(--app-separator);
+  background: var(--app-surface-muted);
+}
+
+/* ── Page Layout ──────────────────────────────────────────────── */
 .page-header,
 .card-header {
   display: flex;
@@ -119,8 +304,9 @@ body {
 .card-header > span {
   min-width: 0;
   color: var(--app-text);
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.022em;
 }
 
 .header-actions {
@@ -131,15 +317,17 @@ body {
   flex-wrap: wrap;
 }
 
+/* ── Filter Form ──────────────────────────────────────────────── */
 .filter-form {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  padding: 14px 16px 2px;
-  margin-bottom: 16px;
-  background: var(--app-surface-muted);
-  border: 1px solid var(--app-border-soft);
+  gap: 12px;
+  padding: 16px 20px 4px;
+  margin-bottom: 20px;
+  background: var(--app-surface);
+  border: none;
   border-radius: var(--app-radius);
+  box-shadow: var(--app-shadow-sm);
 }
 
 .filter-form .el-form-item {
@@ -147,16 +335,25 @@ body {
   margin-bottom: 12px;
 }
 
-.filter-form .el-input,
-.filter-form .el-select {
-  width: 180px;
+.filter-form .el-form-item__label {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  padding-bottom: 4px;
 }
 
+.filter-form .el-input,
+.filter-form .el-select {
+  width: 190px;
+}
+
+/* ── Responsive Table Container ───────────────────────────────── */
 .responsive-table {
   width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
+  border-radius: var(--app-radius-inner);
 }
 
 .responsive-table .el-table {
@@ -168,6 +365,7 @@ body {
   min-width: 100%;
 }
 
+/* ── Dialog Footers ───────────────────────────────────────────── */
 .dialog-footer,
 .mobile-dialog-footer {
   display: flex;
@@ -181,27 +379,62 @@ body {
   margin-left: 0;
 }
 
+/* ── Metric Colors ────────────────────────────────────────────── */
 .metric-positive {
   color: var(--app-success);
+  font-weight: 600;
 }
 
 .metric-negative {
   color: var(--app-danger);
+  font-weight: 600;
 }
 
+/* ── Pagination ───────────────────────────────────────────────── */
+.el-pagination {
+  --el-pagination-button-bg-color: var(--app-surface);
+}
+
+.el-pagination button,
+.el-pagination .el-pager li {
+  border-radius: var(--app-radius-sm);
+}
+
+/* ── Dropdown Menu ────────────────────────────────────────────── */
+.el-dropdown-menu {
+  border-radius: var(--app-radius);
+  box-shadow: var(--app-shadow-lg);
+  border: 1px solid var(--app-border);
+  padding: 4px;
+}
+
+.el-dropdown-menu__item {
+  border-radius: var(--app-radius-sm);
+  padding: 6px 12px;
+}
+
+/* ── Message / Notification ───────────────────────────────────── */
+.el-message {
+  border-radius: var(--app-radius);
+  box-shadow: var(--app-shadow-lg);
+  border: none;
+}
+
+/* ── Mobile & Tablet ──────────────────────────────────────────── */
 @media (max-width: 900px) {
   .el-card__header {
-    padding: 14px 16px;
+    padding: 16px 20px;
   }
 
   .el-card__body {
-    padding: 16px;
+    padding: 20px;
   }
 
   .page-header,
   .card-header {
     align-items: flex-start;
     flex-direction: column;
+    gap: 12px;
   }
 
   .header-actions {
@@ -212,7 +445,7 @@ body {
   .filter-form {
     align-items: stretch;
     flex-direction: column;
-    padding: 12px;
+    padding: 16px;
   }
 
   .filter-form .el-form-item,
@@ -225,7 +458,7 @@ body {
   .filter-form .el-form-item:last-child .el-form-item__content {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: 10px;
   }
 
   .filter-form .el-form-item:last-child .el-button {
@@ -234,18 +467,18 @@ body {
   }
 
   .el-dialog {
-    max-width: calc(100vw - 28px);
-    margin: 14px auto;
+    max-width: calc(100vw - 24px);
+    margin: 12px auto;
   }
 
   .el-dialog__body {
-    max-height: calc(100vh - 170px);
+    max-height: calc(100vh - 180px);
     overflow-y: auto;
-    padding: 16px;
+    padding: 20px;
   }
 
   .el-dialog__footer {
-    padding: 12px 16px 16px;
+    padding: 14px 20px 20px;
   }
 
   .el-dialog .el-form {
@@ -288,11 +521,11 @@ body {
 
 @media (max-width: 640px) {
   .el-card__header {
-    padding: 12px 14px;
+    padding: 14px 16px;
   }
 
   .el-card__body {
-    padding: 14px;
+    padding: 16px;
   }
 
   .header-actions {
