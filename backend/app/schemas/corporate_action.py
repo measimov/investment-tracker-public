@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from decimal import Decimal
 from datetime import date, datetime
 from typing import Optional, Literal
@@ -19,6 +19,7 @@ ActionType = Literal[
 
 class CorporateActionBase(BaseModel):
     """公司行动基础模型"""
+    broker_account_id: Optional[int] = None
     symbol: str = Field(..., max_length=20, description="股票代码")
     name: Optional[str] = Field(None, max_length=100, description="资产名称")
     market: str = Field(..., max_length=20, description="市场（A股、港股、美股等）")
@@ -70,11 +71,32 @@ class CorporateActionBase(BaseModel):
 
 class CorporateActionCreate(CorporateActionBase):
     """创建公司行动"""
-    pass
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_quantity_fields(self):
+        """Quantity-affecting actions must carry at least one usable field.
+
+        Replay implementations interpret these with a single priority rule
+        (issue #47: distribution_ratio > shares_received; split_ratio >
+        new_shares); a record with neither field would silently change nothing.
+        """
+        if self.action_type in ("STOCK_DIVIDEND", "BONUS_ISSUE"):
+            if not self.distribution_ratio and not self.shares_received:
+                raise ValueError(
+                    "股票股息/送股必须提供 distribution_ratio 或 shares_received"
+                )
+        elif self.action_type in ("STOCK_SPLIT", "REVERSE_SPLIT"):
+            if not self.split_ratio and self.new_shares is None:
+                raise ValueError("拆股/合股必须提供 split_ratio 或 new_shares")
+        return self
 
 
 class CorporateActionUpdate(BaseModel):
     """更新公司行动"""
+    model_config = ConfigDict(extra="forbid")
+
+    broker_account_id: Optional[int] = None
     symbol: Optional[str] = Field(None, max_length=20)
     name: Optional[str] = Field(None, max_length=100)
     market: Optional[str] = Field(None, max_length=20)
@@ -114,6 +136,7 @@ class CorporateActionResponse(CorporateActionBase):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    import_batch_id: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
@@ -121,6 +144,9 @@ class CorporateActionResponse(CorporateActionBase):
 # 快捷创建模型
 class CashDividendCreate(BaseModel):
     """现金股息快捷创建"""
+    model_config = ConfigDict(extra="forbid")
+
+    broker_account_id: Optional[int] = None
     symbol: str = Field(..., max_length=20)
     name: Optional[str] = Field(None, max_length=100)
     market: str = Field(..., max_length=20)
@@ -141,6 +167,7 @@ class CashDividendCreate(BaseModel):
             net_dividend = self.total_dividend - tax_withheld
 
         return CorporateActionCreate(
+            broker_account_id=self.broker_account_id,
             symbol=self.symbol,
             name=self.name,
             market=self.market,
@@ -158,6 +185,9 @@ class CashDividendCreate(BaseModel):
 
 class StockDividendCreate(BaseModel):
     """红股/股票股息快捷创建"""
+    model_config = ConfigDict(extra="forbid")
+
+    broker_account_id: Optional[int] = None
     symbol: str = Field(..., max_length=20)
     name: Optional[str] = Field(None, max_length=100)
     market: str = Field(..., max_length=20)
@@ -170,6 +200,7 @@ class StockDividendCreate(BaseModel):
     def to_corporate_action(self) -> CorporateActionCreate:
         """转换为标准公司行动创建模型"""
         return CorporateActionCreate(
+            broker_account_id=self.broker_account_id,
             symbol=self.symbol,
             name=self.name,
             market=self.market,

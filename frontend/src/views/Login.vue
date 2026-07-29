@@ -63,23 +63,16 @@
           style="margin-top: 10px"
         />
       </el-form>
-
-      <component :is="LoginMockHint" v-if="LoginMockHint" @fill-account="fillAccount" />
     </section>
   </div>
 </template>
 
 <script setup>
-import { defineAsyncComponent, ref, reactive } from 'vue'
+import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { User, Lock } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
-
-const USE_MOCK = import.meta.env.MODE === 'mock' && import.meta.env.VITE_USE_MOCK === 'true'
-const LoginMockHint = USE_MOCK
-  ? defineAsyncComponent(() => import('../components/LoginMockHint.vue'))
-  : null
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -92,11 +85,6 @@ const loginForm = reactive({
   username: '',
   password: ''
 })
-
-const fillAccount = (username, password) => {
-  loginForm.username = username
-  loginForm.password = password
-}
 
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
@@ -142,15 +130,34 @@ const handleLogin = async () => {
   align-items: center;
   min-height: calc(100vh - 52px);
   padding: 48px 20px;
+  background:
+    radial-gradient(720px 380px at 15% 8%, rgba(99, 102, 241, 0.16), transparent 60%),
+    radial-gradient(640px 340px at 88% 16%, rgba(139, 92, 246, 0.14), transparent 55%),
+    radial-gradient(560px 380px at 50% 105%, rgba(16, 185, 129, 0.1), transparent 55%);
 }
 
 .login-shell {
   width: 100%;
   max-width: 400px;
   padding: 36px;
-  background: var(--app-surface);
-  border-radius: 14px;
-  box-shadow: var(--app-shadow-md);
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 22px;
+  box-shadow: var(--app-shadow-lg);
+  backdrop-filter: saturate(160%) blur(24px);
+  -webkit-backdrop-filter: saturate(160%) blur(24px);
+  animation: loginIn 0.5s var(--apple-spring);
+}
+
+@keyframes loginIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .login-brand {
@@ -167,33 +174,34 @@ const handleLogin = async () => {
   grid-template-columns: repeat(3, 6px);
   align-items: end;
   gap: 3px;
-  width: 34px;
-  height: 34px;
-  padding: 6px;
-  background: var(--app-surface-secondary);
-  border: 1px solid var(--app-border);
-  border-radius: 8px;
+  width: 38px;
+  height: 38px;
+  padding: 7px;
+  background: var(--app-primary-gradient);
+  border: none;
+  border-radius: 11px;
+  box-shadow: 0 6px 14px -3px var(--app-primary-shadow);
 }
 
 .brand-mark span {
   display: block;
   width: 6px;
   border-radius: 2px 2px 0 0;
+  background: rgba(255, 255, 255, 0.95);
 }
 
 .brand-mark span:nth-child(1) {
-  height: 13px;
-  background: var(--app-success);
+  height: 14px;
+  opacity: 0.75;
 }
 
 .brand-mark span:nth-child(2) {
-  height: 20px;
-  background: var(--app-primary);
+  height: 22px;
 }
 
 .brand-mark span:nth-child(3) {
   height: 10px;
-  background: var(--app-danger);
+  opacity: 0.6;
 }
 
 .login-brand h1 {
@@ -224,9 +232,10 @@ const handleLogin = async () => {
 }
 
 .login-form :deep(.el-button) {
-  height: 44px;
+  height: 46px;
   font-size: 16px;
-  font-weight: 500;
+  font-weight: 600;
+  border-radius: 12px;
 }
 
 @media (max-width: 640px) {

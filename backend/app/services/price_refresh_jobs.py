@@ -1,80 +1,64 @@
-from datetime import datetime
-from threading import Lock
 from typing import Any, Dict, Optional
-from uuid import uuid4
 
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
+from .background_job_store import (
+    claim_job,
+    create_or_get_active_job,
+    get_job,
+    handle_job_failure,
+    update_job,
+)
+from .job_worker import register_runner
 from .stock_price_service import update_all_holdings_prices
 
 logger = get_app_logger(__name__)
-
-_jobs: Dict[str, Dict[str, Any]] = {}
-_active_job_by_user: Dict[int, str] = {}
-_lock = Lock()
-
-
-def _public_job(job: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: value for key, value in job.items() if key != "user_id"}
+JOB_TYPE = "price_refresh"
 
 
 def start_price_refresh_job(user_id: int) -> Dict[str, Any]:
-    with _lock:
-        active_job_id = _active_job_by_user.get(user_id)
-        if active_job_id:
-            active_job = _jobs.get(active_job_id)
-            if active_job and active_job["status"] in {"queued", "running"}:
-                return _public_job(active_job)
+    return create_or_get_active_job(
+        JOB_TYPE,
+        user_id,
+        {"result": None},
+    )
 
-        job_id = uuid4().hex
-        job = {
-            "id": job_id,
-            "user_id": user_id,
-            "status": "queued",
-            "created_at": datetime.utcnow(),
-            "started_at": None,
-            "finished_at": None,
-            "result": None,
-            "error": None,
-        }
-        _jobs[job_id] = job
-        _active_job_by_user[user_id] = job_id
-        return _public_job(job)
+
+def execute_price_refresh_job(claimed: Dict[str, Any]) -> None:
+    """Execute an already-claimed price refresh job.
+
+    Unexpected exceptions propagate to the caller, which routes them through the
+    retry/backoff path; an unsuccessful result is a deterministic failure.
+    """
+    db = SessionLocal()
+    try:
+        result = update_all_holdings_prices(db, claimed["user_id"])
+        update_job(
+            claimed["id"],
+            JOB_TYPE,
+            status="succeeded" if result.get("success") else "failed",
+            data_updates={"result": result},
+            required_status="running",
+        )
+    finally:
+        db.close()
 
 
 def run_price_refresh_job(job_id: str) -> None:
-    with _lock:
-        job = _jobs.get(job_id)
-        if not job:
-            logger.warning("Price refresh job %s disappeared before it could run", job_id)
-            return
-        user_id = job["user_id"]
-        job["status"] = "running"
-        job["started_at"] = datetime.utcnow()
-
-    db = SessionLocal()
+    """Inline fast path: claim by id and execute; retries on unexpected errors."""
+    claimed = claim_job(job_id, JOB_TYPE)
+    if not claimed:
+        logger.info("Price refresh job %s was already claimed or no longer queued", job_id)
+        return
     try:
-        result = update_all_holdings_prices(db, user_id)
-        with _lock:
-            job["status"] = "succeeded" if result.get("success") else "failed"
-            job["result"] = result
-            job["finished_at"] = datetime.utcnow()
+        execute_price_refresh_job(claimed)
     except Exception as exc:
         logger.exception("Price refresh job %s failed", job_id)
-        with _lock:
-            job["status"] = "failed"
-            job["error"] = str(exc)
-            job["finished_at"] = datetime.utcnow()
-    finally:
-        db.close()
-        with _lock:
-            if _active_job_by_user.get(user_id) == job_id:
-                del _active_job_by_user[user_id]
+        handle_job_failure(job_id, JOB_TYPE, str(exc))
 
 
 def get_price_refresh_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
-    with _lock:
-        job = _jobs.get(job_id)
-        if not job or job["user_id"] != user_id:
-            return None
-        return _public_job(job.copy())
+    return get_job(job_id, JOB_TYPE, user_id)
+
+
+register_runner(JOB_TYPE, execute_price_refresh_job)

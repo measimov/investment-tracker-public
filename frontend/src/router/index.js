@@ -1,15 +1,19 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { ElMessage } from 'element-plus'
-import Dashboard from '../views/Dashboard.vue'
-import Transactions from '../views/Transactions.vue'
-import Holdings from '../views/Holdings.vue'
-import Statistics from '../views/Statistics.vue'
-import CorporateActions from '../views/CorporateActions.vue'
-import ExchangeRates from '../views/ExchangeRates.vue'
-import Login from '../views/Login.vue'
-import UserManagement from '../views/admin/UserManagement.vue'
-import AllHoldings from '../views/admin/AllHoldings.vue'
+
+// Route-level code splitting: each view is loaded on demand so the initial
+// bundle stays small (the Statistics view with its charts is the heaviest).
+const Dashboard = () => import('../views/Dashboard.vue')
+const Transactions = () => import('../views/Transactions.vue')
+const Holdings = () => import('../views/Holdings.vue')
+const Statistics = () => import('../views/Statistics.vue')
+const CorporateActions = () => import('../views/CorporateActions.vue')
+const ExchangeRates = () => import('../views/ExchangeRates.vue')
+const AccountData = () => import('../views/AccountData.vue')
+const Login = () => import('../views/Login.vue')
+const UserManagement = () => import('../views/admin/UserManagement.vue')
+const AllHoldings = () => import('../views/admin/AllHoldings.vue')
 
 const routes = [
   {
@@ -31,6 +35,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/account-data',
+    name: 'AccountData',
+    component: AccountData,
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/holdings',
     name: 'Holdings',
     component: Holdings,
@@ -40,6 +50,12 @@ const routes = [
     path: '/corporate-actions',
     name: 'CorporateActions',
     component: CorporateActions,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/reports',
+    name: 'Reports',
+    component: () => import('../views/Reports.vue'),
     meta: { requiresAuth: true }
   },
   {
@@ -77,27 +93,19 @@ const router = createRouter({
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
 
-  // 如果有token但未认证，尝试恢复状态（防御性检查）
-  if (!authStore.isAuthenticated && localStorage.getItem('token')) {
+  if (!authStore.sessionChecked) {
     await authStore.checkAuth()
   }
 
   // Check if route requires authentication
   if (to.meta.requiresAuth !== false) {
-    // Check if user is authenticated
     if (!authStore.isAuthenticated) {
-      // Try to restore auth from localStorage
-      const isAuthenticated = await authStore.checkAuth()
-
-      if (!isAuthenticated) {
-        // Not authenticated, redirect to login
-        ElMessage.warning('请先登录')
-        next({
-          path: '/login',
-          query: { redirect: to.fullPath }
-        })
-        return
-      }
+      ElMessage.warning('请先登录')
+      next({
+        path: '/login',
+        query: { redirect: to.fullPath }
+      })
+      return
     }
 
     // Check if route requires admin access

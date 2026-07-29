@@ -1,22 +1,36 @@
-from fastapi import APIRouter, Depends, Query
+from datetime import date
+from decimal import Decimal
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import Dict, List, Any
 from ..database import get_db
 from ..models.user import User
 from ..core.deps import get_current_active_user
 from ..services.statistics_service import (
+    build_portfolio_snapshot,
     get_summary_statistics,
     get_statistics_by_market,
     get_statistics_by_time,
-    get_profit_loss_analysis,
-    calculate_current_holdings_performance,
-    calculate_realized_pnl_fifo,
-    get_dividend_summary,
-    calculate_total_realized_return,
-    calculate_account_total_return
+    get_holdings_cost_breakdown,
+    calculate_performance_analytics,
+    calculate_performance_summary,
+    resolve_server_prices,
+)
+from ..services.performance_history_jobs import (
+    get_performance_history_sync_job,
+    run_performance_history_sync_job,
+    start_performance_history_sync_job,
 )
 
 router = APIRouter()
+
+
+def _validate_date_range(start_date: date | None, end_date: date | None) -> None:
+    if start_date and end_date and end_date < start_date:
+        raise HTTPException(
+            status_code=422,
+            detail="end_date must be on or after start_date",
+        )
 
 
 @router.get("/summary", response_model=Dict[str, Any])
@@ -39,7 +53,7 @@ def get_by_market(
 
 @router.get("/by-time", response_model=List[Dict[str, Any]])
 def get_by_time(
-    group_by: str = Query("month", regex="^(month|year)$"),
+    group_by: str = Query("month", pattern="^(month|year)$"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -47,107 +61,148 @@ def get_by_time(
     return get_statistics_by_time(db, current_user.id, group_by)
 
 
-@router.get("/profit-loss", response_model=List[Dict[str, Any]])
-def get_profit_loss(
+@router.get("/holdings-cost-breakdown", response_model=List[Dict[str, Any]])
+def get_holdings_cost_breakdown_api(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    """Get profit/loss analysis."""
-    return get_profit_loss_analysis(db, current_user.id)
+    """Get current holdings sorted by total cost (cost distribution chart)."""
+    return get_holdings_cost_breakdown(db, current_user.id)
 
 
-@router.post("/current-holdings-performance", response_model=Dict[str, Any])
-def get_current_holdings_performance(
+@router.get("/portfolio-snapshot", response_model=Dict[str, Any])
+def get_portfolio_snapshot(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """组合快照：一次调用返回看板全量数据（表现/持仓/价格新鲜度/市场/近期交易/对账状态）。
+
+    同时是 LLM 报告（目的③）的结构化输入底座；估算口径与数据质量信号原样携带。
+    """
+    return build_portfolio_snapshot(db, current_user.id)
+
+
+@router.post("/performance-summary", response_model=Dict[str, Any])
+def get_performance_summary(
     current_prices: Dict[str, float],
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    获取当前持仓表现（基于FIFO剩余批次）
+    获取统计分析页核心收益卡片数据（手工试算：使用请求体中的价格）。
 
-    请求体示例：
-    {
-        "600000": 12.5,
-        "515180": 1.45,
-        "AAPL": 185.0
-    }
-
-    返回：
-    {
-        "unrealized_pnl": 未实现盈亏,
-        "current_holdings_cost": 当前持仓成本,
-        "unrealized_pnl_rate": 浮盈率,
-        "current_market_value": 当前市值,
-        "holdings_detail": [...]
-    }
+    This endpoint calculates shared FIFO-dependent metrics once and returns the
+    performance cards together so the statistics tab can render them sooner.
     """
-    return calculate_current_holdings_performance(db, current_user.id, current_prices)
+    return calculate_performance_summary(db, current_user.id, current_prices)
 
 
-@router.get("/realized-pnl-fifo", response_model=Dict[str, Any])
-def get_realized_pnl_fifo(
+@router.get("/performance-summary", response_model=Dict[str, Any])
+def get_performance_summary_server_priced(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
+    """获取核心收益卡片数据；估值价格由服务端权威数据决定（issue #46）。
+
+    Prices come from Holding.current_price, falling back to the latest cached
+    SecurityPrice close, so results are reproducible without client input.
     """
-    获取已实现盈亏（FIFO方法）
-
-    返回：
-    {
-        "realized_pnl": 已实现盈亏,
-        "sold_cost": 已卖出成本,
-        "realized_pnl_rate": 已实现收益率,
-        "trades_detail": [...]
-    }
-    """
-    return calculate_realized_pnl_fifo(db, current_user.id)
+    prices, sources, freshness = resolve_server_prices(db, current_user.id)
+    result = calculate_performance_summary(db, current_user.id, prices)
+    result["price_sources"] = sources
+    result["price_freshness"] = freshness
+    return result
 
 
-@router.get("/dividend-summary", response_model=Dict[str, Any])
-def get_dividend_summary_api(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """
-    获取股息统计摘要（独立模块）
-
-    返回：
-    {
-        "total_dividend_gross": 税前总额,
-        "total_tax": 总税费,
-        "total_dividend_net": 税后总额,
-        "by_symbol": [...]
-    }
-    """
-    return get_dividend_summary(db, current_user.id)
-
-
-@router.get("/total-realized-return", response_model=Dict[str, Any])
-def get_total_realized_return(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """
-    获取综合已实现收益。
-
-    Total realized return = realized trading PnL + net dividend income.
-    The return rate denominator is sold_cost_cny.
-    """
-    return calculate_total_realized_return(db, current_user.id)
-
-
-@router.post("/account-total-return", response_model=Dict[str, Any])
-def get_account_total_return(
+def _run_performance_analytics(
+    db: Session,
+    user_id: int,
     current_prices: Dict[str, float],
+    start_date: date | None,
+    end_date: date | None,
+    risk_free_rate: Decimal,
+    refresh_history: bool,
+) -> Dict[str, Any]:
+    _validate_date_range(start_date, end_date)
+    return calculate_performance_analytics(
+        db,
+        user_id,
+        current_prices,
+        start_date=start_date,
+        end_date=end_date,
+        risk_free_rate=risk_free_rate,
+        refresh_history=refresh_history,
+    )
+
+
+@router.post("/performance-analytics", response_model=Dict[str, Any])
+def get_performance_analytics(
+    current_prices: Dict[str, float],
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    risk_free_rate: Decimal = Query(Decimal("0")),
+    refresh_history: bool = Query(False),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
     """
-    获取账户级总收益。
+    获取收益率曲线和量化指标（手工试算：使用请求体中的价格）。
 
-    Total return = realized trading PnL + unrealized PnL + net dividend income.
-    Simple return denominator is estimated net invested principal.
-    Annualized return uses XIRR over buy/sell/dividend cash flows plus current
-    market value as the terminal value.
+    Uses cached daily price history when available. When refresh_history=true,
+    the service attempts to pull supported symbols from Tushare before
+    calculating the curve.
     """
-    return calculate_account_total_return(db, current_user.id, current_prices)
+    return _run_performance_analytics(
+        db, current_user.id, current_prices,
+        start_date, end_date, risk_free_rate, refresh_history,
+    )
+
+
+@router.get("/performance-analytics", response_model=Dict[str, Any])
+def get_performance_analytics_server_priced(
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    risk_free_rate: Decimal = Query(Decimal("0")),
+    refresh_history: bool = Query(False),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """获取收益率曲线和量化指标；估值价格由服务端权威数据决定（issue #46）。"""
+    prices, sources, freshness = resolve_server_prices(db, current_user.id)
+    result = _run_performance_analytics(
+        db, current_user.id, prices,
+        start_date, end_date, risk_free_rate, refresh_history,
+    )
+    result.setdefault("data_quality", {})["price_sources"] = sources
+    result["data_quality"]["price_freshness"] = freshness
+    return result
+
+
+@router.post("/performance-history-sync", response_model=Dict[str, Any])
+def start_performance_history_sync(
+    background_tasks: BackgroundTasks,
+    start_date: date | None = Query(None),
+    end_date: date | None = Query(None),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Start an incremental Tushare history sync job for performance analytics."""
+    _validate_date_range(start_date, end_date)
+    job = start_performance_history_sync_job(
+        current_user.id,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if job["status"] == "queued":
+        background_tasks.add_task(run_performance_history_sync_job, job["id"])
+    return job
+
+
+@router.get("/performance-history-sync/{job_id}", response_model=Dict[str, Any])
+def get_performance_history_sync(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+):
+    job = get_performance_history_sync_job(job_id, current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Performance history sync job not found")
+    return job

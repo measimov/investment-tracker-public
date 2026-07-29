@@ -17,6 +17,8 @@ os.environ.setdefault(
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "test-admin-password")
 os.environ.setdefault("DEMO_INITIAL_PASSWORD", "test-user-password")
+# Tests drive job execution explicitly; the polling worker would race them.
+os.environ.setdefault("BACKGROUND_WORKER_ENABLED", "false")
 
 BACKEND_DIR = Path(__file__).parent
 sys.path.insert(0, str(BACKEND_DIR))

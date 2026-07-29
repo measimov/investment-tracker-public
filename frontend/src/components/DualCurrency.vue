@@ -1,10 +1,10 @@
 <template>
   <span class="dual-currency">
-    <span class="cny-amount" :class="{ 'highlight': highlightCurrency === 'CNY' }">
+    <span class="cny-amount" :class="{ highlight: highlightCurrency === 'CNY' }">
       {{ formatCurrency(amountCny, 'CNY', precision) }}
     </span>
     <span class="separator"> / </span>
-    <span class="usd-amount" :class="{ 'highlight': highlightCurrency === 'USD' }">
+    <span class="usd-amount" :class="{ highlight: highlightCurrency === 'USD' }">
       {{ formatCurrency(amountUsd, 'USD', precision) }}
     </span>
   </span>
@@ -51,16 +51,16 @@ const props = defineProps({
 }
 
 .separator {
-  color: #909399;
+  color: #94a3b8;
   font-size: 0.9em;
 }
 
 .usd-amount {
-  color: #606266;
+  color: #475569;
   font-size: 0.95em;
 }
 
 .highlight.usd-amount {
-  color: #303133;
+  color: #0f172a;
 }
 </style>

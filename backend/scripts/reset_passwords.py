@@ -45,7 +45,7 @@ def main():
             conn.execute(text(
                 "UPDATE users SET hashed_password = :pwd WHERE username = 'demo'"
             ), {"pwd": demo_hash})
-            print("✅ demo密码已重置")
+            print("✅ Demo密码已重置")
             print()
 
         conn.commit()

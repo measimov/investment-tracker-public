@@ -119,6 +119,7 @@ def update_exchange_rate(
         rate.source = rate_update.source
 
     db.commit()
+    exchange_rate_service.invalidate_rate_cache(db)
     db.refresh(rate)
     return rate
 
@@ -133,6 +134,7 @@ def delete_exchange_rate(rate_id: int, db: Session = Depends(get_db)):
 
     db.delete(rate)
     db.commit()
+    exchange_rate_service.invalidate_rate_cache(db)
     return {"message": "Exchange rate deleted successfully"}
 
 

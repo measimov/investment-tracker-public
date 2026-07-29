@@ -41,7 +41,9 @@
           <el-table-column label="操作" width="280">
             <template #default="{ row }">
               <el-button type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
-              <el-button type="warning" size="small" text @click="handleResetPassword(row)">重置密码</el-button>
+              <el-button type="warning" size="small" text @click="handleResetPassword(row)"
+                >重置密码</el-button
+              >
               <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
             </template>
           </el-table-column>
@@ -50,11 +52,7 @@
     </el-card>
 
     <!-- Create/Edit User Dialog -->
-    <el-dialog
-      v-model="dialogVisible"
-      :title="isEdit ? '编辑用户' : '添加用户'"
-      width="500px"
-    >
+    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑用户' : '添加用户'" width="500px">
       <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
         <el-form-item label="用户名" prop="username">
           <el-input v-model="form.username" placeholder="请输入用户名" :disabled="isEdit" />
@@ -63,7 +61,12 @@
           <el-input v-model="form.email" placeholder="请输入邮箱" type="email" />
         </el-form-item>
         <el-form-item label="密码" prop="password" v-if="!isEdit">
-          <el-input v-model="form.password" placeholder="请输入密码" type="password" show-password />
+          <el-input
+            v-model="form.password"
+            placeholder="请输入密码"
+            type="password"
+            show-password
+          />
         </el-form-item>
         <el-form-item label="激活状态">
           <el-switch v-model="form.is_active" />
@@ -74,30 +77,43 @@
       </el-form>
       <template #footer>
         <div class="mobile-dialog-footer">
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
+          <el-button @click="dialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
         </div>
       </template>
     </el-dialog>
 
     <!-- Reset Password Dialog -->
-    <el-dialog
-      v-model="resetPasswordVisible"
-      title="重置密码"
-      width="400px"
-    >
-      <el-form :model="resetPasswordForm" :rules="resetPasswordRules" ref="resetPasswordFormRef" label-width="100px">
+    <el-dialog v-model="resetPasswordVisible" title="重置密码" width="400px">
+      <el-form
+        :model="resetPasswordForm"
+        :rules="resetPasswordRules"
+        ref="resetPasswordFormRef"
+        label-width="100px"
+      >
         <el-form-item label="新密码" prop="new_password">
-          <el-input v-model="resetPasswordForm.new_password" placeholder="请输入新密码" type="password" show-password />
+          <el-input
+            v-model="resetPasswordForm.new_password"
+            placeholder="请输入新密码"
+            type="password"
+            show-password
+          />
         </el-form-item>
         <el-form-item label="确认密码" prop="confirm_password">
-          <el-input v-model="resetPasswordForm.confirm_password" placeholder="请再次输入新密码" type="password" show-password />
+          <el-input
+            v-model="resetPasswordForm.confirm_password"
+            placeholder="请再次输入新密码"
+            type="password"
+            show-password
+          />
         </el-form-item>
       </el-form>
       <template #footer>
         <div class="mobile-dialog-footer">
-        <el-button @click="resetPasswordVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleResetPasswordSubmit" :loading="resettingPassword">确定</el-button>
+          <el-button @click="resetPasswordVisible = false">取消</el-button>
+          <el-button type="primary" @click="handleResetPasswordSubmit" :loading="resettingPassword"
+            >确定</el-button
+          >
         </div>
       </template>
     </el-dialog>
@@ -109,6 +125,7 @@ import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '../../api'
+import { formatDateTime } from '../../utils/helpers'
 
 const loading = ref(false)
 const users = ref([])
@@ -163,30 +180,12 @@ const rules = {
     { required: true, message: '请输入邮箱', trigger: 'blur' },
     { type: 'email', message: '请输入有效的邮箱地址', trigger: 'blur' }
   ],
-  password: [
-    { required: true, validator: validatePassword, trigger: 'blur' }
-  ]
+  password: [{ required: true, validator: validatePassword, trigger: 'blur' }]
 }
 
 const resetPasswordRules = {
-  new_password: [
-    { required: true, validator: validatePassword, trigger: 'blur' }
-  ],
-  confirm_password: [
-    { required: true, validator: validateConfirmPassword, trigger: 'blur' }
-  ]
-}
-
-function formatDateTime(dateString) {
-  if (!dateString) return ''
-  const date = new Date(dateString)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
+  new_password: [{ required: true, validator: validatePassword, trigger: 'blur' }],
+  confirm_password: [{ required: true, validator: validateConfirmPassword, trigger: 'blur' }]
 }
 
 async function loadUsers() {
@@ -240,7 +239,9 @@ async function handleSubmit() {
     dialogVisible.value = false
     loadUsers()
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || (isEdit.value ? '更新用户失败' : '创建用户失败'))
+    ElMessage.error(
+      error.response?.data?.detail || (isEdit.value ? '更新用户失败' : '创建用户失败')
+    )
   } finally {
     submitting.value = false
   }
@@ -275,17 +276,19 @@ function handleDelete(row) {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     type: 'warning'
-  }).then(async () => {
-    try {
-      await api.deleteUser(row.id)
-      ElMessage.success('删除用户成功')
-      loadUsers()
-    } catch (error) {
-      ElMessage.error(error.response?.data?.detail || '删除用户失败')
-    }
-  }).catch(() => {
-    // User cancelled
   })
+    .then(async () => {
+      try {
+        await api.deleteUser(row.id)
+        ElMessage.success('删除用户成功')
+        loadUsers()
+      } catch (error) {
+        ElMessage.error(error.response?.data?.detail || '删除用户失败')
+      }
+    })
+    .catch(() => {
+      // User cancelled
+    })
 }
 
 function resetForm() {

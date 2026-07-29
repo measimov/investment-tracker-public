@@ -66,6 +66,13 @@ export const useTransactionsStore = defineStore('transactions', () => {
     return response
   }
 
+  // 转仓创建 TRANSFER_OUT/IN 交易对并重算持仓：交易列表与持仓缓存都要失效
+  async function createTransfer(data) {
+    const response = await api.createTransfer(data)
+    invalidateDependentData()
+    return response
+  }
+
   function isLoading(params = {}) {
     return loadingKeys.value[paramsKey(params)] === true
   }
@@ -80,6 +87,7 @@ export const useTransactionsStore = defineStore('transactions', () => {
     deleteTransaction,
     invalidate,
     invalidateDependentData,
+    createTransfer,
     isLoading
   }
 })

@@ -8,6 +8,8 @@ from ..config import settings
 SECRET_KEY = settings.secret_key
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
+AUTH_COOKIE_NAME = "investment_session"
+CSRF_COOKIE_NAME = "investment_csrf"
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -22,10 +24,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         True if password matches, False otherwise
     """
     try:
-        return bcrypt.checkpw(
-            plain_password.encode('utf-8'),
-            hashed_password.encode('utf-8')
-        )
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
     except Exception:
         return False
 
@@ -41,8 +40,8 @@ def get_password_hash(password: str) -> str:
         The hashed password
     """
     salt = bcrypt.gensalt(rounds=12)
-    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-    return hashed.decode('utf-8')
+    hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
+    return hashed.decode("utf-8")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

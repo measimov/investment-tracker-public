@@ -8,9 +8,23 @@ class IbkrActivityFlow(Base):
     __tablename__ = "ibkr_activity_flows"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     transaction_id = Column(Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True)
     corporate_action_id = Column(Integer, ForeignKey("corporate_actions.id", ondelete="SET NULL"), nullable=True, index=True)
+    broker_account_id = Column(
+        Integer,
+        ForeignKey("broker_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    import_batch_id = Column(
+        Integer,
+        ForeignKey("import_batches.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     broker = Column(String(50), nullable=False, default="IBKR", index=True)
     row_hash = Column(String(64), nullable=False, index=True)

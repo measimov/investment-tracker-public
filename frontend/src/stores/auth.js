@@ -1,53 +1,48 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
-import { jwtDecode } from 'jwt-decode'
+import { computed, ref } from 'vue'
 import api from '../api'
 
 export const useAuthStore = defineStore('auth', () => {
-  // Helper function to safely load auth state from localStorage
-  function loadFromLocalStorage() {
+  function loadCachedUser() {
     try {
-      const storedToken = localStorage.getItem('token')
       const storedUser = localStorage.getItem('user')
-
-      return {
-        token: storedToken || null,
-        user: storedUser ? JSON.parse(storedUser) : null
-      }
+      return storedUser ? JSON.parse(storedUser) : null
     } catch (error) {
-      console.warn('Failed to load auth state from localStorage:', error)
-      // Clear potentially corrupted data
-      localStorage.removeItem('token')
+      console.warn('Failed to load cached user:', error)
       localStorage.removeItem('user')
-      return { token: null, user: null }
+      return null
     }
   }
 
-  // State - Initialize from localStorage
-  const stored = loadFromLocalStorage()
-  const user = ref(stored.user)    // ✅ 立即恢复user
-  const token = ref(stored.token)  // ✅ 立即恢复token
+  const user = ref(loadCachedUser())
+  const authenticated = ref(false)
+  const sessionChecked = ref(false)
 
-  // Computed
-  const isAuthenticated = computed(() => !!token.value)
+  const isAuthenticated = computed(() => authenticated.value)
   const isAdmin = computed(() => user.value?.is_admin === true)
 
-  // Actions
+  function cacheUser(userInfo) {
+    user.value = userInfo
+    localStorage.setItem('user', JSON.stringify(userInfo))
+  }
+
+  function clearSession() {
+    user.value = null
+    authenticated.value = false
+    localStorage.removeItem('user')
+    localStorage.removeItem('token')
+  }
+
   async function login(username, password) {
     try {
       const response = await api.login(username, password)
-      const { access_token } = response.data
-
-      // Save token
-      token.value = access_token
-      localStorage.setItem('token', access_token)
-
-      // Fetch user info
-      await fetchUserInfo()
-
+      cacheUser(response.data.user)
+      authenticated.value = true
+      sessionChecked.value = true
       return { success: true }
     } catch (error) {
-      console.error('Login failed:', error)
+      clearSession()
+      sessionChecked.value = true
       return {
         success: false,
         message: error.response?.data?.detail || '登录失败，请检查用户名和密码'
@@ -55,86 +50,47 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function logout() {
-    // Clear state
-    user.value = null
-    token.value = null
-
-    // Clear localStorage
-    localStorage.removeItem('token')
-    localStorage.removeItem('user')
+  async function logout() {
+    try {
+      await api.logout()
+    } catch (error) {
+      if (error.response?.status !== 401) {
+        console.warn('Remote logout failed:', error)
+      }
+    } finally {
+      clearSession()
+      sessionChecked.value = true
+    }
   }
 
   async function fetchUserInfo() {
-    try {
-      const response = await api.getUserInfo()
-      user.value = response.data
-
-      // Also save to localStorage for persistence
-      localStorage.setItem('user', JSON.stringify(response.data))
-    } catch (error) {
-      console.error('Failed to fetch user info:', error)
-      // If fetching user info fails, logout
-      logout()
-      throw error
-    }
+    const response = await api.getUserInfo()
+    cacheUser(response.data)
+    authenticated.value = true
+    return response.data
   }
 
   async function checkAuth() {
-    const storedToken = localStorage.getItem('token')
-    const storedUser = localStorage.getItem('user')
-
-    if (!storedToken) {
-      logout()
-      return false
-    }
-
     try {
-      // Check if token is expired
-      const decoded = jwtDecode(storedToken)
-      const currentTime = Date.now() / 1000
-
-      if (decoded.exp < currentTime) {
-        // Token expired
-        logout()
-        return false
-      }
-
-      // Token is valid, set it
-      token.value = storedToken
-
-      // Load user from localStorage (快速恢复，不等待API)
-      if (storedUser) {
-        user.value = JSON.parse(storedUser)
-      }
-
-      // 在后台异步刷新用户信息（不阻塞，失败也不影响已恢复的状态）
-      fetchUserInfo().catch(err => {
-        console.warn('Failed to refresh user info (running in background):', err)
-        // 不处理错误，保留localStorage的数据
-      })
-
+      await fetchUserInfo()
       return true
     } catch (error) {
-      console.error('Auth check failed:', error)
-      logout()
+      clearSession()
       return false
+    } finally {
+      sessionChecked.value = true
     }
   }
 
   function updateUser(userInfo) {
-    user.value = { ...user.value, ...userInfo }
-    localStorage.setItem('user', JSON.stringify(user.value))
+    cacheUser({ ...user.value, ...userInfo })
   }
 
   return {
-    // State
     user,
-    token,
-    // Computed
+    sessionChecked,
     isAuthenticated,
     isAdmin,
-    // Actions
     login,
     logout,
     fetchUserInfo,

@@ -7,6 +7,8 @@ from sqlalchemy import desc
 from decimal import Decimal
 from datetime import date, datetime
 from typing import Dict, Optional
+from weakref import WeakKeyDictionary
+
 import requests
 from ..models.exchange_rate import ExchangeRate
 from ..core.logging import get_app_logger
@@ -14,6 +16,15 @@ from ..core.logging import get_app_logger
 
 BASE_CURRENCY = "CNY"  # 基准货币
 logger = get_app_logger(__name__)
+
+# Session 级最新汇率缓存：统计路径逐笔换算会对同一批币种对发起数百次
+# 相同查询（实测占摘要接口 ~10%）。以 Session 为键，请求结束缓存随会话
+# 消亡；汇率写路径调用 invalidate_rate_cache 主动失效。
+_session_rate_cache: "WeakKeyDictionary[Session, Dict]" = WeakKeyDictionary()
+
+
+def invalidate_rate_cache(db: Session) -> None:
+    _session_rate_cache.pop(db, None)
 
 
 def get_latest_rate(
@@ -36,6 +47,25 @@ def get_latest_rate(
     if from_currency == to_currency:
         return Decimal("1.0")
 
+    try:
+        cache = _session_rate_cache.setdefault(db, {})
+    except TypeError:
+        cache = None  # 不可弱引用的会话实现（测试替身等）：直接跳过缓存
+    key = (from_currency, to_currency)
+    if cache is not None and key in cache:
+        return cache[key]
+
+    rate = _query_latest_rate(db, from_currency, to_currency)
+    if cache is not None:
+        cache[key] = rate
+    return rate
+
+
+def _query_latest_rate(
+    db: Session,
+    from_currency: str,
+    to_currency: str,
+) -> Optional[Decimal]:
     # 查询最新的有效汇率
     rate_record = db.query(ExchangeRate).filter(
         ExchangeRate.from_currency == from_currency,
@@ -204,6 +234,8 @@ def update_or_create_rate(
     """
     if effective_date is None:
         effective_date = date.today()
+
+    invalidate_rate_cache(db)
 
     # 查找是否存在
     existing = db.query(ExchangeRate).filter(

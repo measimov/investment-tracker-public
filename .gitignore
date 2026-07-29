@@ -60,8 +60,13 @@ Thumbs.db
 
 # Data files
 *.csv
-!sample_import.csv
+!sample_corporate_actions.csv
+*.xls
 *.xlsx
+*.pdf
+*.dump
+*.dump.partial
+backups/
 *.db
 *.sqlite
 *.db-journal

@@ -51,8 +51,18 @@
       <!-- Holdings Table -->
       <div class="responsive-table holdings-table">
         <el-table :data="holdings" v-loading="loading" stripe>
-          <el-table-column prop="user_id" label="用户ID" width="80" v-if="selectedUserId === null" />
-          <el-table-column prop="username" label="用户名" width="120" v-if="selectedUserId === null" />
+          <el-table-column
+            prop="user_id"
+            label="用户ID"
+            width="80"
+            v-if="selectedUserId === null"
+          />
+          <el-table-column
+            prop="username"
+            label="用户名"
+            width="120"
+            v-if="selectedUserId === null"
+          />
           <el-table-column prop="symbol" label="代码" width="100" />
           <el-table-column prop="name" label="名称" width="120" />
           <el-table-column prop="market" label="市场" width="100" />
@@ -111,6 +121,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../api'
+import { formatNumber, formatPercent, formatDateTime } from '../../utils/helpers'
 
 const loading = ref(false)
 const users = ref([])
@@ -135,33 +146,6 @@ const totalValue = computed(() => {
   }, 0)
 })
 
-function formatNumber(value, precision = 2) {
-  if (value === null || value === undefined) return '0.00'
-  const numberValue = parseFloat(value)
-  if (Number.isNaN(numberValue)) return '0.00'
-  return numberValue.toLocaleString('zh-CN', {
-    minimumFractionDigits: precision,
-    maximumFractionDigits: precision
-  })
-}
-
-function formatPercent(value) {
-  if (value === null || value === undefined || isNaN(value)) return '0.00%'
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
-}
-
-function formatDateTime(dateString) {
-  if (!dateString) return ''
-  const date = new Date(dateString)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
 function calculateProfit(row) {
   const cost = parseFloat(row.total_cost || 0)
   const value = parseFloat(row.quantity || 0) * parseFloat(row.current_price || 0)
@@ -185,7 +169,7 @@ function getProfitClass(row) {
 async function loadUsers() {
   try {
     const response = await api.getUsers()
-    users.value = response.data.filter(user => user.is_active)
+    users.value = response.data.filter((user) => user.is_active)
   } catch (error) {
     ElMessage.error('加载用户列表失败')
   }

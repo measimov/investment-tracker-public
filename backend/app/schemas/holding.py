@@ -10,6 +10,9 @@ class HoldingResponse(BaseModel):
     id: int
     user_id: int
     username: Optional[str] = None
+    broker_account_id: Optional[int] = Field(
+        None, description="Owning broker account; null = 未指定账户桶"
+    )
     symbol: str = Field(..., description="Stock/Asset symbol")
     name: str | None = Field(None, description="Asset name")
     market: str = Field(..., description="Market")

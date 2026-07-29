@@ -10,6 +10,7 @@ from ..schemas.user import (
     UserPasswordReset
 )
 from ..core.security import get_password_hash
+from ..services.auth_session_service import revoke_user_sessions
 from ..core.deps import get_current_admin_user
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -169,7 +170,9 @@ def update_user(
         user.email = user_data.email
 
     # Update other fields
+    deactivated = False
     if user_data.is_active is not None:
+        deactivated = user.is_active and not user_data.is_active
         user.is_active = user_data.is_active
 
     if user_data.is_admin is not None:
@@ -177,6 +180,11 @@ def update_user(
 
     db.commit()
     db.refresh(user)
+
+    # Deactivation invalidates outstanding sessions, so re-enabling the user
+    # later cannot resurrect tokens issued before the deactivation (issue #36).
+    if deactivated:
+        revoke_user_sessions(db, user.id)
 
     return UserSchema.model_validate(user)
 
@@ -214,6 +222,7 @@ def delete_user(
             detail="Cannot delete your own account"
         )
 
+    # 所有用户级表的 user_id 外键均为 ON DELETE CASCADE，删除交由数据库完成。
     db.delete(user)
     db.commit()
 
@@ -249,5 +258,8 @@ def reset_user_password(
 
     user.hashed_password = get_password_hash(password_data.new_password)
     db.commit()
+
+    # An admin reset invalidates every outstanding session of that user.
+    revoke_user_sessions(db, user.id)
 
     return {"message": "Password reset successfully"}

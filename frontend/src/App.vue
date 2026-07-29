@@ -25,44 +25,15 @@
           router
           class="header-menu"
         >
-          <el-menu-item index="/">
-            <el-icon><DataBoard /></el-icon>
-            <span>仪表盘</span>
-          </el-menu-item>
-          <el-menu-item index="/transactions">
-            <el-icon><List /></el-icon>
-            <span>交易记录</span>
-          </el-menu-item>
-          <el-menu-item index="/corporate-actions">
-            <el-icon><DocumentCopy /></el-icon>
-            <span>公司行动</span>
-          </el-menu-item>
-          <el-menu-item index="/holdings">
-            <el-icon><Wallet /></el-icon>
-            <span>当前持仓</span>
-          </el-menu-item>
-          <el-menu-item index="/statistics">
-            <el-icon><TrendCharts /></el-icon>
-            <span>统计分析</span>
-          </el-menu-item>
-          <el-menu-item index="/exchange-rates">
-            <el-icon><Money /></el-icon>
-            <span>汇率管理</span>
-          </el-menu-item>
-          <!-- 管理员菜单 -->
-          <el-menu-item v-if="authStore.isAdmin" index="/admin/holdings">
-            <el-icon><Odometer /></el-icon>
-            <span>查看所有持仓</span>
-          </el-menu-item>
-          <el-menu-item v-if="authStore.isAdmin" index="/admin/users">
-            <el-icon><User /></el-icon>
-            <span>用户管理</span>
+          <el-menu-item v-for="item in visibleNavItems" :key="item.path" :index="item.path">
+            <el-icon><component :is="item.icon" /></el-icon>
+            <span>{{ item.label }}</span>
           </el-menu-item>
         </el-menu>
         <div v-if="authStore.isAuthenticated" class="user-info">
           <el-dropdown @command="handleUserCommand">
             <span class="user-dropdown">
-              <el-icon><User /></el-icon>
+              <span class="user-avatar" aria-hidden="true">{{ userInitial }}</span>
               <span class="username">{{ authStore.user?.username }}</span>
               <el-icon class="el-icon--right"><ArrowDown /></el-icon>
             </span>
@@ -87,13 +58,17 @@
         direction="rtl"
         size="82%"
         :with-header="false"
+        append-to-body
       >
         <div class="mobile-nav-panel">
           <div class="mobile-nav-user">
-            <div>
-              <div class="mobile-nav-name">{{ authStore.user?.username }}</div>
-              <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
-              <el-tag v-else type="info" size="small">普通用户</el-tag>
+            <div class="mobile-nav-identity">
+              <span class="user-avatar user-avatar-lg" aria-hidden="true">{{ userInitial }}</span>
+              <div>
+                <div class="mobile-nav-name">{{ authStore.user?.username }}</div>
+                <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
+                <el-tag v-else type="info" size="small">普通用户</el-tag>
+              </div>
             </div>
             <el-button
               :icon="Close"
@@ -108,37 +83,9 @@
             class="mobile-nav-menu"
             @select="mobileNavVisible = false"
           >
-            <el-menu-item index="/">
-              <el-icon><DataBoard /></el-icon>
-              <span>仪表盘</span>
-            </el-menu-item>
-            <el-menu-item index="/transactions">
-              <el-icon><List /></el-icon>
-              <span>交易记录</span>
-            </el-menu-item>
-            <el-menu-item index="/corporate-actions">
-              <el-icon><DocumentCopy /></el-icon>
-              <span>公司行动</span>
-            </el-menu-item>
-            <el-menu-item index="/holdings">
-              <el-icon><Wallet /></el-icon>
-              <span>当前持仓</span>
-            </el-menu-item>
-            <el-menu-item index="/statistics">
-              <el-icon><TrendCharts /></el-icon>
-              <span>统计分析</span>
-            </el-menu-item>
-            <el-menu-item index="/exchange-rates">
-              <el-icon><Money /></el-icon>
-              <span>汇率管理</span>
-            </el-menu-item>
-            <el-menu-item v-if="authStore.isAdmin" index="/admin/holdings">
-              <el-icon><Odometer /></el-icon>
-              <span>查看所有持仓</span>
-            </el-menu-item>
-            <el-menu-item v-if="authStore.isAdmin" index="/admin/users">
-              <el-icon><User /></el-icon>
-              <span>用户管理</span>
+            <el-menu-item v-for="item in visibleNavItems" :key="item.path" :index="item.path">
+              <el-icon><component :is="item.icon" /></el-icon>
+              <span>{{ item.label }}</span>
             </el-menu-item>
           </el-menu>
           <el-button
@@ -170,12 +117,27 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import { useAppStatusStore } from './stores/appStatus'
 import { ElMessage } from 'element-plus'
-import { Close, Menu, SwitchButton, WarningFilled } from '@element-plus/icons-vue'
+import {
+  Close,
+  DataBoard,
+  MagicStick,
+  DocumentCopy,
+  List,
+  Menu,
+  Money,
+  Odometer,
+  SwitchButton,
+  Tickets,
+  TrendCharts,
+  User,
+  Wallet,
+  WarningFilled
+} from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -183,20 +145,32 @@ const authStore = useAuthStore()
 const appStatus = useAppStatusStore()
 const mobileNavVisible = ref(false)
 
-// 应用启动时恢复认证状态
-onMounted(async () => {
-  // 如果未认证但localStorage中有token，尝试恢复
-  if (!authStore.isAuthenticated && localStorage.getItem('token')) {
-    await authStore.checkAuth()
-  }
-})
+// 导航项集中定义，桌面端与移动端菜单共用（认证状态由路由守卫恢复）
+const navItems = [
+  { path: '/', label: '仪表盘', icon: DataBoard },
+  { path: '/account-data', label: '账户数据', icon: Tickets },
+  { path: '/transactions', label: '交易记录', icon: List },
+  { path: '/corporate-actions', label: '公司行动', icon: DocumentCopy },
+  { path: '/holdings', label: '当前持仓', icon: Wallet },
+  { path: '/statistics', label: '统计分析', icon: TrendCharts },
+  { path: '/reports', label: 'AI 复盘', icon: MagicStick },
+  { path: '/exchange-rates', label: '汇率管理', icon: Money },
+  { path: '/admin/holdings', label: '查看所有持仓', icon: Odometer, adminOnly: true },
+  { path: '/admin/users', label: '用户管理', icon: User, adminOnly: true }
+]
+
+const visibleNavItems = computed(() =>
+  navItems.filter((item) => !item.adminOnly || authStore.isAdmin)
+)
+
+const userInitial = computed(() => authStore.user?.username?.trim().charAt(0).toUpperCase() || '?')
 
 const activeMenu = computed(() => route.path)
 
-const handleUserCommand = (command) => {
+const handleUserCommand = async (command) => {
   if (command === 'logout') {
     mobileNavVisible.value = false
-    authStore.logout()
+    await authStore.logout()
     ElMessage.success('已退出登录')
     router.push('/login')
   }
@@ -242,7 +216,7 @@ const handleUserCommand = (command) => {
 }
 
 .brand-link:hover .brand-mark {
-  transform: scale(1.05);
+  transform: scale(1.06) rotate(-2deg);
 }
 
 .brand-mark {
@@ -250,13 +224,13 @@ const handleUserCommand = (command) => {
   grid-template-columns: repeat(3, 5px);
   align-items: end;
   gap: 3px;
-  width: 26px;
-  height: 26px;
-  padding: 4px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: 6px;
-  box-shadow: var(--app-shadow-sm);
+  width: 28px;
+  height: 28px;
+  padding: 5px;
+  background: var(--app-primary-gradient);
+  border: none;
+  border-radius: 9px;
+  box-shadow: 0 4px 10px -2px var(--app-primary-shadow);
   transition: transform var(--app-duration) var(--apple-spring);
 }
 
@@ -264,21 +238,21 @@ const handleUserCommand = (command) => {
   display: block;
   width: 5px;
   border-radius: 2px 2px 0 0;
+  background: rgba(255, 255, 255, 0.95);
 }
 
 .brand-mark span:nth-child(1) {
-  height: 12px;
-  background: var(--app-success);
+  height: 11px;
+  opacity: 0.75;
 }
 
 .brand-mark span:nth-child(2) {
-  height: 18px;
-  background: var(--app-primary);
+  height: 17px;
 }
 
 .brand-mark span:nth-child(3) {
-  height: 9px;
-  background: var(--app-danger);
+  height: 8px;
+  opacity: 0.6;
 }
 
 .brand-title {
@@ -309,25 +283,31 @@ const handleUserCommand = (command) => {
 }
 
 :deep(.header-menu.el-menu--horizontal > .el-menu-item) {
-  height: 52px;
-  padding: 0 12px;
-  border-bottom: 2px solid transparent !important;
+  height: 36px;
+  line-height: 36px;
+  margin: 8px 3px;
+  padding: 0 14px;
+  border: none !important;
+  border-radius: 999px;
   color: var(--app-text-muted) !important;
   font-weight: 500;
   font-size: 14px;
   letter-spacing: -0.01em;
   background: transparent !important;
-  transition: color var(--app-duration) var(--apple-ease),
-              border-color var(--app-duration) var(--apple-ease);
+  transition:
+    color var(--app-duration) var(--apple-ease),
+    background-color var(--app-duration) var(--apple-ease);
 }
 
 :deep(.header-menu.el-menu--horizontal > .el-menu-item.is-active) {
   color: var(--app-primary) !important;
-  border-bottom: 2px solid var(--app-primary) !important;
+  background: var(--app-primary-soft) !important;
+  font-weight: 600;
 }
 
 :deep(.header-menu.el-menu--horizontal > .el-menu-item:hover) {
   color: var(--app-text) !important;
+  background: rgba(15, 23, 42, 0.05) !important;
 }
 
 .user-info {
@@ -344,15 +324,37 @@ const handleUserCommand = (command) => {
 .user-dropdown {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   cursor: pointer;
-  padding: 5px 10px;
-  border-radius: var(--app-radius-sm);
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
   transition: background-color var(--app-duration) var(--apple-ease);
 }
 
 .user-dropdown:hover {
-  background-color: rgba(0, 0, 0, 0.04);
+  background-color: rgba(15, 23, 42, 0.05);
+}
+
+.user-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--app-primary-gradient);
+  box-shadow: 0 2px 6px -1px var(--app-primary-shadow);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  user-select: none;
+}
+
+.user-avatar-lg {
+  width: 40px;
+  height: 40px;
+  font-size: 17px;
+  flex-shrink: 0;
 }
 
 .username {
@@ -444,6 +446,14 @@ const handleUserCommand = (command) => {
   gap: 16px;
   padding: 20px 20px 16px;
   border-bottom: 1px solid var(--app-separator);
+  background: linear-gradient(135deg, var(--app-primary-soft), transparent 70%);
+}
+
+.mobile-nav-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .mobile-nav-name {
@@ -473,10 +483,16 @@ const handleUserCommand = (command) => {
 .mobile-nav-menu :deep(.el-menu-item.is-active) {
   background: var(--app-primary-soft);
   color: var(--app-primary);
+  font-weight: 600;
+}
+
+.mobile-nav-menu :deep(.el-menu-item:hover) {
+  background: rgba(15, 23, 42, 0.04);
 }
 
 .mobile-logout-button {
   margin: 12px 16px 20px;
+  border-radius: var(--app-radius-inner);
 }
 
 @media (max-width: 1100px) {

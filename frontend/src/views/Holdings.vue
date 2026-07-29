@@ -9,6 +9,21 @@
               一键刷新股价
             </el-button>
             <el-select
+              v-model="selectedAccount"
+              placeholder="选择账户"
+              clearable
+              class="market-select"
+            >
+              <el-option label="全部账户" :value="''" />
+              <el-option label="未指定账户" value="unassigned" />
+              <el-option
+                v-for="account in brokerAccounts"
+                :key="account.id"
+                :label="account.account_name"
+                :value="account.id"
+              />
+            </el-select>
+            <el-select
               v-model="selectedMarket"
               placeholder="选择市场"
               clearable
@@ -28,10 +43,20 @@
       </template>
 
       <div v-if="!isMobileView" class="responsive-table desktop-data-table">
-        <el-table :data="holdings" v-loading="loading" stripe>
+        <el-table :data="visibleHoldings" v-loading="loading" stripe>
+          <template #empty>
+            <el-empty description="暂无持仓数据" :image-size="88" />
+          </template>
           <el-table-column prop="symbol" label="代码" width="120" />
           <el-table-column prop="name" label="名称" width="150" />
           <el-table-column prop="market" label="市场" width="100" />
+          <el-table-column label="账户" width="130">
+            <template #default="{ row }">
+              <span :class="{ 'account-unassigned': !row.broker_account_id }">
+                {{ accountLabel(row.broker_account_id) }}
+              </span>
+            </template>
+          </el-table-column>
           <el-table-column prop="quantity" label="持仓数量" width="120" align="right">
             <template #default="{ row }">
               {{ formatNumber(row.quantity, 4) }}
@@ -44,7 +69,7 @@
           </el-table-column>
           <el-table-column prop="total_cost" label="总成本" width="140" align="right">
             <template #default="{ row }">
-              <span style="font-weight: bold; color: #409eff">
+              <span style="font-weight: bold; color: #4f46e5">
                 {{ formatCurrency(row.total_cost, row.currency) }}
               </span>
             </template>
@@ -52,7 +77,7 @@
           <el-table-column label="当前价格" width="132" align="right">
             <template #default="{ row }">
               <el-input-number
-                v-model="currentPrices[row.symbol]"
+                v-model="currentPrices[priceKey(row)]"
                 :min="0"
                 :precision="4"
                 size="small"
@@ -62,8 +87,8 @@
           </el-table-column>
           <el-table-column label="当前市值" width="140" align="right">
             <template #default="{ row }">
-              <span v-if="currentPrices[row.symbol]" style="font-weight: bold">
-                {{ formatCurrency(currentPrices[row.symbol] * row.quantity, row.currency) }}
+              <span v-if="currentPrices[priceKey(row)]" style="font-weight: bold">
+                {{ formatCurrency(currentPrices[priceKey(row)] * row.quantity, row.currency) }}
               </span>
               <span v-else style="color: var(--app-text-soft)">-</span>
             </template>
@@ -71,7 +96,7 @@
           <el-table-column label="浮动盈亏" width="140" align="right">
             <template #default="{ row }">
               <span
-                v-if="currentPrices[row.symbol]"
+                v-if="currentPrices[priceKey(row)]"
                 :style="{ fontWeight: 'bold', color: getProfitColor(row) }"
               >
                 {{ formatCurrency(calculateProfitAmount(row), row.currency) }}
@@ -82,7 +107,7 @@
           <el-table-column label="收益率" width="100" align="right">
             <template #default="{ row }">
               <span
-                v-if="currentPrices[row.symbol]"
+                v-if="currentPrices[priceKey(row)]"
                 :style="{ fontWeight: 'bold', color: getProfitColor(row) }"
               >
                 {{ formatNumber(calculateProfitRate(row), 2) }}%
@@ -93,7 +118,14 @@
           <el-table-column prop="currency" label="币种" width="80" />
           <el-table-column prop="updated_at" label="更新时间" width="180">
             <template #default="{ row }">
-              {{ new Date(row.updated_at).toLocaleString('zh-CN') }}
+              {{ formatDateTime(row.updated_at) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-button type="primary" size="small" text @click="openTransferDialog(row)">
+                转仓
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -101,8 +133,8 @@
 
       <div v-else v-loading="loading" class="mobile-holding-list">
         <article
-          v-for="row in holdings"
-          :key="`${row.market}-${row.symbol}`"
+          v-for="row in visibleHoldings"
+          :key="`${row.market}-${row.symbol}-${row.broker_account_id ?? 'null'}`"
           class="mobile-holding-card"
         >
           <div class="mobile-row-head">
@@ -110,7 +142,12 @@
               <span class="asset-symbol">{{ row.symbol }}</span>
               <span class="asset-name">{{ row.name }}</span>
             </div>
-            <el-tag size="small" effect="plain">{{ row.market }}</el-tag>
+            <div class="mobile-tags">
+              <el-tag size="small" effect="plain">{{ row.market }}</el-tag>
+              <el-tag size="small" type="info" effect="plain">
+                {{ accountLabel(row.broker_account_id) }}
+              </el-tag>
+            </div>
           </div>
 
           <div class="mobile-metrics">
@@ -120,21 +157,21 @@
             </div>
             <div>
               <span class="metric-label">当前市值</span>
-              <strong v-if="currentPrices[row.symbol]">
-                {{ formatCurrency(currentPrices[row.symbol] * row.quantity, row.currency) }}
+              <strong v-if="currentPrices[priceKey(row)]">
+                {{ formatCurrency(currentPrices[priceKey(row)] * row.quantity, row.currency) }}
               </strong>
               <strong v-else>-</strong>
             </div>
             <div>
               <span class="metric-label">浮动盈亏</span>
-              <strong v-if="currentPrices[row.symbol]" :style="{ color: getProfitColor(row) }">
+              <strong v-if="currentPrices[priceKey(row)]" :style="{ color: getProfitColor(row) }">
                 {{ formatCurrency(calculateProfitAmount(row), row.currency) }}
               </strong>
               <strong v-else>-</strong>
             </div>
             <div>
               <span class="metric-label">收益率</span>
-              <strong v-if="currentPrices[row.symbol]" :style="{ color: getProfitColor(row) }">
+              <strong v-if="currentPrices[priceKey(row)]" :style="{ color: getProfitColor(row) }">
                 {{ formatNumber(calculateProfitRate(row), 2) }}%
               </strong>
               <strong v-else>-</strong>
@@ -150,19 +187,38 @@
           <div class="mobile-price-row">
             <span>当前价格</span>
             <el-input-number
-              v-model="currentPrices[row.symbol]"
+              v-model="currentPrices[priceKey(row)]"
               :min="0"
               :precision="4"
               size="small"
               @change="savePriceToDatabase(row)"
             />
           </div>
+
+          <div class="mobile-card-actions">
+            <el-button type="primary" size="small" text @click="openTransferDialog(row)">
+              转仓到其他账户
+            </el-button>
+          </div>
         </article>
+        <el-empty
+          v-if="!loading && visibleHoldings.length === 0"
+          description="暂无持仓数据"
+          :image-size="88"
+        />
       </div>
 
       <!-- Summary -->
       <el-divider />
       <div class="summary-section">
+        <el-alert
+          v-if="unpricedCount > 0"
+          type="info"
+          :closable="false"
+          show-icon
+          class="summary-alert"
+          :title="`${unpricedCount} 只持仓暂无价格，已同时从总成本与总市值中剔除（口径自洽）`"
+        />
         <el-row :gutter="20">
           <el-col :xs="24" :sm="12" :lg="6">
             <div class="summary-item summary-cost">
@@ -180,16 +236,24 @@
           </el-col>
           <el-col :xs="24" :sm="12" :lg="6">
             <div class="summary-item summary-profit">
-              <div class="summary-label">总盈亏</div>
+              <div class="summary-label">
+                总盈亏（摊薄成本口径）
+                <el-tooltip
+                  placement="top"
+                  content="按持仓摊薄平均成本计算：卖出不改变剩余持仓均价。统计分析页的“当前持仓表现”按 FIFO 剩余批次成本计算，部分卖出过的证券两者会有差异；两种口径下“已实现+未实现”的总收益一致，只是拆分归属不同。"
+                >
+                  <el-icon class="label-help"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </div>
               <div
                 class="summary-value"
-                :style="{ color: totalProfit >= 0 ? '#67C23A' : '#F56C6C' }"
+                :style="{ color: totalProfit >= 0 ? '#059669' : '#e11d48' }"
               >
                 {{ formatCurrency(totalProfit) }}
               </div>
               <div
                 class="summary-sub-value"
-                :style="{ color: totalProfit >= 0 ? '#67C23A' : '#F56C6C' }"
+                :style="{ color: totalProfit >= 0 ? '#059669' : '#e11d48' }"
               >
                 {{ formatCurrency(convertToUSD(totalProfit), 'USD') }}
               </div>
@@ -200,7 +264,7 @@
               <div class="summary-label">总收益率</div>
               <div
                 class="summary-value"
-                :style="{ color: totalProfitRate >= 0 ? '#67C23A' : '#F56C6C' }"
+                :style="{ color: totalProfitRate >= 0 ? '#059669' : '#e11d48' }"
               >
                 {{ formatNumber(totalProfitRate, 2) }}%
               </div>
@@ -209,34 +273,198 @@
         </el-row>
       </div>
     </el-card>
+
+    <el-dialog v-model="transferDialogVisible" title="账户间转仓" width="420px">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="转仓把持仓从一个账户移到另一个，成本基础跟随迁移，不产生盈亏或现金流。"
+        style="margin-bottom: 16px"
+      />
+      <el-form v-if="transferForm" label-position="top">
+        <el-form-item label="证券">
+          <el-input :model-value="`${transferForm.symbol}（${transferForm.market}）`" disabled />
+        </el-form-item>
+        <el-form-item label="转出账户">
+          <el-input :model-value="accountLabel(transferForm.from_broker_account_id)" disabled />
+        </el-form-item>
+        <el-form-item label="转入账户" required>
+          <el-select
+            v-model="transferForm.to_broker_account_id"
+            placeholder="请选择转入账户"
+            style="width: 100%"
+          >
+            <el-option
+              v-if="transferForm.from_broker_account_id !== null"
+              label="未指定账户"
+              value="unassigned"
+            />
+            <el-option
+              v-for="account in transferTargetAccounts"
+              :key="account.id"
+              :label="account.account_name"
+              :value="account.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item :label="`数量（可转 ${transferForm.max_quantity}）`" required>
+          <el-input-number
+            v-model="transferForm.quantity"
+            :min="0.00000001"
+            :max="transferForm.max_quantity"
+            :precision="8"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="转仓日期" required>
+          <el-date-picker
+            v-model="transferForm.transfer_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            style="width: 100%"
+          />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="transferForm.notes" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="transferDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="transferring" @click="submitTransfer">
+          确认转仓
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import api from '../api'
 import { useHoldingsStore } from '../stores/holdings'
+import { useTransactionsStore } from '../stores/transactions'
+import { useExchangeRates } from '../composables/useExchangeRates'
+import { useMediaQuery } from '../composables/useMediaQuery'
 import { getApiErrorMessage } from '../utils/apiErrors'
-import { formatNumber, formatCurrency } from '../utils/helpers'
+import { formatNumber, formatCurrency, formatDateTime, todayLocalISODate } from '../utils/helpers'
+import { pollJobUntilDone } from '../utils/polling'
 
 const loading = ref(false)
 const refreshing = ref(false)
 const holdingsStore = useHoldingsStore()
+const transactionsStore = useTransactionsStore()
 const holdings = ref([])
 const selectedMarket = ref('')
+const selectedAccount = ref('')
+const brokerAccounts = ref([])
+const transferDialogVisible = ref(false)
+const transferring = ref(false)
+const transferForm = ref(null)
 const currentPrices = reactive({})
-const exchangeRates = ref({})
-const summaryStats = ref({})
-const isMobileView = ref(false)
+const { loadExchangeRates, convertToCNY, convertToUSD } = useExchangeRates()
+const isMobileView = useMediaQuery('(max-width: 640px)')
 
-function updateResponsiveState() {
-  isMobileView.value = window.matchMedia('(max-width: 640px)').matches
+const visibleHoldings = computed(() => {
+  if (selectedAccount.value === '' || selectedAccount.value === undefined) return holdings.value
+  if (selectedAccount.value === 'unassigned') {
+    return holdings.value.filter((h) => h.broker_account_id === null)
+  }
+  return holdings.value.filter((h) => h.broker_account_id === selectedAccount.value)
+})
+
+const transferTargetAccounts = computed(() => {
+  if (!transferForm.value) return brokerAccounts.value
+  return brokerAccounts.value.filter(
+    (account) => account.id !== transferForm.value.from_broker_account_id
+  )
+})
+
+function accountLabel(accountId) {
+  if (accountId === null || accountId === undefined) return '未指定'
+  const account = brokerAccounts.value.find((item) => item.id === accountId)
+  return account ? account.account_name : `账户#${accountId}`
 }
 
+async function loadBrokerAccounts() {
+  try {
+    const response = await api.getBrokerAccounts({ limit: 1000 })
+    brokerAccounts.value = response.data
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '加载券商账户失败'))
+  }
+}
+
+function openTransferDialog(row) {
+  transferForm.value = {
+    symbol: row.symbol,
+    market: row.market,
+    from_broker_account_id: row.broker_account_id,
+    // undefined = 尚未选择；null 仅在用户点选"未指定账户"(sentinel) 后映射产生
+    to_broker_account_id: undefined,
+    quantity: parseFloat(row.quantity),
+    max_quantity: parseFloat(row.quantity),
+    transfer_date: todayLocalISODate(),
+    notes: ''
+  }
+  transferDialogVisible.value = true
+}
+
+async function submitTransfer() {
+  const form = transferForm.value
+  if (!form) return
+  if (form.to_broker_account_id === undefined) {
+    ElMessage.warning('请选择转入账户')
+    return
+  }
+  const targetAccountId =
+    form.to_broker_account_id === 'unassigned' ? null : form.to_broker_account_id
+  if (targetAccountId === form.from_broker_account_id) {
+    ElMessage.warning('请选择不同的转入账户')
+    return
+  }
+  if (!form.quantity || form.quantity <= 0) {
+    ElMessage.warning('请输入有效的转仓数量')
+    return
+  }
+  transferring.value = true
+  try {
+    await transactionsStore.createTransfer({
+      symbol: form.symbol,
+      market: form.market,
+      quantity: form.quantity,
+      from_broker_account_id: form.from_broker_account_id,
+      to_broker_account_id: targetAccountId,
+      transfer_date: form.transfer_date,
+      notes: form.notes || null
+    })
+    ElMessage.success('转仓成功')
+    transferDialogVisible.value = false
+    await loadHoldings({ force: true })
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '转仓失败'))
+  } finally {
+    transferring.value = false
+  }
+}
+
+// 价格键与统计页一致：symbol:market（同代码跨市场不串价）
+function priceKey(row) {
+  return `${row.symbol}:${row.market}`
+}
+
+// 汇总口径：无可用价格的持仓行在成本与市值两侧同时剔除（口径自洽），
+// 单独计数提示，而不是"计成本不计市值"把总盈亏虚减。
+const pricedHoldings = computed(() =>
+  visibleHoldings.value.filter((h) => currentPrices[priceKey(h)] > 0)
+)
+
+const unpricedCount = computed(() => visibleHoldings.value.length - pricedHoldings.value.length)
+
 const totalCostCNY = computed(() => {
-  return holdings.value.reduce((sum, h) => {
+  return pricedHoldings.value.reduce((sum, h) => {
     const costCNY = convertToCNY(parseFloat(h.total_cost), h.currency)
     return sum + costCNY
   }, 0)
@@ -249,10 +477,8 @@ const totalCostUSD = computed(() => {
 const totalCost = computed(() => totalCostCNY.value)
 
 const totalMarketValueCNY = computed(() => {
-  return holdings.value.reduce((sum, h) => {
-    const price = currentPrices[h.symbol]
-    if (!price) return sum
-    const marketValue = price * parseFloat(h.quantity)
+  return pricedHoldings.value.reduce((sum, h) => {
+    const marketValue = currentPrices[priceKey(h)] * parseFloat(h.quantity)
     const marketValueCNY = convertToCNY(marketValue, h.currency)
     return sum + marketValueCNY
   }, 0)
@@ -286,9 +512,9 @@ async function loadHoldings(options = {}) {
     // Initialize current prices from persisted market prices only.
     holdings.value.forEach((h) => {
       if (h.current_price && parseFloat(h.current_price) > 0) {
-        currentPrices[h.symbol] = parseFloat(h.current_price)
+        currentPrices[priceKey(h)] = parseFloat(h.current_price)
       } else {
-        currentPrices[h.symbol] = null
+        currentPrices[priceKey(h)] = null
       }
     })
   } catch (error) {
@@ -298,22 +524,9 @@ async function loadHoldings(options = {}) {
   }
 }
 
-async function loadExchangeRates() {
-  try {
-    const response = await api.getLatestRates()
-    const rates = {}
-    Object.entries(response.data.rates).forEach(([currency, rate]) => {
-      rates[currency] = parseFloat(rate)
-    })
-    exchangeRates.value = rates
-  } catch (error) {
-    console.error('加载汇率失败', error)
-  }
-}
-
 async function savePriceToDatabase(row) {
   try {
-    const price = currentPrices[row.symbol]
+    const price = currentPrices[priceKey(row)]
     if (!price || price <= 0) return
 
     await holdingsStore.updateHoldingPrice(row.id, price)
@@ -394,54 +607,15 @@ async function refreshPrices() {
 }
 
 async function pollPriceRefreshJob(jobId) {
-  const maxAttempts = 240
-
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const response = await api.getPriceRefreshJob(jobId)
-    const job = response.data
-
-    if (job.status === 'succeeded') {
-      return job.result
-    }
-
-    if (job.status === 'failed') {
-      throw new Error(job.error || job.result?.error || '后台刷新失败')
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 2000))
-  }
-
-  throw new Error('刷新仍在后台运行，请稍后重新查看持仓价格')
-}
-
-async function loadSummaryStats() {
-  try {
-    const response = await api.getSummary()
-    summaryStats.value = response.data
-  } catch (error) {
-    console.error('加载统计摘要失败', error)
-  }
-}
-
-function convertToCNY(amount, currency) {
-  if (!currency || currency === 'CNY') return amount
-  const rate = exchangeRates.value[currency]
-  if (!rate) return amount
-  return amount * rate
-}
-
-function convertToUSD(amountCNY) {
-  const usdRate = exchangeRates.value['USD']
-  if (!usdRate || usdRate === 0) return 0
-  return amountCNY / usdRate
-}
-
-function calculateProfit(row) {
-  // Profit calculation is reactive through computed properties
+  const job = await pollJobUntilDone(() => api.getPriceRefreshJob(jobId), {
+    timeoutMessage: '刷新仍在后台运行，请稍后重新查看持仓价格',
+    failureMessage: '后台刷新失败'
+  })
+  return job?.result ?? null
 }
 
 function calculateProfitAmount(row) {
-  const currentPrice = currentPrices[row.symbol]
+  const currentPrice = currentPrices[priceKey(row)]
   if (!currentPrice) return 0
   const marketValue = currentPrice * parseFloat(row.quantity)
   return marketValue - parseFloat(row.total_cost)
@@ -456,21 +630,26 @@ function calculateProfitRate(row) {
 
 function getProfitColor(row) {
   const profit = calculateProfitAmount(row)
-  return profit >= 0 ? '#67C23A' : '#F56C6C'
+  return profit >= 0 ? '#059669' : '#e11d48'
 }
 
 onMounted(async () => {
-  updateResponsiveState()
-  window.addEventListener('resize', updateResponsiveState)
-  await Promise.all([loadExchangeRates(), loadSummaryStats(), loadHoldings()])
-})
-
-onUnmounted(() => {
-  window.removeEventListener('resize', updateResponsiveState)
+  await Promise.all([loadExchangeRates(), loadHoldings(), loadBrokerAccounts()])
 })
 </script>
 
 <style scoped>
+.summary-alert {
+  margin-bottom: 12px;
+}
+
+.label-help {
+  margin-left: 4px;
+  color: var(--app-text-soft);
+  cursor: help;
+  vertical-align: -2px;
+}
+
 .holdings-page {
   width: 100%;
 }
@@ -500,6 +679,22 @@ onUnmounted(() => {
 
 .mobile-holding-list {
   display: none;
+}
+
+.account-unassigned {
+  color: var(--app-text-soft);
+}
+
+.mobile-tags {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mobile-card-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .summary-item {

@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Text, ForeignKey
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ..database import Base
 
@@ -20,7 +21,21 @@ class CorporateAction(Base):
     __tablename__ = "corporate_actions"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    broker_account_id = Column(
+        Integer,
+        ForeignKey("broker_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    import_batch_id = Column(
+        Integer,
+        ForeignKey("import_batches.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # 基本信息
     symbol = Column(String(20), nullable=False, index=True, comment="股票代码")
@@ -69,3 +84,6 @@ class CorporateAction(Base):
     # 时间戳
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    broker_account = relationship("BrokerAccount")
+    import_batch = relationship("ImportBatch")

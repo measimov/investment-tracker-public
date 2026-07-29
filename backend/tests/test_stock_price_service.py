@@ -4,6 +4,7 @@ import pytest
 
 from app.services.stock_price_service import (
     Market,
+    configure_tushare_client_endpoint,
     get_exchange_type,
     parse_tencent_quote_price,
     to_tencent_quote_code,
@@ -48,3 +49,29 @@ def test_parse_tencent_quote_price_rejects_missing_or_invalid_price():
 
     with pytest.raises(ValueError):
         parse_tencent_quote_price('v_sh600000="1~浦发银行~600000~0";', "sh600000")
+
+
+def test_configure_tushare_client_endpoint_uses_https_default(monkeypatch):
+    monkeypatch.delenv("TUSHARE_API_BASE_URL", raising=False)
+
+    class DummyClient:
+        _DataApi__http_url = "http://api.waditu.com/dataapi"
+
+    client = DummyClient()
+
+    configure_tushare_client_endpoint(client)
+
+    assert client._DataApi__http_url == "https://api.waditu.com/dataapi"
+
+
+def test_configure_tushare_client_endpoint_accepts_override(monkeypatch):
+    monkeypatch.setenv("TUSHARE_API_BASE_URL", "https://api.tushare.pro/dataapi/")
+
+    class DummyClient:
+        _DataApi__http_url = "http://api.waditu.com/dataapi"
+
+    client = DummyClient()
+
+    configure_tushare_client_endpoint(client)
+
+    assert client._DataApi__http_url == "https://api.tushare.pro/dataapi"

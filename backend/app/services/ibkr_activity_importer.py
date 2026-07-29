@@ -4,27 +4,63 @@ import csv
 import hashlib
 import io
 import re
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional
 
+import pandas as pd
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..models.broker_account import BrokerAccount
 from ..models.corporate_action import CorporateAction
 from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.transaction import Transaction
 from ..core.logging import get_app_logger
 from ..services.holding_service import recalculate_holdings
+from ..services.import_batch_service import (
+    complete_import_batch,
+    fail_import_batch,
+    set_import_batch_source_stats,
+    start_import_batch,
+    validate_import_account,
+    validate_source_file_account,
+)
 from ..services.stock_price_service import (
     to_tushare_a_code,
     to_tushare_hk_code,
-    tushare_query,
+    tushare_query_once,
 )
 
 
 BROKER_NAME = "IBKR"
+SOURCE_TYPE = "ibkr_activity_csv"
+SOURCE_TYPE_XLSX = "ibkr_trade_history_xlsx"
+PARSER_NAME = "ibkr_activity"
+PARSER_VERSION = "4"
+# trade_history.xlsx（reporting API 自制导出，规范格式）的 All Trades 表。
+# 只含成交（STK/OPT/CASH），不含股息与预扣税 —— 股息仍需其他来源。
+XLSX_TRADE_SHEET = "All Trades"
+XLSX_REQUIRED_COLUMNS = [
+    "Date (HKT)",
+    "Symbol",
+    "Name",
+    "Type",
+    "Ccy",
+    "Side",
+    "Qty",
+    "Price",
+    "Net Amount",
+    "Commission",
+    "Trade ID",
+]
+XLSX_SIDE_MAP = {"BUY": "买", "SELL": "卖"}
+XLSX_OPTION_ASSET_TYPE = "OPT"
+XLSX_FX_ASSET_TYPE = "CASH"
 BASE_CURRENCY_FALLBACK = "USD"
 TRADE_TYPES = {"买": "BUY", "卖": "SELL"}
 EXERCISE_TYPES = {"行权", "被行权"}
@@ -127,10 +163,142 @@ class ParsedIbkrFlow:
         )
 
 
+@dataclass
+class ExistingSourceResolution:
+    booked_hashes: set[str] = field(default_factory=set)
+    duplicate_hashes: set[str] = field(default_factory=set)
+    unresolved_tax_sources: Dict[str, IbkrActivityFlow] = field(default_factory=dict)
+    claimable_source_hashes: set[str] = field(default_factory=set)
+    claimable_canonical_keys: set[tuple[str, int]] = field(default_factory=set)
+
+
 def strip_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).replace("\ufeff", "").strip()
+
+
+def _account_parts(value: Optional[str]) -> tuple[str, str, bool]:
+    """Return fixed prefix/suffix and whether the value is explicitly masked."""
+    text = strip_text(value).upper().replace("尾号", "")
+    text = re.sub(r"[\s_-]+", "", text)
+    masked = bool(re.search(r"[*X•·]+", text))
+    if masked:
+        parts = re.split(r"[*X•·]+", text)
+        prefix = re.sub(r"[^A-Z0-9]", "", parts[0])
+        suffix = re.sub(r"[^A-Z0-9]", "", parts[-1])
+        return prefix, suffix, True
+    normalized = re.sub(r"[^A-Z0-9]", "", text)
+    return normalized, normalized, False
+
+
+def account_identifier_matches(statement_account: Optional[str], configured_mask: str) -> bool:
+    """
+    Match an IBKR statement account to an exact identifier or a masked tail.
+
+    IBKR commonly emits values such as ``U***00001`` while users may store
+    ``U***00001``, ``****0001`` or ``尾号0001``. A tail must contain at least
+    four fixed characters; two unmasked full identifiers must match exactly.
+    """
+    statement = strip_text(statement_account)
+    configured = strip_text(configured_mask)
+    if not statement or not configured:
+        return False
+
+    statement_prefix, statement_suffix, statement_masked = _account_parts(statement)
+    configured_prefix, configured_suffix, configured_masked = _account_parts(configured)
+    if not statement_suffix or not configured_suffix:
+        return False
+
+    if not statement_masked and not configured_masked:
+        if statement_prefix == configured_prefix:
+            return True
+        # A short configured identifier is an explicitly entered account tail.
+        return len(configured_suffix) >= 4 and len(configured_suffix) <= 6 and statement_suffix.endswith(
+            configured_suffix
+        )
+
+    if statement_masked and not configured_masked:
+        if 4 <= len(configured_suffix) <= 6 and statement_suffix.endswith(
+            configured_suffix
+        ):
+            return True
+        return (
+            len(statement_suffix) >= 4
+            and configured_suffix.startswith(statement_prefix)
+            and configured_suffix.endswith(statement_suffix)
+        )
+    if configured_masked and not statement_masked:
+        return (
+            len(configured_suffix) >= 4
+            and statement_suffix.startswith(configured_prefix)
+            and statement_suffix.endswith(configured_suffix)
+        )
+
+    shared_suffix = (
+        statement_suffix.endswith(configured_suffix)
+        if len(statement_suffix) >= len(configured_suffix)
+        else configured_suffix.endswith(statement_suffix)
+    )
+    if not shared_suffix or min(len(statement_suffix), len(configured_suffix)) < 4:
+        return False
+
+    if statement_prefix and configured_prefix:
+        return statement_prefix == configured_prefix
+    return True
+
+
+def validate_statement_accounts(
+    parsed_rows: List[ParsedIbkrFlow],
+    broker_account: BrokerAccount,
+    *,
+    allow_missing_accounts: bool = False,
+) -> List[str]:
+    """校验报表行的账户标识与所选账户掩码匹配（防导错账户）。
+
+    trade_history.xlsx（reporting API 导出）不含账户列，无法逐行交叉校验：
+    该路径以 allow_missing_accounts=True 调用，全部行都无标识时返回空列表，
+    由调用方在结果里附警告；只要有任何一行带了标识，仍照常严格校验。
+    """
+    configured = strip_text(broker_account.account_number_masked)
+    if not configured:
+        raise ValueError(
+            "所选 IBKR 账户缺少账户掩码或尾号；请先在账户资料中填写后再导入"
+        )
+
+    configured_masks = [
+        value
+        for value in re.split(r"[/,，;；、|\\n]+", configured)
+        if strip_text(value)
+    ]
+    source_accounts = sorted(
+        {strip_text(flow.account) for flow in parsed_rows if strip_text(flow.account)}
+    )
+    if allow_missing_accounts and not source_accounts:
+        return []
+    missing_account_rows = [
+        flow.source_row_number for flow in parsed_rows if not strip_text(flow.account)
+    ]
+    if missing_account_rows:
+        rows = ", ".join(str(row) for row in missing_account_rows[:10])
+        raise ValueError(f"IBKR CSV 存在缺少账户标识的交易历史行：{rows}")
+    if not source_accounts:
+        raise ValueError("IBKR CSV 的交易历史没有可验证的账户标识")
+
+    mismatched = [
+        account
+        for account in source_accounts
+        if not any(
+            account_identifier_matches(account, configured_mask)
+            for configured_mask in configured_masks
+        )
+    ]
+    if mismatched:
+        raise ValueError(
+            "IBKR CSV 账户与所选券商账户不匹配："
+            f"CSV={', '.join(mismatched)}；所选账户={configured}"
+        )
+    return source_accounts
 
 
 def parse_decimal(value: Any) -> Optional[Decimal]:
@@ -323,36 +491,37 @@ def parse_dividend_currency(description: Optional[str]) -> Optional[str]:
 
 
 def lookup_tushare_security_name(symbol: str, market: Optional[str]) -> Optional[str]:
-    """Resolve a display name from Tushare instead of trusting IBKR descriptions."""
+    """Resolve a display name from Tushare instead of trusting IBKR descriptions.
+
+    Single attempt, no retry: an empty result is a definitive "not in Tushare"
+    (SGX symbols, delisted codes), and a token/network failure will fail for the
+    whole batch anyway — resolve_security_names' circuit breaker handles that.
+    """
     if not symbol or not market:
         return None
     if (symbol, market) in KNOWN_SECURITY_NAMES:
         return KNOWN_SECURITY_NAMES[(symbol, market)]
 
-    try:
-        if market in {"A股", "B股"}:
-            df = tushare_query(
-                "stock_basic",
-                ts_code=to_tushare_a_code(symbol),
-                fields="ts_code,name",
-            )
-        elif market == "港股":
-            df = tushare_query(
-                "hk_basic",
-                ts_code=to_tushare_hk_code(symbol),
-                fields="ts_code,name,fullname",
-            )
-        elif market == "美股":
-            df = tushare_query(
-                "us_basic",
-                ts_code=str(symbol or "").strip().upper(),
-                fields="ts_code,name",
-            )
-        else:
-            return None
-    except Exception as exc:
-        logger.warning("Tushare name lookup failed for %s %s: %s", symbol, market, str(exc)[:200])
-        return KNOWN_SECURITY_NAMES.get((symbol, market))
+    if market in {"A股", "B股"}:
+        df = tushare_query_once(
+            "stock_basic",
+            ts_code=to_tushare_a_code(symbol),
+            fields="ts_code,name",
+        )
+    elif market == "港股":
+        df = tushare_query_once(
+            "hk_basic",
+            ts_code=to_tushare_hk_code(symbol),
+            fields="ts_code,name,fullname",
+        )
+    elif market == "美股":
+        df = tushare_query_once(
+            "us_basic",
+            ts_code=str(symbol or "").strip().upper(),
+            fields="ts_code,name",
+        )
+    else:
+        return None
 
     if df is None or df.empty:
         return None
@@ -362,23 +531,82 @@ def lookup_tushare_security_name(symbol: str, market: Optional[str]) -> Optional
         value = strip_text(row.get(column))
         if value:
             return value
-    return KNOWN_SECURITY_NAMES.get((symbol, market))
+    return None
+
+
+# 成功查到的名称按进程生命周期缓存：预览→导入两次调用只查一次外网。
+# 查不到/查失败不缓存，下批次可再试（单次尝试代价已很低）。
+_resolved_name_cache: Dict[tuple[str, str], str] = {}
+NAME_LOOKUP_WORKERS = 8
+NAME_LOOKUP_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def resolve_security_names(
+    targets: List[tuple[str, str]],
+) -> Dict[tuple[str, str], Optional[str]]:
+    """Batch name resolution: cached → concurrent single-attempt lookups.
+
+    连续失败达到阈值即熔断（token 缺失/网络故障时批内所有查询都会失败，
+    无谓等待正是"预览卡死 2 分钟"的根因），剩余标的直接降级为已知名称表。
+    """
+    results: Dict[tuple[str, str], Optional[str]] = {}
+    pending: List[tuple[str, str]] = []
+    for key in targets:
+        if key in KNOWN_SECURITY_NAMES:
+            results[key] = KNOWN_SECURITY_NAMES[key]
+        elif key in _resolved_name_cache:
+            results[key] = _resolved_name_cache[key]
+        else:
+            pending.append(key)
+    if not pending:
+        return results
+
+    failure_lock = Lock()
+    consecutive_failures = 0
+
+    def worker(key: tuple[str, str]) -> Optional[str]:
+        nonlocal consecutive_failures
+        with failure_lock:
+            if consecutive_failures >= NAME_LOOKUP_MAX_CONSECUTIVE_FAILURES:
+                return None
+        try:
+            name = lookup_tushare_security_name(*key)
+        except Exception as exc:
+            with failure_lock:
+                consecutive_failures += 1
+                tripped = consecutive_failures == NAME_LOOKUP_MAX_CONSECUTIVE_FAILURES
+            logger.warning(
+                "Tushare name lookup failed for %s %s: %s", key[0], key[1], str(exc)[:200]
+            )
+            if tripped:
+                logger.warning(
+                    "Tushare 查名连续失败 %s 次，本批剩余标的跳过外网查询",
+                    NAME_LOOKUP_MAX_CONSECUTIVE_FAILURES,
+                )
+            return None
+        with failure_lock:
+            consecutive_failures = 0
+        if name:
+            _resolved_name_cache[key] = name
+        return name
+
+    with ThreadPoolExecutor(max_workers=min(NAME_LOOKUP_WORKERS, len(pending))) as pool:
+        for key, name in zip(pending, pool.map(worker, pending)):
+            results[key] = name
+    return results
 
 
 def enrich_security_names(parsed_rows: List[ParsedIbkrFlow]) -> None:
-    name_cache: Dict[tuple[str, str], Optional[str]] = {}
-    targets = {
-        (flow.symbol, flow.market)
-        for flow in parsed_rows
-        if (flow.is_trade or flow.is_cash_dividend or flow.is_withholding_tax)
-        and flow.symbol
-        and flow.market
-    }
-
-    for symbol, market in sorted(targets):
-        name_cache[(symbol, market)] = lookup_tushare_security_name(
-            symbol, market
-        ) or KNOWN_SECURITY_NAMES.get((symbol, market))
+    targets = sorted(
+        {
+            (flow.symbol, flow.market)
+            for flow in parsed_rows
+            if (flow.is_trade or flow.is_cash_dividend or flow.is_withholding_tax)
+            and flow.symbol
+            and flow.market
+        }
+    )
+    name_cache = resolve_security_names(targets)
 
     for flow in parsed_rows:
         if flow.symbol and flow.market:
@@ -418,10 +646,103 @@ def apply_exercise_import_policy(parsed_rows: List[ParsedIbkrFlow]) -> None:
             quantities[key] = max(Decimal("0"), current_quantity - flow_quantity)
 
 
+def read_ibkr_trade_history_xlsx(
+    contents: bytes,
+) -> tuple[List[tuple[int, Dict[str, str]]], str, int, List[str]]:
+    """把 trade_history.xlsx 的 All Trades 表适配成 CSV reader 的同形行。
+
+    行 dict 的键与 read_ibkr_transaction_history 一致，parse_rows 无需分叉：
+    - Side BUY/SELL → 交易类型 买/卖；Type=CASH（外汇兑换）→ 外汇交易组成部分
+    - Type 原样放进"资产类别"（parse_rows 据此把 OPT 判为期权跳过归档）
+    - Trade ID 拼进"说明"，进 row_hash，成为跨上传去重的稳定标识
+    - Net Amount 即无符号成交额（数量×价格），费用另列 Commission；
+      重建 总额/净额 的 CSV 符号约定（买为负、卖为正），
+      使 trade_fee_in_price_currency 推出的费用恰为 Commission（成交币种）。
+    """
+    try:
+        frame = pd.read_excel(
+            io.BytesIO(contents), sheet_name=XLSX_TRADE_SHEET, dtype=object
+        )
+    except ValueError as exc:
+        raise ValueError(f"Missing {XLSX_TRADE_SHEET} sheet in IBKR xlsx") from exc
+
+    missing = sorted(set(XLSX_REQUIRED_COLUMNS) - set(map(str, frame.columns)))
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(missing)}")
+
+    def _text(value: Any) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        return str(value).strip()
+
+    data_rows: List[tuple[int, Dict[str, str]]] = []
+    errors: List[str] = []
+    for index, row in frame.iterrows():
+        row_number = int(index) + 2  # 表头占第 1 行
+        raw_date = row.get("Date (HKT)")
+        try:
+            trade_date = pd.to_datetime(raw_date).date().isoformat()
+        except (ValueError, TypeError):
+            errors.append(f"row {row_number}: invalid trade date")
+            continue
+
+        asset_type = _text(row.get("Type"))
+        side = _text(row.get("Side")).upper()
+        if asset_type == XLSX_FX_ASSET_TYPE:
+            activity_type = FX_ACTIVITY_TYPE
+        else:
+            activity_type = XLSX_SIDE_MAP.get(side, side or "__MISSING__")
+
+        quantity_text = _text(row.get("Qty"))
+        price_text = _text(row.get("Price"))
+        gross = parse_decimal(row.get("Net Amount")) or Decimal("0")
+        commission = parse_decimal(row.get("Commission")) or Decimal("0")
+        # CSV 符号约定：买入现金流出为负；净额与总额之差即费用
+        signed_gross = -abs(gross) if activity_type == "买" else abs(gross)
+        signed_net = signed_gross - abs(commission)
+
+        name = _text(row.get("Name"))
+        trade_id = _text(row.get("Trade ID"))
+        description = f"{name}; trade_id={trade_id}" if trade_id else name
+
+        data_rows.append(
+            (
+                row_number,
+                {
+                    "日期": trade_date,
+                    "账户": "",
+                    "说明": description,
+                    "交易类型": activity_type,
+                    "资产类别": asset_type,
+                    "代码": _text(row.get("Symbol")),
+                    "数量": quantity_text,
+                    "价格": price_text,
+                    "Price Currency": _text(row.get("Ccy")),
+                    "总额": str(signed_gross),
+                    "佣金": str(-abs(commission)) if commission else "0",
+                    "净额": str(signed_net),
+                },
+            )
+        )
+
+    return data_rows, BASE_CURRENCY_FALLBACK, len(frame), errors
+
+
+def is_ibkr_xlsx_filename(filename: str) -> bool:
+    return filename.lower().endswith(".xlsx")
+
+
 def parse_rows(
     contents: bytes, filename: str
 ) -> tuple[List[ParsedIbkrFlow], Dict[str, int], int, List[str]]:
-    data_rows, base_currency, total_rows, errors = read_ibkr_transaction_history(contents)
+    if is_ibkr_xlsx_filename(filename):
+        data_rows, base_currency, total_rows, errors = read_ibkr_trade_history_xlsx(
+            contents
+        )
+    else:
+        data_rows, base_currency, total_rows, errors = read_ibkr_transaction_history(
+            contents
+        )
     parsed_rows: List[ParsedIbkrFlow] = []
     business_counts: Dict[str, int] = {}
     hash_occurrences: Dict[str, int] = {}
@@ -468,7 +789,11 @@ def parse_rows(
             elif quantity is None or quantity == 0 or price is None or price <= 0:
                 skip_reason = "invalid"
         elif activity_type in TRADE_TYPES:
-            if is_option_symbol(raw_symbol, description):
+            # xlsx 行带显式资产类别（OPT），比符号启发式更可靠；CSV 行无此键
+            if (
+                strip_text(row.get("资产类别")) == XLSX_OPTION_ASSET_TYPE
+                or is_option_symbol(raw_symbol, description)
+            ):
                 skip_reason = "option"
             elif not symbol or not market:
                 skip_reason = "unsupported"
@@ -564,19 +889,332 @@ def flow_to_sample(flow: ParsedIbkrFlow, duplicate: bool) -> Dict[str, Any]:
     }
 
 
-def get_existing_hashes(db: Session, user_id: int, hashes: Iterable[str]) -> set[str]:
-    hash_list = list(hashes)
+def _unsafe_existing_source(source: IbkrActivityFlow, reason: str) -> ValueError:
+    return ValueError(
+        "IBKR 历史来源记录无法安全判重："
+        f"row_hash={source.row_hash}；{reason}。"
+        "请先完成旧 IBKR 数据的账户迁移，当前导入不会静默跳过该记录"
+    )
+
+
+def _decimal_equal(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    # Imported source decimals are persisted at 8-10 places. Compare within the
+    # narrowest persisted scale so a safe re-import is not rejected solely
+    # because the original calculation carried additional decimal places.
+    return abs(Decimal(str(left)) - Decimal(str(right))) <= Decimal("0.000000005")
+
+
+def _source_matches_parsed_flow(
+    source: IbkrActivityFlow,
+    flow: ParsedIbkrFlow,
+) -> bool:
+    text_fields = (
+        ("account", source.account, flow.account),
+        ("description", source.description, flow.description),
+        ("activity_type", source.activity_type, flow.activity_type),
+        ("raw_symbol", source.raw_symbol, flow.raw_symbol),
+        ("symbol", source.symbol, flow.symbol),
+        ("market", source.market, flow.market),
+        ("price_currency", source.price_currency, flow.price_currency),
+        ("base_currency", source.base_currency, flow.base_currency),
+    )
+    if any(strip_text(left) != strip_text(right) for _, left, right in text_fields):
+        return False
+    if source.trade_date != flow.trade_date:
+        return False
+    return all(
+        _decimal_equal(left, right)
+        for left, right in (
+            (source.quantity, flow.quantity),
+            (source.price, flow.price),
+            (source.gross_amount, flow.gross_amount),
+            (source.commission, flow.commission),
+            (source.net_amount, flow.net_amount),
+            (source.fee_in_price_currency, flow.fee_in_price_currency),
+        )
+    )
+
+
+def _transaction_matches_flow(transaction: Transaction, flow: ParsedIbkrFlow) -> bool:
+    return (
+        transaction.transaction_type == flow.transaction_type
+        and transaction.symbol == flow.symbol
+        and transaction.market == flow.market
+        and transaction.transaction_date == flow.trade_date
+        and transaction.currency == (flow.price_currency or flow.base_currency)
+        and _decimal_equal(transaction.quantity, abs(flow.quantity or Decimal("0")))
+        and _decimal_equal(transaction.price, flow.price)
+        and _decimal_equal(
+            transaction.fee or Decimal("0"),
+            flow.fee_in_price_currency or Decimal("0"),
+        )
+    )
+
+
+def _validate_dividend_action_sources(
+    action: CorporateAction,
+    linked_sources: List[IbkrActivityFlow],
+    broker_account: BrokerAccount,
+) -> bool:
+    dividend_sources = [
+        source
+        for source in linked_sources
+        if source.activity_type == DIVIDEND_TYPE
+        and source.gross_amount is not None
+        and source.gross_amount > 0
+    ]
+    tax_sources = [
+        source
+        for source in linked_sources
+        if source.activity_type == WITHHOLDING_TAX_TYPE
+        and source.gross_amount is not None
+        and source.gross_amount < 0
+    ]
+    if len(dividend_sources) != 1:
+        return False
+    if len(dividend_sources) + len(tax_sources) != len(linked_sources):
+        return False
+    if any(
+        not account_identifier_matches(source.account, broker_account.account_number_masked)
+        for source in linked_sources
+    ):
+        return False
+    if any(
+        source.broker_account_id not in {None, broker_account.id}
+        for source in linked_sources
+    ):
+        return False
+
+    dividend_source = dividend_sources[0]
+    total_dividend = dividend_source.gross_amount
+    total_tax = sum(
+        (abs(source.gross_amount or Decimal("0")) for source in tax_sources),
+        Decimal("0"),
+    )
+    expected_net = max(Decimal("0"), total_dividend - total_tax)
+    return (
+        action.action_type == "CASH_DIVIDEND"
+        and action.symbol == dividend_source.symbol
+        and action.market == dividend_source.market
+        and action.currency == dividend_source.base_currency
+        and (
+            action.ex_date == dividend_source.trade_date
+            or action.payment_date == dividend_source.trade_date
+        )
+        and _decimal_equal(action.total_dividend, total_dividend)
+        and _decimal_equal(action.tax_withheld or Decimal("0"), total_tax)
+        and _decimal_equal(action.net_dividend, expected_net)
+    )
+
+
+def resolve_existing_sources(
+    db: Session,
+    user_id: int,
+    parsed_rows: Iterable[ParsedIbkrFlow],
+    *,
+    broker_account_id: int,
+    broker_account: BrokerAccount,
+    claim_unassigned: bool = False,
+) -> ExistingSourceResolution:
+    flow_by_hash = {flow.row_hash: flow for flow in parsed_rows}
+    hash_list = list(flow_by_hash)
     if not hash_list:
-        return set()
-    rows = (
-        db.query(IbkrActivityFlow.row_hash)
+        return ExistingSourceResolution()
+    sources = (
+        db.query(IbkrActivityFlow)
         .filter(
             IbkrActivityFlow.user_id == user_id,
             IbkrActivityFlow.row_hash.in_(hash_list),
         )
+        .order_by(IbkrActivityFlow.id)
         .all()
     )
-    return {row[0] for row in rows}
+    if not sources:
+        return ExistingSourceResolution()
+
+    sources_by_hash: Dict[str, List[IbkrActivityFlow]] = {}
+    for source in sources:
+        sources_by_hash.setdefault(source.row_hash, []).append(source)
+    for row_hash, matching_sources in sources_by_hash.items():
+        if len(matching_sources) != 1:
+            raise _unsafe_existing_source(
+                matching_sources[0],
+                f"同一 row_hash 存在 {len(matching_sources)} 条来源记录",
+            )
+        parsed_flow = flow_by_hash[row_hash]
+        if not _source_matches_parsed_flow(matching_sources[0], parsed_flow):
+            raise _unsafe_existing_source(
+                matching_sources[0],
+                "row_hash 相同但来源经济事实与本次 CSV 不一致",
+            )
+        # trade_history.xlsx 来源行没有账户标识（文件不含账户列）：
+        # 该来源已直接归属到 broker_account_id，且 row_hash/经济事实一致，
+        # 归属一致即视为安全判重；有账户标识的（CSV 来源）仍按掩码严格校验。
+        if not strip_text(matching_sources[0].account):
+            if matching_sources[0].broker_account_id not in (None, broker_account.id):
+                raise _unsafe_existing_source(
+                    matching_sources[0],
+                    "无账户标识的历史来源已归属其他券商账户",
+                )
+        elif not account_identifier_matches(
+            matching_sources[0].account,
+            broker_account.account_number_masked,
+        ):
+            raise _unsafe_existing_source(
+                matching_sources[0],
+                "历史来源账户标识与所选券商账户不匹配",
+            )
+
+    transaction_ids = {
+        source.transaction_id for source in sources if source.transaction_id is not None
+    }
+    corporate_action_ids = {
+        source.corporate_action_id
+        for source in sources
+        if source.corporate_action_id is not None
+    }
+    transactions = (
+        {
+            transaction.id: transaction
+            for transaction in db.query(Transaction)
+            .filter(Transaction.id.in_(transaction_ids))
+            .all()
+        }
+        if transaction_ids
+        else {}
+    )
+    corporate_actions = (
+        {
+            action.id: action
+            for action in db.query(CorporateAction)
+            .filter(CorporateAction.id.in_(corporate_action_ids))
+            .all()
+        }
+        if corporate_action_ids
+        else {}
+    )
+    all_action_sources = (
+        db.query(IbkrActivityFlow)
+        .filter(IbkrActivityFlow.corporate_action_id.in_(corporate_action_ids))
+        .order_by(IbkrActivityFlow.id)
+        .all()
+        if corporate_action_ids
+        else []
+    )
+    action_sources_by_id: Dict[int, List[IbkrActivityFlow]] = {}
+    for source in all_action_sources:
+        action_sources_by_id.setdefault(source.corporate_action_id, []).append(source)
+
+    resolution = ExistingSourceResolution()
+    claimable_records: Dict[tuple[str, int], Any] = {}
+    claimable_sources: Dict[int, IbkrActivityFlow] = {}
+    for source in sources:
+        if source.broker_account_id not in {None, broker_account_id}:
+            raise _unsafe_existing_source(
+                source,
+                "历史来源记录属于其他券商账户"
+                f"（实际={source.broker_account_id}，所选={broker_account_id}）",
+            )
+        has_transaction = source.transaction_id is not None
+        has_corporate_action = source.corporate_action_id is not None
+        if has_transaction and has_corporate_action:
+            raise _unsafe_existing_source(
+                source,
+                "同一来源同时链接交易和公司行动，链接冲突",
+            )
+        if not has_transaction and not has_corporate_action:
+            if (
+                source.activity_type == WITHHOLDING_TAX_TYPE
+                and source.skip_reason == "unattributed_tax"
+            ):
+                resolution.unresolved_tax_sources[source.row_hash] = source
+                if source.broker_account_id is None:
+                    claimable_sources[source.id] = source
+                continue
+            raise _unsafe_existing_source(
+                source,
+                "来源没有可解析的交易或公司行动链接，属于孤儿记录",
+            )
+
+        if has_transaction:
+            canonical_type = "transaction"
+            canonical_id = source.transaction_id
+            canonical_record = transactions.get(canonical_id)
+        else:
+            canonical_type = "corporate_action"
+            canonical_id = source.corporate_action_id
+            canonical_record = corporate_actions.get(canonical_id)
+
+        if canonical_record is None or canonical_record.user_id != user_id:
+            raise _unsafe_existing_source(
+                source,
+                "链接的规范记录不存在或不属于当前用户，属于孤儿记录",
+            )
+        if canonical_type == "transaction":
+            if not _transaction_matches_flow(
+                canonical_record,
+                flow_by_hash[source.row_hash],
+            ):
+                raise _unsafe_existing_source(
+                    source,
+                    "链接交易的日期、标的、方向、数量、价格、费用或币种不一致",
+                )
+            link_count = (
+                db.query(IbkrActivityFlow.id)
+                .filter(IbkrActivityFlow.transaction_id == canonical_id)
+                .count()
+            )
+            if link_count != 1:
+                raise _unsafe_existing_source(
+                    source,
+                    f"链接交易被 {link_count} 条 IBKR 来源共同引用",
+                )
+        elif not _validate_dividend_action_sources(
+            canonical_record,
+            action_sources_by_id.get(canonical_id, []),
+            broker_account,
+        ):
+            raise _unsafe_existing_source(
+                source,
+                "链接股息与其唯一股息来源、税款来源或金额汇总不一致",
+            )
+
+        canonical_needs_claim = canonical_record.broker_account_id is None
+        source_needs_claim = source.broker_account_id is None
+        if canonical_record.broker_account_id != broker_account_id:
+            if canonical_record.broker_account_id is not None:
+                raise _unsafe_existing_source(
+                    source,
+                    "链接的规范记录属于其他券商账户"
+                    f"（实际={canonical_record.broker_account_id}，所选={broker_account_id}）",
+                )
+            canonical_key = (canonical_type, canonical_id)
+            claimable_records[canonical_key] = canonical_record
+            resolution.claimable_canonical_keys.add(canonical_key)
+        if canonical_needs_claim or source_needs_claim:
+            resolution.claimable_source_hashes.add(source.row_hash)
+            if canonical_type == "corporate_action":
+                for linked_source in action_sources_by_id.get(canonical_id, []):
+                    if linked_source.broker_account_id is None:
+                        claimable_sources[linked_source.id] = linked_source
+            elif source_needs_claim:
+                claimable_sources[source.id] = source
+        else:
+            resolution.duplicate_hashes.add(source.row_hash)
+
+        resolution.booked_hashes.add(source.row_hash)
+
+    if claim_unassigned:
+        for canonical_record in claimable_records.values():
+            canonical_record.broker_account_id = broker_account_id
+            db.add(canonical_record)
+        for source in claimable_sources.values():
+            source.broker_account_id = broker_account_id
+            db.add(source)
+
+    return resolution
 
 
 def eligible_rows(parsed_rows: List[ParsedIbkrFlow]) -> List[ParsedIbkrFlow]:
@@ -594,11 +1232,17 @@ def build_import_result(
     parsed_rows: List[ParsedIbkrFlow],
     business_counts: Dict[str, int],
     existing_hashes: set[str],
+    booked_source_hashes: set[str],
     imported_transactions: int,
     imported_corporate_actions: int,
     imported_tax_adjustments: int,
     affected_symbols: int,
     errors: List[str],
+    warnings: Optional[List[str]] = None,
+    source_accounts: Optional[List[str]] = None,
+    claimable_unassigned_rows: int = 0,
+    migrated_unassigned_rows: int = 0,
+    canonical_objects_changed: int = 0,
 ) -> Dict[str, Any]:
     rows = eligible_rows(parsed_rows)
     trade_rows = [flow for flow in rows if flow.is_trade]
@@ -621,6 +1265,11 @@ def build_import_result(
         "unsupported": len([flow for flow in parsed_rows if flow.skip_reason == "unsupported"]),
         "invalid": len([flow for flow in parsed_rows if flow.skip_reason == "invalid"]),
     }
+    booked_source_rows = len(
+        [flow for flow in rows if flow.row_hash in booked_source_hashes]
+    )
+    eligible_unbooked_source_rows = max(0, len(rows) - booked_source_rows)
+    unbooked_source_rows = max(0, total_rows - booked_source_rows)
 
     return {
         "broker": BROKER_NAME,
@@ -632,6 +1281,12 @@ def build_import_result(
         "imported_transactions": imported_transactions,
         "imported_corporate_actions": imported_corporate_actions,
         "imported_tax_adjustments": imported_tax_adjustments,
+        "canonical_objects_changed": canonical_objects_changed,
+        "booked_source_rows": booked_source_rows,
+        "unbooked_source_rows": unbooked_source_rows,
+        "eligible_unbooked_source_rows": eligible_unbooked_source_rows,
+        "claimable_unassigned_rows": claimable_unassigned_rows,
+        "migrated_unassigned_rows": migrated_unassigned_rows,
         "duplicate_rows": len(duplicate_rows),
         "skipped_non_trade_rows": total_rows - len(trade_rows) - len(dividend_rows) - len(tax_rows),
         "skipped_invalid_rows": skip_counts["invalid"] + len(errors),
@@ -642,31 +1297,167 @@ def build_import_result(
         "affected_symbols": affected_symbols,
         "date_start": min(dates).isoformat() if dates else None,
         "date_end": max(dates).isoformat() if dates else None,
+        "source_account_masks": source_accounts or [],
         "business_counts": business_counts,
         "duplicate_samples": [flow_to_sample(flow, True) for flow in duplicate_rows[:10]],
         "import_samples": [flow_to_sample(flow, False) for flow in import_rows[:10]],
         "errors": errors[:50],
+        "warnings": (warnings or [])[:50],
     }
 
 
+def _action_is_tax_candidate(action: CorporateAction, flow: ParsedIbkrFlow) -> bool:
+    return (
+        action.user_id is not None
+        and action.symbol == flow.symbol
+        and action.market == flow.market
+        and action.action_type == "CASH_DIVIDEND"
+        and action.currency == flow.base_currency
+        and (
+            action.ex_date == flow.trade_date
+            or action.payment_date == flow.trade_date
+        )
+    )
+
+
+def preview_booked_source_hashes(
+    db: Session,
+    user_id: int,
+    parsed_rows: List[ParsedIbkrFlow],
+    *,
+    broker_account_id: int,
+    resolution: ExistingSourceResolution,
+    errors: List[str],
+) -> set[str]:
+    """Dry-run source-to-canonical coverage without mutating the database."""
+    booked_hashes = set(resolution.booked_hashes)
+    prospective_dividends = [
+        flow
+        for flow in parsed_rows
+        if flow.is_cash_dividend and flow.row_hash not in resolution.booked_hashes
+    ]
+    for flow in parsed_rows:
+        if (flow.is_trade or flow.is_cash_dividend) and flow.row_hash not in booked_hashes:
+            booked_hashes.add(flow.row_hash)
+
+    claimable_action_ids = {
+        canonical_id
+        for canonical_type, canonical_id in resolution.claimable_canonical_keys
+        if canonical_type == "corporate_action"
+    }
+    claimable_actions = (
+        {
+            action.id: action
+            for action in db.query(CorporateAction)
+            .filter(CorporateAction.id.in_(claimable_action_ids))
+            .all()
+        }
+        if claimable_action_ids
+        else {}
+    )
+
+    for flow in parsed_rows:
+        if not flow.is_withholding_tax or flow.row_hash in booked_hashes:
+            continue
+        candidate_ids = {
+            action.id
+            for action in find_dividend_candidates_for_tax(
+                db,
+                user_id,
+                flow,
+                broker_account_id=broker_account_id,
+            )
+        }
+        candidate_ids.update(
+            action.id
+            for action in claimable_actions.values()
+            if _action_is_tax_candidate(action, flow)
+        )
+        virtual_candidates = [
+            dividend
+            for dividend in prospective_dividends
+            if dividend.symbol == flow.symbol
+            and dividend.market == flow.market
+            and dividend.base_currency == flow.base_currency
+            and dividend.trade_date == flow.trade_date
+        ]
+        candidate_count = len(candidate_ids) + len(virtual_candidates)
+        if candidate_count == 1:
+            booked_hashes.add(flow.row_hash)
+        else:
+            errors.append(
+                f"row {flow.source_row_number}: withholding tax requires exactly one "
+                f"same-account, same-security, same-date dividend candidate; "
+                f"found {candidate_count}"
+            )
+    return booked_hashes
+
+
 def preview_ibkr_activity(
-    db: Session, user_id: int, contents: bytes, filename: str
+    db: Session,
+    user_id: int,
+    contents: bytes,
+    filename: str,
+    broker_account_id: Optional[int] = None,
 ) -> Dict[str, Any]:
+    if broker_account_id is None:
+        raise ValueError("请选择 IBKR 券商账户后再预览")
+    broker_account = validate_import_account(
+        db,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        broker=BROKER_NAME,
+    )
+    validate_source_file_account(
+        db,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        broker=BROKER_NAME,
+        contents=contents,
+    )
     parsed_rows, business_counts, total_rows, errors = parse_rows(contents, filename)
-    existing_hashes = get_existing_hashes(
-        db, user_id, [flow.row_hash for flow in eligible_rows(parsed_rows)]
+    is_xlsx = is_ibkr_xlsx_filename(filename)
+    source_accounts = validate_statement_accounts(
+        parsed_rows, broker_account, allow_missing_accounts=is_xlsx
+    )
+    warnings_extra = (
+        [
+            "trade_history.xlsx 不含账户标识列，无法与所选账户交叉校验，"
+            "请人工确认文件属于该 IBKR 账户"
+        ]
+        if is_xlsx and not source_accounts
+        else []
+    )
+    resolution = resolve_existing_sources(
+        db,
+        user_id,
+        eligible_rows(parsed_rows),
+        broker_account_id=broker_account_id,
+        broker_account=broker_account,
+    )
+    booked_source_hashes = preview_booked_source_hashes(
+        db,
+        user_id,
+        parsed_rows,
+        broker_account_id=broker_account_id,
+        resolution=resolution,
+        errors=errors,
     )
     return build_import_result(
         filename=filename,
         total_rows=total_rows,
         parsed_rows=parsed_rows,
         business_counts=business_counts,
-        existing_hashes=existing_hashes,
+        existing_hashes=resolution.duplicate_hashes,
+        booked_source_hashes=booked_source_hashes,
         imported_transactions=0,
         imported_corporate_actions=0,
         imported_tax_adjustments=0,
         affected_symbols=0,
         errors=errors,
+        warnings=warnings_extra,
+        source_accounts=source_accounts,
+        claimable_unassigned_rows=len(resolution.claimable_source_hashes),
     )
 
 
@@ -675,11 +1466,15 @@ def create_ibkr_activity_flow(
     user_id: int,
     filename: str,
     flow: ParsedIbkrFlow,
+    broker_account_id: Optional[int] = None,
+    import_batch_id: Optional[int] = None,
     transaction_id: Optional[int] = None,
     corporate_action_id: Optional[int] = None,
 ) -> IbkrActivityFlow:
     return IbkrActivityFlow(
         user_id=user_id,
+        broker_account_id=broker_account_id,
+        import_batch_id=import_batch_id,
         transaction_id=transaction_id,
         corporate_action_id=corporate_action_id,
         broker=BROKER_NAME,
@@ -707,9 +1502,28 @@ def create_ibkr_activity_flow(
 
 
 def find_dividend_for_tax(
-    db: Session, user_id: int, flow: ParsedIbkrFlow
+    db: Session,
+    user_id: int,
+    flow: ParsedIbkrFlow,
+    broker_account_id: Optional[int] = None,
 ) -> Optional[CorporateAction]:
-    candidates = (
+    candidates = find_dividend_candidates_for_tax(
+        db,
+        user_id,
+        flow,
+        broker_account_id=broker_account_id,
+    )
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def find_dividend_candidates_for_tax(
+    db: Session,
+    user_id: int,
+    flow: ParsedIbkrFlow,
+    broker_account_id: Optional[int] = None,
+) -> List[CorporateAction]:
+    """Return only same-account, same-security, same-payment-date candidates."""
+    return (
         db.query(CorporateAction)
         .filter(
             CorporateAction.user_id == user_id,
@@ -717,27 +1531,34 @@ def find_dividend_for_tax(
             CorporateAction.market == flow.market,
             CorporateAction.action_type == "CASH_DIVIDEND",
             CorporateAction.currency == flow.base_currency,
-            CorporateAction.ex_date <= flow.trade_date,
+            CorporateAction.broker_account_id == broker_account_id,
+            or_(
+                CorporateAction.ex_date == flow.trade_date,
+                CorporateAction.payment_date == flow.trade_date,
+            ),
         )
-        .order_by(CorporateAction.ex_date.desc(), CorporateAction.id.desc())
-        .limit(5)
+        .order_by(CorporateAction.id)
         .all()
     )
-    return candidates[0] if candidates else None
 
 
 def calculate_position_before(
-    db: Session, user_id: int, symbol: str, market: str, before_date: date
+    db: Session,
+    user_id: int,
+    symbol: str,
+    market: str,
+    before_date: date,
+    broker_account_id: Optional[int] = None,
 ) -> tuple[Decimal, Decimal]:
+    query = db.query(Transaction).filter(
+        Transaction.user_id == user_id,
+        Transaction.symbol == symbol,
+        Transaction.market == market,
+        Transaction.transaction_date < before_date,
+        Transaction.broker_account_id == broker_account_id,
+    )
     transactions = (
-        db.query(Transaction)
-        .filter(
-            Transaction.user_id == user_id,
-            Transaction.symbol == symbol,
-            Transaction.market == market,
-            Transaction.transaction_date < before_date,
-        )
-        .order_by(Transaction.transaction_date, Transaction.id)
+        query.order_by(Transaction.transaction_date, Transaction.id)
         .all()
     )
 
@@ -806,6 +1627,9 @@ def apply_known_relisting_transfers(
     user_id: int,
     parsed_rows: List[ParsedIbkrFlow],
     affected_symbols: set[tuple[str, str]],
+    *,
+    broker_account_id: Optional[int] = None,
+    import_batch_id: Optional[int] = None,
 ) -> int:
     created = 0
     for relisting in KNOWN_RELISTINGS:
@@ -822,21 +1646,24 @@ def apply_known_relisting_transfers(
         if not new_trade_dates:
             continue
 
-        if (
-            db.query(Transaction)
-            .filter(
-                Transaction.user_id == user_id,
-                Transaction.notes.like(f"%{SYNTHETIC_RELISTING_MARKER}%"),
-                Transaction.notes.like(f"%{old_symbol}->{new_symbol}%"),
-            )
-            .first()
-        ):
+        existing_transfer_query = db.query(Transaction).filter(
+            Transaction.user_id == user_id,
+            Transaction.notes.like(f"%{SYNTHETIC_RELISTING_MARKER}%"),
+            Transaction.notes.like(f"%{old_symbol}->{new_symbol}%"),
+            Transaction.broker_account_id == broker_account_id,
+        )
+        if existing_transfer_query.first():
             continue
 
         first_new_trade_date = min(new_trade_dates)
         transfer_date = first_new_trade_date - timedelta(days=1)
         quantity, old_avg_cost = calculate_position_before(
-            db, user_id, old_symbol, old_market, first_new_trade_date
+            db,
+            user_id,
+            old_symbol,
+            old_market,
+            first_new_trade_date,
+            broker_account_id=broker_account_id,
         )
         if quantity <= 0:
             continue
@@ -859,6 +1686,8 @@ def apply_known_relisting_transfers(
         db.add(
             Transaction(
                 user_id=user_id,
+                broker_account_id=broker_account_id,
+                import_batch_id=import_batch_id,
                 symbol=old_symbol,
                 name=name,
                 market=old_market,
@@ -874,6 +1703,8 @@ def apply_known_relisting_transfers(
         db.add(
             Transaction(
                 user_id=user_id,
+                broker_account_id=broker_account_id,
+                import_batch_id=import_batch_id,
                 symbol=new_symbol,
                 name=name,
                 market=new_market,
@@ -899,6 +1730,9 @@ def apply_withholding_tax(
     filename: str,
     flow: ParsedIbkrFlow,
     action: CorporateAction,
+    *,
+    import_batch_id: Optional[int] = None,
+    existing_source: Optional[IbkrActivityFlow] = None,
 ) -> int:
     tax_amount = abs(flow.gross_amount or Decimal("0"))
     action.tax_withheld = (action.tax_withheld or Decimal("0")) + tax_amount
@@ -908,159 +1742,385 @@ def apply_withholding_tax(
         f"{action.notes or ''}; {BROKER_NAME} withholding tax row={flow.source_row_number}; "
         f"row_hash={flow.row_hash}"
     ).strip("; ")
-    db.add(
-        create_ibkr_activity_flow(
-            user_id=user_id,
-            filename=filename,
-            flow=flow,
-            corporate_action_id=action.id,
+    if existing_source is not None:
+        existing_source.corporate_action_id = action.id
+        existing_source.skip_reason = None
+        existing_source.notes = (
+            f"{existing_source.notes or ''}; attributed during account-scoped re-import"
+        ).strip("; ")
+        db.add(existing_source)
+    else:
+        db.add(
+            create_ibkr_activity_flow(
+                user_id=user_id,
+                filename=filename,
+                flow=flow,
+                broker_account_id=action.broker_account_id,
+                import_batch_id=import_batch_id,
+                corporate_action_id=action.id,
+            )
         )
-    )
     return 1
 
 
 def import_ibkr_activity(
-    db: Session, user_id: int, contents: bytes, filename: str
+    db: Session,
+    user_id: int,
+    contents: bytes,
+    filename: str,
+    broker_account_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    parsed_rows, business_counts, total_rows, errors = parse_rows(contents, filename)
-    existing_hashes = get_existing_hashes(
-        db, user_id, [flow.row_hash for flow in eligible_rows(parsed_rows)]
-    )
-    duplicate_hashes = set(existing_hashes)
+    if broker_account_id is None:
+        raise ValueError("请选择 IBKR 券商账户后再正式导入")
 
+    broker_account = validate_import_account(
+        db,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        broker=BROKER_NAME,
+    )
+    batch = start_import_batch(
+        db,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        broker=BROKER_NAME,
+        source_type=SOURCE_TYPE_XLSX if is_ibkr_xlsx_filename(filename) else SOURCE_TYPE,
+        filename=filename,
+        contents=contents,
+        parser_name=PARSER_NAME,
+        parser_version=PARSER_VERSION,
+    )
+    batch_id = batch.id
+    total_rows = 0
+    imported_source_rows = 0
+    records_committed = False
     imported_transactions = 0
     imported_corporate_actions = 0
     imported_tax_adjustments = 0
     imported_transfer_transactions = 0
-    affected_symbols: set[tuple[str, str]] = set()
-    pending_tax_flows: List[ParsedIbkrFlow] = []
+    canonical_action_ids_changed: set[int] = set()
+    booked_source_hashes: set[str] = set()
+    source_accounts: List[str] = []
+    migrated_unassigned_rows = 0
+    duplicate_hashes: set[str] = set()
 
-    for flow in parsed_rows:
-        if not flow.is_trade and not flow.is_cash_dividend and not flow.is_withholding_tax:
-            continue
-        if flow.row_hash in existing_hashes:
-            continue
+    try:
+        parsed_rows, business_counts, total_rows, errors = parse_rows(contents, filename)
+        is_xlsx = is_ibkr_xlsx_filename(filename)
+        source_accounts = validate_statement_accounts(
+            parsed_rows, broker_account, allow_missing_accounts=is_xlsx
+        )
+        warnings_extra = (
+            [
+                "trade_history.xlsx 不含账户标识列，无法与所选账户交叉校验，"
+                "请人工确认文件属于该 IBKR 账户"
+            ]
+            if is_xlsx and not source_accounts
+            else []
+        )
+        dates = [flow.trade_date for flow in parsed_rows]
+        set_import_batch_source_stats(
+            batch,
+            row_count=total_rows,
+            period_start=min(dates) if dates else None,
+            period_end=max(dates) if dates else None,
+        )
+        resolution = resolve_existing_sources(
+            db,
+            user_id,
+            eligible_rows(parsed_rows),
+            broker_account_id=broker_account_id,
+            broker_account=broker_account,
+            claim_unassigned=True,
+        )
+        duplicate_hashes = set(resolution.duplicate_hashes)
+        booked_source_hashes.update(resolution.booked_hashes)
+        migrated_unassigned_rows = len(resolution.claimable_source_hashes)
 
-        if flow.is_cash_dividend:
-            action = CorporateAction(
+        affected_symbols: set[tuple[str, str]] = set()
+        pending_tax_flows: List[ParsedIbkrFlow] = [
+            flow
+            for flow in parsed_rows
+            if flow.is_withholding_tax
+            and flow.row_hash not in resolution.booked_hashes
+        ]
+
+        # 期权行不在 eligible_rows 里，resolution 不覆盖其哈希；
+        # 重复上传去重需单独查（否则再归档会撞 row_hash 唯一约束）。
+        # 与 resolve_existing_sources 同口径：仅同账户可判重——归属其他账户
+        # 的既有来源说明此前选错了账户，必须阻塞并提示，不能静默视为重复
+        # （(user_id, row_hash) 唯一约束也使正确账户无法再补录该审计来源）。
+        option_hashes = [
+            flow.row_hash for flow in parsed_rows if flow.skip_reason == "option"
+        ]
+        existing_option_hashes: set[str] = set()
+        if option_hashes:
+            for existing_option in (
+                db.query(IbkrActivityFlow)
+                .filter(
+                    IbkrActivityFlow.user_id == user_id,
+                    IbkrActivityFlow.row_hash.in_(option_hashes),
+                )
+                .all()
+            ):
+                if existing_option.broker_account_id != broker_account_id:
+                    raise ValueError(
+                        "IBKR 期权来源记录无法安全判重："
+                        f"row_hash={existing_option.row_hash} 已归属其他券商账户"
+                        f"（broker_account_id={existing_option.broker_account_id}）。"
+                        "请确认此前是否选错账户导入；当前导入不会静默跳过该记录"
+                    )
+                existing_option_hashes.add(existing_option.row_hash)
+
+        for flow in parsed_rows:
+            if not flow.is_trade and not flow.is_cash_dividend and not flow.is_withholding_tax:
+                # 期权成交跳过但归档（owner 2026-07-28 拍板）：不生成交易、
+                # 不影响持仓，原始行留在 ibkr_activity_flows 供审计与去重。
+                # 系统的已实现盈亏因此不含期权部分，报表口径需注明。
+                if (
+                    flow.skip_reason == "option"
+                    and flow.row_hash not in existing_option_hashes
+                    and flow.row_hash not in booked_source_hashes
+                ):
+                    archived_option = create_ibkr_activity_flow(
+                        user_id=user_id,
+                        filename=filename,
+                        flow=flow,
+                        broker_account_id=broker_account_id,
+                        import_batch_id=batch_id,
+                    )
+                    archived_option.skip_reason = "option"
+                    db.add(archived_option)
+                    booked_source_hashes.add(flow.row_hash)
+                continue
+            if flow.row_hash in resolution.booked_hashes:
+                continue
+            if flow.is_withholding_tax:
+                continue
+
+            if flow.is_cash_dividend:
+                action = CorporateAction(
+                    user_id=user_id,
+                    broker_account_id=broker_account_id,
+                    import_batch_id=batch_id,
+                    symbol=flow.symbol,
+                    name=flow.name,
+                    market=flow.market,
+                    action_type="CASH_DIVIDEND",
+                    ex_date=flow.trade_date,
+                    payment_date=flow.trade_date,
+                    total_dividend=flow.gross_amount,
+                    tax_withheld=Decimal("0"),
+                    net_dividend=flow.gross_amount,
+                    currency=flow.base_currency,
+                    notes=(
+                        f"{BROKER_NAME} Activity Statement; "
+                        f"row={flow.source_row_number}; "
+                        f"raw_symbol={flow.raw_symbol}; "
+                        f"dividend_currency={parse_dividend_currency(flow.description) or ''}; "
+                        f"row_hash={flow.row_hash}"
+                    ),
+                )
+                db.add(action)
+                db.flush()
+                db.add(
+                    create_ibkr_activity_flow(
+                        user_id=user_id,
+                        filename=filename,
+                        flow=flow,
+                        broker_account_id=broker_account_id,
+                        import_batch_id=batch_id,
+                        corporate_action_id=action.id,
+                    )
+                )
+                booked_source_hashes.add(flow.row_hash)
+                imported_corporate_actions += 1
+                canonical_action_ids_changed.add(action.id)
+                continue
+
+            transaction_type = flow.transaction_type
+            if (
+                not transaction_type
+                or not flow.symbol
+                or not flow.market
+                or flow.quantity is None
+                or flow.price is None
+            ):
+                continue
+            transaction = Transaction(
                 user_id=user_id,
+                broker_account_id=broker_account_id,
+                import_batch_id=batch_id,
                 symbol=flow.symbol,
                 name=flow.name,
                 market=flow.market,
-                action_type="CASH_DIVIDEND",
-                ex_date=flow.trade_date,
-                payment_date=flow.trade_date,
-                total_dividend=flow.gross_amount,
-                tax_withheld=Decimal("0"),
-                net_dividend=flow.gross_amount,
-                currency=flow.base_currency,
+                transaction_type=transaction_type,
+                quantity=abs(flow.quantity),
+                price=flow.price,
+                fee=flow.fee_in_price_currency or Decimal("0"),
+                transaction_date=flow.trade_date,
+                currency=flow.price_currency or flow.base_currency,
                 notes=(
                     f"{BROKER_NAME} Activity Statement; "
+                    f"account={flow.account or ''}; "
                     f"row={flow.source_row_number}; "
+                    f"type={flow.activity_type}; "
                     f"raw_symbol={flow.raw_symbol}; "
-                    f"dividend_currency={parse_dividend_currency(flow.description) or ''}; "
-                    f"row_hash={flow.row_hash}"
+                    f"gross={flow.gross_amount}; "
+                    f"net={flow.net_amount}"
                 ),
             )
-            db.add(action)
+            db.add(transaction)
             db.flush()
             db.add(
                 create_ibkr_activity_flow(
-                    user_id=user_id, filename=filename, flow=flow, corporate_action_id=action.id
+                    user_id=user_id,
+                    filename=filename,
+                    flow=flow,
+                    broker_account_id=broker_account_id,
+                    import_batch_id=batch_id,
+                    transaction_id=transaction.id,
                 )
             )
-            existing_hashes.add(flow.row_hash)
-            imported_corporate_actions += 1
-            continue
+            booked_source_hashes.add(flow.row_hash)
+            affected_symbols.add((flow.symbol, flow.market))
+            imported_transactions += 1
 
-        if flow.is_withholding_tax:
-            action = find_dividend_for_tax(db, user_id, flow)
-            if not action:
-                pending_tax_flows.append(flow)
-                continue
-            imported_tax_adjustments += apply_withholding_tax(db, user_id, filename, flow, action)
-            existing_hashes.add(flow.row_hash)
-            continue
-
-        transaction_type = flow.transaction_type
-        if (
-            not transaction_type
-            or not flow.symbol
-            or not flow.market
-            or flow.quantity is None
-            or flow.price is None
-        ):
-            continue
-        transaction = Transaction(
-            user_id=user_id,
-            symbol=flow.symbol,
-            name=flow.name,
-            market=flow.market,
-            transaction_type=transaction_type,
-            quantity=abs(flow.quantity),
-            price=flow.price,
-            fee=flow.fee_in_price_currency or Decimal("0"),
-            transaction_date=flow.trade_date,
-            currency=flow.price_currency or flow.base_currency,
-            notes=(
-                f"{BROKER_NAME} Activity Statement; "
-                f"account={flow.account or ''}; "
-                f"row={flow.source_row_number}; "
-                f"type={flow.activity_type}; "
-                f"raw_symbol={flow.raw_symbol}; "
-                f"gross={flow.gross_amount}; "
-                f"net={flow.net_amount}"
-            ),
-        )
-        db.add(transaction)
         db.flush()
-        db.add(
-            create_ibkr_activity_flow(
-                user_id=user_id, filename=filename, flow=flow, transaction_id=transaction.id
+        for flow in pending_tax_flows:
+            candidates = find_dividend_candidates_for_tax(
+                db,
+                user_id,
+                flow,
+                broker_account_id=broker_account_id,
             )
+            if len(candidates) != 1:
+                if flow.row_hash not in resolution.unresolved_tax_sources:
+                    unresolved_source = create_ibkr_activity_flow(
+                        user_id=user_id,
+                        filename=filename,
+                        flow=flow,
+                        broker_account_id=broker_account_id,
+                        import_batch_id=batch_id,
+                    )
+                    unresolved_source.skip_reason = "unattributed_tax"
+                    unresolved_source.notes = (
+                        "Preserved without canonical action: expected exactly one "
+                        f"same-account same-security same-date dividend; found {len(candidates)}"
+                    )
+                    db.add(unresolved_source)
+                errors.append(
+                    f"row {flow.source_row_number}: withholding tax requires exactly one "
+                    f"same-account, same-security, same-date dividend candidate; "
+                    f"found {len(candidates)}"
+                )
+                continue
+            imported_tax_adjustments += apply_withholding_tax(
+                db,
+                user_id,
+                filename,
+                flow,
+                candidates[0],
+                import_batch_id=batch_id,
+                existing_source=resolution.unresolved_tax_sources.get(flow.row_hash),
+            )
+            booked_source_hashes.add(flow.row_hash)
+            canonical_action_ids_changed.add(candidates[0].id)
+
+        db.flush()
+        imported_transfer_transactions = apply_known_relisting_transfers(
+            db,
+            user_id,
+            parsed_rows,
+            affected_symbols,
+            broker_account_id=broker_account_id,
+            import_batch_id=batch_id,
         )
-        existing_hashes.add(flow.row_hash)
-        affected_symbols.add((flow.symbol, flow.market))
-        imported_transactions += 1
+        imported_transactions += imported_transfer_transactions
+        canonical_objects_changed = (
+            imported_transactions + len(canonical_action_ids_changed)
+        )
 
-    for flow in pending_tax_flows:
-        if flow.row_hash in existing_hashes:
-            continue
-        action = find_dividend_for_tax(db, user_id, flow)
-        if not action:
-            continue
-        imported_tax_adjustments += apply_withholding_tax(db, user_id, filename, flow, action)
-        existing_hashes.add(flow.row_hash)
-
-    db.flush()
-    imported_transfer_transactions = apply_known_relisting_transfers(
-        db, user_id, parsed_rows, affected_symbols
-    )
-    imported_transactions += imported_transfer_transactions
-
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise ValueError("Duplicate IBKR activity flow detected during import")
-
-    recalculated_symbols = 0
-    for symbol, market in affected_symbols:
         try:
-            recalculate_holdings(db, user_id, symbol, market)
-            recalculated_symbols += 1
-        except ValueError as exc:
-            errors.append(f"{symbol} {market}: {exc}")
+            db.commit()
+        except IntegrityError as exc:
+            raise ValueError(
+                "Duplicate IBKR activity flow detected during import"
+            ) from exc
+        records_committed = True
 
-    return build_import_result(
-        filename=filename,
-        total_rows=total_rows,
-        parsed_rows=parsed_rows,
-        business_counts=business_counts,
-        existing_hashes=duplicate_hashes,
-        imported_transactions=imported_transactions,
-        imported_corporate_actions=imported_corporate_actions,
-        imported_tax_adjustments=imported_tax_adjustments,
-        affected_symbols=recalculated_symbols,
-        errors=errors,
-    )
+        recalculated_symbols = 0
+        for symbol, market in affected_symbols:
+            try:
+                recalculate_holdings(db, user_id, symbol, market)
+                recalculated_symbols += 1
+            except ValueError as exc:
+                errors.append(f"{symbol} {market}: {exc}")
+
+        result = build_import_result(
+            filename=filename,
+            total_rows=total_rows,
+            parsed_rows=parsed_rows,
+            business_counts=business_counts,
+            existing_hashes=duplicate_hashes,
+            booked_source_hashes=booked_source_hashes,
+            imported_transactions=imported_transactions,
+            imported_corporate_actions=imported_corporate_actions,
+            imported_tax_adjustments=imported_tax_adjustments,
+            affected_symbols=recalculated_symbols,
+            errors=errors,
+            warnings=warnings_extra,
+            source_accounts=source_accounts,
+            migrated_unassigned_rows=migrated_unassigned_rows,
+            canonical_objects_changed=canonical_objects_changed,
+        )
+        imported_source_rows = (
+            db.query(IbkrActivityFlow)
+            .filter(IbkrActivityFlow.import_batch_id == batch_id)
+            .count()
+        )
+        result["archived_source_rows"] = imported_source_rows
+        imported_source_count = max(
+            0,
+            result["booked_source_rows"] - result["duplicate_rows"],
+        )
+        completed_batch = complete_import_batch(
+            db,
+            batch_id,
+            result=result,
+            imported_count=imported_source_count,
+            archived_count=imported_source_rows,
+        )
+        result.update(
+            {
+                "import_batch_id": completed_batch.id,
+                "broker_account_id": completed_batch.broker_account_id,
+                "batch_status": completed_batch.status,
+            }
+        )
+        return result
+    except Exception as exc:
+        if records_committed:
+            db.rollback()
+            try:
+                imported_source_rows = (
+                    db.query(IbkrActivityFlow)
+                    .filter(IbkrActivityFlow.import_batch_id == batch_id)
+                    .count()
+                )
+            except Exception:
+                imported_source_rows = 0
+        fail_import_batch(
+            db,
+            batch_id,
+            exc,
+            records_committed=records_committed,
+            row_count=total_rows,
+            imported_count=max(
+                0,
+                len(booked_source_hashes) - len(duplicate_hashes),
+            ),
+            duplicate_count=len(duplicate_hashes),
+            archived_count=imported_source_rows,
+        )
+        raise

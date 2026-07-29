@@ -15,8 +15,16 @@ from .api import (
     exchange_rates,
     auth,
     users,
+    broker_accounts,
+    import_batches,
+    cash_events,
+    reconciliation_snapshots,
+    excluded_securities,
+    llm_reports,
 )
 from .core.logging import configure_logging, get_app_logger
+from .services.background_job_store import cleanup_expired_jobs, interrupt_stale_jobs
+from .services.job_worker import start_worker, stop_worker
 
 
 configure_logging()
@@ -52,6 +60,55 @@ app.include_router(
     corporate_actions.router, prefix="/api/corporate-actions", tags=["Corporate Actions"]
 )
 app.include_router(exchange_rates.router, prefix="/api", tags=["Exchange Rates"])
+app.include_router(
+    broker_accounts.router,
+    prefix="/api/broker-accounts",
+    tags=["Broker Accounts"],
+)
+app.include_router(
+    import_batches.router,
+    prefix="/api/import-batches",
+    tags=["Import Batches"],
+)
+app.include_router(
+    cash_events.router,
+    prefix="/api/cash-events",
+    tags=["Cash Events"],
+)
+app.include_router(
+    reconciliation_snapshots.router,
+    prefix="/api/reconciliation-snapshots",
+    tags=["Reconciliation Snapshots"],
+)
+app.include_router(
+    excluded_securities.router,
+    prefix="/api/excluded-securities",
+    tags=["Excluded Securities"],
+)
+app.include_router(
+    llm_reports.router,
+    prefix="/api/llm-reports",
+    tags=["LLM Reports"],
+)
+
+
+@app.on_event("startup")
+def reconcile_background_jobs() -> None:
+    interrupted = interrupt_stale_jobs()
+    deleted = cleanup_expired_jobs()
+    if interrupted or deleted:
+        logger.info(
+            "Background job reconciliation completed: interrupted=%s, deleted=%s",
+            interrupted,
+            deleted,
+        )
+    # Reliability net for background jobs (leases, takeover, retries).
+    start_worker()
+
+
+@app.on_event("shutdown")
+def shutdown_background_worker() -> None:
+    stop_worker()
 
 
 @app.get("/")

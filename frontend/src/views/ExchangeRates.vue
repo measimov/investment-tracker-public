@@ -8,25 +8,45 @@
             <el-button type="primary" @click="refreshFromAPI" :loading="refreshing">
               从API更新汇率
             </el-button>
-            <el-button type="success" @click="showAddDialog">
-              手动添加汇率
-            </el-button>
+            <el-button type="success" @click="showAddDialog"> 手动添加汇率 </el-button>
           </div>
         </div>
       </template>
 
       <!-- 当前汇率展示 -->
-      <div class="current-rates" v-if="latestRates">
-        <h3>当前汇率（基准货币：{{ latestRates.base_currency }}）</h3>
-        <el-row :gutter="20">
-          <el-col :xs="24" :sm="12" :md="6" v-for="(rate, currency) in latestRates.rates" :key="currency">
-            <el-card shadow="hover" v-if="currency !== 'CNY'">
-              <el-statistic
-                :title="`1 ${currency} =`"
-                :value="rate"
-                :precision="4"
-                suffix="CNY"
-              >
+      <div class="current-rates" v-loading="loadingLatest && hasLoaded">
+        <h3>当前汇率（基准货币：{{ latestBaseCurrency }}）</h3>
+        <el-row v-if="initialLoading" :gutter="20">
+          <el-col v-for="index in 4" :key="index" :xs="24" :sm="12" :md="6">
+            <el-card shadow="never" class="rate-skeleton-card">
+              <el-skeleton animated>
+                <template #template>
+                  <el-skeleton-item variant="text" class="rate-title-skeleton" />
+                  <el-skeleton-item variant="h3" class="rate-value-skeleton" />
+                  <div class="rate-info">
+                    <el-skeleton-item variant="text" />
+                    <el-skeleton-item variant="button" class="rate-tag-skeleton" />
+                  </div>
+                </template>
+              </el-skeleton>
+            </el-card>
+          </el-col>
+        </el-row>
+        <el-empty
+          v-else-if="displayRates.length === 0"
+          description="暂无可用汇率"
+          :image-size="88"
+        />
+        <el-row v-else :gutter="20">
+          <el-col
+            v-for="{ currency, rate } in displayRates"
+            :key="currency"
+            :xs="24"
+            :sm="12"
+            :md="6"
+          >
+            <el-card shadow="hover">
+              <el-statistic :title="`1 ${currency} =`" :value="rate" :precision="4" suffix="CNY">
                 <template #prefix>
                   <span class="currency-code">{{ currency }}</span>
                 </template>
@@ -49,8 +69,14 @@
       <!-- 汇率历史记录 -->
       <div class="rate-history">
         <h3>汇率历史记录</h3>
-        <div class="responsive-table">
-          <el-table :data="rateHistory" stripe style="width: 100%">
+        <div v-if="initialLoading" class="history-skeleton">
+          <el-skeleton animated :rows="7" />
+        </div>
+        <div v-else class="responsive-table">
+          <el-table :data="rateHistory" stripe style="width: 100%" v-loading="loadingHistory">
+            <template #empty>
+              <el-empty description="暂无汇率历史记录" :image-size="88" />
+            </template>
             <el-table-column prop="from_currency" label="源币种" width="100" />
             <el-table-column prop="to_currency" label="目标币种" width="100" />
             <el-table-column prop="rate" label="汇率" width="150">
@@ -80,12 +106,8 @@
             </el-table-column>
             <el-table-column label="操作" width="150">
               <template #default="{ row }">
-                <el-button size="small" type="primary" @click="editRate(row)">
-                  编辑
-                </el-button>
-                <el-button size="small" type="danger" @click="deleteRate(row.id)">
-                  删除
-                </el-button>
+                <el-button size="small" type="primary" @click="editRate(row)"> 编辑 </el-button>
+                <el-button size="small" type="danger" @click="deleteRate(row.id)"> 删除 </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -94,11 +116,7 @@
     </el-card>
 
     <!-- 添加/编辑汇率对话框 -->
-    <el-dialog
-      v-model="dialogVisible"
-      :title="editingRate ? '编辑汇率' : '添加汇率'"
-      width="500px"
-    >
+    <el-dialog v-model="dialogVisible" :title="editingRate ? '编辑汇率' : '添加汇率'" width="500px">
       <el-form :model="rateForm" :rules="rules" ref="rateFormRef" label-width="100px">
         <el-form-item label="源币种" prop="from_currency">
           <el-select
@@ -166,10 +184,8 @@
 
       <template #footer>
         <div class="mobile-dialog-footer">
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitRate" :loading="submitting">
-          确定
-        </el-button>
+          <el-button @click="dialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="submitRate" :loading="submitting">确定</el-button>
         </div>
       </template>
     </el-dialog>
@@ -177,13 +193,18 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { CURRENCIES } from '@/utils/currency'
+import { getApiErrorMessage } from '@/utils/apiErrors'
+import { formatDate, formatDateTime } from '@/utils/helpers'
 
 const latestRates = ref(null)
 const rateHistory = ref([])
+const loadingLatest = ref(false)
+const loadingHistory = ref(false)
+const hasLoaded = ref(false)
 const dialogVisible = ref(false)
 const refreshing = ref(false)
 const submitting = ref(false)
@@ -201,6 +222,17 @@ const rateForm = ref({
 
 const currencies = CURRENCIES
 
+const displayRates = computed(() =>
+  Object.entries(latestRates.value?.rates || {})
+    .filter(([currency]) => currency !== 'CNY')
+    .map(([currency, rate]) => ({ currency, rate }))
+)
+
+const latestBaseCurrency = computed(() => latestRates.value?.base_currency || 'CNY')
+const initialLoading = computed(
+  () => !hasLoaded.value && (loadingLatest.value || loadingHistory.value)
+)
+
 const rules = {
   from_currency: [{ required: true, message: '请选择源币种', trigger: 'change' }],
   to_currency: [{ required: true, message: '请选择目标币种', trigger: 'change' }],
@@ -211,23 +243,37 @@ const rules = {
 
 // 加载最新汇率
 const loadLatestRates = async () => {
+  loadingLatest.value = true
   try {
     const response = await api.getLatestRates()
     latestRates.value = response.data
   } catch (error) {
-    ElMessage.error('加载最新汇率失败')
+    ElMessage.error(getApiErrorMessage(error, '加载最新汇率失败'))
     console.error(error)
+  } finally {
+    loadingLatest.value = false
   }
 }
 
 // 加载历史汇率
 const loadRateHistory = async () => {
+  loadingHistory.value = true
   try {
     const response = await api.getExchangeRates()
     rateHistory.value = response.data
   } catch (error) {
-    ElMessage.error('加载汇率历史失败')
+    ElMessage.error(getApiErrorMessage(error, '加载汇率历史失败'))
     console.error(error)
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+const loadInitialData = async () => {
+  try {
+    await Promise.all([loadLatestRates(), loadRateHistory()])
+  } finally {
+    hasLoaded.value = true
   }
 }
 
@@ -240,7 +286,7 @@ const refreshFromAPI = async () => {
     await loadLatestRates()
     await loadRateHistory()
   } catch (error) {
-    ElMessage.error('从API更新汇率失败: ' + (error.response?.data?.detail || error.message))
+    ElMessage.error('从API更新汇率失败: ' + getApiErrorMessage(error))
     console.error(error)
   } finally {
     refreshing.value = false
@@ -303,7 +349,7 @@ const submitRate = async () => {
       await loadLatestRates()
       await loadRateHistory()
     } catch (error) {
-      ElMessage.error('操作失败: ' + (error.response?.data?.detail || error.message))
+      ElMessage.error('操作失败: ' + getApiErrorMessage(error))
       console.error(error)
     } finally {
       submitting.value = false
@@ -329,31 +375,18 @@ const deleteRate = async (id) => {
   }
 }
 
-// 格式化日期
-const formatDate = (dateStr) => {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleDateString('zh-CN')
-}
-
-// 格式化日期时间
-const formatDateTime = (dateStr) => {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString('zh-CN')
-}
-
 // 获取来源类型
 const getSourceType = (source) => {
   const types = {
-    'api': 'success',
-    'manual': 'warning',
-    'system': 'info'
+    api: 'success',
+    manual: 'warning',
+    system: 'info'
   }
   return types[source] || 'info'
 }
 
 onMounted(() => {
-  loadLatestRates()
-  loadRateHistory()
+  loadInitialData()
 })
 </script>
 
@@ -400,8 +433,32 @@ onMounted(() => {
   align-items: center;
 }
 
+.rate-skeleton-card {
+  min-height: 116px;
+}
+
+.rate-title-skeleton {
+  width: 42%;
+  height: 14px;
+}
+
+.rate-value-skeleton {
+  width: 72%;
+  height: 26px;
+  margin: 12px 0 2px;
+}
+
+.rate-tag-skeleton {
+  width: 52px;
+}
+
 .rate-history {
   margin-top: 20px;
+}
+
+.history-skeleton {
+  min-height: 300px;
+  padding: 12px 0;
 }
 
 :deep(.el-statistic__head) {

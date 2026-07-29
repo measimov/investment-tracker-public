@@ -20,6 +20,7 @@ echo ""
 
 # 检查备份目录
 BACKUP_DIR="./backups"
+APP_BASE_URL="${APP_BASE_URL:-https://localhost}"
 
 if [ ! -d "$BACKUP_DIR" ]; then
     echo -e "${RED}❌ 备份目录不存在: $BACKUP_DIR${NC}"
@@ -96,7 +97,7 @@ case $choice in
 
             echo ""
             echo -e "${GREEN}✅ 恢复完成！${NC}"
-            echo "   访问: https://app.example.local"
+            echo "   访问: $APP_BASE_URL"
         else
             echo -e "${YELLOW}❌ 已取消恢复${NC}"
         fi
@@ -106,7 +107,7 @@ case $choice in
         # 从 Excel 导入
         echo ""
         echo -e "${YELLOW}Excel 导入步骤:${NC}"
-        echo "1. 访问: https://app.example.local"
+        echo "1. 访问: $APP_BASE_URL"
         echo "2. 点击 '交易记录' 菜单"
         echo "3. 点击 '导入' 按钮"
         echo "4. 选择 Excel 备份文件"

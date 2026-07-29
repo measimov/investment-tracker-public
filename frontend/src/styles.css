@@ -1,49 +1,98 @@
 :root {
-  /* ── Apple System Color Palette ─────────────────────────────── */
-  --app-bg: #f5f5f7;
+  /* ── Modern fintech palette (slate neutrals + indigo/violet accent) ── */
+  --app-bg: #f3f5fa;
   --app-surface: #ffffff;
-  --app-surface-muted: #fbfbfd;
-  --app-surface-secondary: #f5f5f7;
-  --app-border: rgba(0, 0, 0, 0.06);
-  --app-border-soft: rgba(0, 0, 0, 0.04);
-  --app-separator: rgba(0, 0, 0, 0.09);
+  --app-surface-muted: #fafbfe;
+  --app-surface-secondary: #f3f5fa;
+  --app-border: rgba(15, 23, 42, 0.08);
+  --app-border-soft: rgba(15, 23, 42, 0.05);
+  --app-separator: rgba(15, 23, 42, 0.07);
 
-  --app-text: #1d1d1f;
-  --app-text-muted: #6e6e73;
-  --app-text-soft: #86868b;
-  --app-text-tertiary: #aeaeb2;
+  --app-text: #0f172a;
+  --app-text-muted: #475569;
+  --app-text-soft: #64748b;
+  --app-text-tertiary: #94a3b8;
 
-  /* Apple SF System Colors */
-  --app-primary: #007AFF;
-  --app-primary-soft: rgba(0, 122, 255, 0.08);
-  --app-primary-tint: rgba(0, 122, 255, 0.12);
+  --app-primary: #4f46e5;
+  --app-primary-strong: #4338ca;
+  --app-primary-soft: rgba(79, 70, 229, 0.08);
+  --app-primary-tint: rgba(79, 70, 229, 0.14);
+  --app-primary-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  --app-primary-shadow: rgba(79, 70, 229, 0.35);
 
-  --app-success: #34C759;
-  --app-success-soft: rgba(52, 199, 89, 0.1);
+  --app-success: #059669;
+  --app-success-bright: #10b981;
+  --app-success-soft: rgba(16, 185, 129, 0.12);
 
-  --app-danger: #FF3B30;
-  --app-danger-soft: rgba(255, 59, 48, 0.1);
+  --app-danger: #e11d48;
+  --app-danger-bright: #f43f5e;
+  --app-danger-soft: rgba(244, 63, 94, 0.12);
 
-  --app-warning: #FF9500;
-  --app-warning-soft: rgba(255, 149, 0, 0.1);
+  --app-warning: #d97706;
+  --app-warning-bright: #f59e0b;
+  --app-warning-soft: rgba(245, 158, 11, 0.14);
 
-  --app-info: #5856D6;
+  --app-info: #7c3aed;
 
-  /* ── Apple-style Natural Shadows ────────────────────────────── */
-  --app-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --app-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --app-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.04);
-  --app-shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
+  /* ── Soft layered shadows ─────────────────────────────────────── */
+  --app-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --app-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px -2px rgba(15, 23, 42, 0.06);
+  --app-shadow-md: 0 2px 4px rgba(15, 23, 42, 0.04), 0 12px 32px -6px rgba(15, 23, 42, 0.1);
+  --app-shadow-lg: 0 4px 8px rgba(15, 23, 42, 0.05), 0 24px 56px -12px rgba(15, 23, 42, 0.18);
 
   /* ── Geometry ───────────────────────────────────────────────── */
-  --app-radius: 12px;
-  --app-radius-inner: 8px;
-  --app-radius-sm: 6px;
+  --app-radius: 16px;
+  --app-radius-inner: 10px;
+  --app-radius-sm: 8px;
 
   /* ── Motion ─────────────────────────────────────────────────── */
   --apple-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
   --apple-spring: cubic-bezier(0.22, 1, 0.36, 1);
   --app-duration: 0.3s;
+
+  /* ── Element Plus palette sync ──────────────────────────────── */
+  --el-color-primary: #4f46e5;
+  --el-color-primary-light-3: #8580ec;
+  --el-color-primary-light-5: #b3aef3;
+  --el-color-primary-light-7: #d1cef9;
+  --el-color-primary-light-8: #e0defb;
+  --el-color-primary-light-9: #efeefd;
+  --el-color-primary-dark-2: #4338ca;
+
+  --el-color-success: #10b981;
+  --el-color-success-light-3: #4fd1a5;
+  --el-color-success-light-5: #87e2c2;
+  --el-color-success-light-7: #bbf0dd;
+  --el-color-success-light-8: #d2f5e7;
+  --el-color-success-light-9: #e8faf2;
+  --el-color-success-dark-2: #059669;
+
+  --el-color-warning: #f59e0b;
+  --el-color-warning-light-3: #f8bc4e;
+  --el-color-warning-light-5: #fad485;
+  --el-color-warning-light-7: #fce5b8;
+  --el-color-warning-light-8: #fdeccf;
+  --el-color-warning-light-9: #fef5e7;
+  --el-color-warning-dark-2: #d97706;
+
+  --el-color-danger: #f43f5e;
+  --el-color-danger-light-3: #f7728a;
+  --el-color-danger-light-5: #fa9faf;
+  --el-color-danger-light-7: #fcc7cf;
+  --el-color-danger-light-8: #fdd9de;
+  --el-color-danger-light-9: #feecef;
+  --el-color-danger-dark-2: #e11d48;
+
+  --el-color-error: #f43f5e;
+  --el-color-error-light-3: #f7728a;
+  --el-color-error-light-5: #fa9faf;
+  --el-color-error-light-7: #fcc7cf;
+  --el-color-error-light-8: #fdd9de;
+  --el-color-error-light-9: #feecef;
+  --el-color-error-dark-2: #e11d48;
+
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
 }
 
 /* ── Reset & Base ─────────────────────────────────────────────── */
@@ -64,19 +113,30 @@ body {
 
 body {
   margin: 0;
-  background: var(--app-bg);
+  background:
+    radial-gradient(960px 480px at 88% -12%, rgba(99, 102, 241, 0.09), transparent 60%),
+    radial-gradient(760px 420px at -12% 22%, rgba(16, 185, 129, 0.06), transparent 55%),
+    radial-gradient(680px 500px at 110% 78%, rgba(139, 92, 246, 0.06), transparent 55%),
+    var(--app-bg);
+  background-attachment: fixed;
   color: var(--app-text);
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
-               'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Inter', 'Segoe UI', Roboto,
+    'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
   font-size: 15px;
   line-height: 1.47;
-  letter-spacing: -0.022em;
+  letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
-/* ── Scrollbar — macOS native feel ────────────────────────────── */
+::selection {
+  background: var(--app-primary-tint);
+  color: var(--app-text);
+}
+
+/* ── Scrollbar — slim and unobtrusive ─────────────────────────── */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -87,25 +147,27 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(15, 23, 42, 0.16);
   border-radius: 100px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(15, 23, 42, 0.32);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
-/* ── Cards — borderless, shadow-separated ─────────────────────── */
+/* ── Cards — hairline border, soft elevation, hover lift ──────── */
 .el-card {
-  border: none;
+  border: 1px solid var(--app-border-soft);
   border-radius: var(--app-radius);
   box-shadow: var(--app-shadow);
   background: var(--app-surface);
-  transition: box-shadow var(--app-duration) var(--apple-ease);
+  transition:
+    box-shadow var(--app-duration) var(--apple-ease),
+    transform var(--app-duration) var(--apple-ease);
 }
 
 .el-card:hover {
@@ -113,7 +175,7 @@ body {
 }
 
 .el-card__header {
-  padding: 20px 24px;
+  padding: 18px 24px;
   border-bottom: 1px solid var(--app-separator);
   font-weight: 600;
   font-size: 15px;
@@ -125,59 +187,143 @@ body {
   padding: 24px;
 }
 
-/* ── Buttons — Apple flat style ───────────────────────────────── */
+/* ── Buttons — gradient primary, tactile press ────────────────── */
 .el-button {
   border-radius: var(--app-radius-inner);
   font-weight: 500;
   letter-spacing: -0.01em;
   padding: 8px 16px;
-  transition: opacity var(--app-duration) var(--apple-ease),
-              transform 0.15s var(--apple-ease),
-              background-color var(--app-duration) var(--apple-ease),
-              box-shadow var(--app-duration) var(--apple-ease);
-}
-
-.el-button:hover {
-  opacity: 0.85;
+  transition:
+    filter 0.2s var(--apple-ease),
+    transform 0.15s var(--apple-ease),
+    background-color var(--app-duration) var(--apple-ease),
+    color var(--app-duration) var(--apple-ease),
+    border-color var(--app-duration) var(--apple-ease),
+    box-shadow var(--app-duration) var(--apple-ease);
 }
 
 .el-button:active {
   transform: scale(0.97);
-  opacity: 0.7;
 }
 
 .el-button--primary {
-  background: var(--app-primary);
-  border-color: var(--app-primary);
-  box-shadow: none;
+  background: var(--app-primary-gradient);
+  border: none;
+  box-shadow: 0 4px 12px -4px var(--app-primary-shadow);
 }
 
-.el-button--primary:hover {
-  background: var(--app-primary);
-  border-color: var(--app-primary);
+.el-button--primary:hover,
+.el-button--primary:focus {
+  background: var(--app-primary-gradient);
+  border: none;
+  filter: brightness(1.07);
+  box-shadow: 0 8px 20px -6px var(--app-primary-shadow);
+  transform: translateY(-1px);
+}
+
+.el-button--primary.is-disabled,
+.el-button--primary.is-loading {
+  background: var(--app-primary-gradient);
+  border: none;
+  opacity: 0.6;
+  transform: none;
   box-shadow: none;
 }
 
 .el-button--success {
-  background: var(--app-success);
-  border-color: var(--app-success);
+  background: var(--el-color-success);
+  border-color: var(--el-color-success);
+}
+
+.el-button--success:hover,
+.el-button--success:focus {
+  background: var(--app-success-bright);
+  border-color: var(--app-success-bright);
+  filter: brightness(1.05);
 }
 
 .el-button--danger {
-  background: var(--app-danger);
-  border-color: var(--app-danger);
+  background: var(--el-color-danger);
+  border-color: var(--el-color-danger);
+}
+
+.el-button--danger:hover,
+.el-button--danger:focus {
+  background: var(--app-danger-bright);
+  border-color: var(--app-danger-bright);
+  filter: brightness(1.05);
 }
 
 .el-button--warning {
-  background: var(--app-warning);
-  border-color: var(--app-warning);
+  background: var(--el-color-warning);
+  border-color: var(--el-color-warning);
+}
+
+.el-button--warning:hover,
+.el-button--warning:focus {
+  background: var(--app-warning-bright);
+  border-color: var(--app-warning-bright);
+  filter: brightness(1.05);
+}
+
+/* Text & link button variants — transparent bg, readable colored text.
+   Without this, the gradient/solid fills above bleed through
+   background-image while the text keeps the same hue. */
+.el-button.is-text,
+.el-button.is-link {
+  background: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.el-button.is-text:hover,
+.el-button.is-text:focus,
+.el-button.is-link:hover,
+.el-button.is-link:focus {
+  background-color: var(--app-surface-muted);
+  border-color: transparent;
+  box-shadow: none;
+  filter: none;
+  transform: none;
+}
+
+.el-button--primary.is-text:hover,
+.el-button--primary.is-text:focus,
+.el-button--primary.is-link:hover,
+.el-button--primary.is-link:focus {
+  background-color: var(--app-primary-soft);
+  color: var(--app-primary-strong);
+}
+
+.el-button--success.is-text:hover,
+.el-button--success.is-text:focus,
+.el-button--success.is-link:hover,
+.el-button--success.is-link:focus {
+  background-color: var(--app-success-soft);
+  color: var(--app-success);
+}
+
+.el-button--danger.is-text:hover,
+.el-button--danger.is-text:focus,
+.el-button--danger.is-link:hover,
+.el-button--danger.is-link:focus {
+  background-color: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+.el-button--warning.is-text:hover,
+.el-button--warning.is-text:focus,
+.el-button--warning.is-link:hover,
+.el-button--warning.is-link:focus {
+  background-color: var(--app-warning-soft);
+  color: var(--app-warning);
 }
 
 .el-button + .el-button {
   margin-left: 8px;
 }
 
-/* ── Form Elements — clean inset fields ───────────────────────── */
+/* ── Form Elements — soft inset fields, indigo focus ring ─────── */
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner,
@@ -191,29 +337,32 @@ body {
 .el-input__wrapper:hover,
 .el-select__wrapper:hover,
 .el-textarea__inner:hover {
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.16) inset;
 }
 
 .el-input__wrapper.is-focus,
 .el-select__wrapper.is-focus {
-  box-shadow: 0 0 0 3px var(--app-primary-tint), 0 0 0 1px var(--app-primary) inset !important;
+  box-shadow:
+    0 0 0 3px var(--app-primary-tint),
+    0 0 0 1px var(--app-primary) inset !important;
 }
 
-/* ── Tables — refined, no uppercase headers ───────────────────── */
+/* ── Tables — quiet headers, tabular numbers ──────────────────── */
 .el-table {
   --el-table-header-bg-color: var(--app-surface-muted);
   --el-table-header-text-color: var(--app-text-muted);
   --el-table-border-color: var(--app-separator);
-  --el-table-row-hover-bg-color: var(--app-surface-secondary);
+  --el-table-row-hover-bg-color: var(--app-primary-soft);
   border-radius: var(--app-radius-inner);
   overflow: hidden;
   font-size: 14px;
+  font-variant-numeric: tabular-nums;
 }
 
 .el-table th.el-table__cell {
   font-weight: 600;
   font-size: 12px;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
   color: var(--app-text-muted);
 }
 
@@ -230,7 +379,7 @@ body {
   background-color: var(--el-table-row-hover-bg-color) !important;
 }
 
-/* ── Tags — Apple capsule style ───────────────────────────────── */
+/* ── Tags — capsule with soft fills ───────────────────────────── */
 .el-tag {
   border-radius: 980px;
   font-weight: 500;
@@ -256,15 +405,20 @@ body {
 }
 
 .el-tag--info {
-  background-color: rgba(0, 0, 0, 0.05);
+  background-color: rgba(15, 23, 42, 0.06);
   color: var(--app-text-muted);
 }
 
-/* ── Dialogs — Apple sheet style ──────────────────────────────── */
+.el-tag--primary {
+  background-color: var(--app-primary-soft);
+  color: var(--app-primary);
+}
+
+/* ── Dialogs — floating sheets ────────────────────────────────── */
 .el-dialog {
-  border-radius: 14px;
+  border-radius: 18px;
   box-shadow: var(--app-shadow-lg);
-  border: none;
+  border: 1px solid var(--app-border-soft);
   overflow: hidden;
 }
 
@@ -277,7 +431,7 @@ body {
 .el-dialog__title {
   font-weight: 600;
   font-size: 17px;
-  letter-spacing: -0.022em;
+  letter-spacing: -0.02em;
 }
 
 .el-dialog__body {
@@ -304,9 +458,9 @@ body {
 .card-header > span {
   min-width: 0;
   color: var(--app-text);
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 600;
-  letter-spacing: -0.022em;
+  letter-spacing: -0.02em;
 }
 
 .header-actions {
@@ -325,7 +479,7 @@ body {
   padding: 16px 20px 4px;
   margin-bottom: 20px;
   background: var(--app-surface);
-  border: none;
+  border: 1px solid var(--app-border-soft);
   border-radius: var(--app-radius);
   box-shadow: var(--app-shadow-sm);
 }
@@ -383,11 +537,13 @@ body {
 .metric-positive {
   color: var(--app-success);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 .metric-negative {
   color: var(--app-danger);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Pagination ───────────────────────────────────────────────── */
@@ -398,6 +554,11 @@ body {
 .el-pagination button,
 .el-pagination .el-pager li {
   border-radius: var(--app-radius-sm);
+}
+
+.el-pagination .el-pager li.is-active {
+  background: var(--app-primary-gradient);
+  box-shadow: 0 2px 8px -2px var(--app-primary-shadow);
 }
 
 /* ── Dropdown Menu ────────────────────────────────────────────── */
@@ -415,9 +576,20 @@ body {
 
 /* ── Message / Notification ───────────────────────────────────── */
 .el-message {
-  border-radius: var(--app-radius);
+  border-radius: var(--app-radius-inner);
   box-shadow: var(--app-shadow-lg);
-  border: none;
+  border: 1px solid var(--app-border-soft);
+}
+
+/* ── Accessibility: respect reduced motion ────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ── Mobile & Tablet ──────────────────────────────────────────── */
@@ -517,15 +689,34 @@ body {
     flex-wrap: wrap;
     gap: 8px 0;
   }
+
+  /* Comfortable touch targets */
+  .el-button {
+    min-height: 38px;
+  }
 }
 
 @media (max-width: 640px) {
+  body {
+    font-size: 14px;
+  }
+
+  .el-card {
+    border-radius: 14px;
+  }
+
   .el-card__header {
     padding: 14px 16px;
   }
 
   .el-card__body {
     padding: 16px;
+  }
+
+  /* Prevent iOS auto-zoom on focus (needs >= 16px input text) */
+  .el-input__inner,
+  .el-textarea__inner {
+    font-size: 16px;
   }
 
   .header-actions {
@@ -548,5 +739,35 @@ body {
   .dialog-footer .el-button,
   .mobile-dialog-footer .el-button {
     width: 100%;
+  }
+
+  /* Dialogs become bottom sheets */
+  .el-overlay-dialog {
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  .el-dialog {
+    width: 100% !important;
+    max-width: 100%;
+    max-height: 92vh;
+    margin: 0 !important;
+    border-radius: 20px 20px 0 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .el-dialog__body {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+    overflow-y: auto;
+  }
+
+  /* Compact pagination: drop bulky extras on phones */
+  .el-pagination .el-pagination__sizes,
+  .el-pagination .el-pagination__jump {
+    display: none;
   }
 }

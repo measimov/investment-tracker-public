@@ -15,6 +15,23 @@
 
       <!-- Filters -->
       <el-form :inline="true" class="filter-form">
+        <el-form-item label="账户">
+          <el-select
+            v-model="filters.account"
+            placeholder="全部账户"
+            clearable
+            @change="handleSearch"
+            @clear="handleSearch"
+          >
+            <el-option label="未分配账户" value="unassigned" />
+            <el-option
+              v-for="account in brokerAccounts"
+              :key="account.id"
+              :label="brokerAccountLabel(account)"
+              :value="account.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="代码">
           <el-input
             v-model="filters.symbol"
@@ -75,13 +92,21 @@
       </el-form>
 
       <!-- Statistics Summary -->
+      <el-alert
+        v-if="summary?.cash_dividends?.missing_rate_currencies?.length"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="stats-alert"
+        :title="`缺少 ${summary.cash_dividends.missing_rate_currencies.join('/')} 汇率，对应股息未计入 CNY 折算总额，请先在汇率页补录`"
+      />
       <el-row :gutter="20" class="stats-row" v-if="summary">
         <el-col :xs="12" :md="6">
           <el-statistic title="总记录数" :value="summary.total_count" />
         </el-col>
         <el-col :xs="12" :md="6">
           <el-statistic
-            title="股息总额"
+            title="股息总额（CNY折算）"
             :value="summary.cash_dividends?.total_dividend || 0"
             :precision="2"
             suffix="元"
@@ -89,7 +114,7 @@
         </el-col>
         <el-col :xs="12" :md="6">
           <el-statistic
-            title="预扣税"
+            title="预扣税（CNY折算）"
             :value="summary.cash_dividends?.total_tax || 0"
             :precision="2"
             suffix="元"
@@ -97,7 +122,7 @@
         </el-col>
         <el-col :xs="12" :md="6">
           <el-statistic
-            title="税后净额"
+            title="税后净额（CNY折算）"
             :value="summary.cash_dividends?.net_dividend || 0"
             :precision="2"
             suffix="元"
@@ -108,6 +133,9 @@
       <!-- Table -->
       <div class="responsive-table">
         <el-table :data="actions" v-loading="loading" stripe row-key="id" max-height="560">
+          <template #empty>
+            <el-empty description="暂无公司行动记录" :image-size="88" />
+          </template>
           <el-table-column prop="ex_date" label="除权除息日" width="120" sortable>
             <template #default="{ row }">
               {{ formatDate(row.ex_date) }}
@@ -116,6 +144,13 @@
           <el-table-column prop="symbol" label="代码" width="100" />
           <el-table-column prop="name" label="名称" width="120" />
           <el-table-column prop="market" label="市场" width="100" />
+          <el-table-column label="账户" min-width="150">
+            <template #default="{ row }">
+              <span :class="{ 'account-unassigned': !row.broker_account_id }">
+                {{ brokerAccountLabelById(row.broker_account_id) }}
+              </span>
+            </template>
+          </el-table-column>
           <el-table-column prop="action_type" label="类型" width="120">
             <template #default="{ row }">
               <el-tag :type="getActionTypeTag(row.action_type)" size="small">
@@ -152,8 +187,17 @@
           <el-table-column prop="notes" label="备注" min-width="150" show-overflow-tooltip />
           <el-table-column label="操作" width="150">
             <template #default="{ row }">
-              <el-button type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
-              <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+              <el-tag v-if="row.import_batch_id" type="info" effect="plain" size="small">
+                导入只读
+              </el-tag>
+              <template v-else>
+                <el-button type="primary" size="small" text @click="handleEdit(row)">
+                  编辑
+                </el-button>
+                <el-button type="danger" size="small" text @click="handleDelete(row)">
+                  删除
+                </el-button>
+              </template>
             </template>
           </el-table-column>
         </el-table>
@@ -182,6 +226,22 @@
       <el-form :model="form" :rules="rules" ref="formRef" label-width="120px">
         <!-- 基本信息 -->
         <el-divider content-position="left">基本信息</el-divider>
+
+        <el-form-item label="券商账户">
+          <el-select
+            v-model="form.broker_account_id"
+            placeholder="可选；历史记录请按实际来源归属"
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="account in brokerAccounts"
+              :key="account.id"
+              :label="brokerAccountLabel(account)"
+              :value="account.id"
+            />
+          </el-select>
+        </el-form-item>
 
         <el-form-item label="股票代码" prop="symbol">
           <el-input v-model="form.symbol" placeholder="如: 600000, AAPL" />
@@ -359,12 +419,14 @@ const loading = ref(false)
 const holdingsStore = useHoldingsStore()
 const actions = ref([])
 const summary = ref(null)
+const brokerAccounts = ref([])
 const dialogVisible = ref(false)
 const isEdit = ref(false)
 const formRef = ref(null)
 const submitting = ref(false)
 
 const filters = reactive({
+  account: '',
   symbol: '',
   market: '',
   action_type: '',
@@ -378,6 +440,7 @@ const pagination = reactive({
 })
 
 const form = reactive({
+  broker_account_id: null,
   symbol: '',
   name: '',
   market: '',
@@ -463,6 +526,11 @@ function buildQueryParams() {
   const symbol = filters.symbol.trim()
 
   if (symbol) params.symbol = symbol
+  if (filters.account === 'unassigned') {
+    params.unassigned_account = true
+  } else if (filters.account) {
+    params.broker_account_id = filters.account
+  }
   if (filters.market) params.market = filters.market
   if (filters.action_type) params.action_type = filters.action_type
   if (filters.date_range?.length === 2) {
@@ -494,6 +562,7 @@ async function loadSummary(params = {}) {
 }
 
 function resetFilters() {
+  filters.account = ''
   filters.symbol = ''
   filters.market = ''
   filters.action_type = ''
@@ -511,6 +580,7 @@ function handleEdit(row) {
   isEdit.value = true
   Object.assign(form, {
     id: row.id,
+    broker_account_id: row.broker_account_id || null,
     symbol: row.symbol,
     name: row.name || '',
     market: row.market,
@@ -549,6 +619,7 @@ async function handleSubmit() {
   try {
     // 准备提交数据
     const submitData = {
+      broker_account_id: form.broker_account_id || null,
       symbol: form.symbol,
       name: form.name,
       market: form.market,
@@ -612,6 +683,7 @@ function handleDelete(row) {
 
 function resetForm() {
   Object.assign(form, {
+    broker_account_id: null,
     symbol: '',
     name: '',
     market: '',
@@ -631,12 +703,37 @@ function resetForm() {
   formRef.value?.clearValidate()
 }
 
-onMounted(() => {
+function brokerAccountLabel(account) {
+  const suffix = account.account_number_masked ? ` · ${account.account_number_masked}` : ''
+  return `${account.account_name}${suffix}`
+}
+
+function brokerAccountLabelById(accountId) {
+  if (!accountId) return '未分配'
+  const account = brokerAccounts.value.find((item) => item.id === accountId)
+  return account ? brokerAccountLabel(account) : '已删除账户'
+}
+
+async function loadBrokerAccounts() {
+  try {
+    const response = await api.getBrokerAccounts({ limit: 1000 })
+    brokerAccounts.value = response.data
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '加载券商账户失败'))
+  }
+}
+
+onMounted(async () => {
+  await loadBrokerAccounts()
   loadActions()
 })
 </script>
 
 <style scoped>
+.stats-alert {
+  margin-bottom: 14px;
+}
+
 .corporate-actions-page {
   width: 100%;
 }
@@ -670,6 +767,10 @@ onMounted(() => {
   font-size: 12px;
   color: var(--app-text-soft);
   margin-top: 5px;
+}
+
+.account-unassigned {
+  color: var(--app-warning);
 }
 
 @media (max-width: 900px) {

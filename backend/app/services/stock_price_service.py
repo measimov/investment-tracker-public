@@ -37,6 +37,7 @@ from ..core.logging import get_app_logger
 # Configure logging
 logger = get_app_logger(__name__)
 TENCENT_QUOTE_URL = "https://qt.gtimg.cn/q={codes}"
+DEFAULT_TUSHARE_API_BASE_URL = "https://api.waditu.com/dataapi"
 
 
 def get_exchange_type(symbol: str) -> str:
@@ -61,9 +62,7 @@ def get_exchange_type(symbol: str) -> str:
         return "sz"
 
 
-# Global session with connection pooling
-_session_lock = Lock()
-_global_session = None
+# Per-thread requests sessions with connection pooling
 _thread_sessions = local()
 
 # User-Agent rotation to avoid blocking
@@ -90,25 +89,25 @@ def get_session():
     """
     session = getattr(_thread_sessions, "session", None)
     if session is None:
-        with _session_lock:
-            session = requests.Session()
+        # Thread-local: no lock needed, each thread builds its own session.
+        session = requests.Session()
 
-            # Configure retry strategy
-            retry_strategy = Retry(
-                total=3,
-                backoff_factor=1,
-                status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=["GET", "POST"],
-            )
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
 
-            adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=20)
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=20)
 
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
 
-            # Set random User-Agent
-            session.headers.update({"User-Agent": random.choice(USER_AGENTS)})
-            _thread_sessions.session = session
+        # Set random User-Agent
+        session.headers.update({"User-Agent": random.choice(USER_AGENTS)})
+        _thread_sessions.session = session
 
     return session
 
@@ -202,8 +201,24 @@ def get_tushare_pro():
 
                 ts.set_token(token)
                 _tushare_pro = ts.pro_api()
+                configure_tushare_client_endpoint(_tushare_pro)
 
     return _tushare_pro
+
+
+def get_tushare_api_base_url() -> str:
+    """Return the Tushare HTTPS data API base URL used by the SDK client."""
+    return (os.environ.get("TUSHARE_API_BASE_URL") or DEFAULT_TUSHARE_API_BASE_URL).rstrip("/")
+
+
+def configure_tushare_client_endpoint(pro_client) -> None:
+    """Patch Tushare SDK clients away from the legacy HTTP endpoint."""
+    endpoint = get_tushare_api_base_url()
+    private_url_attr = "_DataApi__http_url"
+    if hasattr(pro_client, private_url_attr):
+        setattr(pro_client, private_url_attr, endpoint)
+    else:
+        logger.warning("Tushare client endpoint patch skipped: unsupported SDK client shape")
 
 
 def tushare_query(api_name: str, **kwargs):
@@ -218,6 +233,14 @@ def tushare_query(api_name: str, **kwargs):
         return data
 
     return retry_with_backoff(fetch, max_retries=3, initial_delay=0.5, max_delay=3.0)
+
+
+def tushare_query_once(api_name: str, **kwargs):
+    """Single-attempt Tushare call for lookups where an empty result is a
+    definitive answer (e.g. name resolution), not a transient failure to retry."""
+    wait_for_tushare_rate_limit(api_name)
+    pro = get_tushare_pro()
+    return getattr(pro, api_name)(**kwargs)
 
 
 def positive_decimal_price(value: Any) -> Decimal:

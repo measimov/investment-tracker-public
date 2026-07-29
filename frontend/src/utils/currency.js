@@ -44,13 +44,13 @@ export function formatDualCurrency(amountCny, amountUsd) {
  */
 export function getCurrencySymbol(currency) {
   const symbols = {
-    'CNY': '¥',
-    'USD': '$',
-    'HKD': 'HK$',
-    'SGD': 'S$',
-    'EUR': '€',
-    'GBP': '£',
-    'JPY': '¥'
+    CNY: '¥',
+    USD: '$',
+    HKD: 'HK$',
+    SGD: 'S$',
+    EUR: '€',
+    GBP: '£',
+    JPY: '¥'
   }
   return symbols[currency] || currency
 }
@@ -61,9 +61,9 @@ export function getCurrencySymbol(currency) {
  * @returns {string} 颜色代码
  */
 export function getProfitColor(amount) {
-  if (amount > 0) return '#67C23A'  // 绿色（盈利）
-  if (amount < 0) return '#F56C6C'  // 红色（亏损）
-  return '#909399'  // 灰色（持平）
+  if (amount > 0) return '#059669' // 绿色（盈利）
+  if (amount < 0) return '#e11d48' // 红色（亏损）
+  return '#94a3b8' // 灰色（持平）
 }
 
 /**
@@ -110,5 +110,5 @@ export const CURRENCIES = [
  * @returns {object} 货币信息
  */
 export function getCurrencyInfo(code) {
-  return CURRENCIES.find(c => c.code === code) || { code, name: code, symbol: code }
+  return CURRENCIES.find((c) => c.code === code) || { code, name: code, symbol: code }
 }

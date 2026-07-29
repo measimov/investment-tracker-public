@@ -3,27 +3,40 @@ import { ElNotification } from 'element-plus'
 import { useAppStatusStore } from '../stores/appStatus'
 import { getApiErrorMessage, normalizeApiError } from '../utils/apiErrors'
 
-const USE_MOCK = import.meta.env.MODE === 'mock' && import.meta.env.VITE_USE_MOCK === 'true'
+const CSRF_COOKIE_NAME = 'investment_csrf'
+const SAFE_METHODS = new Set(['get', 'head', 'options'])
 
-if (USE_MOCK) {
-  console.log(
-    '%c📊 [Investment Tracker] Frontend Mock Mode Active!',
-    'color: #67C23A; font-weight: bold; font-size: 14px;'
-  )
-}
-
-let mockHandlersPromise = null
-
-async function getMockHandlers() {
-  if (!USE_MOCK) return null
-  if (!mockHandlersPromise) {
-    mockHandlersPromise = import('./mockData').then((module) => module.handlers)
-  }
-  return mockHandlersPromise
+function getCookie(name) {
+  const prefix = `${encodeURIComponent(name)}=`
+  const item = document.cookie.split('; ').find((value) => value.startsWith(prefix))
+  return item ? decodeURIComponent(item.slice(prefix.length)) : null
 }
 
 let lastGlobalErrorKey = ''
 let lastGlobalErrorAt = 0
+
+// 滑动会话续期：有 API 活动时每隔一段时间静默轮换会话 Cookie，
+// 活跃用户不会被 30 分钟令牌过期打断；闲置用户按原有效期自然登出。
+const SESSION_RENEW_INTERVAL_MS = 10 * 60 * 1000
+let lastSessionRenewAt = 0
+
+function maybeRenewSession(config) {
+  const url = config?.url || ''
+  if (url.startsWith('/auth/')) {
+    // 登录/续期本身就是最新会话，登出后无会话可续
+    if (url === '/auth/login' || url === '/auth/refresh') {
+      lastSessionRenewAt = Date.now()
+    }
+    return
+  }
+  if (!localStorage.getItem('user')) return
+  if (Date.now() - lastSessionRenewAt < SESSION_RENEW_INTERVAL_MS) return
+  // 先记时间戳：失败也等满间隔再试，避免后端异常时逐请求重试
+  lastSessionRenewAt = Date.now()
+  apiClient.post('/auth/refresh', null, { skipGlobalErrorNotification: true }).catch(() => {
+    // 静默失败：会话真过期时常规 401 流程会接管
+  })
+}
 
 function getStatusStore() {
   try {
@@ -67,6 +80,7 @@ function notifyGlobalError(error) {
 const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
   timeout: 120000, // Increased to 120 seconds for batch operations
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json'
   }
@@ -80,10 +94,12 @@ apiClient.interceptors.request.use(
       startedAt: Date.now()
     }
 
-    // Add Authorization header if token exists
-    const token = localStorage.getItem('token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+    const method = config.method?.toLowerCase() || 'get'
+    if (!SAFE_METHODS.has(method)) {
+      const csrfToken = getCookie(CSRF_COOKIE_NAME)
+      if (csrfToken) {
+        config.headers['X-CSRF-Token'] = csrfToken
+      }
     }
 
     if (import.meta.env.DEV && (config.url?.includes('refresh') || config.url?.includes('batch'))) {
@@ -103,6 +119,7 @@ apiClient.interceptors.response.use(
     if (statusStore?.shouldClearForRequest(response.config?.metadata?.startedAt)) {
       statusStore.clear()
     }
+    maybeRenewSession(response.config)
     return response
   },
   (error) => {
@@ -112,7 +129,6 @@ apiClient.interceptors.response.use(
     // Handle 401 Unauthorized - clear auth and redirect to login
     if (normalizedError.response?.status === 401) {
       // Clear authentication
-      localStorage.removeItem('token')
       localStorage.removeItem('user')
 
       // Redirect to login page if not already there
@@ -132,16 +148,32 @@ apiClient.interceptors.response.use(
   }
 )
 
+function uploadFile(endpoint, file, fields = {}) {
+  const formData = new FormData()
+  formData.append('file', file)
+  Object.entries(fields).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== '') {
+      formData.append(key, String(value))
+    }
+  })
+  return apiClient.post(endpoint, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  })
+}
+
 const api = {
   // Authentication
   login(username, password) {
     return apiClient.post('/auth/login', { username, password })
   },
+  logout() {
+    return apiClient.post('/auth/logout')
+  },
   getUserInfo() {
     return apiClient.get('/auth/me')
   },
   changePassword(oldPassword, newPassword) {
-    return apiClient.post('/auth/change-password', {
+    return apiClient.put('/auth/me/password', {
       old_password: oldPassword,
       new_password: newPassword
     })
@@ -166,6 +198,84 @@ const api = {
   deleteTransaction(id) {
     return apiClient.delete(`/transactions/${id}`)
   },
+  // 账户间转仓：创建 TRANSFER_OUT/TRANSFER_IN 互指交易对，成本基础跟随迁移
+  createTransfer(data) {
+    return apiClient.post('/transactions/transfer', data)
+  },
+
+  // Broker accounts
+  getBrokerAccounts(params) {
+    return apiClient.get('/broker-accounts', { params })
+  },
+  getBrokerAccount(id) {
+    return apiClient.get(`/broker-accounts/${id}`)
+  },
+  createBrokerAccount(data) {
+    return apiClient.post('/broker-accounts', data)
+  },
+  updateBrokerAccount(id, data) {
+    return apiClient.put(`/broker-accounts/${id}`, data)
+  },
+  deleteBrokerAccount(id) {
+    return apiClient.delete(`/broker-accounts/${id}`)
+  },
+
+  // Import traceability
+  getImportBatches(params) {
+    return apiClient.get('/import-batches', { params })
+  },
+  getImportBatch(id) {
+    return apiClient.get(`/import-batches/${id}`)
+  },
+
+  // Account cash events
+  getCashEvents(params) {
+    return apiClient.get('/cash-events', { params })
+  },
+  getCashEvent(id) {
+    return apiClient.get(`/cash-events/${id}`)
+  },
+  createCashEvent(data) {
+    return apiClient.post('/cash-events', data)
+  },
+  updateCashEvent(id, data) {
+    return apiClient.put(`/cash-events/${id}`, data)
+  },
+  deleteCashEvent(id) {
+    return apiClient.delete(`/cash-events/${id}`)
+  },
+
+  // 现金管理标的排除清单：导入只归档不入账，对账比对双侧忽略
+  getExcludedSecurities() {
+    return apiClient.get('/excluded-securities')
+  },
+  createExcludedSecurity(data) {
+    return apiClient.post('/excluded-securities', data)
+  },
+  deleteExcludedSecurity(id) {
+    return apiClient.delete(`/excluded-securities/${id}`)
+  },
+
+  // Month-end reconciliation snapshots
+  getReconciliationSnapshots(params) {
+    return apiClient.get('/reconciliation-snapshots', { params })
+  },
+  getReconciliationSnapshot(id) {
+    return apiClient.get(`/reconciliation-snapshots/${id}`)
+  },
+  createReconciliationSnapshot(data) {
+    return apiClient.post('/reconciliation-snapshots', data)
+  },
+  updateReconciliationSnapshot(id, data) {
+    return apiClient.put(`/reconciliation-snapshots/${id}`, data)
+  },
+  deleteReconciliationSnapshot(id) {
+    return apiClient.delete(`/reconciliation-snapshots/${id}`)
+  },
+  // 手动触发快照自动比对（账本变化后刷新红绿状态与 diff 明细）
+  compareReconciliationSnapshot(id) {
+    return apiClient.post(`/reconciliation-snapshots/${id}/compare`)
+  },
 
   // Holdings
   getHoldings(params) {
@@ -185,65 +295,55 @@ const api = {
   getStatsByTime(groupBy = 'month') {
     return apiClient.get('/statistics/by-time', { params: { group_by: groupBy } })
   },
-  getProfitLoss() {
-    return apiClient.get('/statistics/profit-loss')
+  getHoldingsCostBreakdown() {
+    return apiClient.get('/statistics/holdings-cost-breakdown')
   },
 
   // Import/Export
-  importCSV(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/csv', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  importCSV(file, brokerAccountId = null) {
+    return uploadFile('/import/csv', file, { broker_account_id: brokerAccountId })
+  },
+  importExcel(file, brokerAccountId = null) {
+    return uploadFile('/import/excel', file, { broker_account_id: brokerAccountId })
+  },
+  importCorporateActionsCSV(file, brokerAccountId = null) {
+    return uploadFile('/import/corporate-actions/csv', file, {
+      broker_account_id: brokerAccountId
     })
   },
-  importExcel(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/excel', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  importCorporateActionsExcel(file, brokerAccountId = null) {
+    return uploadFile('/import/corporate-actions/excel', file, {
+      broker_account_id: brokerAccountId
     })
   },
-  previewCmbFundFlows(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/cmb-fund-flows/preview', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  previewCmbFundFlows(file, brokerAccountId = null) {
+    return uploadFile('/import/cmb-fund-flows/preview', file, {
+      broker_account_id: brokerAccountId
     })
   },
-  importCmbFundFlows(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/cmb-fund-flows', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  importCmbFundFlows(file, brokerAccountId = null) {
+    return uploadFile('/import/cmb-fund-flows', file, {
+      broker_account_id: brokerAccountId
     })
   },
-  previewIbkrActivity(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/ibkr-activity/preview', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  previewIbkrActivity(file, brokerAccountId = null) {
+    return uploadFile('/import/ibkr-activity/preview', file, {
+      broker_account_id: brokerAccountId
     })
   },
-  importIbkrActivity(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/ibkr-activity', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  importIbkrActivity(file, brokerAccountId = null) {
+    return uploadFile('/import/ibkr-activity', file, {
+      broker_account_id: brokerAccountId
     })
   },
-  previewEastmoneyStatement(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/eastmoney-statement/preview', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  previewEastmoneyStatement(file, brokerAccountId = null) {
+    return uploadFile('/import/eastmoney-statement/preview', file, {
+      broker_account_id: brokerAccountId
     })
   },
-  importEastmoneyStatement(file) {
-    const formData = new FormData()
-    formData.append('file', file)
-    return apiClient.post('/import/eastmoney-statement', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
+  importEastmoneyStatement(file, brokerAccountId = null) {
+    return uploadFile('/import/eastmoney-statement', file, {
+      broker_account_id: brokerAccountId
     })
   },
   exportCSV() {
@@ -282,21 +382,56 @@ const api = {
     return apiClient.get('/corporate-actions/statistics/summary', { params })
   },
 
-  // Performance Statistics (New)
-  getCurrentHoldingsPerformance(currentPrices) {
-    return apiClient.post('/statistics/current-holdings-performance', currentPrices)
+  // AI 复盘报告（LLM）
+  getLlmReports() {
+    return apiClient.get('/llm-reports')
   },
-  getRealizedPnLFifo() {
-    return apiClient.get('/statistics/realized-pnl-fifo')
+  getLlmReport(id) {
+    return apiClient.get(`/llm-reports/${id}`)
   },
-  getDividendSummary() {
-    return apiClient.get('/statistics/dividend-summary')
+  deleteLlmReport(id) {
+    return apiClient.delete(`/llm-reports/${id}`)
   },
-  getTotalRealizedReturn() {
-    return apiClient.get('/statistics/total-realized-return')
+  generateLlmReport() {
+    return apiClient.post('/llm-reports/generate')
   },
-  getAccountTotalReturn(currentPrices) {
-    return apiClient.post('/statistics/account-total-return', currentPrices)
+  getLlmReportJob(jobId) {
+    return apiClient.get(`/llm-reports/jobs/${jobId}`)
+  },
+  // 追问为同步 LLM 调用，单独放宽超时
+  askLlmReport(id, content) {
+    return apiClient.post(`/llm-reports/${id}/messages`, { content }, { timeout: 180000 })
+  },
+  getLlmReportSchedule() {
+    return apiClient.get('/llm-reports/schedule')
+  },
+  updateLlmReportSchedule(cadence) {
+    return apiClient.put('/llm-reports/schedule', { cadence })
+  },
+
+  // Portfolio snapshot：一次调用返回看板全量数据（表现/新鲜度/市场/近期交易/对账状态）
+  getPortfolioSnapshot() {
+    return apiClient.get('/statistics/portfolio-snapshot')
+  },
+
+  // Performance Statistics
+  // Without prices the server values holdings from its own authority (GET);
+  // passing prices is the manual what-if path (POST).
+  getPerformanceSummary(currentPrices = null) {
+    return currentPrices
+      ? apiClient.post('/statistics/performance-summary', currentPrices)
+      : apiClient.get('/statistics/performance-summary')
+  },
+  getPerformanceAnalytics(currentPrices = null, params = {}) {
+    return currentPrices
+      ? apiClient.post('/statistics/performance-analytics', currentPrices, { params })
+      : apiClient.get('/statistics/performance-analytics', { params })
+  },
+  startPerformanceHistorySync(params = {}) {
+    return apiClient.post('/statistics/performance-history-sync', null, { params })
+  },
+  getPerformanceHistorySyncJob(jobId) {
+    return apiClient.get(`/statistics/performance-history-sync/${jobId}`)
   },
 
   // Exchange Rates
@@ -370,27 +505,4 @@ const api = {
   }
 }
 
-const apiWithMock = new Proxy(api, {
-  get(target, prop, receiver) {
-    if (USE_MOCK) {
-      return async function (...args) {
-        const handlers = await getMockHandlers()
-        if (handlers?.[prop]) {
-          if (import.meta.env.DEV) {
-            console.log(
-              `%c[Mock API Call] ${String(prop)}`,
-              'color: #409EFF; font-weight: bold;',
-              ...args
-            )
-          }
-          return handlers[prop](...args)
-        }
-        const apiMethod = Reflect.get(target, prop, receiver)
-        return typeof apiMethod === 'function' ? apiMethod(...args) : apiMethod
-      }
-    }
-    return Reflect.get(target, prop, receiver)
-  }
-})
-
-export default apiWithMock
+export default api

@@ -4,11 +4,11 @@ const backendPort = 18000
 const frontendPort = 4173
 const backendSourcePath = 'backend'
 const databaseUrl =
-  process.env.E2E_DATABASE_URL ||
-  'postgresql://postgres:postgres@127.0.0.1:5432/investment_e2e'
+  process.env.E2E_DATABASE_URL || 'postgresql://postgres:postgres@127.0.0.1:5432/investment_e2e'
 
 export default defineConfig({
   testDir: './e2e',
+  globalSetup: './e2e/global-setup.js',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
