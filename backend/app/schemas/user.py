@@ -54,23 +54,11 @@ class User(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 
-class UserInDB(User):
-    """Schema for user in database (includes hashed password)"""
-
-    hashed_password: str
-
-
 class Token(BaseModel):
     """Schema for JWT token response"""
 
     access_token: str
     token_type: str
-
-
-class TokenData(BaseModel):
-    """Schema for decoded token data"""
-
-    username: Optional[str] = None
 
 
 class LoginRequest(BaseModel):

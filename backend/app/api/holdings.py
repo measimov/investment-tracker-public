@@ -1,7 +1,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from ..database import get_db
 from ..models.holding import Holding
@@ -119,7 +119,7 @@ def update_holding_price(
         )
         .all()
     )
-    updated_at = datetime.now()
+    updated_at = datetime.now(timezone.utc)
     for row in sibling_rows:
         row.current_price = price_update.current_price
         row.price_updated_at = updated_at
@@ -158,7 +158,7 @@ def batch_update_prices(
         if rows:
             for holding in rows:
                 holding.current_price = update.price
-                holding.price_updated_at = datetime.now()
+                holding.price_updated_at = datetime.now(timezone.utc)
             success_list.append(
                 {"symbol": update.symbol, "market": update.market, "price": float(update.price)}
             )

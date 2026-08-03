@@ -526,14 +526,14 @@
       "annualized_return_rate": "<volatile:today-dependent>",
       "base_currency": "CNY",
       "calculation_scope": "invested_securities_only",
-      "calculation_status": "estimated",
+      "calculation_status": "exact",
       "cash_flow_count": 8,
       "current_market_value_cny": 99554.0,
       "current_market_value_usd": 13826.944444,
       "fx_basis": "transaction_date",
       "methodology_notes": [
-        "Account cash and external deposits or withdrawals are not included.",
-        "Security buys, sells and dividends are used as XIRR cash-flow proxies."
+        "权益仓口径：仅统计投入证券的资金，口径内精确；账户闲置现金与外部出入金按设计不计入、不稀释收益率。",
+        "XIRR 现金流为证券买卖与股息（按各自日期汇率折算）。"
       ],
       "net_dividend_income_cny": 324.0,
       "net_invested_principal_cny": 68103.8,

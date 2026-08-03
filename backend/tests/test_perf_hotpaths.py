@@ -139,3 +139,37 @@ def test_xirr_long_horizon_mixed_signs_preserves_relative_magnitudes():
     # Decimal 参考实现（main 版本）在同一输入上的收敛值
     assert float(rate) == pytest.approx(0.0049368537, abs=1e-6)
     assert float(rate) != pytest.approx(-0.9999, abs=1e-4)
+
+
+def test_job_success_clears_previous_attempt_error(monkeypatch):
+    """重试成功后 job 不残留上一次尝试的错误信息。"""
+    from app.models.background_job import BackgroundJob
+    from app.services.background_job_store import (
+        claim_job,
+        create_or_get_active_job,
+        handle_job_failure,
+        update_job,
+    )
+
+    db = SessionLocal()
+    db.query(BackgroundJob).filter(
+        BackgroundJob.user_id == 2, BackgroundJob.job_type == "price_refresh"
+    ).delete(synchronize_session=False)
+    db.commit()
+    db.close()
+
+    job = create_or_get_active_job("price_refresh", 2, {"result": None})
+    claim_job(job["id"], "price_refresh")
+    handle_job_failure(job["id"], "price_refresh", "第一次失败")
+    claim_job(job["id"], "price_refresh")
+    updated = update_job(job["id"], "price_refresh", status="succeeded",
+                         required_status="running")
+    assert updated["status"] == "succeeded"
+    assert updated["error"] is None
+
+    db = SessionLocal()
+    db.query(BackgroundJob).filter(
+        BackgroundJob.user_id == 2, BackgroundJob.job_type == "price_refresh"
+    ).delete(synchronize_session=False)
+    db.commit()
+    db.close()

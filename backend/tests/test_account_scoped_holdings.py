@@ -17,60 +17,31 @@ from app.services.statistics_service import (
     get_summary_statistics,
     resolve_server_prices,
 )
+from tests.helpers import add_transaction, get_rows, make_account, reset_tables
 
 
-def reset_tables(db):
-    for model in (
-        BrokerFundFlow,
-        IbkrActivityFlow,
-        Holding,
-        CorporateAction,
-        Transaction,
-        BrokerAccount,
-    ):
-        db.query(model).delete()
-    db.commit()
-
-
-def make_account(db, name):
-    account = BrokerAccount(user_id=1, broker=name, account_name=name, base_currency="CNY")
-    db.add(account)
-    db.flush()
-    return account
+RESET_MODELS = (
+    BrokerFundFlow,
+    IbkrActivityFlow,
+    Holding,
+    CorporateAction,
+    Transaction,
+    BrokerAccount,
+)
 
 
 def add_txn(db, *, account_id=None, txn_type="BUY", quantity="100", price="10",
             fee="0", txn_date=date(2026, 1, 1), symbol="AAPL", market="美股"):
-    txn = Transaction(
-        user_id=1,
-        broker_account_id=account_id,
-        symbol=symbol,
-        name=symbol,
-        market=market,
-        transaction_type=txn_type,
-        quantity=Decimal(quantity),
-        price=Decimal(price),
-        fee=Decimal(fee),
-        transaction_date=txn_date,
-        currency="USD",
-    )
-    db.add(txn)
-    db.flush()
-    return txn
-
-
-def get_rows(db, symbol="AAPL", market="美股"):
-    return (
-        db.query(Holding)
-        .filter(Holding.user_id == 1, Holding.symbol == symbol, Holding.market == market)
-        .order_by(Holding.id)
-        .all()
+    return add_transaction(
+        db, broker_account_id=account_id, symbol=symbol, name=symbol, market=market,
+        transaction_type=txn_type, quantity=Decimal(quantity), price=Decimal(price),
+        fee=Decimal(fee), transaction_date=txn_date,
     )
 
 
 def test_two_accounts_produce_two_holding_rows():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -88,12 +59,13 @@ def test_two_accounts_produce_two_holding_rows():
         assert by_account[ibkr.id].quantity == Decimal("50")
         assert by_account[ibkr.id].total_cost == Decimal("601")
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
+
 
 def test_sell_only_consumes_own_account_bucket():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -108,13 +80,13 @@ def test_sell_only_consumes_own_account_bucket():
         assert by_account[cmb.id].quantity == Decimal("60")
         assert by_account[ibkr.id].quantity == Decimal("50")
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
 def test_ratio_action_applies_to_all_account_buckets():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -134,13 +106,13 @@ def test_ratio_action_applies_to_all_account_buckets():
         # 拆股不改总成本
         assert by_account[cmb.id].total_cost == Decimal("1000")
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
 def test_cross_account_sell_falls_back_to_merged_bucket():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         add_txn(db, account_id=cmb.id, quantity="100", price="10")
@@ -168,13 +140,13 @@ def test_cross_account_sell_falls_back_to_merged_bucket():
         assert rows[0].broker_account_id is None
         assert rows[0].quantity == Decimal("20")
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
 def test_null_account_absolute_action_targets_single_holder():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         add_txn(db, account_id=cmb.id, quantity="100", price="10")
@@ -192,13 +164,13 @@ def test_null_account_absolute_action_targets_single_holder():
         assert rows[0].broker_account_id == cmb.id
         assert rows[0].quantity == Decimal("110")
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
 def test_statistics_do_not_double_count_account_rows():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -217,13 +189,13 @@ def test_statistics_do_not_double_count_account_rows():
         assert detail[0]["quantity"] == 150.0
         assert detail[0]["unrealized_pnl"] == 300.0
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
 def test_resolve_server_prices_prefers_any_priced_account_row():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -241,7 +213,7 @@ def test_resolve_server_prices_prefers_any_priced_account_row():
         assert prices["AAPL:美股"] == 13.5
         assert sources["AAPL:美股"] == "holding"
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -250,7 +222,7 @@ def test_split_buckets_inherit_security_level_price():
     from datetime import datetime, timezone
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -273,14 +245,14 @@ def test_split_buckets_inherit_security_level_price():
             assert row.current_price == Decimal("13.5")
             assert row.price_updated_at is not None
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
 def test_user_visible_counts_dedupe_account_rows():
     """total_holdings 与 by-market holdings_count 按证券去重，不按账户行计数。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -300,7 +272,7 @@ def test_user_visible_counts_dedupe_account_rows():
         assert by_market["美股"]["holdings_count"] == 1
         assert by_market["港股"]["holdings_count"] == 1
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -311,7 +283,7 @@ def test_manual_price_update_syncs_all_account_rows():
     from app.schemas.holding import HoldingPriceUpdate
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
@@ -335,7 +307,7 @@ def test_manual_price_update_syncs_all_account_rows():
             assert row.current_price == Decimal("15.5")
             assert row.price_updated_at is not None
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -347,7 +319,7 @@ def test_get_holding_rejects_cross_market_aggregation():
     from app.models.user import User
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         cmb = make_account(db, "CMB")
         add_txn(db, account_id=cmb.id, symbol="PCT", market="港股",
@@ -371,5 +343,6 @@ def test_get_holding_rejects_cross_market_aggregation():
         result = get_holding("PCT", market="港股", current_user=user, db=db)
         assert result.market == "港股"
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
+

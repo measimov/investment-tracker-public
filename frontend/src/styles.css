@@ -41,6 +41,17 @@
   --app-shadow-lg: 0 4px 8px rgba(15, 23, 42, 0.05), 0 24px 56px -12px rgba(15, 23, 42, 0.18);
 
   /* ── Geometry ───────────────────────────────────────────────── */
+  /* 间距 scale：视图层禁止再发明新的间距值 */
+  --app-space-xs: 8px;
+  --app-space-sm: 12px;
+  --app-space-md: 16px;
+  --app-space-lg: 20px;
+  --app-space-xl: 24px;
+  --app-chip-gradient-primary: linear-gradient(135deg, #6366f1, #8b5cf6);
+  --app-chip-gradient-success: linear-gradient(135deg, #10b981, #34d399);
+  --app-chip-gradient-danger: linear-gradient(135deg, #f43f5e, #fb7185);
+  --app-header-height: 52px;
+
   --app-radius: 16px;
   --app-radius-inner: 10px;
   --app-radius-sm: 8px;
@@ -83,14 +94,6 @@
   --el-color-danger-light-9: #feecef;
   --el-color-danger-dark-2: #e11d48;
 
-  --el-color-error: #f43f5e;
-  --el-color-error-light-3: #f7728a;
-  --el-color-error-light-5: #fa9faf;
-  --el-color-error-light-7: #fcc7cf;
-  --el-color-error-light-8: #fdd9de;
-  --el-color-error-light-9: #feecef;
-  --el-color-error-dark-2: #e11d48;
-
   --el-border-radius-base: 8px;
   --el-border-radius-small: 6px;
 }
@@ -125,7 +128,6 @@ body {
     'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
   font-size: 15px;
   line-height: 1.47;
-  letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -191,7 +193,6 @@ body {
 .el-button {
   border-radius: var(--app-radius-inner);
   font-weight: 500;
-  letter-spacing: -0.01em;
   padding: 8px 16px;
   transition:
     filter 0.2s var(--apple-ease),
@@ -319,10 +320,6 @@ body {
   color: var(--app-warning);
 }
 
-.el-button + .el-button {
-  margin-left: 8px;
-}
-
 /* ── Form Elements — soft inset fields, indigo focus ring ─────── */
 .el-input__wrapper,
 .el-select__wrapper,
@@ -348,6 +345,14 @@ body {
 }
 
 /* ── Tables — quiet headers, tabular numbers ──────────────────── */
+/* 数值单元格禁换行：金额/数量折行是最刺眼的表格破损。只作用于
+   右对齐（数值）列——长文本列保持可换行/由 show-overflow-tooltip
+   截断，账户名、导入结果等信息不因全局 nowrap 被裁剪（评审实测）。 */
+.el-table td.is-right .cell,
+.el-table th.is-right .cell {
+  white-space: nowrap;
+}
+
 .el-table {
   --el-table-header-bg-color: var(--app-surface-muted);
   --el-table-header-text-color: var(--app-text-muted);
@@ -450,6 +455,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
   min-width: 0;
 }
@@ -474,6 +480,7 @@ body {
 /* ── Filter Form ──────────────────────────────────────────────── */
 .filter-form {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 12px;
   padding: 16px 20px 4px;
@@ -501,7 +508,179 @@ body {
   width: 190px;
 }
 
+/* ── Stat 卡排版基准：标签 13/500/muted、值 22/700/tabular ─────────
+   所有"大数字+标签"角色（summary 卡、analytics 块、el-statistic）向
+   此基准对齐；el-statistic 直接全局覆盖，视图不再各写 :deep。 */
+.el-statistic__head {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--app-text-muted);
+}
+
+.el-statistic__content {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text);
+}
+
+/* ── 移动卡片列表（≤640）：窄屏把表格换成卡片时的共用外观 ─────────
+   Transactions / Holdings / AccountData / CorporateActions 共用一套。
+   此前 Transactions 与 Holdings 各揣一份 drift 的双胞胎（卡片间距、
+   动作区分隔线、指标字号互不相同），改一处修不到另一处。视图只保留
+   自己特有的行（如持仓的价格输入行），通用外观一律走这里。
+   断点 640 与各视图 useMediaQuery('(max-width: 640px)') 一致——
+   v-if 与 CSS 必须同宽，否则中间宽度会两边都不渲染。 */
+.mobile-card-list {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .desktop-data-table {
+    display: none;
+  }
+
+  .mobile-card-list {
+    display: grid;
+    gap: 12px;
+  }
+
+  .mobile-card {
+    /* grid item 默认 min-width:auto，长账户名/备注会把卡片撑到几千 px，
+       按钮被外层裁到屏幕外——而根节点 scrollWidth 不变，"无横滚"会假通过 */
+    padding: 14px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-soft);
+    border-radius: var(--app-radius-inner);
+    box-shadow: var(--app-shadow-sm);
+  }
+
+  .mobile-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .mobile-card-title {
+    min-width: 0;
+  }
+
+  .mobile-card-symbol {
+    display: block;
+    color: var(--app-text);
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1.2;
+    /* 标的名/账户名无空格也要能断，否则整卡被单个长词撑开 */
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-card-name {
+    display: block;
+    max-width: 100%;
+    margin-top: 3px;
+    overflow: hidden;
+    color: var(--app-text-muted);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    flex-shrink: 0;
+    max-width: 45%;
+    gap: 6px;
+  }
+
+  .mobile-card-tags .el-tag {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mobile-card-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .mobile-card-metrics > div {
+    min-width: 0;
+    padding: 10px;
+    background: var(--app-surface-muted);
+    border-radius: var(--app-radius-sm);
+  }
+
+  .mobile-metric-label {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--app-text-muted);
+    font-size: 12px;
+  }
+
+  .mobile-card-metrics strong {
+    display: block;
+    color: var(--app-text);
+    font-size: 16px;
+    line-height: 1.25;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 12px;
+    color: var(--app-text-muted);
+    font-size: 12px;
+  }
+
+  .mobile-card-meta > * {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--app-border-soft);
+  }
+}
+
 /* ── Responsive Table Container ───────────────────────────────── */
+/* 强调文本（替代内联 font-weight+primary 色） */
+.accent-strong {
+  font-weight: 600;
+  color: var(--app-primary);
+}
+
+/* 对话框表单控件默认撑满（对应移动端已有的 !important 规则的桌面版） */
+.el-dialog .el-form .el-select,
+.el-dialog .el-form .el-input-number,
+.el-dialog .el-form .el-date-editor {
+  width: 100%;
+}
+
+/* 区块垂直韵律：替代散落的内联 margin-top/bottom: 20px */
+.section-gap {
+  margin-top: var(--app-space-lg);
+}
+
+.section-gap-bottom {
+  margin-bottom: var(--app-space-lg);
+}
+
 .responsive-table {
   width: 100%;
   overflow-x: auto;
@@ -520,7 +699,6 @@ body {
 }
 
 /* ── Dialog Footers ───────────────────────────────────────────── */
-.dialog-footer,
 .mobile-dialog-footer {
   display: flex;
   justify-content: flex-end;
@@ -528,7 +706,6 @@ body {
   flex-wrap: wrap;
 }
 
-.dialog-footer .el-button + .el-button,
 .mobile-dialog-footer .el-button + .el-button {
   margin-left: 0;
 }
@@ -730,13 +907,11 @@ body {
     margin-left: 0;
   }
 
-  .dialog-footer,
   .mobile-dialog-footer {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .dialog-footer .el-button,
   .mobile-dialog-footer .el-button {
     width: 100%;
   }

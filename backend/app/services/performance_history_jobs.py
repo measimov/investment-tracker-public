@@ -7,6 +7,8 @@ from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from ..models.holding import Holding
 from ..models.transaction import Transaction
+from .benchmark_service import benchmark_targets
+from .security_rule_service import get_price_gap_exemptions
 from .market_data_service import (
     fetch_and_store_security_price_history_incremental,
     infer_price_currency,
@@ -23,6 +25,15 @@ from .job_worker import register_runner
 
 logger = get_app_logger(__name__)
 MAX_CONSECUTIVE_FAILURES = 5
+
+# 配额/权限类错误对整批标的等价：命中即中止整个 job（确定性失败，不再逐标的
+# 烧配额），与 llm_report_jobs 的"4xx 不烧重试"同一先例。
+QUOTA_ERROR_SIGNATURES = ("每分钟最多访问", "权限", "积分不足", "抱歉，您")
+
+
+def _is_quota_error(error) -> bool:
+    text = str(error or "")
+    return any(signature in text for signature in QUOTA_ERROR_SIGNATURES)
 JOB_TYPE = "performance_history_sync"
 
 
@@ -72,20 +83,82 @@ def get_history_sync_targets(
     if sync_end < sync_start:
         sync_end = sync_start
     symbols_by_key = {}
+    last_event_by_key = {}
+    first_event_by_key = {}
     for txn in transactions:
         key = (txn.symbol, txn.market)
         symbols_by_key[key] = txn.currency or infer_price_currency(txn.market)
+        if key not in last_event_by_key or txn.transaction_date > last_event_by_key[key]:
+            last_event_by_key[key] = txn.transaction_date
+        if key not in first_event_by_key or txn.transaction_date < first_event_by_key[key]:
+            first_event_by_key[key] = txn.transaction_date
+    held_keys = {
+        (holding.symbol, holding.market)
+        for holding in holdings
+        if holding.quantity and holding.quantity > 0
+    }
     for holding in holdings:
         key = (holding.symbol, holding.market)
         symbols_by_key.setdefault(key, holding.currency or infer_price_currency(holding.market))
 
+    def _target_end(key) -> date:
+        # 已清仓标的：回测只需要"持有区间内"的行情（owner 原则），清仓日之后
+        # 的尾部对退市/摘牌标的永远补不上、对存续标的也用不上——同步终点钳到
+        # 最后一笔交易日。在持标的仍同步到全局终点，其缺口是真问题要暴露。
+        if key in held_keys:
+            return sync_end
+        return min(sync_end, last_event_by_key.get(key, sync_end))
+
+    def _target_start(key) -> date:
+        # 起点同理钳到该标的首笔交易日：买入之前的历史曲线用不到，
+        # 全局起点会给后买入的标的造出"买入前"头部缺口白白外呼。
+        return max(sync_start, first_event_by_key.get(key, sync_start))
+
+    # 行情缺口豁免（security_rules PRICE_GAP_EXEMPTION）：停牌-摘牌等
+    # 永久无数据的区间不再外呼、不再计为失败。豁免只能收窄目标区间的
+    # 头/尾（中段缺口无法用单一 start/end 表达，也没有现实案例）；
+    # 收窄到空区间的目标整体丢弃。
+    exemptions = get_price_gap_exemptions(db, user_id)
+
+    def _apply_exemptions(key, target_start: date, target_end: date):
+        for symbol, market, ex_start, ex_end in exemptions:
+            if (symbol, market) != key:
+                continue
+            effective_end = ex_end or date.max
+            if ex_start <= target_start and effective_end >= target_end:
+                return None  # 全区间豁免
+            if ex_start <= target_start <= effective_end:
+                target_start = effective_end + timedelta(days=1)
+            if ex_start <= target_end <= effective_end:
+                target_end = ex_start - timedelta(days=1)
+        if target_start > target_end:
+            return None
+        return target_start, target_end
+
+    targets = []
+    for (symbol, market), currency in sorted(symbols_by_key.items()):
+        key = (symbol, market)
+        clamped = _apply_exemptions(key, _target_start(key), _target_end(key))
+        if clamped is None:
+            continue
+        targets.append(
+            {
+                "symbol": symbol,
+                "market": market,
+                "currency": currency,
+                "start_date": clamped[0],
+                "end_date": clamped[1],
+            }
+        )
+
+    # 基准指数顺风车：窗口 = 用户首笔交易日 ~ 全局终点。基准是全局数据，
+    # 多用户重复跑由增量判重挡住（全覆盖时零外呼）。
+    targets.extend(benchmark_targets(sync_start, sync_end))
+
     return {
         "start_date": sync_start,
         "end_date": sync_end,
-        "targets": [
-            {"symbol": symbol, "market": market, "currency": currency}
-            for (symbol, market), currency in sorted(symbols_by_key.items())
-        ],
+        "targets": targets,
     }
 
 
@@ -166,9 +239,10 @@ def execute_performance_history_sync_job(claimed: Dict[str, Any]) -> None:
                 db,
                 symbol=target["symbol"],
                 market=target["market"],
-                start_date=target_info["start_date"],
-                end_date=target_info["end_date"],
+                start_date=target.get("start_date") or target_info["start_date"],
+                end_date=target.get("end_date") or target_info["end_date"],
                 currency=target["currency"],
+                calendar_market=target.get("calendar_market"),
             )
             results.append(result)
             if result.get("success"):
@@ -179,6 +253,20 @@ def execute_performance_history_sync_job(claimed: Dict[str, Any]) -> None:
             else:
                 failed_count += 1
                 consecutive_failures += 1
+                if _is_quota_error(result.get("error")):
+                    _set_job_progress(
+                        job_id,
+                        completed=index,
+                        success_count=success_count,
+                        failed_count=failed_count,
+                        skipped_count=skipped_count,
+                        results=results[-50:],
+                        status="failed",
+                        current_symbol=None,
+                        current_market=None,
+                        error="Tushare 配额受限，已停止本次同步，请稍后再试。",
+                    )
+                    return
 
             _set_job_progress(
                 job_id,

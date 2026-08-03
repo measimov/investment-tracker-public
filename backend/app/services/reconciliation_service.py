@@ -25,10 +25,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
+from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.cash_event import CashEvent
 from ..models.corporate_action import CorporateAction
 from ..models.transaction import Transaction
-from .excluded_security_service import get_excluded_keys
+from .cmb_fund_flow_importer import BROKER_NAME as CMB_BROKER_NAME
+from .eastmoney_statement_importer import BROKER_NAME as EASTMONEY_BROKER_NAME
+from .security_rule_service import get_excluded_keys
 from .holding_service import AccountReplayError, replay_transactions_per_account
 
 logger = get_app_logger(__name__)
@@ -43,7 +46,6 @@ SCOPE_MARKETS = {
 QUANTITY_TOLERANCE = Decimal("0.000001")
 CASH_TOLERANCE = Decimal("0.01")
 
-CASH_INFLOW_TYPES = {"DEPOSIT", "TRANSFER_IN", "FX_IN", "INTEREST", "OTHER"}
 CASH_OUTFLOW_TYPES = {"WITHDRAWAL", "TRANSFER_OUT", "FX_OUT", "FEE", "TAX"}
 
 METHODOLOGY_NOTES = [
@@ -54,6 +56,9 @@ METHODOLOGY_NOTES = [
     "差异只报告不修复：数量差通常指向漏录交易/公司行动或账户归属错误，"
     "现金差通常指向漏录现金事件。",
     "排除清单内的现金管理标的（summary.excluded_symbols）双侧忽略，不参与比对。",
+    "沪/深港通等结算币种与记账币种不同的交易，按券商流水推导结算币种现金流"
+    "（含费用）：招商流水金额为含费净额直接使用，东财港股通为成交额加/减明细"
+    "费用；未知来源口径回退记账币种。",
 ]
 
 
@@ -115,6 +120,38 @@ def replay_account_positions_asof(
     return positions, inconsistent
 
 
+def _settlement_cash_flow(flow: Any, txn: Any) -> Optional[Decimal]:
+    """带结算汇率的流水行 → 该笔交易的带符号结算现金流（结算币种）。
+
+    金额语义因券商而异，不能一概按"含费净额"直加：
+    - 招商证券：amount 本身是带符号、已含费用的结算净额，直接使用；
+    - 东方财富证券（港股通）：amount 是无符号 CNY 成交额，费用在明细
+      费列——按交易方向扣回（BUY 流出成交额+费，SELL 流入成交额−费）；
+    - 未知券商：返回 None，调用方回退记账币种口径，绝不猜。
+    """
+    amount = Decimal(str(flow.amount))
+    if flow.broker == CMB_BROKER_NAME:
+        return amount
+    if flow.broker == EASTMONEY_BROKER_NAME:
+        gross = abs(amount)
+        fee = sum(
+            Decimal(str(value or 0))
+            for value in (
+                flow.stamp_tax,
+                flow.commission,
+                flow.handling_fee,
+                flow.management_fee,
+                flow.settlement_fee,
+                flow.transfer_fee,
+                flow.other_fee,
+            )
+        )
+        if txn.transaction_type == "BUY":
+            return -(gross + fee)
+        return gross - fee
+    return None
+
+
 def derive_account_cash_asof(
     db: Session,
     user_id: int,
@@ -143,7 +180,26 @@ def derive_account_cash_asof(
         Transaction.transaction_date <= as_of,
         Transaction.transaction_type.in_(["BUY", "SELL"]),
     ).all()
+    # 结算币种感知：沪/深港通以 HKD 记账、CNY 实际结算——按记账币种推导会
+    # 造出不存在的 HKD 流出并漏掉真实 CNY 流出。券商流水行保留了 CNY 结算
+    # 金额与推导结算汇率，命中即以流水结算口径入账（金额语义因券商而异，
+    # 见 _settlement_cash_flow）；口径未知或未命中的交易回退记账币种。
+    settlement_by_txn: Dict[int, Any] = {}
+    if transactions:
+        settlement_flows = db.query(BrokerFundFlow).filter(
+            BrokerFundFlow.user_id == user_id,
+            BrokerFundFlow.transaction_id.in_([txn.id for txn in transactions]),
+            BrokerFundFlow.settlement_rate.isnot(None),
+        ).all()
+        settlement_by_txn = {flow.transaction_id: flow for flow in settlement_flows}
     for txn in transactions:
+        flow = settlement_by_txn.get(txn.id)
+        settlement_cash = (
+            _settlement_cash_flow(flow, txn) if flow is not None else None
+        )
+        if settlement_cash is not None:
+            balances[flow.currency or "CNY"] += settlement_cash
+            continue
         gross = Decimal(str(txn.quantity)) * Decimal(str(txn.price))
         fee = Decimal(str(txn.fee or 0))
         currency = txn.currency or "CNY"

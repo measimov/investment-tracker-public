@@ -179,7 +179,16 @@ def complete_import_batch(
         max(0, int(result.get("excluded_unbooked_rows", 0))),
         max(0, row_count - booked_source_rows),
     )
-    unbooked_source_rows = max(0, row_count - booked_source_rows - excluded_unbooked_rows)
+    # 设计上有意只归档的行（如 IBKR "调整" 纸面损益）同属预期跳过，
+    # 与排除清单行一样不把批次拖成 PARTIAL
+    expected_archived_rows = min(
+        max(0, int(result.get("expected_archived_rows", 0))),
+        max(0, row_count - booked_source_rows - excluded_unbooked_rows),
+    )
+    unbooked_source_rows = max(
+        0,
+        row_count - booked_source_rows - excluded_unbooked_rows - expected_archived_rows,
+    )
     unresolved_count = max(
         0,
         unbooked_source_rows,

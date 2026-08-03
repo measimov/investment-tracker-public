@@ -21,32 +21,16 @@ from app.services.statistics_service import (
     calculate_performance_analytics,
     calculate_performance_summary,
 )
+from tests.helpers import add_transaction, reset_tables
 
 
-def reset_tables(db):
-    for model in (SecurityPrice, Holding, CorporateAction, Transaction, ExchangeRate):
-        db.query(model).delete()
-    db.commit()
+RESET_MODELS = (SecurityPrice, Holding, CorporateAction, Transaction, ExchangeRate)
 
 
 def add_txn(db, **overrides):
-    values = {
-        "user_id": 1,
-        "symbol": "600000",
-        "name": "审计标的",
-        "market": "A股",
-        "transaction_type": "BUY",
-        "quantity": Decimal("100"),
-        "price": Decimal("10"),
-        "fee": Decimal("0"),
-        "transaction_date": date(2026, 1, 1),
-        "currency": "CNY",
-    }
+    values = {"symbol": "600000", "name": "审计标的", "market": "A股", "currency": "CNY"}
     values.update(overrides)
-    txn = Transaction(**values)
-    db.add(txn)
-    db.flush()
-    return txn
+    return add_transaction(db, **values)
 
 
 def add_price(db, price_date, close, symbol="600000"):
@@ -73,7 +57,7 @@ def test_ttwr_chain_neutralizes_mid_period_flows():
     （日收益 = 2400/(1100+1100) − 1 = +9.0909%）；D4 卖 100@12、收盘 12
     （日收益 0）。累计 TTWR = 1.10 × 1.090909 − 1 = +20%，与出入金无关。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_txn(db, transaction_date=date(2026, 1, 1), quantity=Decimal("100"), price=Decimal("10"))
         add_txn(db, transaction_date=date(2026, 1, 3), quantity=Decimal("100"), price=Decimal("11"))
@@ -210,7 +194,7 @@ def test_performance_summary_composition_hand_computed():
     净投入本金 = 市值 1200 − 总收益 230 = 970（= 1000 投入 − 30 股息回流）；
     总收益率 = 230/970。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_txn(db)
         db.add(CorporateAction(
@@ -253,7 +237,7 @@ def test_performance_summary_composition_hand_computed():
 
 def test_dividend_summary_gross_tax_net_hand_computed():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_txn(db)
         db.add(CorporateAction(

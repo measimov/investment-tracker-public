@@ -11,7 +11,7 @@
                 </template>
               </el-skeleton>
             </template>
-            <el-row :gutter="15">
+            <el-row :gutter="20">
               <el-col v-for="index in 3" :key="index" :xs="24" :sm="8">
                 <div class="statistic-skeleton-block">
                   <el-skeleton animated>
@@ -83,18 +83,18 @@
               <div class="card-header">
                 <div class="title-with-tag">
                   <span>证券持仓收益</span>
-                  <el-tag type="warning" effect="plain" size="small">估算口径</el-tag>
+                  <el-tag type="info" effect="plain" size="small">权益仓口径</el-tag>
                 </div>
               </div>
             </template>
 
-            <el-row :gutter="15">
+            <el-row :gutter="20">
               <el-col :xs="24" :sm="8">
                 <el-statistic
                   title="总收益"
                   :value="accountReturn.total_return"
                   :precision="2"
-                  suffix="元"
+                  prefix="¥"
                   :value-style="{ color: getProfitColor(accountReturn.total_return) }"
                 />
               </el-col>
@@ -110,7 +110,7 @@
               <el-col :xs="24" :sm="8">
                 <el-statistic
                   v-if="accountReturn.annualized_return_rate != null"
-                  title="证券交易 XIRR（估算）"
+                  title="权益仓 XIRR"
                   :value="accountReturn.annualized_return_rate"
                   :precision="2"
                   suffix="%"
@@ -119,7 +119,7 @@
                   }"
                 />
                 <div v-else class="empty-statistic">
-                  <span>证券交易 XIRR（估算）</span>
+                  <span>权益仓 XIRR</span>
                   <strong>—</strong>
                 </div>
               </el-col>
@@ -129,7 +129,7 @@
 
             <div class="stat-detail">
               <div class="stat-item">
-                <span>估算净投入本金：</span>
+                <span>净投入本金（权益仓）：</span>
                 <span class="value">{{
                   formatCurrency(accountReturn.net_invested_principal_cny)
                 }}</span>
@@ -160,14 +160,14 @@
               </div>
               <div class="stat-item">
                 <span>税后股息：</span>
-                <span class="value" style="color: #059669">
+                <span class="value" :style="{ color: COLOR.success }">
                   {{ formatCurrency(accountReturn.net_dividend_income_cny) }}
                 </span>
               </div>
               <div class="stat-note">
                 总收益 = 已平仓资本利得 + 未实现盈亏 +
-                税后股息。当前未包含账户现金和真实外部入出金，收益率及 XIRR
-                属于证券交易现金流估算，不代表完整账户表现。
+                税后股息。权益仓口径：仅统计投入证券的资金，账户闲置现金与外部出入金
+                不计入、不稀释收益率；收益率及 XIRR 在此口径内精确，不代表全账户表现。
               </div>
             </div>
           </el-card>
@@ -196,7 +196,7 @@
             </template>
 
             <el-alert
-              title="当前未包含账户现金和真实外部入出金；TTWR 与风险指标以证券交易现金流估算，胜率/盈亏比按平仓日落在所选区间内的每笔平仓交易统计。"
+              title="TTWR 与风险指标为实验指标，基于证券交易现金流估算，未包含账户现金和真实外部入出金；胜率/盈亏比按平仓日落在所选区间内的每笔平仓交易统计。"
               type="warning"
               :closable="false"
               show-icon
@@ -227,6 +227,46 @@
               <span v-if="effectiveRangeLabel" class="range-label">
                 {{ effectiveRangeLabel }}
               </span>
+              <el-select
+                v-model="selectedBenchmarks"
+                multiple
+                collapse-tags
+                :multiple-limit="3"
+                size="small"
+                placeholder="对比基准"
+                class="benchmark-select"
+                data-testid="benchmark-select"
+              >
+                <el-option
+                  v-for="option in benchmarkOptions"
+                  :key="option.code"
+                  :label="option.name"
+                  :value="option.code"
+                />
+                <template #empty>
+                  <p class="benchmark-empty">
+                    基准目录加载失败：后端版本过旧或请求失败，请重启后端后刷新页面
+                  </p>
+                </template>
+              </el-select>
+              <el-tag
+                v-for="block in unavailableBenchmarks"
+                :key="block.code"
+                type="info"
+                size="small"
+                effect="plain"
+              >
+                {{ block.name }} 无基准数据
+              </el-tag>
+              <el-tooltip
+                v-for="block in partialBenchmarks"
+                :key="`partial-${block.code}`"
+                content="基准数据晚于区间起点，计量区间不一致，不计算超额收益；可同步更早历史行情补齐"
+              >
+                <el-tag type="warning" size="small" effect="plain">
+                  {{ block.name }} 起点晚于区间
+                </el-tag>
+              </el-tooltip>
             </div>
 
             <div class="analytics-summary-grid">
@@ -263,6 +303,22 @@
                   formatNullableNumber(analyticsMetrics.calmar_ratio)
                 }}</span>
               </div>
+              <div v-if="primaryBenchmarkComparison" class="analytics-metric">
+                <span class="metric-label">
+                  区间超额收益（vs {{ primaryBenchmarkComparison.name }}）
+                  <el-tooltip
+                    content="组合 TTWR 与基准累计收益的算术差（百分点）；基准为价格指数、不含股息、原币口径"
+                  >
+                    <el-icon class="label-help"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <span
+                  class="metric-value"
+                  :style="{ color: getProfitColor(primaryBenchmarkComparison.excess_return_rate) }"
+                >
+                  {{ formatNullablePercent(primaryBenchmarkComparison.excess_return_rate) }}
+                </span>
+              </div>
               <div class="analytics-metric">
                 <span class="metric-label">标的胜率（实验）</span>
                 <span class="metric-value">{{ formatNullablePercent(tradeSkill.win_rate) }}</span>
@@ -280,7 +336,7 @@
                 }}</span>
               </div>
               <div class="analytics-metric">
-                <span class="metric-label">区间已实现盈亏（估算）</span>
+                <span class="metric-label">区间已实现盈亏</span>
                 <span
                   class="metric-value"
                   :style="{ color: getProfitColor(rangeSummary.realized_pnl_cny || 0) }"
@@ -346,13 +402,18 @@
               description="暂无收益率曲线数据"
               :image-size="88"
             />
-            <v-chart v-else :option="analyticsChartOption" class="chart chart-performance" />
+            <v-chart
+              v-else
+              :option="analyticsChartOption"
+              class="chart chart-performance"
+              autoresize
+            />
           </el-card>
         </el-col>
       </el-row>
 
       <!-- 新增：投资表现卡片 -->
-      <el-row :gutter="20" class="performance-cards" style="margin-bottom: 20px">
+      <el-row :gutter="20" class="performance-cards">
         <!-- 卡片1：当前持仓表现 -->
         <el-col :xs="24" :md="12">
           <el-card class="stat-card" shadow="hover">
@@ -377,13 +438,13 @@
               </div>
             </template>
 
-            <el-row :gutter="15">
+            <el-row :gutter="20">
               <el-col :xs="24" :sm="12">
                 <el-statistic
                   title="未实现盈亏"
                   :value="currentPerformance.unrealized_pnl"
                   :precision="2"
-                  suffix="元"
+                  prefix="¥"
                   :value-style="{ color: getProfitColor(currentPerformance.unrealized_pnl) }"
                 />
               </el-col>
@@ -435,13 +496,13 @@
               </div>
             </template>
 
-            <el-row :gutter="15">
+            <el-row :gutter="20">
               <el-col :xs="24" :sm="12">
                 <el-statistic
                   title="已平仓盈亏"
                   :value="realizedPnL.realized_pnl"
                   :precision="2"
-                  suffix="元"
+                  prefix="¥"
                   :value-style="{ color: getProfitColor(realizedPnL.realized_pnl) }"
                 />
               </el-col>
@@ -474,7 +535,7 @@
                   class="value"
                   :style="{ color: getProfitColor(totalRealizedReturn.total_realized_return) }"
                 >
-                  {{ formatNumber(totalRealizedReturn.total_realized_return_rate, 2) }}%
+                  {{ formatPercent(totalRealizedReturn.total_realized_return_rate) }}
                 </span>
               </div>
               <div class="stat-item">
@@ -489,7 +550,7 @@
               </div>
               <div class="stat-item">
                 <span>税后股息：</span>
-                <span class="value" style="color: #059669">
+                <span class="value" :style="{ color: COLOR.success }">
                   {{ formatCurrency(totalRealizedReturn.net_dividend_income_cny) }}
                 </span>
               </div>
@@ -502,7 +563,7 @@
       </el-row>
 
       <!-- 股息统计（独立卡片） -->
-      <el-row :gutter="20" style="margin-bottom: 20px">
+      <el-row :gutter="20" class="section-gap-bottom">
         <el-col :span="24">
           <el-card class="stat-card" shadow="hover">
             <template #header>
@@ -520,13 +581,13 @@
               :title="`缺少 ${dividendSummary.missing_rate_currencies.join('/')} 汇率，对应股息未计入 CNY 折算总额，请先在汇率页补录`"
             />
 
-            <el-row :gutter="15">
+            <el-row :gutter="20">
               <el-col :xs="24" :sm="8">
                 <el-statistic
                   title="累计股息（税前）"
                   :value="dividendSummary.total_dividend_gross"
                   :precision="2"
-                  suffix="元"
+                  prefix="¥"
                 />
               </el-col>
               <el-col :xs="24" :sm="8">
@@ -534,7 +595,7 @@
                   title="累计税费"
                   :value="dividendSummary.total_tax"
                   :precision="2"
-                  suffix="元"
+                  prefix="¥"
                 />
               </el-col>
               <el-col :xs="24" :sm="8">
@@ -542,8 +603,8 @@
                   title="累计股息（税后）"
                   :value="dividendSummary.total_dividend_net"
                   :precision="2"
-                  suffix="元"
-                  :value-style="{ color: '#059669' }"
+                  prefix="¥"
+                  :value-style="{ color: COLOR.success }"
                 />
               </el-col>
             </el-row>
@@ -564,7 +625,7 @@
               description="暂无市场分布数据"
               :image-size="88"
             />
-            <v-chart v-else :option="marketChartOption" class="chart chart-market" />
+            <v-chart v-else :option="marketChartOption" class="chart" autoresize />
           </el-card>
         </el-col>
 
@@ -575,20 +636,25 @@
               <span>市场详细数据</span>
             </template>
             <div class="responsive-table">
-              <el-table :data="marketStats" style="width: 100%">
+              <el-table :data="marketStats" stripe>
                 <template #empty>
                   <el-empty description="暂无市场统计数据" :image-size="88" />
                 </template>
-                <el-table-column prop="market" label="市场" width="120" />
-                <el-table-column prop="holdings_count" label="持仓数" width="100" align="right" />
-                <el-table-column prop="total_cost" label="总成本" width="140" align="right">
+                <el-table-column prop="market" label="市场" min-width="100" />
+                <el-table-column
+                  prop="holdings_count"
+                  label="持仓数"
+                  min-width="90"
+                  align="right"
+                />
+                <el-table-column prop="total_cost" label="总成本" min-width="130" align="right">
                   <template #default="{ row }">
                     <span style="font-weight: bold">
                       {{ formatCurrency(row.total_cost) }}
                     </span>
                   </template>
                 </el-table-column>
-                <el-table-column label="占比" width="100" align="right">
+                <el-table-column label="占比" min-width="90" align="right">
                   <template #default="{ row }">
                     {{ formatNumber((row.total_cost / totalInvested) * 100, 2) }}%
                   </template>
@@ -600,7 +666,7 @@
       </el-row>
 
       <!-- Transaction Timeline -->
-      <el-row :gutter="20" style="margin-top: 20px">
+      <el-row :gutter="20" class="section-gap">
         <el-col :span="24">
           <el-card class="stat-card">
             <template #header>
@@ -617,40 +683,40 @@
               description="暂无交易时间趋势"
               :image-size="88"
             />
-            <v-chart v-else :option="timeChartOption" class="chart chart-time" />
+            <v-chart v-else :option="timeChartOption" class="chart" autoresize />
           </el-card>
         </el-col>
       </el-row>
 
       <!-- Holdings Ranking -->
-      <el-row :gutter="20" style="margin-top: 20px">
+      <el-row :gutter="20" class="section-gap">
         <el-col :span="24">
           <el-card class="stat-card">
             <template #header>
               <span>持仓排行</span>
             </template>
             <div class="responsive-table">
-              <el-table :data="profitLossData" style="width: 100%">
+              <el-table :data="profitLossData" stripe>
                 <template #empty>
                   <el-empty description="暂无持仓排行数据" :image-size="88" />
                 </template>
                 <el-table-column type="index" label="排名" width="80" />
-                <el-table-column prop="symbol" label="代码" width="120" />
-                <el-table-column prop="name" label="名称" width="150" />
-                <el-table-column prop="market" label="市场" width="100" />
-                <el-table-column prop="quantity" label="数量" width="120" align="right">
+                <el-table-column prop="symbol" label="代码" min-width="100" />
+                <el-table-column prop="name" label="名称" min-width="130" show-overflow-tooltip />
+                <el-table-column prop="market" label="市场" width="80" />
+                <el-table-column prop="quantity" label="数量" min-width="110" align="right">
                   <template #default="{ row }">
                     {{ formatNumber(row.quantity, 4) }}
                   </template>
                 </el-table-column>
-                <el-table-column prop="avg_cost" label="成本价" width="120" align="right">
+                <el-table-column prop="avg_cost" label="成本价" min-width="105" align="right">
                   <template #default="{ row }">
                     {{ formatNumber(row.avg_cost, 4) }}
                   </template>
                 </el-table-column>
-                <el-table-column prop="total_cost" label="总成本" width="140" align="right">
+                <el-table-column prop="total_cost" label="总成本" min-width="130" align="right">
                   <template #default="{ row }">
-                    <span style="font-weight: bold; color: #4f46e5">
+                    <span :style="{ fontWeight: 'bold', color: COLOR.primary }">
                       {{ formatCurrency(row.total_cost, row.currency) }}
                     </span>
                     <div
@@ -678,11 +744,11 @@
       </el-row>
 
       <!-- 价格输入对话框 -->
-      <el-dialog v-model="showPriceDialog" title="输入当前价格" width="800px">
+      <el-dialog v-model="showPriceDialog" title="输入当前价格" width="720px">
         <div class="responsive-table">
-          <el-table :data="priceInputData" max-height="500" v-loading="loading">
+          <el-table :data="priceInputData" max-height="560" stripe v-loading="loading">
             <el-table-column prop="symbol" label="代码" width="100" />
-            <el-table-column prop="name" label="名称" width="150" />
+            <el-table-column prop="name" label="名称" min-width="130" show-overflow-tooltip />
             <el-table-column prop="market" label="市场" width="100" />
             <el-table-column label="持仓数量" width="120" align="right">
               <template #default="{ row }">
@@ -696,13 +762,7 @@
             </el-table-column>
             <el-table-column label="当前价格" width="180">
               <template #default="{ row }">
-                <el-input-number
-                  v-model="row.current_price"
-                  :min="0"
-                  :precision="4"
-                  size="small"
-                  style="width: 100%"
-                />
+                <el-input-number v-model="row.current_price" :min="0" :precision="4" size="small" />
               </template>
             </el-table-column>
           </el-table>
@@ -722,8 +782,8 @@
   </div>
 </template>
 
-<script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, watch, type Ref } from 'vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { PieChart, BarChart, LineChart } from 'echarts/charts'
@@ -736,14 +796,185 @@ import {
 } from 'echarts/components'
 import VChart from 'vue-echarts'
 import { ElMessage } from 'element-plus'
-import { Refresh } from '@element-plus/icons-vue'
+import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import { presetRangeParams } from '@/utils/dateRange'
+import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR, chartTooltipCurrency } from '@/styles/tokens'
 import api from '../api'
 import { useHoldingsStore } from '../stores/holdings'
 import { useExchangeRates } from '../composables/useExchangeRates'
 import { getApiErrorMessage } from '../utils/apiErrors'
-import { formatNumber, formatCurrency } from '../utils/helpers'
-import { pollJobUntilDone } from '../utils/polling'
+import {
+  formatNumber,
+  formatCurrency,
+  formatPercent,
+  profitColor as getProfitColor,
+  toNumber
+} from '../utils/helpers'
+import { pollJobUntilDone, type BackgroundJob } from '../utils/polling'
+
+interface MarketStat {
+  market: string
+  total_cost: number
+  [key: string]: unknown
+}
+
+interface TimeStat {
+  period: string
+  buy_amount: number
+  sell_amount: number
+  [key: string]: unknown
+}
+
+interface ProfitLossItem {
+  total_cost: number
+  currency: string
+  [key: string]: unknown
+}
+
+interface SummaryStats {
+  total_invested_cny?: number
+  [key: string]: unknown
+}
+
+interface CurrentPerformance {
+  unrealized_pnl: number
+  current_holdings_cost: number
+  unrealized_pnl_rate: number
+  current_market_value: number
+  holdings_detail: Array<Record<string, unknown>>
+  [key: string]: unknown
+}
+
+interface RealizedPnL {
+  realized_pnl: number
+  sold_cost: number
+  realized_pnl_rate: number
+  trades_detail: Array<Record<string, unknown>>
+  data_quality?: { warnings?: string[] }
+  [key: string]: unknown
+}
+
+interface DividendSummary {
+  total_dividend_gross: number
+  total_tax: number
+  total_dividend_net: number
+  by_symbol: Array<Record<string, unknown>>
+  missing_rate_currencies?: string[]
+  [key: string]: unknown
+}
+
+interface TotalRealizedReturn {
+  realized_trading_pnl_cny: number
+  net_dividend_income_cny: number
+  total_realized_return: number
+  total_realized_return_rate: number
+  sold_cost_cny: number
+  [key: string]: unknown
+}
+
+interface AccountReturn {
+  total_return: number
+  total_return_rate: number
+  annualized_return_rate: number | null
+  net_invested_principal_cny: number
+  current_market_value_cny: number
+  realized_trading_pnl_cny: number
+  unrealized_pnl_cny: number
+  net_dividend_income_cny: number
+  [key: string]: unknown
+}
+
+interface CurvePoint {
+  date: string
+  cumulative_return_rate?: number | string | null
+  drawdown_rate?: number | string | null
+  [key: string]: unknown
+}
+
+interface AnalyticsMetrics {
+  annualized_return_rate?: number | null
+  max_drawdown_rate?: number | null
+  sharpe_ratio?: number | null
+  sortino_ratio?: number | null
+  calmar_ratio?: number | null
+  [key: string]: unknown
+}
+
+interface TradeSkill {
+  win_rate?: number | null
+  payoff_ratio?: number | null
+  profit_factor?: number | null
+  [key: string]: unknown
+}
+
+interface RangeSummary {
+  realized_pnl_cny?: number | null
+  dividend_net_cny?: number | null
+  xirr_annualized_rate?: number | null
+  [key: string]: unknown
+}
+
+interface BenchmarkComparison {
+  benchmark_total_return_rate?: number | null
+  excess_return_rate?: number | null
+  benchmark_max_drawdown_rate?: number | null
+  [key: string]: unknown
+}
+
+interface BenchmarkBlock {
+  code: string
+  name: string
+  status: string
+  alignment?: string
+  points?: CurvePoint[]
+  total_return_rate?: number | null
+  comparison?: BenchmarkComparison | null
+  [key: string]: unknown
+}
+
+interface PerformanceAnalytics {
+  calculation_level: string
+  curve: CurvePoint[]
+  benchmarks?: BenchmarkBlock[]
+  metrics: AnalyticsMetrics
+  trade_skill: TradeSkill
+  range_summary?: RangeSummary
+  date_range?: { start_date?: string; end_date?: string; clamped?: boolean } | null
+  data_quality?: { warnings?: string[] }
+  [key: string]: unknown
+}
+
+interface HistorySyncJob {
+  id?: number
+  status?: string
+  progress_percent?: number | string | null
+  completed?: number
+  total?: number
+  current_symbol?: string | null
+  current_market?: string | null
+  success_count?: number
+  skipped_count?: number
+  failed_count?: number
+  error?: string | null
+  [key: string]: unknown
+}
+
+interface PriceInputRow {
+  symbol: string
+  name?: string | null
+  market: string
+  avg_cost: number
+  current_price: number | null
+  quantity: number
+}
+
+interface PriceRefreshResult {
+  success_count: number
+  skipped_count: number
+  failed_count: number
+  failed_list?: Array<{ symbol: string; market: string; error?: string }>
+  [key: string]: unknown
+}
 
 use([
   CanvasRenderer,
@@ -757,15 +988,15 @@ use([
   DataZoomComponent
 ])
 
-const marketStats = ref([])
+const marketStats = ref<MarketStat[]>([])
 const holdingsStore = useHoldingsStore()
-const timeStats = ref([])
-const profitLossData = ref([])
+const timeStats = ref<TimeStat[]>([])
+const profitLossData = ref<ProfitLossItem[]>([])
 const timeGroupBy = ref('month')
-const summaryStats = ref({})
+const summaryStats = ref<SummaryStats>({})
 
 // 新增：性能统计数据
-const currentPerformance = ref({
+const currentPerformance = ref<CurrentPerformance>({
   unrealized_pnl: 0,
   current_holdings_cost: 0,
   unrealized_pnl_rate: 0,
@@ -773,7 +1004,7 @@ const currentPerformance = ref({
   holdings_detail: []
 })
 
-const realizedPnL = ref({
+const realizedPnL = ref<RealizedPnL>({
   realized_pnl: 0,
   sold_cost: 0,
   realized_pnl_rate: 0,
@@ -783,14 +1014,14 @@ const realizedPnL = ref({
   }
 })
 
-const dividendSummary = ref({
+const dividendSummary = ref<DividendSummary>({
   total_dividend_gross: 0,
   total_tax: 0,
   total_dividend_net: 0,
   by_symbol: []
 })
 
-const totalRealizedReturn = ref({
+const totalRealizedReturn = ref<TotalRealizedReturn>({
   realized_trading_pnl_cny: 0,
   net_dividend_income_cny: 0,
   total_realized_return: 0,
@@ -798,7 +1029,7 @@ const totalRealizedReturn = ref({
   sold_cost_cny: 0
 })
 
-const accountReturn = ref({
+const accountReturn = ref<AccountReturn>({
   total_return: 0,
   total_return_rate: 0,
   annualized_return_rate: null,
@@ -809,7 +1040,7 @@ const accountReturn = ref({
   net_dividend_income_cny: 0
 })
 
-const performanceAnalytics = ref({
+const performanceAnalytics = ref<PerformanceAnalytics>({
   calculation_level: 'empty',
   curve: [],
   metrics: {},
@@ -820,14 +1051,14 @@ const performanceAnalytics = ref({
 })
 
 const showPriceDialog = ref(false)
-const priceInputData = ref([])
+const priceInputData = ref<PriceInputRow[]>([])
 const loading = ref(false)
 const initialLoading = ref(true)
 const analyticsLoading = ref(false)
 const saving = ref(false)
 const refreshing = ref(false)
 const historyRefreshing = ref(false)
-const historySyncJob = ref(null)
+const historySyncJob = ref<HistorySyncJob | null>(null)
 const { loadExchangeRates, convertToCNY } = useExchangeRates()
 let isUnmounted = false
 
@@ -846,6 +1077,39 @@ const analyticsMetrics = computed(() => performanceAnalytics.value.metrics || {}
 const tradeSkill = computed(() => performanceAnalytics.value.trade_skill || {})
 const rangeSummary = computed(() => performanceAnalytics.value.range_summary || {})
 
+// 基准对比：选择持久化 localStorage；无数据基准降级为标签提示
+const BENCHMARK_STORAGE_KEY = 'statistics.benchmarks'
+const benchmarkOptions = ref<{ code: string; name: string; currency: string }[]>([])
+const selectedBenchmarks = ref<string[]>(
+  (() => {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(BENCHMARK_STORAGE_KEY) || 'null')
+      if (Array.isArray(stored)) return stored.filter((code) => typeof code === 'string')
+    } catch {
+      // 损坏的本地存储按默认值处理
+    }
+    return ['000300.SH']
+  })()
+)
+// 基准虚线用调色板后段，避开组合主线（primary）与回撤（danger）用色
+const BENCHMARK_COLORS = [CHART_PALETTE[3], CHART_PALETTE[5], CHART_PALETTE[6]]
+
+const analyticsBenchmarks = computed(() => performanceAnalytics.value.benchmarks || [])
+const okBenchmarks = computed(() => analyticsBenchmarks.value.filter((b) => b.status === 'ok'))
+const unavailableBenchmarks = computed(() =>
+  analyticsBenchmarks.value.filter((b) => b.status !== 'ok')
+)
+// 基准数据晚于区间起点（first_available）：曲线仍画（头部空洞可见），
+// 但不产出超额收益——tag 说明降级原因
+const partialBenchmarks = computed(() =>
+  analyticsBenchmarks.value.filter((b) => b.status === 'ok' && b.alignment === 'first_available')
+)
+const primaryBenchmarkComparison = computed(() => {
+  const first = okBenchmarks.value.find((b) => b.comparison)
+  if (!first?.comparison) return null
+  return { name: first.name, excess_return_rate: first.comparison.excess_return_rate ?? null }
+})
+
 // 区间选择：预设即业界主交互，自定义次之。切换只做便宜的重算（不触发行情同步）。
 const RANGE_PRESETS = [
   { value: 'all', label: '成立以来' },
@@ -857,7 +1121,7 @@ const RANGE_PRESETS = [
   { value: 'custom', label: '自定义' }
 ]
 const analyticsRangePreset = ref('all')
-const analyticsCustomRange = ref(null)
+const analyticsCustomRange = ref<[string, string] | null>(null)
 
 function analyticsRangeParams() {
   const preset = analyticsRangePreset.value
@@ -886,6 +1150,15 @@ watch([analyticsRangePreset, analyticsCustomRange], () => {
   }
   loadPerformanceAnalytics()
 })
+
+watch(selectedBenchmarks, (codes) => {
+  try {
+    window.localStorage.setItem(BENCHMARK_STORAGE_KEY, JSON.stringify(codes))
+  } catch {
+    // 存储失败不阻断（隐私模式等）
+  }
+  loadPerformanceAnalytics()
+})
 const summaryWarnings = computed(() => realizedPnL.value.data_quality?.warnings || [])
 const analyticsWarnings = computed(() => performanceAnalytics.value.data_quality?.warnings || [])
 const historySyncPercent = computed(() => {
@@ -908,18 +1181,19 @@ const historySyncStatusText = computed(() => {
 })
 
 const marketChartOption = computed(() => ({
+  color: CHART_PALETTE,
+  textStyle: { fontFamily: CHART_FONT_FAMILY },
   tooltip: {
     trigger: 'item',
-    formatter: '{b}: ¥{c} ({d}%)'
+    formatter: (params: { name: string; value: number; percent: number }) =>
+      `${params.name}: ${chartTooltipCurrency(params.value)} (${params.percent}%)`
   },
-  legend: {
-    orient: 'vertical',
-    left: 'left'
-  },
+  legend: { bottom: 0, left: 'center' },
   series: [
     {
       type: 'pie',
-      radius: ['40%', '70%'],
+      radius: ['42%', '68%'],
+      center: ['50%', '44%'],
       avoidLabelOverlap: false,
       itemStyle: {
         borderRadius: 10,
@@ -951,11 +1225,13 @@ const timeChartOption = computed(() => {
   const sellAmounts = timeStats.value.map((item) => item.sell_amount)
 
   return {
+    textStyle: { fontFamily: CHART_FONT_FAMILY },
     tooltip: {
       trigger: 'axis',
       axisPointer: {
         type: 'shadow'
-      }
+      },
+      valueFormatter: (value: number | string) => chartTooltipCurrency(value)
     },
     legend: {
       data: ['买入金额', '卖出金额']
@@ -982,7 +1258,7 @@ const timeChartOption = computed(() => {
         type: 'bar',
         data: buyAmounts,
         itemStyle: {
-          color: '#059669'
+          color: COLOR.success
         }
       },
       {
@@ -990,7 +1266,7 @@ const timeChartOption = computed(() => {
         type: 'bar',
         data: sellAmounts,
         itemStyle: {
-          color: '#e11d48'
+          color: COLOR.danger
         }
       }
     ]
@@ -1002,13 +1278,36 @@ const analyticsChartOption = computed(() => {
   const returns = performanceCurve.value.map((item) => Number(item.cumulative_return_rate || 0))
   const drawdowns = performanceCurve.value.map((item) => Number(item.drawdown_rate || 0))
 
+  // 基准虚线：与组合曲线同栅格生成，按日期对齐（first_available 时头部为空洞）
+  const benchmarkSeries = okBenchmarks.value.map((block, index) => {
+    const rateByDate = new Map(
+      (block.points || []).map((point) => [point.date, Number(point.cumulative_return_rate || 0)])
+    )
+    return {
+      name: block.name,
+      type: 'line',
+      smooth: true,
+      symbol: 'none',
+      data: dates.map((day) => rateByDate.get(day) ?? null),
+      lineStyle: {
+        width: 2,
+        type: 'dashed',
+        color: BENCHMARK_COLORS[index % BENCHMARK_COLORS.length]
+      },
+      itemStyle: {
+        color: BENCHMARK_COLORS[index % BENCHMARK_COLORS.length]
+      }
+    }
+  })
+
   return {
+    textStyle: { fontFamily: CHART_FONT_FAMILY },
     tooltip: {
       trigger: 'axis',
-      valueFormatter: (value) => `${formatNumber(value, 2)}%`
+      valueFormatter: (value: number | string) => `${formatNumber(value, 2)}%`
     },
     legend: {
-      data: ['累计TTWR收益率', '回撤']
+      data: ['累计TTWR收益率', '回撤', ...benchmarkSeries.map((series) => series.name)]
     },
     grid: {
       left: '3%',
@@ -1047,10 +1346,10 @@ const analyticsChartOption = computed(() => {
         data: returns,
         lineStyle: {
           width: 3,
-          color: '#4f46e5'
+          color: COLOR.primary
         },
         itemStyle: {
-          color: '#4f46e5'
+          color: COLOR.primary
         }
       },
       {
@@ -1064,51 +1363,53 @@ const analyticsChartOption = computed(() => {
         },
         lineStyle: {
           width: 2,
-          color: '#e11d48'
+          color: COLOR.danger
         },
         itemStyle: {
-          color: '#e11d48'
+          color: COLOR.danger
         }
-      }
+      },
+      ...benchmarkSeries
     ]
   }
 })
 
-async function loadMarketStats() {
-  try {
-    const response = await api.getStatsByMarket()
-    marketStats.value = response.data
-  } catch (error) {
-    ElMessage.error('加载市场统计失败')
+// 统计块加载工厂；silent=true 时失败只记 console（摘要卡片允许静默降级）
+function makeStatsLoader<T>(
+  target: Ref<T>,
+  fetcher: () => Promise<{ data: T }>,
+  failureMessage: string,
+  { silent = false }: { silent?: boolean } = {}
+) {
+  return async () => {
+    try {
+      const response = await fetcher()
+      target.value = response.data
+    } catch (error) {
+      if (silent) console.error(failureMessage, error)
+      else ElMessage.error(failureMessage)
+    }
   }
 }
 
-async function loadTimeStats() {
-  try {
-    const response = await api.getStatsByTime(timeGroupBy.value)
-    timeStats.value = response.data
-  } catch (error) {
-    ElMessage.error('加载时间统计失败')
-  }
-}
-
-async function loadProfitLoss() {
-  try {
-    const response = await api.getHoldingsCostBreakdown()
-    profitLossData.value = response.data
-  } catch (error) {
-    ElMessage.error('加载持仓成本分布失败')
-  }
-}
-
-async function loadSummaryStats() {
-  try {
-    const response = await api.getSummary()
-    summaryStats.value = response.data
-  } catch (error) {
-    console.error('加载统计摘要失败', error)
-  }
-}
+const loadMarketStats = makeStatsLoader(
+  marketStats,
+  () => api.getStatsByMarket(),
+  '加载市场统计失败'
+)
+const loadTimeStats = makeStatsLoader(
+  timeStats,
+  () => api.getStatsByTime(timeGroupBy.value),
+  '加载时间统计失败'
+)
+const loadProfitLoss = makeStatsLoader(
+  profitLossData,
+  () => api.getHoldingsCostBreakdown(),
+  '加载持仓成本分布失败'
+)
+const loadSummaryStats = makeStatsLoader(summaryStats, () => api.getSummary(), '加载统计摘要失败', {
+  silent: true
+})
 
 async function loadAllData() {
   initialLoading.value = true
@@ -1118,7 +1419,8 @@ async function loadAllData() {
       loadTimeStats(),
       loadProfitLoss(),
       loadSummaryStats(),
-      loadExchangeRates()
+      loadExchangeRates(),
+      loadBenchmarkCatalog()
     ])
 
     // Server-side pricing (issue #46) lets these run concurrently: the two
@@ -1136,16 +1438,22 @@ async function loadAllData() {
 }
 
 function getCurrentPrices() {
-  const prices = {}
+  const prices: Record<string, number> = {}
   priceInputData.value.forEach((item) => {
-    if (item.current_price > 0) {
+    if (item.current_price && item.current_price > 0) {
       prices[item.symbol] = item.current_price
     }
   })
   return prices
 }
 
-function applyPerformanceSummary(data) {
+function applyPerformanceSummary(data: {
+  current_performance?: CurrentPerformance
+  realized_pnl?: RealizedPnL
+  dividend_summary?: DividendSummary
+  total_realized_return?: TotalRealizedReturn
+  account_return?: AccountReturn
+}) {
   currentPerformance.value = data.current_performance || currentPerformance.value
   realizedPnL.value = data.realized_pnl || realizedPnL.value
   dividendSummary.value = data.dividend_summary || dividendSummary.value
@@ -1153,7 +1461,16 @@ function applyPerformanceSummary(data) {
   accountReturn.value = data.account_return || accountReturn.value
 }
 
-async function loadPerformanceSummary(prices = null) {
+async function loadBenchmarkCatalog() {
+  try {
+    const response = await api.getBenchmarkCatalog()
+    benchmarkOptions.value = response.data
+  } catch (error) {
+    console.warn('加载基准目录失败', error) // 选择器降级为空，不阻断主流程
+  }
+}
+
+async function loadPerformanceSummary(prices: Record<string, number> | null = null) {
   // null -> server-side authoritative prices (GET); a prices object is the
   // manual what-if path from the price dialog (POST).
   const response = await api.getPerformanceSummary(prices)
@@ -1164,13 +1481,16 @@ async function loadPerformanceSummary(prices = null) {
 // 清除 loading 或弹错误——较慢的旧响应直接丢弃。
 let analyticsRequestSeq = 0
 
-async function loadPerformanceAnalytics(options = {}) {
+async function loadPerformanceAnalytics(
+  options: { prices?: Record<string, number> | null; refresh_history?: boolean } = {}
+) {
   const seq = ++analyticsRequestSeq
   analyticsLoading.value = options.refresh_history !== true
   try {
     const response = await api.getPerformanceAnalytics(options.prices || null, {
       refresh_history: options.refresh_history === true,
       risk_free_rate: 0,
+      benchmarks: selectedBenchmarks.value.join(','),
       ...analyticsRangeParams()
     })
     if (seq !== analyticsRequestSeq) return
@@ -1215,12 +1535,12 @@ async function refreshHistoryAndAnalytics() {
   }
 }
 
-async function pollPerformanceHistorySyncJob(jobId) {
+async function pollPerformanceHistorySyncJob(jobId: number | string) {
   return pollJobUntilDone(() => api.getPerformanceHistorySyncJob(jobId), {
     maxAttempts: 1800,
     isCancelled: () => isUnmounted,
-    onUpdate: (job) => {
-      historySyncJob.value = job
+    onUpdate: (job: BackgroundJob) => {
+      historySyncJob.value = job as HistorySyncJob
     },
     timeoutMessage: '历史行情同步仍在后台运行，请稍后刷新统计页查看',
     failureMessage: '历史行情同步失败'
@@ -1228,7 +1548,7 @@ async function pollPerformanceHistorySyncJob(jobId) {
 }
 
 // 新增：性能统计方法
-async function loadHoldingsForPrice(options = {}) {
+async function loadHoldingsForPrice(options: { force?: boolean } = {}) {
   try {
     const holdings = await holdingsStore.fetchHoldings(
       {},
@@ -1240,11 +1560,11 @@ async function loadHoldingsForPrice(options = {}) {
       symbol: h.symbol,
       name: h.name,
       market: h.market,
-      avg_cost: parseFloat(h.avg_cost),
+      avg_cost: toNumber(h.avg_cost),
       // Use the database price if available; missing prices should stay empty.
       current_price:
-        h.current_price && parseFloat(h.current_price) > 0 ? parseFloat(h.current_price) : null,
-      quantity: parseFloat(h.quantity)
+        h.current_price && toNumber(h.current_price) > 0 ? toNumber(h.current_price) : null,
+      quantity: toNumber(h.quantity)
     }))
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error, '加载持仓失败'))
@@ -1273,9 +1593,9 @@ async function savePrices() {
   saving.value = true
   try {
     // Build updates array with symbol, market, and price
-    const updates = []
+    const updates: Array<{ symbol: string; market: string; price: number }> = []
     priceInputData.value.forEach((item) => {
-      if (item.current_price > 0) {
+      if (item.current_price && item.current_price > 0) {
         updates.push({
           symbol: item.symbol,
           market: item.market,
@@ -1340,25 +1660,21 @@ async function refreshPricesAndCalculate() {
   }
 }
 
-async function pollPriceRefreshJob(jobId) {
+async function pollPriceRefreshJob(jobId: number | string): Promise<PriceRefreshResult | null> {
   const job = await pollJobUntilDone(() => api.getPriceRefreshJob(jobId), {
     isCancelled: () => isUnmounted,
     timeoutMessage: '刷新仍在后台运行，请稍后重新查看持仓价格',
     failureMessage: '后台刷新失败'
   })
-  return job?.result ?? null
+  return (job?.result ?? null) as PriceRefreshResult | null
 }
 
-function getProfitColor(value) {
-  return value >= 0 ? '#059669' : '#e11d48'
-}
-
-function formatNullableNumber(value, precision = 2) {
+function formatNullableNumber(value: number | string | null | undefined, precision = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '--'
   return formatNumber(Number(value), precision)
 }
 
-function formatNullablePercent(value, precision = 2) {
+function formatNullablePercent(value: number | string | null | undefined, precision = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return '--'
   return `${formatNumber(Number(value), precision)}%`
 }
@@ -1421,12 +1737,6 @@ onUnmounted(() => {
   margin: 32px auto 16px;
 }
 
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
 .card-header > div,
 .chart-header {
   display: flex;
@@ -1477,6 +1787,25 @@ onUnmounted(() => {
   max-width: 260px;
 }
 
+.benchmark-select {
+  min-width: 180px;
+  max-width: 260px;
+}
+
+.benchmark-empty {
+  padding: 10px 12px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--app-text-soft);
+}
+
+.label-help {
+  margin-left: 4px;
+  color: var(--app-text-soft);
+  cursor: help;
+  vertical-align: -2px;
+}
+
 .methodology-alert {
   margin-bottom: 16px;
 }
@@ -1496,9 +1825,9 @@ onUnmounted(() => {
 
 .analytics-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
 }
 
 .analytics-metric {
@@ -1523,13 +1852,15 @@ onUnmounted(() => {
 
 .metric-label {
   color: var(--app-text-muted);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
 }
 
 .metric-value {
   color: var(--app-text);
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
 
@@ -1632,7 +1963,7 @@ onUnmounted(() => {
   letter-spacing: -0.022em;
 }
 
-@media (max-width: 760px) {
+@media (max-width: 900px) {
   .card-header {
     align-items: flex-start;
     flex-direction: column;
@@ -1656,6 +1987,10 @@ onUnmounted(() => {
 
   .chart {
     height: 300px;
+  }
+
+  .chart-performance {
+    height: 340px;
   }
 
   .analytics-summary-grid {
@@ -1688,7 +2023,7 @@ onUnmounted(() => {
   }
 }
 
-@media (max-width: 420px) {
+@media (max-width: 640px) {
   .analytics-summary-grid {
     grid-template-columns: 1fr;
   }

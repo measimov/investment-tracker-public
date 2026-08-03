@@ -4,8 +4,8 @@
 
 ## 环境要求
 
-- Python 3.11+
-- Node.js 18+
+- Python 3.12
+- Node.js 20+（`marked@18` 等依赖要求 ≥20；CI 用 20、生产镜像 22）
 - PostgreSQL
 - Docker 和 Docker Compose，可选但推荐
 
@@ -31,11 +31,10 @@ TUSHARE_TOKEN=<tushare-api-token>
 ENABLE_DOCS=true
 REQUIRE_HTTPS=false
 PRICE_REFRESH_MAX_WORKERS=4
-BACKGROUND_WORKER_ENABLED=true
-LLM_REPORT_API_KEY=
-LLM_REPORT_BASE_URL=https://api.deepseek.com
-LLM_REPORT_MODEL=deepseek-v4-pro
 ```
+
+完整变量清单（后台任务、Tushare 限速、价格新鲜度窗口、`LLM_REPORT_*` 等）
+见 `.env.example`，各变量与 `backend/app/config.py` 一一对应。
 
 初始化或升级数据库：
 
@@ -57,8 +56,8 @@ ENABLE_DOCS=true uvicorn app.main:app --reload --port 8000
 - ReDoc: `http://localhost:8000/redoc`
 
 应用启动不会自动创建表或补齐初始用户。需要初始账号时运行 `python manage.py seed`。
-`TUSHARE_TOKEN` 可留空，但主动行情刷新能力会受限；`LLM_REPORT_API_KEY` 留空时
-AI 复盘功能禁用。
+`TUSHARE_TOKEN` 可留空，但主动行情刷新、分红公告与基本面档案同步会受限；
+`LLM_REPORT_API_KEY` 留空时 AI 复盘和标的分析功能禁用。
 
 ## 前端
 
@@ -81,7 +80,7 @@ backend/
 │   ├── core/                # dependencies and security helpers
 │   ├── models/              # SQLAlchemy models
 │   ├── schemas/             # Pydantic schemas
-│   ├── services/            # portfolio kernel, statistics, imports, jobs, LLM reports
+│   ├── services/            # holdings, statistics, broker importers, price refresh
 │   ├── config.py
 │   ├── database.py
 │   └── main.py
@@ -179,22 +178,6 @@ npx prettier --write src e2e
 - `frontend/src/views/`
 - 必要的 E2E 测试
 
-## 常用命令
-
-```bash
-# 查看 PostgreSQL 结构
-psql "$DATABASE_URL"
-\dt
-\d transactions
-
-# Docker 方式运行迁移
-docker compose run --rm backend alembic upgrade head
-
-# Docker 日志
-docker compose logs -f backend
-docker compose logs -f frontend
-```
-
 ## 排障
 
 - CORS 错误：检查 `CORS_ORIGINS` 是否包含实际前端地址。
@@ -202,16 +185,10 @@ docker compose logs -f frontend
 - 数据库连接失败：确认 `DATABASE_URL` 指向可访问的 PostgreSQL。
 - API 文档不可访问：确认 `ENABLE_DOCS=true`。
 
-## 认证与 CSRF
+## 认证与后台任务
 
-- 浏览器调用 `POST /api/auth/login` 后，由后端设置 HttpOnly 会话 Cookie 和可读的 CSRF Cookie；前端不在 `localStorage` 保存访问令牌。
-- 浏览器发起 `POST`、`PUT`、`PATCH` 或 `DELETE` 请求时，必须把 `investment_csrf` Cookie 的值放入 `X-CSRF-Token` 请求头。
-- 脚本、CLI 和其他非浏览器客户端使用 `POST /api/auth/token` 获取 Bearer Token，后续请求设置 `Authorization: Bearer <token>`；Bearer 请求不需要 CSRF 头。
-- `REQUIRE_HTTPS=true` 时，会话 Cookie 使用 `Secure` 属性，登录和令牌签发也只接受 HTTPS（或可信反向代理传入的 `X-Forwarded-Proto: https`）。
-
-## 后台任务状态
-
-价格刷新和历史行情同步共用 PostgreSQL `background_jobs` 状态表。活跃任务由数据库原子领取，同一用户、同一任务类型不会并发执行；多个 API worker 查询到同一份状态。默认保留已完成任务 168 小时，并在启动或创建新任务时把超过 60 分钟未更新心跳的 `queued`/`running` 任务标记为 `interrupted`。可通过 `BACKGROUND_JOB_RETENTION_HOURS` 和 `BACKGROUND_JOB_STALE_MINUTES` 调整。
-
-AI 复盘的手动生成和定期计划也由同一个后台 worker 执行。开发时如需完全关闭轮询，
-设置 `BACKGROUND_WORKER_ENABLED=false`；测试入口已默认关闭 worker，并由测试显式驱动作业。
+认证/CSRF 流程与后台任务机制的权威描述见 [CLAUDE.md](CLAUDE.md)（Auth flow、
+Background jobs 两节）；要点：浏览器走 HttpOnly Cookie + `X-CSRF-Token`，
+脚本走 `POST /api/auth/token` 的 Bearer Token；价格刷新与历史行情同步共用
+PostgreSQL `background_jobs` 表，由数据库原子领取，相关 `BACKGROUND_JOB_*`
+参数见 `.env.example`。

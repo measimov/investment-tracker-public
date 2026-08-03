@@ -5,7 +5,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from decimal import Decimal
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Dict, Optional
 from weakref import WeakKeyDictionary
 
@@ -181,35 +181,6 @@ def convert_to_usd(db: Session, amount_cny: Decimal) -> Decimal:
     # CNY转USD = CNY金额 / (USD对CNY的汇率)
     return amount_cny / usd_to_cny_rate
 
-
-def convert_amount_to_both_currencies(
-    db: Session,
-    amount: Decimal,
-    from_currency: str
-) -> Dict[str, Decimal]:
-    """
-    将金额转换为CNY和USD两种货币
-
-    Args:
-        db: 数据库会话
-        amount: 金额
-        from_currency: 源币种
-
-    Returns:
-        {"cny": Decimal, "usd": Decimal}
-    """
-    # 先转换为CNY
-    amount_cny = convert_to_cny(db, amount, from_currency)
-
-    # 再转换为USD
-    amount_usd = convert_to_usd(db, amount_cny)
-
-    return {
-        "cny": amount_cny,
-        "usd": amount_usd
-    }
-
-
 def update_or_create_rate(
     db: Session,
     from_currency: str,
@@ -249,7 +220,7 @@ def update_or_create_rate(
         existing.rate = rate
         existing.source = source
         existing.is_active = True
-        existing.updated_at = datetime.now()
+        existing.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(existing)
         return existing
@@ -267,6 +238,43 @@ def update_or_create_rate(
         db.commit()
         db.refresh(new_rate)
         return new_rate
+
+
+# 估值链路必需的对 CNY 汇率币种（与 fetch_latest_rates_from_api 的抓取集一致）
+REQUIRED_RATE_CURRENCIES = ("USD", "HKD", "SGD")
+
+
+def refresh_rates_if_stale() -> int:
+    """任一必需币种今日缺汇率即自动刷新（job_worker 周期任务；幂等）。
+
+    只查 USD 会掩盖 HKD/SGD 缺失或陈旧（手工只更新了 USD、上游部分返回、
+    逐币种写入中断都可能造成）；逐对写入即使中断，下一轮检查也会因缺口
+    继续补齐（自愈）。数据源为 frankfurter/er-api（非 Tushare），无配额顾虑。
+    """
+    from ..database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        fresh_currencies = {
+            row[0]
+            for row in db.query(ExchangeRate.from_currency).filter(
+                ExchangeRate.from_currency.in_(REQUIRED_RATE_CURRENCIES),
+                ExchangeRate.to_currency == "CNY",
+                ExchangeRate.effective_date == date.today(),
+                ExchangeRate.is_active.is_(True),
+            )
+        }
+        if fresh_currencies >= set(REQUIRED_RATE_CURRENCIES):
+            return 0
+        rates = fetch_latest_rates_from_api(db)
+        logger.info(
+            "汇率自动刷新完成: %s 条（此前缺 %s）",
+            len(rates),
+            sorted(set(REQUIRED_RATE_CURRENCIES) - fresh_currencies),
+        )
+        return len(rates)
+    finally:
+        db.close()
 
 
 def fetch_latest_rates_from_api(db: Session) -> Dict[str, Decimal]:

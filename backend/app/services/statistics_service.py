@@ -2,7 +2,7 @@
 
 所有重放/FIFO/曲线/指标计算都在 services/portfolio/ 内核中（无 DB 依赖）；
 本模块负责数据装载（transactions/corporate actions/prices/rates）、汇率
-换算到本位币和响应字段组装。私有别名（_xirr 等）保留原名以兼容既有测试。
+换算到本位币和响应字段组装。
 """
 
 from sqlalchemy.orm import Session
@@ -16,9 +16,10 @@ from ..models.holding import Holding
 from ..models.corporate_action import CorporateAction
 from ..models.exchange_rate import ExchangeRate
 from ..models.security_price import SecurityPrice
-from . import exchange_rate_service
+from . import benchmark_service, exchange_rate_service
+from .portfolio.benchmark import build_benchmark_series, calculate_benchmark_comparison
 from .market_data_service import (
-    fetch_and_store_security_price_history,
+    fetch_and_store_security_price_history_incremental,
     infer_price_currency,
 )
 from .portfolio.curve import (
@@ -46,16 +47,6 @@ from .portfolio.metrics import (
 
 logger = get_app_logger(__name__)
 
-# 兼容别名：既有测试与旧调用方仍以私有名引用这些内核函数。
-_xirr = xirr
-_calculate_risk_metrics = calculate_risk_metrics
-_calculate_trade_skill_metrics = calculate_trade_skill_metrics
-_get_current_price = get_current_price
-_empty_fifo_result = empty_fifo_result
-_calculate_fifo_pnl_from_records = calculate_fifo_pnl
-_fifo_data_quality = fifo_data_quality
-_corporate_action_curve_date = corporate_action_curve_date
-_decimal_close = decimal_close
 
 
 class _ExchangeRateLookup(ExchangeRateLookup):
@@ -74,14 +65,31 @@ class _ExchangeRateLookup(ExchangeRateLookup):
 
 
 def _to_cny_on_date(
-    db: Session,
     amount: Decimal,
     currency: Optional[str],
     effective_date: date,
     rate_lookup: ExchangeRateLookup,
 ) -> Decimal:
-    # db 参数保留以兼容旧签名；换算完全由 rate_lookup 完成。
     return convert_on_date(amount, currency, effective_date, rate_lookup)
+
+
+def _to_usd_or_zero(db: Session, amount_cny: Decimal) -> Decimal:
+    """CNY→USD 展示换算；缺 USD/CNY 汇率时按既有口径归零。"""
+    try:
+        return exchange_rate_service.convert_to_usd(db, amount_cny)
+    except ValueError:
+        return Decimal("0")
+
+
+def _txn_signed_cash_flow(txn: Transaction) -> Optional[Decimal]:
+    """BUY → -(毛额+费)、SELL → 毛额-费；其余类型不产生外部现金流。"""
+    gross = Decimal(str(txn.quantity)) * Decimal(str(txn.price))
+    fee = Decimal(str(txn.fee or 0))
+    if txn.transaction_type == "BUY":
+        return -(gross + fee)
+    if txn.transaction_type == "SELL":
+        return gross - fee
+    return None
 
 
 def _build_return_curve(
@@ -145,10 +153,7 @@ def get_summary_statistics(db: Session, user_id: int) -> Dict[str, Any]:
     ).count()
 
     # 转换为USD
-    try:
-        total_invested_usd = exchange_rate_service.convert_to_usd(db, total_invested_cny)
-    except ValueError:
-        total_invested_usd = Decimal("0")
+    total_invested_usd = _to_usd_or_zero(db, total_invested_cny)
 
     # 获取使用的汇率
     exchange_rates_used = {}
@@ -269,7 +274,7 @@ def get_statistics_by_time(db: Session, user_id: int, group_by: str = "month") -
             time_stats[key] = bucket
 
         gross = Decimal(str(txn.quantity)) * Decimal(str(txn.price))
-        amount_cny = float(_to_cny_on_date(db, gross, txn.currency, txn_date, rate_lookup))
+        amount_cny = float(_to_cny_on_date(gross, txn.currency, txn_date, rate_lookup))
 
         if txn.transaction_type == "BUY":
             bucket["buy_count"] += 1
@@ -533,14 +538,9 @@ def calculate_current_holdings_performance(
         unrealized_pnl_rate = total_unrealized_pnl_cny / total_holdings_cost_cny * Decimal(100)
 
     # 转换为USD
-    try:
-        total_unrealized_pnl_usd = exchange_rate_service.convert_to_usd(db, total_unrealized_pnl_cny)
-        total_holdings_cost_usd = exchange_rate_service.convert_to_usd(db, total_holdings_cost_cny)
-        total_market_value_usd = exchange_rate_service.convert_to_usd(db, total_market_value_cny)
-    except ValueError:
-        total_unrealized_pnl_usd = Decimal(0)
-        total_holdings_cost_usd = Decimal(0)
-        total_market_value_usd = Decimal(0)
+    total_unrealized_pnl_usd = _to_usd_or_zero(db, total_unrealized_pnl_cny)
+    total_holdings_cost_usd = _to_usd_or_zero(db, total_holdings_cost_cny)
+    total_market_value_usd = _to_usd_or_zero(db, total_market_value_cny)
 
     return {
         'unrealized_pnl_cny': float(total_unrealized_pnl_cny),
@@ -667,12 +667,8 @@ def calculate_realized_pnl_fifo(
         realized_pnl_rate = total_realized_pnl_cny / total_sold_cost_cny * Decimal(100)
 
     # 转换为USD
-    try:
-        total_realized_pnl_usd = exchange_rate_service.convert_to_usd(db, total_realized_pnl_cny)
-        total_sold_cost_usd = exchange_rate_service.convert_to_usd(db, total_sold_cost_cny)
-    except ValueError:
-        total_realized_pnl_usd = Decimal(0)
-        total_sold_cost_usd = Decimal(0)
+    total_realized_pnl_usd = _to_usd_or_zero(db, total_realized_pnl_cny)
+    total_sold_cost_usd = _to_usd_or_zero(db, total_sold_cost_cny)
 
     return {
         'realized_pnl_cny': float(total_realized_pnl_cny),
@@ -781,14 +777,9 @@ def get_dividend_summary(
         by_symbol[symbol]['count'] += 1
 
     # 转换为USD
-    try:
-        total_gross_usd = exchange_rate_service.convert_to_usd(db, total_gross_cny)
-        total_tax_usd = exchange_rate_service.convert_to_usd(db, total_tax_cny)
-        total_net_usd = exchange_rate_service.convert_to_usd(db, total_net_cny)
-    except ValueError:
-        total_gross_usd = Decimal(0)
-        total_tax_usd = Decimal(0)
-        total_net_usd = Decimal(0)
+    total_gross_usd = _to_usd_or_zero(db, total_gross_cny)
+    total_tax_usd = _to_usd_or_zero(db, total_tax_cny)
+    total_net_usd = _to_usd_or_zero(db, total_net_cny)
 
     # 转换为列表并格式化
     by_symbol_list = [
@@ -857,13 +848,6 @@ def _compose_total_realized_return(
     }
 
 
-def calculate_total_realized_return(db: Session, user_id: int) -> Dict[str, Any]:
-    """Combine realized trading PnL with net dividend income."""
-    realized = calculate_realized_pnl_fifo(db, user_id)
-    dividends = get_dividend_summary(db, user_id)
-    return _compose_total_realized_return(realized, dividends)
-
-
 def _compose_account_total_return(
     db: Session,
     user_id: int,
@@ -891,19 +875,12 @@ def _compose_account_total_return(
     if transactions is None:
         transactions = db.query(Transaction).filter(Transaction.user_id == user_id).all()
     for txn in transactions:
-        currency = txn.currency or "CNY"
-        quantity = Decimal(str(txn.quantity))
-        gross = quantity * Decimal(str(txn.price))
-        fee = Decimal(str(txn.fee or 0))
-        if txn.transaction_type == "BUY":
-            amount = -(gross + fee)
-        elif txn.transaction_type == "SELL":
-            amount = gross - fee
-        else:
+        amount = _txn_signed_cash_flow(txn)
+        if amount is None:
             continue
         cash_flows.append((
             txn.transaction_date,
-            _to_cny_on_date(db, amount, currency, txn.transaction_date, rate_lookup),
+            _to_cny_on_date(amount, txn.currency or "CNY", txn.transaction_date, rate_lookup),
         ))
 
     if dividend_actions is None:
@@ -917,7 +894,7 @@ def _compose_account_total_return(
         flow_date = div.payment_date or div.ex_date
         cash_flows.append((
             flow_date,
-            _to_cny_on_date(db, net, currency, flow_date, rate_lookup),
+            _to_cny_on_date(net, currency, flow_date, rate_lookup),
         ))
 
     # Return-rate denominator. net_invested_principal_cny (== cumulative cash-in
@@ -948,14 +925,9 @@ def _compose_account_total_return(
 
     xirr_rate = xirr(cash_flows)
 
-    try:
-        total_return_usd = exchange_rate_service.convert_to_usd(db, total_return_cny)
-        net_invested_principal_usd = exchange_rate_service.convert_to_usd(db, net_invested_principal_cny)
-        current_market_value_usd = exchange_rate_service.convert_to_usd(db, current_market_value_cny)
-    except ValueError:
-        total_return_usd = Decimal("0")
-        net_invested_principal_usd = Decimal("0")
-        current_market_value_usd = Decimal("0")
+    total_return_usd = _to_usd_or_zero(db, total_return_cny)
+    net_invested_principal_usd = _to_usd_or_zero(db, net_invested_principal_cny)
+    current_market_value_usd = _to_usd_or_zero(db, current_market_value_cny)
 
     return {
         'total_return_cny': float(total_return_cny),
@@ -976,11 +948,12 @@ def _compose_account_total_return(
         'annualized_method': 'xirr',
         'fx_basis': 'transaction_date',
         'base_currency': 'CNY',
-        'calculation_status': 'estimated',
+        'calculation_status': 'exact',
         'calculation_scope': 'invested_securities_only',
         'methodology_notes': [
-            'Account cash and external deposits or withdrawals are not included.',
-            'Security buys, sells and dividends are used as XIRR cash-flow proxies.',
+            '权益仓口径：仅统计投入证券的资金，口径内精确；'
+            '账户闲置现金与外部出入金按设计不计入、不稀释收益率。',
+            'XIRR 现金流为证券买卖与股息（按各自日期汇率折算）。',
         ],
     }
 
@@ -1046,6 +1019,7 @@ def calculate_performance_analytics(
     end_date: Optional[date] = None,
     risk_free_rate: Decimal = Decimal("0"),
     refresh_history: bool = False,
+    benchmarks: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     if start_date and end_date and end_date < start_date:
         raise ValueError("end_date must be on or after start_date")
@@ -1127,16 +1101,48 @@ def calculate_performance_analytics(
     symbols = [(symbol, market, currency) for (symbol, market), currency in symbols_by_key.items()]
     sync_results = []
     if refresh_history:
+        # 已清仓标的的同步终点钳到最后一笔交易日：回测只需要持有区间内的
+        # 行情，退市/摘牌标的清仓日后的尾部缺口永远补不上也不需要补。
+        held_keys = {
+            (holding.symbol, holding.market)
+            for holding in holdings
+            if holding.quantity and holding.quantity > 0
+        }
+        last_txn_by_key: Dict[Tuple[str, str], date] = {}
+        first_txn_by_key: Dict[Tuple[str, str], date] = {}
+        for txn in transactions:
+            key = (txn.symbol, txn.market)
+            if key not in last_txn_by_key or txn.transaction_date > last_txn_by_key[key]:
+                last_txn_by_key[key] = txn.transaction_date
+            if key not in first_txn_by_key or txn.transaction_date < first_txn_by_key[key]:
+                first_txn_by_key[key] = txn.transaction_date
         for symbol, market, currency in symbols:
+            key = (symbol, market)
+            symbol_start = max(start_date, first_txn_by_key.get(key, start_date))
+            symbol_end = (
+                end_date
+                if key in held_keys
+                else min(end_date, last_txn_by_key.get(key, end_date))
+            )
+            if symbol_end < symbol_start:
+                symbol_end = symbol_start
+            # 增量：已缓存区间只补边缘缺口，全覆盖时零外呼——此前每次全量
+            # 重拉全部标的全区间，是 Tushare 配额的最大消耗点。
             sync_results.append(
-                fetch_and_store_security_price_history(
+                fetch_and_store_security_price_history_incremental(
                     db,
                     symbol=symbol,
                     market=market,
-                    start_date=start_date,
-                    end_date=end_date,
+                    start_date=symbol_start,
+                    end_date=symbol_end,
                     currency=currency,
                 )
+            )
+        # 请求的基准指数同样内联增量同步（GET 热路径 refresh_history=false
+        # 绝不外呼的约定不变）
+        for code in benchmarks or []:
+            sync_results.append(
+                benchmark_service.sync_benchmark_history(db, code, start_date, end_date)
             )
 
     price_maps, price_counts = _build_price_maps(db, symbols, start_date, end_date)
@@ -1200,23 +1206,17 @@ def calculate_performance_analytics(
     for txn in transactions:
         if not (start_date <= txn.transaction_date <= end_date):
             continue
-        currency = txn.currency or "CNY"
-        gross = Decimal(str(txn.quantity)) * Decimal(str(txn.price))
-        fee = Decimal(str(txn.fee or 0))
-        if txn.transaction_type == "BUY":
-            amount = -(gross + fee)
-        elif txn.transaction_type == "SELL":
-            amount = gross - fee
-        else:
+        amount = _txn_signed_cash_flow(txn)
+        if amount is None:
             continue
         range_cash_flows.append((
             txn.transaction_date,
-            _to_cny_on_date(db, amount, currency, txn.transaction_date, rate_lookup),
+            _to_cny_on_date(amount, txn.currency or "CNY", txn.transaction_date, rate_lookup),
         ))
     for flow_date, net, currency in range_dividends:
         range_cash_flows.append((
             flow_date,
-            _to_cny_on_date(db, net, currency, flow_date, rate_lookup),
+            _to_cny_on_date(net, currency, flow_date, rate_lookup),
         ))
     closing_market_value_cny = Decimal(str(curve[-1]["equity_cny"])) if curve else Decimal("0")
     if closing_market_value_cny > 0:
@@ -1300,6 +1300,43 @@ def calculate_performance_analytics(
     if risk_metrics.get("risk_sample_count", 0) < 2:
         warnings.append("收益序列样本不足，夏普率、索提诺率和卡玛率暂不展示。")
 
+    # 基准对比：每个请求的基准 code 一个块。指数收盘价按曲线区间加载
+    # （含起点前最近一行做基点），喂纯内核对齐组合曲线栅格。
+    benchmarks_payload: List[Dict[str, Any]] = []
+    if benchmarks:
+        curve_dates = [date.fromisoformat(point["date"]) for point in curve]
+        portfolio_total_return = risk_metrics.get("total_return_rate")
+        for code in benchmarks:
+            meta = benchmark_service.BENCHMARKS[code]
+            closes = benchmark_service.load_benchmark_closes(
+                db, code, start_date, end_date
+            )
+            series = build_benchmark_series(closes, curve_dates)
+            block: Dict[str, Any] = {
+                "code": code,
+                "name": meta["name"],
+                "currency": meta["currency"],
+                **series,
+            }
+            if series.get("status") == "ok":
+                comparison = calculate_benchmark_comparison(
+                    portfolio_total_return, series
+                )
+                block["comparison"] = comparison
+                if comparison is None and series.get("alignment") == "first_available":
+                    # 基准数据晚于区间起点：计量区间不一致，不产出超额收益
+                    warnings.append(
+                        f"基准指数 {meta['name']} 数据晚于区间起点"
+                        f"（缺 {series.get('alignment_gap_days', 0)} 天），"
+                        "计量区间不一致，未计算超额收益；可同步更早历史行情补齐。"
+                    )
+            else:
+                warnings.append(
+                    f"基准指数 {meta['name']} 暂无历史行情，无法对比；"
+                    "可点击同步历史行情或检查 Tushare 配置。"
+                )
+            benchmarks_payload.append(block)
+
     return {
         "base_currency": "CNY",
         "calculation_level": calculation_level,
@@ -1317,6 +1354,7 @@ def calculate_performance_analytics(
             "clamped": range_clamped,
         },
         "curve": curve,
+        **({"benchmarks": benchmarks_payload} if benchmarks else {}),
         "metrics": risk_metrics,
         "trade_skill": trade_skill,
         # 区间汇总：与 curve/metrics/trade_skill 同一窗口的资金侧数字。
@@ -1504,7 +1542,7 @@ def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
     """组合快照：持仓表现 + 价格新鲜度 + 市场分布 + 近期交易 + 对账状态（路线图序 5）。
 
     一次调用返回看板所需的全部数据，同时是 LLM 报告（目的③）的结构化输入底座：
-    所有估算口径标记（estimated/experimental）与数据质量信号原样携带。
+    所有口径标记（权益仓 exact/experimental）与数据质量信号原样携带。
     """
     from ..models.broker_account import BrokerAccount
     from ..models.reconciliation_snapshot import ReconciliationSnapshot

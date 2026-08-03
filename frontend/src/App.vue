@@ -116,7 +116,7 @@
   </el-container>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
@@ -167,7 +167,7 @@ const userInitial = computed(() => authStore.user?.username?.trim().charAt(0).to
 
 const activeMenu = computed(() => route.path)
 
-const handleUserCommand = async (command) => {
+const handleUserCommand = async (command: string) => {
   if (command === 'logout') {
     mobileNavVisible.value = false
     await authStore.logout()
@@ -188,7 +188,7 @@ const handleUserCommand = async (command) => {
   top: 0;
   z-index: 100;
   height: auto;
-  min-height: 52px;
+  min-height: var(--app-header-height);
   background-color: rgba(255, 255, 255, 0.72);
   border-bottom: 1px solid var(--app-separator);
   backdrop-filter: saturate(180%) blur(20px);
@@ -201,7 +201,7 @@ const handleUserCommand = async (command) => {
   display: flex;
   align-items: center;
   height: 100%;
-  min-height: 52px;
+  min-height: var(--app-header-height);
   padding: 0 24px;
   gap: 20px;
 }
@@ -384,13 +384,13 @@ const handleUserCommand = async (command) => {
 
 .status-overlay {
   position: sticky;
-  top: 64px;
+  top: calc(var(--app-header-height) + 12px);
   z-index: 19;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  width: min(100%, 1480px);
+  width: min(100%, 1440px);
   margin: 0 auto;
   padding: 12px 32px;
   color: #7f1d1d;
@@ -522,7 +522,7 @@ const handleUserCommand = async (command) => {
   }
 
   .status-overlay {
-    top: 104px;
+    top: calc(var(--app-header-height) + 52px);
     padding-inline: 20px;
   }
 }

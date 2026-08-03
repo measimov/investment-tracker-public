@@ -4,7 +4,7 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`53dcdb71b02c8e82c123f2df62b47f0259856751` (2026-07-29).
+`c901a0dc6d0966b89544891dc35e2fe749bf165e` (2026-08-03).
 
 Before syncing a new public release:
 
@@ -24,7 +24,10 @@ Public-only adaptations:
   `DEMO_INITIAL_PASSWORD`.
 - Keep this file in the public repository even though it is not part of the
   private snapshot.
-- Exclude private operator guidance (`CLAUDE.md`), production rebuild plans and
-  verification notes, and `ops/rebuild/`.
+- Exclude private operator guidance (`CLAUDE.md`) and `ops/`.
+- Replace real-ledger reconciliation figures in `METRICS_AUDIT.md` with neutral
+  isolated-test wording.
+- Keep `TUSHARE_TOKEN` optional (empty default) in `.env.example`,
+  `docker-compose.yml`, and deployment docs.
 - Treat the squashed `20260728_0001_initial_schema.py` as a fresh pre-v1.0
   baseline; it is not an in-place upgrade from the first public snapshot.

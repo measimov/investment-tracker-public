@@ -15,22 +15,20 @@ from app.models.reconciliation_snapshot import ReconciliationSnapshot
 from app.models.transaction import Transaction
 from app.services import cmb_fund_flow_importer as cmb_importer
 from app.services import eastmoney_statement_importer as eastmoney_importer
+from tests.helpers import reset_tables
 
 
-def reset_tables(db):
-    for model in (
-        BrokerFundFlow,
-        IbkrActivityFlow,
-        Holding,
-        CorporateAction,
-        Transaction,
-        CashEvent,
-        ReconciliationSnapshot,
-        ImportBatch,
-        BrokerAccount,
-    ):
-        db.query(model).delete()
-    db.commit()
+RESET_MODELS = (
+    BrokerFundFlow,
+    IbkrActivityFlow,
+    Holding,
+    CorporateAction,
+    Transaction,
+    CashEvent,
+    ReconciliationSnapshot,
+    ImportBatch,
+    BrokerAccount,
+)
 
 
 def cmb_flow(row_hash: str) -> cmb_importer.ParsedFlow:
@@ -86,7 +84,7 @@ def eastmoney_rows():
 
 def test_cmb_preview_scopes_duplicates_to_validated_account(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         first_account = BrokerAccount(
             user_id=1,
@@ -120,7 +118,7 @@ def test_cmb_preview_scopes_duplicates_to_validated_account(monkeypatch):
         monkeypatch.setattr(
             cmb_importer,
             "parse_rows",
-            lambda contents, filename: ([flow], {"证券买入": 1}, 1, []),
+            lambda contents, filename, **kwargs: ([flow], {"证券买入": 1}, 1, []),
         )
 
         first_preview = cmb_importer.preview_cmb_fund_flow(
@@ -147,7 +145,7 @@ def test_cmb_preview_scopes_duplicates_to_validated_account(monkeypatch):
 
 def test_eastmoney_preview_scopes_duplicates_to_validated_account(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         first_account = BrokerAccount(
             user_id=1,
@@ -237,7 +235,7 @@ def test_statement_preview_rejects_missing_foreign_or_wrong_broker_account(
     missing_message,
 ):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         wrong_broker = BrokerAccount(
             user_id=1,

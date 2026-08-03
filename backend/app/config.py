@@ -18,6 +18,14 @@ class Settings(BaseSettings):
 
     # Market data
     tushare_token: str = ""
+    # Tushare 全局最小调用间隔（所有接口与并发线程共享；0.35s ≈ 170 次/分，
+    # 低于免费档常见的每分钟配额）。设 0 关闭全局闸。
+    tushare_global_min_interval_seconds: float = 0.35
+
+    # 分红公告同步（Tushare dividend；仅 A/B 股）
+    dividend_sync_lookback_days: int = 365
+    dividend_sync_match_window_days: int = 30
+    dividend_sync_periodic_enabled: bool = False
 
     # LLM report (DeepSeek / OpenAI-compatible; empty key disables the feature)
     llm_report_api_key: str = ""
@@ -30,6 +38,8 @@ class Settings(BaseSettings):
     enable_docs: bool = True  # Set to False in production to disable API documentation
     require_https: bool = False  # Set to True in production to reject plaintext auth requests
     price_refresh_max_workers: int = 4
+    # 主动刷新股价的新鲜度窗口：窗口内重复请求跳过（防连点浪费配额）
+    price_refresh_freshness_seconds: int = 600
     background_job_retention_hours: int = 168
     background_job_stale_minutes: int = 60
     background_worker_enabled: bool = True

@@ -14,12 +14,10 @@ from app.models.transaction import Transaction
 from app.schemas.corporate_action import CorporateActionCreate
 from app.services.holding_service import recalculate_holdings
 from app.services.statistics_service import _get_fifo_results_for_user
+from tests.helpers import reset_tables
 
 
-def reset_tables(db):
-    for model in (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction):
-        db.query(model).delete()
-    db.commit()
+RESET_MODELS = (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction)
 
 
 def _seed_position(db, **action_fields):
@@ -68,14 +66,14 @@ def _replayed_quantities(db):
 )
 def test_holding_and_fifo_replays_agree(action_fields, expected):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         _seed_position(db, **action_fields)
         holding_qty, fifo_qty = _replayed_quantities(db)
         assert holding_qty == expected
         assert fifo_qty == expected
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -84,7 +82,7 @@ def test_ttwr_curve_position_matches_holding_for_ratio_only_bonus():
     from app.services.statistics_service import calculate_performance_analytics
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         _seed_position(db, action_type="STOCK_DIVIDEND", distribution_ratio="10:3")
         recalculate_holdings(db, 1, "600000", "A股")
@@ -93,7 +91,7 @@ def test_ttwr_curve_position_matches_holding_for_ratio_only_bonus():
 
         assert analytics["data_quality"]["terminal_position_mismatches"] == []
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 

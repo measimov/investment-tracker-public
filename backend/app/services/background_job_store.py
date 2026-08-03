@@ -367,6 +367,9 @@ def update_job(
             job.status = status
             if status in TERMINAL_STATUSES:
                 job.finished_at = now
+            if status == "succeeded":
+                # 重试成功后不残留上一次尝试的错误信息（观感与排障噪音）
+                job.error = None
         if error is not None:
             job.error = error
         job.heartbeat_at = now

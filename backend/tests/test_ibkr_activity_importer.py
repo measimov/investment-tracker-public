@@ -24,26 +24,18 @@ from app.services.ibkr_activity_importer import (
     is_option_symbol,
     parse_rows,
 )
+from tests.helpers import ibkr_csv, reset_tables, seed_security_rule, PCT_RELISTING_PAYLOAD
 
 
-def reset_tables(db):
-    for model in (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction):
-        db.query(model).delete()
-    db.query(ImportBatch).delete()
-    db.query(BrokerAccount).delete()
-    db.commit()
-
-
-def ibkr_csv(*data_rows: str) -> bytes:
-    header = "\n".join(
-        [
-            "Statement,Header,域名称,域值",
-            "总结,Header,域名称,域值",
-            "总结,Data,基础货币,USD",
-            "Transaction History,Header,日期,账户,说明,交易类型,代码,数量,价格,Price Currency,总额,佣金,净额",
-        ]
-    )
-    return (header + "\n" + "\n".join(data_rows) + "\n").encode("utf-8")
+RESET_MODELS = (
+    BrokerFundFlow,
+    IbkrActivityFlow,
+    Holding,
+    CorporateAction,
+    Transaction,
+    ImportBatch,
+    BrokerAccount,
+)
 
 
 def parsed_ibkr_flow(
@@ -82,7 +74,7 @@ def stub_parsed_rows(monkeypatch, *flows: importer.ParsedIbkrFlow) -> None:
     monkeypatch.setattr(
         importer,
         "parse_rows",
-        lambda contents, filename: (list(flows), counts, len(flows), []),
+        lambda contents, filename, **kwargs: (list(flows), counts, len(flows), []),
     )
 
 
@@ -190,8 +182,17 @@ def test_ibkr_import_handles_pc_partner_hk_to_sg_relisting(monkeypatch):
     monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
+        seed_security_rule(
+            db, 1, "RELISTING", "01263", "港股", payload=PCT_RELISTING_PAYLOAD
+        )
+        seed_security_rule(
+            db, 1, "NAME_OVERRIDE", "01263", "港股", payload={"name": "柏能集团"}
+        )
+        seed_security_rule(
+            db, 1, "NAME_OVERRIDE", "PCT", "新加坡股", payload={"name": "柏能集团"}
+        )
         account = BrokerAccount(
             user_id=1,
             broker="IBKR",
@@ -301,7 +302,7 @@ def test_ibkr_import_handles_pc_partner_hk_to_sg_relisting(monkeypatch):
 
 def test_ibkr_preview_requires_owned_matching_broker_account():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         wrong_broker = BrokerAccount(
             user_id=1,
@@ -381,7 +382,7 @@ def test_ibkr_duplicate_hash_rejects_different_account_in_preview_and_import(
     monkeypatch,
 ):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         first_account = BrokerAccount(
             user_id=1,
@@ -450,7 +451,7 @@ def test_ibkr_duplicate_hash_rejects_unsafe_historical_source(
     message,
 ):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -495,6 +496,7 @@ def test_ibkr_duplicate_hash_rejects_unsafe_historical_source(
             user_id=1,
             filename="legacy.csv",
             flow=flow,
+            broker_account_id=account.id,
             transaction_id=(
                 transaction.id if source_state == "conflicting_links" else None
             ),
@@ -529,86 +531,9 @@ def test_ibkr_duplicate_hash_rejects_unsafe_historical_source(
         db.close()
 
 
-def test_ibkr_formal_import_safely_claims_matching_unassigned_legacy_source(
-    monkeypatch,
-):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="IBKR",
-            account_name="IBKR 承接账户",
-            account_number_masked="尾号0001",
-            base_currency="USD",
-        )
-        db.add(account)
-        db.flush()
-        flow = parsed_ibkr_flow("d" * 64)
-        transaction = Transaction(
-            user_id=1,
-            broker_account_id=None,
-            symbol=flow.symbol,
-            name=flow.name,
-            market=flow.market,
-            transaction_type=flow.transaction_type,
-            quantity=abs(flow.quantity),
-            price=flow.price,
-            fee=flow.fee_in_price_currency,
-            transaction_date=flow.trade_date,
-            currency=flow.price_currency,
-        )
-        db.add(transaction)
-        db.flush()
-        source = importer.create_ibkr_activity_flow(
-            user_id=1,
-            filename="legacy.csv",
-            flow=flow,
-            transaction_id=transaction.id,
-        )
-        db.add(source)
-        db.commit()
-        stub_parsed_rows(monkeypatch, flow)
-
-        preview = importer.preview_ibkr_activity(
-            db,
-            1,
-            b"claim-preview",
-            "ibkr.csv",
-            broker_account_id=account.id,
-        )
-        db.refresh(transaction)
-        db.refresh(source)
-        assert preview["claimable_unassigned_rows"] == 1
-        assert preview["duplicate_rows"] == 0
-        assert transaction.broker_account_id is None
-        assert source.broker_account_id is None
-
-        result = import_ibkr_activity(
-            db,
-            1,
-            b"claim-formal",
-            "ibkr.csv",
-            broker_account_id=account.id,
-        )
-        db.refresh(transaction)
-        db.refresh(source)
-        batch = db.get(ImportBatch, result["import_batch_id"])
-        assert transaction.broker_account_id == account.id
-        assert source.broker_account_id == account.id
-        assert result["migrated_unassigned_rows"] == 1
-        assert result["canonical_objects_changed"] == 0
-        assert batch.imported_count == 1
-        assert batch.duplicate_count == 0
-        assert batch.skipped_count == 0
-        assert batch.archived_count == 0
-    finally:
-        db.close()
-
-
 def test_ibkr_account_mask_mismatch_fails_without_records(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -645,7 +570,7 @@ def test_ibkr_tax_is_preserved_unbooked_when_same_account_candidate_is_ambiguous
     monkeypatch,
 ):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -712,7 +637,7 @@ def test_ibkr_tax_is_preserved_unbooked_when_same_account_candidate_is_ambiguous
 
 def test_ibkr_same_account_corporate_action_hash_is_a_safe_duplicate(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -771,7 +696,7 @@ def test_ibkr_same_account_corporate_action_hash_is_a_safe_duplicate(monkeypatch
 
 def test_ibkr_position_lookup_keeps_unassigned_and_assigned_accounts_separate():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -973,7 +898,7 @@ def test_ibkr_xlsx_missing_sheet_or_columns_raises():
 def test_ibkr_xlsx_import_books_trades_and_archives_options(monkeypatch):
     monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     account = BrokerAccount(
         user_id=1,
         broker="IBKR",
@@ -1007,14 +932,14 @@ def test_ibkr_xlsx_import_books_trades_and_archives_options(monkeypatch):
         archived = db.query(IbkrActivityFlow).filter_by(transaction_id=None).count()
         assert archived == 1
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
 def test_ibkr_xlsx_reimport_does_not_duplicate_archived_options(monkeypatch):
     monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     account = BrokerAccount(
         user_id=1,
         broker="IBKR",
@@ -1044,7 +969,7 @@ def test_ibkr_xlsx_reimport_does_not_duplicate_archived_options(monkeypatch):
             db.query(IbkrActivityFlow).filter_by(skip_reason="option").count() == 1
         )
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -1052,7 +977,7 @@ def test_ibkr_xlsx_option_archive_blocks_cross_account_dedup(monkeypatch):
     """期权归档判重必须校验账户归属：另一账户下的既有来源不能被静默视为重复。"""
     monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     account_a = BrokerAccount(
         user_id=1,
         broker="IBKR",
@@ -1110,7 +1035,7 @@ def test_ibkr_xlsx_option_archive_blocks_cross_account_dedup(monkeypatch):
             == 0
         )
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -1172,13 +1097,13 @@ def test_name_lookup_success_is_cached_across_batches(monkeypatch):
     assert len(calls) == 1
 
 
-def test_name_lookup_known_names_never_hit_network(monkeypatch):
+def test_name_lookup_overrides_never_hit_network(monkeypatch):
     monkeypatch.setattr(importer, "_resolved_name_cache", {})
 
     def exploding_lookup(symbol, market):
-        raise AssertionError("KNOWN_SECURITY_NAMES 命中不应触发外网查询")
+        raise AssertionError("名称覆盖命中不应触发外网查询")
 
     monkeypatch.setattr(importer, "lookup_tushare_security_name", exploding_lookup)
-    key = next(iter(importer.KNOWN_SECURITY_NAMES))
-    results = importer.resolve_security_names([key])
-    assert results[key] == importer.KNOWN_SECURITY_NAMES[key]
+    key = ("01263", "港股")
+    results = importer.resolve_security_names([key], name_overrides={key: "柏能集团"})
+    assert results[key] == "柏能集团"

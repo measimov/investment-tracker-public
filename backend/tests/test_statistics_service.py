@@ -14,41 +14,29 @@ from app.models.transaction import Transaction
 from app.services import market_data_service, performance_history_jobs
 from app.services.market_data_service import fetch_and_store_security_price_history_incremental
 from app.services.performance_history_jobs import get_history_sync_targets
+from app.services.portfolio.metrics import (
+    calculate_risk_metrics as _calculate_risk_metrics,
+)
 from app.services.statistics_service import (
     _ExchangeRateLookup,
-    _calculate_risk_metrics,
     _get_fifo_results_for_user,
     calculate_current_holdings_performance,
     calculate_performance_analytics,
     calculate_performance_summary,
     get_statistics_by_time,
 )
+from tests.helpers import add_transaction, reset_tables
 
 
-def reset_tables(db):
-    for model in (BrokerFundFlow, IbkrActivityFlow, SecurityPrice, Holding, CorporateAction, Transaction, ExchangeRate):
-        db.query(model).delete()
-    db.commit()
-
-
-def add_transaction(db, **overrides):
-    values = {
-        "user_id": 1,
-        "symbol": "AAPL",
-        "name": "Apple",
-        "market": "美股",
-        "transaction_type": "BUY",
-        "quantity": Decimal("100"),
-        "price": Decimal("10"),
-        "fee": Decimal("0"),
-        "transaction_date": date(2026, 1, 1),
-        "currency": "USD",
-    }
-    values.update(overrides)
-    transaction = Transaction(**values)
-    db.add(transaction)
-    db.flush()
-    return transaction
+RESET_MODELS = (
+    BrokerFundFlow,
+    IbkrActivityFlow,
+    SecurityPrice,
+    Holding,
+    CorporateAction,
+    Transaction,
+    ExchangeRate,
+)
 
 
 def test_exchange_rate_lookup_matches_historical_fallback_behavior():
@@ -84,7 +72,7 @@ def test_exchange_rate_lookup_matches_historical_fallback_behavior():
 
 def test_fifo_pnl_tracks_partial_lot_cost_and_remaining_cost():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(db, quantity=Decimal("100"), price=Decimal("10"), fee=Decimal("1"))
         add_transaction(
@@ -122,7 +110,7 @@ def test_fifo_pnl_tracks_partial_lot_cost_and_remaining_cost():
 
 def test_performance_analytics_builds_daily_curve_and_trade_metrics():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -194,7 +182,7 @@ def test_performance_analytics_builds_daily_curve_and_trade_metrics():
 
 def test_performance_analytics_empty_result_exposes_methodology():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         result = calculate_performance_analytics(db, 1, {})
 
@@ -208,7 +196,7 @@ def test_performance_analytics_empty_result_exposes_methodology():
 
 def test_performance_analytics_custom_range_replays_opening_position():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -279,7 +267,7 @@ def test_performance_analytics_custom_range_replays_opening_position():
 
 def test_performance_analytics_custom_range_replays_prior_split():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -341,7 +329,7 @@ def test_performance_analytics_custom_range_replays_prior_split():
 
 def test_performance_analytics_warns_when_opening_value_uses_transaction_price():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -374,7 +362,7 @@ def test_performance_analytics_warns_when_opening_value_uses_transaction_price()
 
 def test_performance_analytics_rejects_reversed_date_range():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         with pytest.raises(ValueError, match="end_date must be on or after start_date"):
             calculate_performance_analytics(
@@ -390,7 +378,7 @@ def test_performance_analytics_rejects_reversed_date_range():
 
 def test_performance_analytics_ttwr_is_distinct_from_money_weighted_summary():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -441,7 +429,7 @@ def test_performance_analytics_ttwr_is_distinct_from_money_weighted_summary():
 
         assert summary["account_return"]["net_invested_principal_cny"] == 250.0
         assert summary["account_return"]["total_return_rate"] == 200.0
-        assert summary["account_return"]["calculation_status"] == "estimated"
+        assert summary["account_return"]["calculation_status"] == "exact"
         assert summary["account_return"]["calculation_scope"] == "invested_securities_only"
         assert analytics["curve"][-1]["net_invested_principal_cny"] == 250.0
         assert analytics["curve"][-1]["cumulative_return_rate"] == 50.0
@@ -455,7 +443,7 @@ def test_account_xirr_uses_transaction_date_fx():
     """Issue #42: XIRR converts each flow at its own-date FX, so a pure-FX gain
     on a flat USD position still shows a positive money-weighted return."""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         db.add(ExchangeRate(from_currency="USD", to_currency="CNY", rate=Decimal("6"),
                             effective_date=date(2020, 1, 1), is_active=True))
@@ -485,11 +473,11 @@ def test_trade_skill_metrics_are_per_closing_trade():
     """Issue #43: win rate counts closing trades, not per-symbol net results."""
     from app.services.statistics_service import (
         calculate_realized_pnl_fifo,
-        _calculate_trade_skill_metrics,
+        calculate_trade_skill_metrics as _calculate_trade_skill_metrics,
     )
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         d = 1
         for _ in range(10):  # 10 winning round-trips on ONE symbol
@@ -525,7 +513,9 @@ def test_trade_skill_metrics_are_per_closing_trade():
 
 def test_trade_skill_profit_factor_none_without_losses():
     """Issue #43: profit_factor is None but has_losses distinguishes it from no data."""
-    from app.services.statistics_service import _calculate_trade_skill_metrics
+    from app.services.portfolio.metrics import (
+        calculate_trade_skill_metrics as _calculate_trade_skill_metrics,
+    )
 
     only_wins = _calculate_trade_skill_metrics({"closed_trades": [
         {"realized_pnl_cny": 100.0, "matched_cost_cny": 500.0},
@@ -549,7 +539,7 @@ def test_build_price_maps_uses_constant_query_count():
     from app.services.statistics_service import _build_price_maps
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         symbols = []
         for i in range(8):
@@ -590,7 +580,7 @@ def test_resolve_server_prices_prefers_holding_then_history():
     from app.services.statistics_service import resolve_server_prices
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         db.add(Holding(user_id=1, symbol="AAPL", name="Apple", market="美股",
                        quantity=Decimal("10"), avg_cost=Decimal("10"),
@@ -623,7 +613,7 @@ def test_current_holdings_unpriced_positions_surfaced():
     """Issue #45: unpriced holdings are excluded but surfaced, and market-keyed
     prices resolve correctly."""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(db, symbol="AAPL", market="美股", transaction_type="BUY",
                         quantity=Decimal("100"), price=Decimal("10"),
@@ -657,7 +647,7 @@ def test_current_holdings_unpriced_positions_surfaced():
 def test_statistics_by_time_year_and_cny_conversion():
     """Issue #44: 'year' grouping works and amounts are CNY-converted."""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         db.add(ExchangeRate(
             from_currency="USD", to_currency="CNY", rate=Decimal("7"),
@@ -755,7 +745,7 @@ def test_risk_metrics_sortino_downside_denominator_is_total_n():
 def test_account_return_fully_exited_profit_uses_peak_principal():
     """Issue #39: a fully-sold profitable account must not report 0% return."""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -795,7 +785,7 @@ def test_account_return_fully_exited_profit_uses_peak_principal():
 
 def test_performance_analytics_ttwr_neutralizes_large_sell_cash_flow():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -854,7 +844,7 @@ def test_performance_analytics_ttwr_neutralizes_large_sell_cash_flow():
 
 def test_performance_analytics_replays_same_day_buys_before_sells():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -925,7 +915,7 @@ def test_performance_analytics_replays_same_day_buys_before_sells():
 
 def test_performance_analytics_applies_reverse_split_to_curve_positions():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -996,7 +986,7 @@ def test_performance_analytics_applies_reverse_split_to_curve_positions():
 
 def test_performance_analytics_terminal_point_uses_latest_history_when_current_price_missing():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         today = date.today()
         add_transaction(
@@ -1054,7 +1044,7 @@ def test_performance_analytics_terminal_point_uses_latest_history_when_current_p
 
 def test_performance_analytics_uses_record_currency_for_market_value():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         db.add(
             ExchangeRate(
@@ -1108,7 +1098,7 @@ def test_performance_analytics_uses_record_currency_for_market_value():
 
 def test_performance_analytics_clips_oversell_cash_flow_for_ttwr():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -1180,7 +1170,7 @@ def test_history_sync_default_end_date_uses_previous_day(monkeypatch):
             return cls(2026, 6, 3)
 
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -1202,7 +1192,7 @@ def test_history_sync_default_end_date_uses_previous_day(monkeypatch):
 
 def test_incremental_history_sync_skips_when_cache_covers_range():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         for price_date, close_price in (
             (date(2026, 1, 1), Decimal("10")),
@@ -1276,7 +1266,7 @@ def test_yahoo_history_request_uses_exact_period_bounds(monkeypatch):
 
 def test_yahoo_long_range_without_data_is_reported_as_uncovered(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         monkeypatch.setattr(market_data_service, "_fetch_yahoo_chart", lambda *args: {})
 
@@ -1304,7 +1294,7 @@ def test_yahoo_long_range_without_data_is_reported_as_uncovered(monkeypatch):
 
 def test_yahoo_short_range_without_data_is_explicit_no_data(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         monkeypatch.setattr(market_data_service, "_fetch_yahoo_chart", lambda *args: {})
 
@@ -1326,7 +1316,7 @@ def test_yahoo_short_range_without_data_is_explicit_no_data(monkeypatch):
 
 def test_incremental_history_sync_uses_yahoo_for_singapore_stock(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         def fake_fetch_yahoo_chart(symbol, start_date, end_date):
             assert symbol == "PCT.SI"
@@ -1382,7 +1372,7 @@ def test_incremental_history_sync_uses_yahoo_for_singapore_stock(monkeypatch):
 
 def test_incremental_history_sync_falls_back_to_stockanalysis(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         def fake_fetch_yahoo_chart(symbol, start_date, end_date):
             raise RuntimeError("Yahoo rate limited")
@@ -1451,7 +1441,7 @@ def test_trade_skill_and_range_summary_respect_selected_range():
     """交易能力指标与区间汇总必须遵守所选区间：只统计平仓日在区间内的交易、
     支付日在区间内的股息；区间 XIRR 以期初/期末市值为合成流。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         # 第一笔平仓（盈利）：1/2 买 → 1/5 卖
         add_transaction(db, symbol="600000", name="甲", market="A股",
@@ -1513,7 +1503,7 @@ def test_trade_skill_and_range_summary_respect_selected_range():
 def test_range_is_clamped_to_history_and_echoed():
     """请求区间越界时钳制到 [首笔交易日, 最后事件日]，并回显 requested/effective。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(db, symbol="600000", name="甲", market="A股",
                         quantity=Decimal("100"), price=Decimal("10"),
@@ -1538,7 +1528,7 @@ def test_range_is_clamped_to_history_and_echoed():
 def test_range_xirr_uses_opening_and_closing_market_values():
     """期中起点的区间 XIRR：期初市值作合成投入流，期末市值作回收流。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(db, symbol="600000", name="甲", market="A股",
                         quantity=Decimal("100"), price=Decimal("10"),
@@ -1569,7 +1559,7 @@ def test_disjoint_range_clamps_to_nearest_boundary_day():
     """请求区间与历史完全无交集：钳制到最近边界单日并置 clamped，
     不得在 API 预校验之后抛错变成 500。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(db, symbol="600000", name="甲", market="A股",
                         quantity=Decimal("100"), price=Decimal("10"),

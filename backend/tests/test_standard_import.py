@@ -14,12 +14,10 @@ from app.models.corporate_action import CorporateAction
 from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.transaction import Transaction
+from tests.helpers import reset_tables
 
 
-def reset_tables(db):
-    for model in (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction):
-        db.query(model).delete()
-    db.commit()
+RESET_MODELS = (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction)
 
 
 def standard_df(*rows):
@@ -28,7 +26,7 @@ def standard_df(*rows):
 
 def test_standard_import_recalculates_holdings():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         result = import_standard_transactions_dataframe(
             db,
@@ -60,7 +58,7 @@ def test_standard_import_recalculates_holdings():
 
 def test_standard_import_rolls_back_when_recalculation_fails():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         try:
             import_standard_transactions_dataframe(
@@ -88,7 +86,7 @@ def test_standard_import_rolls_back_when_recalculation_fails():
 
 def test_standard_corporate_action_import_recalculates_holdings():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         import_standard_transactions_dataframe(
             db,
@@ -158,7 +156,7 @@ def test_standard_corporate_action_import_recalculates_holdings():
 
 def test_standard_corporate_action_import_rolls_back_on_invalid_row():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         try:
             import_standard_corporate_actions_dataframe(
@@ -192,7 +190,7 @@ def test_standard_corporate_action_import_rolls_back_on_invalid_row():
 def test_standard_import_attributes_broker_account():
     """标准导入带 broker_account_id：交易/公司行动/重算的持仓都落到该账户桶。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     account = BrokerAccount(user_id=1, broker="HSBC", account_name="hsbc-probe")
     db.add(account)
     db.commit()
@@ -241,7 +239,7 @@ def test_standard_import_attributes_broker_account():
         assert action.broker_account_id == account.id
         assert holding.broker_account_id == account.id
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.query(BrokerAccount).filter_by(id=account.id).delete()
         db.commit()
         db.close()
@@ -250,7 +248,7 @@ def test_standard_import_attributes_broker_account():
 def test_standard_import_without_account_lands_in_null_bucket():
     """不带 broker_account_id 时行为不变：落 NULL 账户桶。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         import_standard_transactions_dataframe(
             db,
@@ -274,5 +272,5 @@ def test_standard_import_without_account_lands_in_null_bucket():
         assert txn.broker_account_id is None
         assert holding.broker_account_id is None
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()

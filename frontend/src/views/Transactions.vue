@@ -5,18 +5,9 @@
         <div class="page-header">
           <span>交易记录管理</span>
           <div class="header-actions">
-            <el-button type="success" @click="showImportDialog = true">
-              <el-icon><Upload /></el-icon>
-              导入
-            </el-button>
-            <el-button type="primary" @click="handleExport">
-              <el-icon><Download /></el-icon>
-              导出
-            </el-button>
-            <el-button type="primary" @click="handleAdd">
-              <el-icon><Plus /></el-icon>
-              新增交易
-            </el-button>
+            <el-button :icon="Upload" @click="showImportDialog = true">导入</el-button>
+            <el-button :icon="Download" @click="handleExport">导出</el-button>
+            <el-button type="primary" :icon="Plus" @click="handleAdd">新增交易</el-button>
           </div>
         </div>
       </template>
@@ -151,12 +142,17 @@
         </el-table>
       </div>
 
-      <div v-else v-loading="loading" class="mobile-transaction-list">
-        <article v-for="row in transactions" :key="row.id" class="mobile-transaction-card">
-          <div class="mobile-row-head">
-            <div class="asset-title">
-              <span class="asset-symbol">{{ row.symbol }}</span>
-              <span class="asset-name">{{ row.name || row.market }}</span>
+      <div v-else v-loading="loading" class="mobile-card-list">
+        <article
+          v-for="row in transactions"
+          :key="row.id"
+          class="mobile-card"
+          data-testid="transaction-card"
+        >
+          <div class="mobile-card-head">
+            <div class="mobile-card-title">
+              <span class="mobile-card-symbol">{{ row.symbol }}</span>
+              <span class="mobile-card-name">{{ row.name || row.market }}</span>
             </div>
             <el-tag :type="typeTagKind(row.transaction_type)" size="small">
               {{ typeLabel(row.transaction_type) }}
@@ -170,7 +166,7 @@
             <strong>{{ formatNumber(row.quantity, 4) }} × {{ formatNumber(row.price, 4) }}</strong>
           </div>
 
-          <div class="mobile-transaction-meta">
+          <div class="mobile-card-meta">
             <span :class="{ 'account-unassigned': !row.broker_account_id }">
               账户：{{ brokerAccountLabelById(row.broker_account_id) }}
             </span>
@@ -218,7 +214,7 @@
     </el-card>
 
     <!-- Transaction Form Dialog -->
-    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑交易' : '新增交易'" width="600px">
+    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑交易' : '新增交易'" width="560px">
       <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
         <el-form-item label="券商账户">
           <el-select
@@ -226,7 +222,6 @@
             clearable
             placeholder="可选；用于账户归属"
             :loading="brokerAccountsLoading"
-            style="width: 100%"
           >
             <el-option
               v-for="account in brokerAccounts"
@@ -243,7 +238,7 @@
           <el-input v-model="form.name" placeholder="资产名称" />
         </el-form-item>
         <el-form-item label="市场" prop="market">
-          <el-select v-model="form.market" placeholder="选择市场" style="width: 100%">
+          <el-select v-model="form.market" placeholder="选择市场">
             <el-option label="A股" value="A股" />
             <el-option label="B股" value="B股" />
             <el-option label="港股" value="港股" />
@@ -259,25 +254,24 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="数量" prop="quantity">
-          <el-input-number v-model="form.quantity" :min="0" :precision="8" style="width: 100%" />
+          <el-input-number v-model="form.quantity" :min="0" :precision="8" />
         </el-form-item>
         <el-form-item label="价格" prop="price">
-          <el-input-number v-model="form.price" :min="0" :precision="8" style="width: 100%" />
+          <el-input-number v-model="form.price" :min="0" :precision="8" />
         </el-form-item>
         <el-form-item label="手续费" prop="fee">
-          <el-input-number v-model="form.fee" :min="0" :precision="2" style="width: 100%" />
+          <el-input-number v-model="form.fee" :min="0" :precision="2" />
         </el-form-item>
         <el-form-item label="交易日期" prop="transaction_date">
           <el-date-picker
             v-model="form.transaction_date"
             type="date"
             placeholder="选择日期"
-            style="width: 100%"
             value-format="YYYY-MM-DD"
           />
         </el-form-item>
         <el-form-item label="币种" prop="currency">
-          <el-select v-model="form.currency" style="width: 100%">
+          <el-select v-model="form.currency">
             <el-option label="CNY (人民币)" value="CNY" />
             <el-option label="USD (美元)" value="USD" />
             <el-option label="HKD (港币)" value="HKD" />
@@ -297,7 +291,7 @@
     </el-dialog>
 
     <!-- Import Dialog -->
-    <el-dialog v-model="showImportDialog" title="导入数据" width="640px">
+    <el-dialog v-model="showImportDialog" title="导入数据" width="720px">
       <el-tabs v-model="importMode" class="import-tabs">
         <el-tab-pane label="标准交易文件" name="standard" />
         <el-tab-pane label="标准公司行动文件" name="corporate_actions" />
@@ -371,7 +365,8 @@
             </span>
             <span v-else-if="importMode === 'ibkr'">
               支持 trade_history.xlsx（规范格式）与 Activity Statement
-              CSV（历史回填），导入普通股票/ETF买卖、股息和外国预扣税；期权跳过但归档，外汇、利息暂不导入
+              CSV（历史回填），导入普通股票/ETF买卖、股息、外国预扣税，以及存款、
+              利息、外汇兑换的现金入账（生成只读现金事件）；期权与「调整」跳过但归档
             </span>
             <span v-else>
               支持已解密的东方财富普通股票和港股通 PDF
@@ -434,6 +429,12 @@
           <el-descriptions-item v-if="importMode === 'ibkr'" label="期权跳过">{{
             brokerPreview.skipped_option_rows
           }}</el-descriptions-item>
+          <el-descriptions-item v-if="importMode === 'ibkr'" label="现金入账">{{
+            brokerPreview.eligible_cash_event_rows || 0
+          }}</el-descriptions-item>
+          <el-descriptions-item v-if="importMode === 'ibkr'" label="外汇入账">{{
+            brokerPreview.eligible_fx_rows || 0
+          }}</el-descriptions-item>
           <el-descriptions-item v-if="importMode === 'ibkr'" label="外汇跳过">{{
             brokerPreview.skipped_fx_rows
           }}</el-descriptions-item>
@@ -461,15 +462,15 @@
         </el-descriptions>
 
         <el-alert
-          v-if="brokerPreview.skipped_excluded_rows > 0"
+          v-if="(brokerPreview.skipped_excluded_rows || 0) > 0"
           class="preview-alert"
           type="info"
           :closable="false"
           show-icon
-          :title="`${brokerPreview.skipped_excluded_rows} 条流水命中排除清单，将只归档不入账（账户数据 → 排除清单 可调整）`"
+          :title="`${brokerPreview.skipped_excluded_rows} 条流水命中排除规则，将只归档不入账（账户数据 → 特例规则 可调整）`"
         />
         <el-alert
-          v-if="brokerPreview.duplicate_rows > 0"
+          v-if="(brokerPreview.duplicate_rows || 0) > 0"
           class="preview-alert"
           type="warning"
           :closable="false"
@@ -532,18 +533,63 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
+import { Upload, Download, Plus } from '@element-plus/icons-vue'
 import { computed, ref, reactive, watch, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import api from '../api'
-import { useTransactionsStore } from '../stores/transactions'
+import { useTransactionsStore, type Transaction } from '../stores/transactions'
 import { useMediaQuery } from '../composables/useMediaQuery'
 import { getApiErrorMessage } from '../utils/apiErrors'
-import { formatNumber, formatDate, downloadFile } from '../utils/helpers'
+import {
+  formatNumber,
+  formatDate,
+  downloadFile,
+  todayLocalISODate,
+  toNumber
+} from '../utils/helpers'
+
+interface BrokerAccount {
+  id: number
+  account_name: string
+  broker?: string | null
+  account_number_masked?: string | null
+  is_active?: boolean
+  [key: string]: unknown
+}
+
+interface BrokerPreview {
+  broker?: string
+  statement_scope?: string
+  source_account_masks?: string[]
+  total_rows?: number
+  archived_source_rows?: number | null
+  eligible_trade_rows?: number
+  eligible_dividend_rows?: number
+  eligible_tax_rows?: number
+  eligible_cash_rows?: number
+  duplicate_rows?: number
+  skipped_non_trade_rows?: number
+  skipped_invalid_rows?: number
+  skipped_excluded_rows?: number
+  skipped_option_rows?: number
+  skipped_fx_rows?: number
+  skipped_cash_rows?: number
+  skipped_unsupported_rows?: number
+  skipped_conflict_rows?: number
+  reported_position_count?: number
+  date_start?: string
+  date_end?: string
+  warnings?: string[]
+  errors?: string[]
+  batch_status?: string
+  reconciliation_status?: string
+  [key: string]: unknown
+}
 
 const loading = ref(false)
 const transactionsStore = useTransactionsStore()
-const transactions = ref([])
+const transactions = ref<Transaction[]>([])
 const pagination = reactive({
   page: 1,
   pageSize: 50,
@@ -551,16 +597,16 @@ const pagination = reactive({
 })
 const dialogVisible = ref(false)
 const isEdit = ref(false)
-const formRef = ref(null)
+const formRef = ref<FormInstance | null>(null)
 const submitting = ref(false)
 const showImportDialog = ref(false)
 const importing = ref(false)
-const uploadFile = ref(null)
+const uploadFile = ref<File | null>(null)
 const importMode = ref('standard')
-const brokerPreview = ref(null)
-const brokerAccounts = ref([])
+const brokerPreview = ref<BrokerPreview | null>(null)
+const brokerAccounts = ref<BrokerAccount[]>([])
 const brokerAccountsLoading = ref(false)
-const importBrokerAccountId = ref(null)
+const importBrokerAccountId = ref<number | null>(null)
 const isMobileView = useMediaQuery('(max-width: 640px)')
 const importAccept = computed(() => {
   // IBKR：规范格式为 trade_history.xlsx；Activity CSV 保留供历史回填
@@ -580,11 +626,12 @@ const brokerPreviewHasBlockingErrors = computed(
     brokerPreview.value?.reconciliation_status === 'MISMATCHED'
 )
 const brokerImportAccountOptions = computed(() => {
-  const keywords = {
+  const keywordMap: Record<string, string[]> = {
     cmb: ['招商'],
     ibkr: ['IBKR', 'INTERACTIVE'],
     eastmoney: ['东方']
-  }[importMode.value]
+  }
+  const keywords = keywordMap[importMode.value]
   if (!keywords) return []
   return brokerAccounts.value.filter(
     (account) =>
@@ -597,14 +644,32 @@ const brokerImportAccountOptions = computed(() => {
   )
 })
 
-const filters = reactive({
+const filters = reactive<{
+  symbol: string
+  market: string
+  transaction_type: string
+  account: '' | 'UNASSIGNED' | number
+}>({
   symbol: '',
   market: '',
   transaction_type: '',
   account: ''
 })
 
-const form = reactive({
+const form = reactive<{
+  id?: number
+  broker_account_id: number | null
+  symbol: string
+  name: string
+  market: string
+  transaction_type: string
+  quantity: number
+  price: number
+  fee: number
+  transaction_date: string
+  currency: string
+  notes: string
+}>({
   broker_account_id: null,
   symbol: '',
   name: '',
@@ -627,7 +692,7 @@ const rules = {
   transaction_date: [{ required: true, message: '请选择交易日期', trigger: 'change' }]
 }
 
-async function loadTransactions(options = {}) {
+async function loadTransactions(options: { force?: boolean } = {}) {
   loading.value = true
   try {
     const params = buildQueryParams()
@@ -657,7 +722,7 @@ async function loadTransactions(options = {}) {
 }
 
 function buildQueryParams() {
-  const params = {}
+  const params: Record<string, unknown> = {}
   if (filters.symbol) params.symbol = filters.symbol
   if (filters.market) params.market = filters.market
   if (filters.transaction_type) params.transaction_type = filters.transaction_type
@@ -693,7 +758,7 @@ function handleAdd() {
   dialogVisible.value = true
 }
 
-function handleEdit(row) {
+function handleEdit(row: Transaction) {
   isEdit.value = true
   Object.assign(form, {
     id: row.id,
@@ -702,9 +767,9 @@ function handleEdit(row) {
     name: row.name || '',
     market: row.market,
     transaction_type: row.transaction_type,
-    quantity: parseFloat(row.quantity),
-    price: parseFloat(row.price),
-    fee: parseFloat(row.fee),
+    quantity: toNumber(row.quantity),
+    price: toNumber(row.price),
+    fee: toNumber(row.fee),
     transaction_date: row.transaction_date,
     currency: row.currency,
     notes: row.notes || ''
@@ -713,16 +778,31 @@ function handleEdit(row) {
 }
 
 async function handleSubmit() {
-  const valid = await formRef.value.validate()
+  const valid = await formRef.value?.validate()
   if (!valid) return
 
   submitting.value = true
   try {
+    // 后端 TransactionCreate/Update 均为 extra="forbid"：payload 只能含
+    // schema 字段——把编辑态残留的 form.id 一并提交会被 422 拒绝
+    const payload = {
+      broker_account_id: form.broker_account_id || null,
+      symbol: form.symbol,
+      name: form.name,
+      market: form.market,
+      transaction_type: form.transaction_type,
+      quantity: form.quantity,
+      price: form.price,
+      fee: form.fee,
+      transaction_date: form.transaction_date,
+      currency: form.currency,
+      notes: form.notes
+    }
     if (isEdit.value) {
-      await transactionsStore.updateTransaction(form.id, form)
+      await transactionsStore.updateTransaction(form.id as number, payload)
       ElMessage.success('更新成功')
     } else {
-      await transactionsStore.createTransaction(form)
+      await transactionsStore.createTransaction(payload)
       ElMessage.success('创建成功')
     }
     dialogVisible.value = false
@@ -734,33 +814,33 @@ async function handleSubmit() {
   }
 }
 
-const TYPE_LABELS = {
+const TYPE_LABELS: Record<string, string> = {
   BUY: '买入',
   SELL: '卖出',
   TRANSFER_OUT: '转出',
   TRANSFER_IN: '转入'
 }
 
-const TYPE_TAG_KINDS = {
+const TYPE_TAG_KINDS: Record<string, 'success' | 'danger' | 'warning' | 'info'> = {
   BUY: 'success',
   SELL: 'danger',
   TRANSFER_OUT: 'warning',
   TRANSFER_IN: 'info'
 }
 
-function isTransfer(row) {
+function isTransfer(row: Transaction) {
   return row.transaction_type === 'TRANSFER_OUT' || row.transaction_type === 'TRANSFER_IN'
 }
 
-function typeLabel(type) {
+function typeLabel(type: string) {
   return TYPE_LABELS[type] || type
 }
 
-function typeTagKind(type) {
+function typeTagKind(type: string) {
   return TYPE_TAG_KINDS[type] || 'info'
 }
 
-function handleDelete(row) {
+function handleDelete(row: Transaction) {
   const message = isTransfer(row)
     ? '这是转仓交易：删除将同时删除配对的另一腿，并重算相关持仓。确定继续吗？'
     : '确定要删除这条交易记录吗？'
@@ -782,15 +862,15 @@ function handleDelete(row) {
 async function handleExport() {
   try {
     const response = await api.exportExcel()
-    downloadFile(response.data, `transactions_${new Date().toISOString().split('T')[0]}.xlsx`)
+    downloadFile(response.data, `transactions_${todayLocalISODate()}.xlsx`)
     ElMessage.success('导出成功')
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error, '导出失败'))
   }
 }
 
-function handleFileChange(file) {
-  uploadFile.value = file.raw
+function handleFileChange(file: { raw?: File }) {
+  uploadFile.value = file.raw ?? null
   brokerPreview.value = null
 }
 
@@ -861,7 +941,6 @@ async function handleImport() {
         `公司行动 ${response.data.imported_corporate_actions} 条，` +
         `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
         `现金收益 ${response.data.imported_cash_events || 0} 条，` +
-        `承接旧 Excel ${response.data.migrated_legacy_rows || 0} 条，` +
         `跳过重复 ${response.data.duplicate_rows} 条`
     } else if (importMode.value === 'ibkr') {
       response = await api.importIbkrActivity(uploadFile.value, importBrokerAccountId.value)
@@ -942,9 +1021,9 @@ function resetForm() {
   formRef.value?.clearValidate()
 }
 
-const brokerAccountLabel = (account) =>
+const brokerAccountLabel = (account: BrokerAccount) =>
   [account.account_name, account.broker, account.account_number_masked].filter(Boolean).join(' · ')
-const brokerAccountLabelById = (id) => {
+const brokerAccountLabelById = (id: number | null | undefined) => {
   if (id == null) return '待分配'
   const account = brokerAccounts.value.find((item) => String(item.id) === String(id))
   return account ? brokerAccountLabel(account) : '已删除账户'
@@ -977,17 +1056,6 @@ onMounted(() => {
 
 .transactions-card {
   overflow: hidden;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
 }
 
 .filter-form {
@@ -1056,10 +1124,6 @@ onMounted(() => {
   margin-top: 12px;
 }
 
-.mobile-transaction-list {
-  display: none;
-}
-
 @media (max-width: 900px) {
   .header-actions {
     width: 100%;
@@ -1084,60 +1148,13 @@ onMounted(() => {
 }
 
 @media (max-width: 640px) {
-  .desktop-data-table {
-    display: none;
-  }
-
-  .mobile-transaction-list {
-    display: grid;
-    gap: 12px;
-  }
-
-  .mobile-transaction-card {
-    padding: 14px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-soft);
-    border-radius: 8px;
-    box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
-  }
-
-  .mobile-row-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .asset-title {
-    min-width: 0;
-  }
-
-  .asset-symbol {
-    display: block;
-    color: var(--app-text);
-    font-size: 18px;
-    font-weight: 600;
-    line-height: 1.2;
-  }
-
-  .asset-name {
-    display: block;
-    margin-top: 3px;
-    color: var(--app-text-muted);
-    font-size: 13px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
+  /* 卡片通用外观见 styles.css 的 .mobile-card 套件；这里只留交易特有的金额块 */
   .transaction-amount {
     display: grid;
     gap: 6px;
-    margin-top: 12px;
   }
 
-  .transaction-amount span,
-  .mobile-transaction-meta {
+  .transaction-amount span {
     color: var(--app-text-muted);
     font-size: 12px;
   }
@@ -1146,22 +1163,7 @@ onMounted(() => {
     color: var(--app-text);
     font-size: 17px;
     line-height: 1.25;
-  }
-
-  .mobile-transaction-meta {
-    display: flex;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-top: 8px;
-  }
-
-  .mobile-card-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-    margin-top: 10px;
-    padding-top: 8px;
-    border-top: 1px solid var(--app-border-soft);
+    font-variant-numeric: tabular-nums;
   }
 
   .import-account-field {

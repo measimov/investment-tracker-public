@@ -13,8 +13,11 @@ from .broker_account import BrokerAccount
 from .import_batch import ImportBatch
 from .cash_event import CashEvent
 from .reconciliation_snapshot import ReconciliationSnapshot
-from .excluded_security import ExcludedSecurity
+from .security_rule import SecurityRule
 from .llm_report import LlmReport, LlmReportMessage, LlmReportSchedule
+from .corporate_action_suggestion import CorporateActionSuggestion
+from .security_event import SecurityEvent
+from .security_profile import SecurityAnalysis, SecurityProfileData
 
 __all__ = [
     "Transaction",
@@ -31,8 +34,12 @@ __all__ = [
     "ImportBatch",
     "CashEvent",
     "ReconciliationSnapshot",
-    "ExcludedSecurity",
+    "SecurityRule",
     "LlmReport",
     "LlmReportMessage",
     "LlmReportSchedule",
+    "CorporateActionSuggestion",
+    "SecurityEvent",
+    "SecurityAnalysis",
+    "SecurityProfileData",
 ]

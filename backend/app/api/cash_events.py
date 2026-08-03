@@ -2,6 +2,7 @@ from datetime import date
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..core.deps import get_current_active_user
@@ -9,6 +10,7 @@ from ..database import get_db
 from ..models.broker_account import BrokerAccount
 from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.cash_event import CashEvent
+from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.user import User
 from ..schemas.cash_event import (
     CashEventCreate,
@@ -41,6 +43,15 @@ def _ensure_cash_event_is_mutable(
         BrokerFundFlow.user_id == user_id,
         BrokerFundFlow.cash_event_id == event_id,
     ).first()
+    if broker_source is None:
+        broker_source = db.query(IbkrActivityFlow.id).filter(
+            IbkrActivityFlow.user_id == user_id,
+            or_(
+                IbkrActivityFlow.cash_event_id == event_id,
+                IbkrActivityFlow.fx_quote_cash_event_id == event_id,
+                IbkrActivityFlow.fx_fee_cash_event_id == event_id,
+            ),
+        ).first()
     if broker_source:
         raise HTTPException(
             status_code=409,
@@ -88,12 +99,40 @@ def list_cash_events(
         query = query.filter(CashEvent.event_date >= start_date)
     if end_date:
         query = query.filter(CashEvent.event_date <= end_date)
-    return (
+    events = (
         query.order_by(CashEvent.event_date.desc(), CashEvent.id.desc())
         .offset(skip)
         .limit(limit)
         .all()
     )
+    linked_ids = set()
+    if events:
+        event_ids = [event.id for event in events]
+        linked_ids.update(
+            event_id
+            for (event_id,) in db.query(BrokerFundFlow.cash_event_id).filter(
+                BrokerFundFlow.user_id == current_user.id,
+                BrokerFundFlow.cash_event_id.in_(event_ids),
+            )
+        )
+        for column in (
+            IbkrActivityFlow.cash_event_id,
+            IbkrActivityFlow.fx_quote_cash_event_id,
+            IbkrActivityFlow.fx_fee_cash_event_id,
+        ):
+            linked_ids.update(
+                event_id
+                for (event_id,) in db.query(column).filter(
+                    IbkrActivityFlow.user_id == current_user.id,
+                    column.in_(event_ids),
+                )
+            )
+    responses = []
+    for event in events:
+        payload = CashEventResponse.model_validate(event)
+        payload.imported = event.id in linked_ids
+        responses.append(payload)
+    return responses
 
 
 @router.get("/{event_id:int}", response_model=CashEventResponse)

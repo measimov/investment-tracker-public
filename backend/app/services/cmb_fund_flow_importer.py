@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import re
 from bisect import bisect_right
-from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Any, Deque, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 import pdfplumber
@@ -22,7 +20,17 @@ from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.cash_event import CashEvent
 from ..models.corporate_action import CorporateAction
 from ..models.transaction import Transaction
-from ..services.excluded_security_service import get_excluded_symbols
+from ..services import broker_import_common
+from ..services.broker_import_common import (
+    HASH_DUPLICATE_OCCURRENCE_FIELD,
+    find_dividend_for_tax,
+    source_error_rows,
+)
+from ..services.security_rule_service import (
+    get_cash_management_symbols,
+    get_cmb_cash_business_map,
+    get_excluded_symbols,
+)
 from ..services.holding_service import recalculate_holdings
 from ..services.import_batch_service import (
     complete_import_batch,
@@ -39,7 +47,7 @@ SOURCE_TYPE = "cmb_statement_pdf"
 PARSER_NAME = "cmb_statement"
 # 行为变化必须升版（ImportBatch 按 parser/version 审计入账口径）：
 # v7 = 开放基金申购/新股入账 生成规范 BUY（此前仅归档）
-PARSER_VERSION = "8"
+PARSER_VERSION = "10"
 TRADE_BUSINESS_MAP = {
     "证券买入": "BUY",
     "证券卖出": "SELL",
@@ -54,7 +62,9 @@ ALLOTMENT_BUSINESS_NAMES = {"新股入账"}
 DIVIDEND_BUSINESS_NAMES = {"股息入账", "产品红利发放"}
 PRODUCT_DIVIDEND_BUSINESS_NAME = "产品红利发放"
 TAX_BUSINESS_NAME = "股息红利税补缴"
-CASH_MANAGEMENT_SYMBOLS = {"880013"}
+# CASH_INFLOW_EVENT_TYPES 是事件类型→方向的语义（非账本特例），保持硬编码；
+# 业务名→事件类型映射已表驱动（security_rules CMB_CASH_BUSINESS）。
+CASH_INFLOW_EVENT_TYPES = {"DEPOSIT", "INTEREST", "OTHER", "TRANSFER_IN"}
 # 沪/深港通：价格列是 HKD，金额与费用列是 CNY 结算。结算汇率不披露，
 # 由行内推导（成交金额CNY ÷ (数量 × HKD价格)），并做合理区间校验。
 HK_CONNECT_MARKET_NAMES = {"沪港通", "深港通"}
@@ -81,7 +91,6 @@ HASH_FIELDS = [
     "contract_number",
     "shareholder_code",
 ]
-HASH_DUPLICATE_OCCURRENCE_FIELD = "duplicate_occurrence"
 PDF_FLOW_COLUMNS = [
     "发生日期",
     "市场",
@@ -113,12 +122,8 @@ PDF_NUMERIC_COLUMNS = [
     "资金余额",
     "剩余数量",
 ]
-STRICT_DECIMAL_PATTERN = re.compile(r"^[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)$")
 PDF_AMOUNT_TOLERANCE = Decimal("0.02")
-SOURCE_ROW_ERROR_PATTERN = re.compile(r"^row (\d+):")
 MANUAL_REVIEW_WARNING_SUFFIX = "manual review required"
-LEGACY_EXCEL_STATEMENT_TYPE = "cmb_fund_flow_excel"
-LEGACY_EXCEL_SUFFIXES = (".xls", ".xlsx")
 ROW_HASH_NOTE_PATTERN = re.compile(r"row_hash=([0-9a-f]{64})")
 
 
@@ -151,6 +156,12 @@ class ParsedFlow:
     settlement_rate: Optional[Decimal] = None
     # 排除清单命中标记：置位后所有入账语义（交易/股息/税/利息）失效，行只归档。
     excluded: bool = False
+    # 现金管理产品标记（security_rules CASH_MANAGEMENT 类型 pre-pass 置位）：
+    # 该标的的"产品红利发放"按利息入账而非股息。与 excluded 互斥，排除优先。
+    is_cash_management_symbol: bool = False
+    # 现金业务事件类型（security_rules CMB_CASH_BUSINESS 类型 pre-pass 置位）：
+    # None = 业务名不在映射内，行保持归档（fail-open）。
+    cash_event_type: Optional[str] = None
 
     @property
     def transaction_type(self) -> Optional[str]:
@@ -182,7 +193,7 @@ class ParsedFlow:
             not self.excluded
             and self.business_name in DIVIDEND_BUSINESS_NAMES
             and bool(self.security_code)
-            and self.security_code not in CASH_MANAGEMENT_SYMBOLS
+            and not self.is_cash_management_symbol
             and self.amount > 0
         )
 
@@ -196,11 +207,25 @@ class ParsedFlow:
         )
 
     @property
+    def is_cash_business(self) -> bool:
+        """现金业务行：映射内业务名、非零金额、方向与事件类型一致、未被排除。
+
+        方向不符的行在 parse 阶段已产出阻断错误；这里再次否决入账资格，
+        确保即使错误被上层忽略也只会归档、绝不 abs() 成反向事件。"""
+        if self.excluded or self.amount == 0:
+            return False
+        if self.cash_event_type is None:
+            return False
+        if self.cash_event_type in CASH_INFLOW_EVENT_TYPES:
+            return self.amount > 0
+        return self.amount < 0
+
+    @property
     def is_cash_interest(self) -> bool:
         return (
             not self.excluded
             and self.business_name == PRODUCT_DIVIDEND_BUSINESS_NAME
-            and self.security_code in CASH_MANAGEMENT_SYMBOLS
+            and self.is_cash_management_symbol
             and self.amount > 0
         )
 
@@ -217,19 +242,6 @@ class ParsedFlow:
         )
 
 
-@dataclass
-class LegacyFlowMatch:
-    source_flow: BrokerFundFlow
-    transaction: Optional[Transaction] = None
-    corporate_action: Optional[CorporateAction] = None
-
-
-@dataclass
-class ExactClaimResult:
-    row_hashes: set[str]
-    imported_cash_events: int = 0
-
-
 def strip_bom(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -240,13 +252,7 @@ def strip_bom(value: Any) -> str:
 
 
 def parse_strict_pdf_decimal(value: Any) -> Optional[Decimal]:
-    text = strip_bom(value)
-    if not text or not STRICT_DECIMAL_PATTERN.fullmatch(text):
-        return None
-    try:
-        return Decimal(text.replace(",", ""))
-    except InvalidOperation:
-        return None
+    return broker_import_common.parse_strict_decimal(value, strip=strip_bom)
 
 
 def parse_trade_date(value: Any) -> Optional[date]:
@@ -326,289 +332,17 @@ def infer_market(symbol: str, currency: str, shareholder_code: Optional[str]) ->
 
 
 def normalize_hash_value(value: Any) -> str:
-    if isinstance(value, Decimal):
-        return format(value.normalize(), "f")
-    if isinstance(value, date):
-        return value.isoformat()
-    return strip_bom(value)
+    return broker_import_common.normalize_hash_value(value, strip=strip_bom)
 
 
 def calculate_row_hash(values: Dict[str, Any]) -> str:
-    fields = HASH_FIELDS
-    if values.get(HASH_DUPLICATE_OCCURRENCE_FIELD):
-        fields = HASH_FIELDS + [HASH_DUPLICATE_OCCURRENCE_FIELD]
-    payload = "|".join(normalize_hash_value(values.get(field, "")) for field in fields)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return broker_import_common.calculate_row_hash(values, HASH_FIELDS, strip=strip_bom)
 
 
 def _normalized_decimal(value: Any) -> Decimal:
     if value is None:
         return Decimal("0")
     return Decimal(value).normalize()
-
-
-def _event_kind(
-    business_name: str,
-    *,
-    security_code: str,
-    amount: Decimal,
-) -> Optional[str]:
-    transaction_type = TRADE_BUSINESS_MAP.get(business_name)
-    if transaction_type:
-        return transaction_type
-    if (
-        business_name == PRODUCT_DIVIDEND_BUSINESS_NAME
-        and security_code in CASH_MANAGEMENT_SYMBOLS
-        and amount > 0
-    ):
-        return "INTEREST"
-    if (
-        business_name in DIVIDEND_BUSINESS_NAMES
-        and security_code
-        and security_code not in CASH_MANAGEMENT_SYMBOLS
-        and amount > 0
-    ):
-        return "CASH_DIVIDEND"
-    if business_name == TAX_BUSINESS_NAME and security_code and amount < 0:
-        return "DIVIDEND_TAX"
-    return None
-
-
-def _economic_key(
-    *,
-    business_name: str,
-    trade_date: date,
-    security_code: str,
-    currency: str,
-    trade_quantity: Decimal,
-    trade_price: Decimal,
-    amount: Decimal,
-    total_fee: Decimal,
-    shareholder_code: Optional[str],
-) -> tuple[Any, ...]:
-    """Cross-format identity for one economic event, independent of file-only IDs."""
-    kind = _event_kind(
-        business_name,
-        security_code=security_code,
-        amount=_normalized_decimal(amount),
-    )
-    account_identity = strip_bom(shareholder_code).upper()
-    common = (
-        account_identity,
-        kind,
-        trade_date,
-        strip_bom(security_code),
-        strip_bom(currency).upper(),
-    )
-    if kind in {"BUY", "SELL"}:
-        return common + (
-            abs(_normalized_decimal(trade_quantity)),
-            _normalized_decimal(trade_price),
-            _normalized_decimal(amount),
-            _normalized_decimal(total_fee),
-        )
-    return common + (_normalized_decimal(amount),)
-
-
-def _conflict_key(
-    *,
-    business_name: str,
-    trade_date: date,
-    security_code: str,
-    currency: str,
-    trade_quantity: Decimal,
-    amount: Decimal,
-    shareholder_code: Optional[str],
-) -> tuple[Any, ...]:
-    """Coarser key used only to stop near-matching Excel/PDF rows from double counting."""
-    kind = _event_kind(
-        business_name,
-        security_code=security_code,
-        amount=_normalized_decimal(amount),
-    )
-    common = (
-        strip_bom(shareholder_code).upper(),
-        kind,
-        trade_date,
-        strip_bom(security_code),
-        strip_bom(currency).upper(),
-    )
-    if kind in {"BUY", "SELL"}:
-        return common + (abs(_normalized_decimal(trade_quantity)),)
-    return common
-
-
-def _parsed_flow_economic_key(flow: ParsedFlow) -> tuple[Any, ...]:
-    return _economic_key(
-        business_name=flow.business_name,
-        trade_date=flow.trade_date,
-        security_code=flow.security_code,
-        currency=flow.currency,
-        trade_quantity=flow.trade_quantity,
-        trade_price=flow.trade_price,
-        amount=flow.amount,
-        total_fee=flow.total_fee,
-        shareholder_code=flow.shareholder_code,
-    )
-
-
-def _parsed_flow_conflict_key(flow: ParsedFlow) -> tuple[Any, ...]:
-    return _conflict_key(
-        business_name=flow.business_name,
-        trade_date=flow.trade_date,
-        security_code=flow.security_code,
-        currency=flow.currency,
-        trade_quantity=flow.trade_quantity,
-        amount=flow.amount,
-        shareholder_code=flow.shareholder_code,
-    )
-
-
-def _stored_flow_economic_key(flow: BrokerFundFlow) -> tuple[Any, ...]:
-    return _economic_key(
-        business_name=flow.business_name,
-        trade_date=flow.trade_date,
-        security_code=flow.security_code or "",
-        currency=flow.currency,
-        trade_quantity=_normalized_decimal(flow.trade_quantity),
-        trade_price=_normalized_decimal(flow.trade_price),
-        amount=_normalized_decimal(flow.amount),
-        total_fee=_stored_flow_total_fee(flow),
-        shareholder_code=flow.shareholder_code,
-    )
-
-
-def _stored_flow_total_fee(flow: BrokerFundFlow) -> Decimal:
-    return sum(
-        (
-            _normalized_decimal(getattr(flow, field))
-            for field in (
-                "stamp_tax",
-                "commission",
-                "handling_fee",
-                "management_fee",
-                "settlement_fee",
-                "transfer_fee",
-                "other_fee",
-            )
-        ),
-        Decimal("0"),
-    )
-
-
-def _transaction_matches_legacy_source(
-    transaction: Transaction,
-    flow: BrokerFundFlow,
-) -> bool:
-    return (
-        transaction.transaction_type == TRADE_BUSINESS_MAP.get(flow.business_name)
-        and strip_bom(transaction.symbol) == strip_bom(flow.security_code)
-        and transaction.transaction_date == flow.trade_date
-        and abs(_normalized_decimal(transaction.quantity))
-        == abs(_normalized_decimal(flow.trade_quantity))
-        and _normalized_decimal(transaction.price) == _normalized_decimal(flow.trade_price)
-        and strip_bom(transaction.currency).upper() == strip_bom(flow.currency).upper()
-        and _normalized_decimal(transaction.fee) == _stored_flow_total_fee(flow)
-        and strip_bom(transaction.market)
-        == infer_market(
-            strip_bom(flow.security_code),
-            strip_bom(flow.currency).upper(),
-            flow.shareholder_code,
-        )
-    )
-
-
-def _cash_event_matches_source(
-    cash_event: CashEvent,
-    flow: BrokerFundFlow,
-) -> bool:
-    return (
-        cash_event.event_type == "INTEREST"
-        and cash_event.event_date == flow.trade_date
-        and strip_bom(cash_event.currency).upper() == strip_bom(flow.currency).upper()
-        and _normalized_decimal(cash_event.amount) == _normalized_decimal(flow.amount)
-    )
-
-
-def _corporate_action_matches_legacy_source(
-    action: CorporateAction,
-    flow: BrokerFundFlow,
-) -> bool:
-    if (
-        strip_bom(action.symbol) != strip_bom(flow.security_code)
-        or strip_bom(action.currency).upper() != strip_bom(flow.currency).upper()
-        or strip_bom(action.market)
-        != infer_market(
-            strip_bom(flow.security_code),
-            strip_bom(flow.currency).upper(),
-            flow.shareholder_code,
-        )
-    ):
-        return False
-    if flow.business_name in DIVIDEND_BUSINESS_NAMES:
-        return action.ex_date == flow.trade_date and _normalized_decimal(
-            action.total_dividend
-        ) == _normalized_decimal(flow.amount)
-    if flow.business_name == TAX_BUSINESS_NAME:
-        return action.ex_date <= flow.trade_date and _normalized_decimal(
-            action.tax_withheld
-        ) >= abs(_normalized_decimal(flow.amount))
-    return False
-
-
-def _corporate_action_aggregate_matches_legacy_sources(
-    action: CorporateAction,
-    flows: List[BrokerFundFlow],
-) -> bool:
-    dividend_flows = [
-        flow
-        for flow in flows
-        if _event_kind(
-            flow.business_name,
-            security_code=flow.security_code or "",
-            amount=_normalized_decimal(flow.amount),
-        )
-        == "CASH_DIVIDEND"
-    ]
-    tax_total = sum(
-        (
-            abs(_normalized_decimal(flow.amount))
-            for flow in flows
-            if _event_kind(
-                flow.business_name,
-                security_code=flow.security_code or "",
-                amount=_normalized_decimal(flow.amount),
-            )
-            == "DIVIDEND_TAX"
-        ),
-        Decimal("0"),
-    )
-    if len(dividend_flows) != 1 or action.total_dividend is None:
-        return False
-    dividend_total = _normalized_decimal(dividend_flows[0].amount)
-    if _normalized_decimal(action.total_dividend) != dividend_total:
-        return False
-    if _normalized_decimal(action.tax_withheld) != tax_total:
-        return False
-    if action.net_dividend is None:
-        return False
-    expected_net = max(
-        Decimal("0"),
-        _normalized_decimal(action.total_dividend) - _normalized_decimal(action.tax_withheld),
-    )
-    return _normalized_decimal(action.net_dividend) == expected_net
-
-
-def _stored_flow_conflict_key(flow: BrokerFundFlow) -> tuple[Any, ...]:
-    return _conflict_key(
-        business_name=flow.business_name,
-        trade_date=flow.trade_date,
-        security_code=flow.security_code or "",
-        currency=flow.currency,
-        trade_quantity=_normalized_decimal(flow.trade_quantity),
-        amount=_normalized_decimal(flow.amount),
-        shareholder_code=flow.shareholder_code,
-    )
 
 
 def validate_cmb_statement_filename(filename: str) -> None:
@@ -770,8 +504,15 @@ def read_cmb_fund_flow(contents: bytes, filename: str) -> pd.DataFrame:
 
 
 def parse_rows(
-    contents: bytes, filename: str
+    contents: bytes,
+    filename: str,
+    *,
+    cash_management_symbols: frozenset = frozenset(),
+    cash_business_map: Optional[Dict[str, str]] = None,
 ) -> tuple[List[ParsedFlow], Dict[str, int], int, List[str]]:
+    """解析对账单。特例规则（现金管理标的/现金业务映射）由调用方注入，
+    保持本函数无 DB 依赖；缺省空规则 = 股息按股息、现金业务只归档。"""
+    cash_business_map = cash_business_map or {}
     df = read_cmb_fund_flow(contents, filename)
     required_columns = {
         "证券代码",
@@ -922,7 +663,7 @@ def parse_rows(
 
         if (
             business_name in DIVIDEND_BUSINESS_NAMES
-            and security_code not in CASH_MANAGEMENT_SYMBOLS
+            and security_code not in cash_management_symbols
         ):
             if not security_code:
                 errors.append(
@@ -937,6 +678,19 @@ def parse_rows(
             )
         if business_name == TAX_BUSINESS_NAME and amount >= 0:
             errors.append(f"row {row_number}: dividend tax amount must be negative")
+
+        cash_event_type = cash_business_map.get(business_name)
+        if cash_event_type and amount != 0:
+            # 方向由映射的事件类型承担，符号必须一致（防对账单口径漂移静默入错账）
+            expect_inflow = cash_event_type in CASH_INFLOW_EVENT_TYPES
+            if expect_inflow and amount < 0:
+                errors.append(
+                    f"row {row_number}: {business_name} 应为流入但金额为负"
+                )
+            if not expect_inflow and amount > 0:
+                errors.append(
+                    f"row {row_number}: {business_name} 应为流出但金额为正"
+                )
 
         contract_number = strip_bom(row.get("合同编号")) or None
         serial_number = strip_bom(row.get("流水号")) or None
@@ -994,6 +748,8 @@ def parse_rows(
                 notes=strip_bom(row.get("备注")) or None,
                 market_text=market_text,
                 settlement_rate=settlement_rate,
+                is_cash_management_symbol=security_code in cash_management_symbols,
+                cash_event_type=cash_event_type,
             )
         )
 
@@ -1003,6 +759,9 @@ def parse_rows(
 def parse_rows_with_warnings(
     contents: bytes,
     filename: str,
+    *,
+    cash_management_symbols: frozenset = frozenset(),
+    cash_business_map: Optional[Dict[str, str]] = None,
 ) -> tuple[List[ParsedFlow], Dict[str, int], int, List[str], List[str]]:
     """
     Split preserved manual-review rows from errors that make an import unsafe.
@@ -1012,7 +771,12 @@ def parse_rows_with_warnings(
     they can be archived without being guessed into a canonical ledger event.
     Structural parsing and reconciliation failures remain blocking errors.
     """
-    parsed_rows, business_counts, total_rows, messages = parse_rows(contents, filename)
+    parsed_rows, business_counts, total_rows, messages = parse_rows(
+        contents,
+        filename,
+        cash_management_symbols=cash_management_symbols,
+        cash_business_map=cash_business_map,
+    )
     warnings = [
         message
         for message in messages
@@ -1071,513 +835,6 @@ def get_existing_hashes(
     return {row[0] for row in rows}
 
 
-def _all_sources_for_action(
-    db: Session,
-    *,
-    user_id: int,
-    action: CorporateAction,
-) -> Optional[List[BrokerFundFlow]]:
-    note_hashes = set(ROW_HASH_NOTE_PATTERN.findall(action.notes or ""))
-    query = db.query(BrokerFundFlow).filter(
-        BrokerFundFlow.user_id == user_id,
-        BrokerFundFlow.broker == BROKER_NAME,
-    )
-    if note_hashes:
-        query = query.filter(
-            (BrokerFundFlow.corporate_action_id == action.id)
-            | BrokerFundFlow.row_hash.in_(note_hashes)
-        )
-    else:
-        query = query.filter(BrokerFundFlow.corporate_action_id == action.id)
-    sources = query.order_by(BrokerFundFlow.id).all()
-
-    sources_by_hash: Dict[str, List[BrokerFundFlow]] = defaultdict(list)
-    for source in sources:
-        sources_by_hash[source.row_hash].append(source)
-    if any(len(sources_by_hash[row_hash]) != 1 for row_hash in note_hashes):
-        return None
-
-    return [
-        source
-        for source in sources
-        if _event_kind(
-            source.business_name,
-            security_code=source.security_code or "",
-            amount=_normalized_decimal(source.amount),
-        )
-        in {"CASH_DIVIDEND", "DIVIDEND_TAX"}
-    ]
-
-
-def claim_unassigned_exact_pdf_sources(
-    db: Session,
-    *,
-    user_id: int,
-    broker_account_id: int,
-    parsed_rows: Iterable[ParsedFlow],
-) -> ExactClaimResult:
-    """
-    Assign exact PDF source rows created before broker accounts existed.
-
-    Linked economic records must still agree with the immutable source row.
-    Otherwise the import stops instead of silently creating a second record.
-    """
-    rows = list(parsed_rows)
-    hashes = [flow.row_hash for flow in rows]
-    if not hashes:
-        return ExactClaimResult(row_hashes=set())
-    sources = (
-        db.query(BrokerFundFlow)
-        .filter(
-            BrokerFundFlow.user_id == user_id,
-            BrokerFundFlow.broker == BROKER_NAME,
-            BrokerFundFlow.broker_account_id.is_(None),
-            BrokerFundFlow.row_hash.in_(hashes),
-            (
-                (BrokerFundFlow.statement_type == SOURCE_TYPE)
-                | BrokerFundFlow.source_filename.ilike("%.pdf")
-            ),
-        )
-        .all()
-    )
-    sources_by_hash = {source.row_hash: source for source in sources}
-    claimed: set[str] = set()
-    imported_cash_events = 0
-    claimed_actions: Dict[int, CorporateAction] = {}
-
-    for flow in rows:
-        source = sources_by_hash.get(flow.row_hash)
-        if source is None:
-            continue
-
-        if flow.transaction_type:
-            transaction = db.get(Transaction, source.transaction_id) if source.transaction_id else None
-            if transaction is None or not _transaction_matches_legacy_source(transaction, source):
-                raise ValueError(
-                    "招商证券旧 PDF 来源行对应交易缺失或已修改；为避免重复记账，本次未导入"
-                )
-            if transaction.user_id != user_id or transaction.broker_account_id not in (
-                None,
-                broker_account_id,
-            ):
-                raise ValueError("招商证券旧 PDF 来源行对应交易已归属其他账户；本次未导入")
-            transaction.broker_account_id = broker_account_id
-
-        action = (
-            db.get(CorporateAction, source.corporate_action_id)
-            if source.corporate_action_id
-            else None
-        )
-        if (flow.is_cash_dividend or flow.is_dividend_tax) and action is None:
-            candidates = (
-                db.query(CorporateAction)
-                .filter(
-                    CorporateAction.user_id == user_id,
-                    CorporateAction.notes.contains(source.row_hash),
-                )
-                .all()
-            )
-            if len(candidates) == 1:
-                action = candidates[0]
-        if flow.is_cash_dividend or flow.is_dividend_tax:
-            if action is None or not _corporate_action_matches_legacy_source(action, source):
-                raise ValueError(
-                    "招商证券旧 PDF 来源行对应公司行动缺失或已修改；"
-                    "为避免重复记账，本次未导入"
-                )
-            if action.user_id != user_id or action.broker_account_id not in (
-                None,
-                broker_account_id,
-            ):
-                raise ValueError("招商证券旧 PDF 来源行对应公司行动已归属其他账户；本次未导入")
-            action.broker_account_id = broker_account_id
-            source.corporate_action_id = action.id
-            claimed_actions[action.id] = action
-
-        if flow.is_cash_interest:
-            cash_event = db.get(CashEvent, source.cash_event_id) if source.cash_event_id else None
-            if cash_event is not None:
-                if (
-                    not _cash_event_matches_source(cash_event, source)
-                    or cash_event.user_id != user_id
-                    or cash_event.broker_account_id not in (None, broker_account_id)
-                ):
-                    raise ValueError(
-                        "招商证券旧 PDF 来源行对应现金收益缺失、已修改或已归属其他账户；"
-                        "本次未导入"
-                    )
-                cash_event.broker_account_id = broker_account_id
-            else:
-                cash_event = CashEvent(
-                    user_id=user_id,
-                    broker_account_id=broker_account_id,
-                    event_type="INTEREST",
-                    amount=flow.amount,
-                    currency=flow.currency,
-                    event_date=flow.trade_date,
-                    notes=(
-                        f"{BROKER_NAME}对账单天添利产品红利; "
-                        f"row={flow.source_row_number}; row_hash={flow.row_hash}"
-                    ),
-                )
-                db.add(cash_event)
-                db.flush()
-                source.cash_event_id = cash_event.id
-                imported_cash_events += 1
-
-        source.broker_account_id = broker_account_id
-        source.statement_type = SOURCE_TYPE
-        claimed.add(flow.row_hash)
-
-    db.flush()
-    for action in claimed_actions.values():
-        action_sources = _all_sources_for_action(
-            db,
-            user_id=user_id,
-            action=action,
-        )
-        if action_sources is None or not _corporate_action_aggregate_matches_legacy_sources(
-            action,
-            action_sources,
-        ):
-            raise ValueError(
-                "招商证券旧 PDF 来源行对应公司行动的全部股息、税费或净额聚合不一致；"
-                "为避免承接漂移记录，本次未导入"
-            )
-
-    return ExactClaimResult(
-        row_hashes=claimed,
-        imported_cash_events=imported_cash_events,
-    )
-
-
-def _is_legacy_excel_flow(flow: BrokerFundFlow) -> bool:
-    filename = (flow.source_filename or "").lower()
-    return filename.endswith(LEGACY_EXCEL_SUFFIXES) and flow.statement_type in (
-        None,
-        LEGACY_EXCEL_STATEMENT_TYPE,
-    )
-
-
-def plan_legacy_excel_matches(
-    db: Session,
-    *,
-    user_id: int,
-    broker_account_id: int,
-    parsed_rows: List[ParsedFlow],
-    existing_hashes: set[str],
-) -> Dict[str, LegacyFlowMatch]:
-    """
-    Match old Excel-backed business records to PDF rows as a multiset.
-
-    The source-row hash remains format-specific. This bridge only reuses an
-    existing business record when the securities account and economic facts
-    agree exactly. Near matches are rejected before any account assignment.
-    """
-    pdf_rows = [
-        flow
-        for flow in parsed_rows
-        if (
-            (
-                flow.transaction_type
-                and flow.security_code
-                and flow.trade_quantity != 0
-                and flow.trade_price > 0
-            )
-            or flow.is_cash_dividend
-            or flow.is_dividend_tax
-        )
-    ]
-    if not pdf_rows:
-        return {}
-
-    shareholder_codes = {
-        strip_bom(flow.shareholder_code).upper()
-        for flow in pdf_rows
-        if strip_bom(flow.shareholder_code)
-    }
-    if not shareholder_codes:
-        return {}
-
-    period_start = min(flow.trade_date for flow in pdf_rows)
-    period_end = max(flow.trade_date for flow in pdf_rows)
-    stored_rows = (
-        db.query(BrokerFundFlow)
-        .filter(
-            BrokerFundFlow.user_id == user_id,
-            BrokerFundFlow.broker == BROKER_NAME,
-            BrokerFundFlow.trade_date >= period_start,
-            BrokerFundFlow.trade_date <= period_end,
-            (
-                BrokerFundFlow.broker_account_id.is_(None)
-                | (BrokerFundFlow.broker_account_id == broker_account_id)
-            ),
-        )
-        .order_by(BrokerFundFlow.id)
-        .all()
-    )
-    legacy_rows = [
-        flow
-        for flow in stored_rows
-        if _is_legacy_excel_flow(flow)
-        and strip_bom(flow.shareholder_code).upper() in shareholder_codes
-        and _event_kind(
-            flow.business_name,
-            security_code=flow.security_code or "",
-            amount=_normalized_decimal(flow.amount),
-        )
-    ]
-    if not legacy_rows:
-        return {}
-
-    existing_sources_by_hash: Dict[str, List[BrokerFundFlow]] = defaultdict(list)
-    if existing_hashes:
-        existing_source_rows = (
-            db.query(BrokerFundFlow)
-            .filter(
-                BrokerFundFlow.user_id == user_id,
-                BrokerFundFlow.broker_account_id == broker_account_id,
-                BrokerFundFlow.row_hash.in_(existing_hashes),
-            )
-            .order_by(BrokerFundFlow.id)
-            .all()
-        )
-        for source in existing_source_rows:
-            existing_sources_by_hash[source.row_hash].append(source)
-
-    transaction_ids = {
-        flow.transaction_id
-        for flow in legacy_rows
-        if flow.transaction_id is not None and flow.business_name in TRADE_BUSINESS_MAP
-    }
-    transactions = {
-        transaction.id: transaction
-        for transaction in (
-            db.query(Transaction)
-            .filter(
-                Transaction.id.in_(transaction_ids),
-                Transaction.user_id == user_id,
-            )
-            .all()
-            if transaction_ids
-            else []
-        )
-    }
-
-    action_hashes = {
-        flow.row_hash
-        for flow in legacy_rows
-        if flow.business_name in DIVIDEND_BUSINESS_NAMES or flow.business_name == TAX_BUSINESS_NAME
-    }
-    action_hashes.update(
-        flow.row_hash
-        for flow in pdf_rows
-        if flow.row_hash in existing_hashes and (flow.is_cash_dividend or flow.is_dividend_tax)
-    )
-    actions_by_hash: Dict[str, CorporateAction] = {}
-    ambiguous_action_hashes: set[str] = set()
-    if action_hashes:
-        actions = (
-            db.query(CorporateAction)
-            .filter(
-                CorporateAction.user_id == user_id,
-                CorporateAction.action_type == "CASH_DIVIDEND",
-            )
-            .order_by(CorporateAction.id)
-            .all()
-        )
-        for action in actions:
-            for row_hash in ROW_HASH_NOTE_PATTERN.findall(action.notes or ""):
-                if row_hash in action_hashes:
-                    existing_action = actions_by_hash.get(row_hash)
-                    if existing_action is not None and existing_action.id != action.id:
-                        ambiguous_action_hashes.add(row_hash)
-                    actions_by_hash[row_hash] = action
-    if ambiguous_action_hashes:
-        raise ValueError("招商证券来源哈希关联到多条公司行动，无法安全承接旧 Excel；本次未导入")
-
-    valid_legacy_matches: List[LegacyFlowMatch] = []
-    account_conflicts = 0
-    business_record_conflicts = 0
-    for flow in legacy_rows:
-        if flow.business_name in TRADE_BUSINESS_MAP:
-            transaction = transactions.get(flow.transaction_id)
-            if transaction is None:
-                continue
-            if transaction.broker_account_id not in (None, broker_account_id):
-                account_conflicts += 1
-                continue
-            if not _transaction_matches_legacy_source(transaction, flow):
-                business_record_conflicts += 1
-                continue
-            valid_legacy_matches.append(LegacyFlowMatch(source_flow=flow, transaction=transaction))
-            continue
-        action = actions_by_hash.get(flow.row_hash)
-        if action is None:
-            continue
-        if action.broker_account_id not in (None, broker_account_id):
-            account_conflicts += 1
-            continue
-        if not _corporate_action_matches_legacy_source(action, flow):
-            business_record_conflicts += 1
-            continue
-        valid_legacy_matches.append(LegacyFlowMatch(source_flow=flow, corporate_action=action))
-
-    if account_conflicts:
-        raise ValueError(
-            "招商证券旧 Excel 来源行与 "
-            f"{account_conflicts} 条已归属其他账户的业务记录冲突；本次未导入"
-        )
-    if business_record_conflicts:
-        raise ValueError(
-            "招商证券旧 Excel 来源行与 "
-            f"{business_record_conflicts} 条已修改的交易或公司行动不一致；"
-            "为避免复用漂移记录，本次未导入"
-        )
-
-    corporate_actions: Dict[int, CorporateAction] = {}
-    for match in valid_legacy_matches:
-        if match.corporate_action is None:
-            continue
-        corporate_actions[match.corporate_action.id] = match.corporate_action
-
-    action_source_hashes = {
-        action_id: set(ROW_HASH_NOTE_PATTERN.findall(action.notes or ""))
-        for action_id, action in corporate_actions.items()
-    }
-    all_action_source_hashes = {
-        row_hash for hashes in action_source_hashes.values() for row_hash in hashes
-    }
-    legacy_action_sources_by_hash: Dict[str, List[BrokerFundFlow]] = defaultdict(list)
-    if all_action_source_hashes:
-        all_action_sources = (
-            db.query(BrokerFundFlow)
-            .filter(
-                BrokerFundFlow.user_id == user_id,
-                BrokerFundFlow.broker == BROKER_NAME,
-                BrokerFundFlow.row_hash.in_(all_action_source_hashes),
-            )
-            .order_by(BrokerFundFlow.id)
-            .all()
-        )
-        for source in all_action_sources:
-            if _is_legacy_excel_flow(source) and (
-                source.business_name in DIVIDEND_BUSINESS_NAMES
-                or source.business_name == TAX_BUSINESS_NAME
-            ):
-                legacy_action_sources_by_hash[source.row_hash].append(source)
-
-    aggregate_conflicts = 0
-    aggregate_account_conflicts = 0
-    for action_id, action in corporate_actions.items():
-        action_sources: List[BrokerFundFlow] = []
-        ambiguous_sources = False
-        for row_hash in action_source_hashes[action_id]:
-            sources = legacy_action_sources_by_hash.get(row_hash, [])
-            if len(sources) > 1:
-                ambiguous_sources = True
-                break
-            action_sources.extend(sources)
-        if ambiguous_sources or not action_sources:
-            aggregate_conflicts += 1
-            continue
-        if any(
-            source.broker_account_id not in (None, broker_account_id) for source in action_sources
-        ):
-            aggregate_account_conflicts += 1
-            continue
-        if not all(
-            _corporate_action_matches_legacy_source(action, source) for source in action_sources
-        ) or not _corporate_action_aggregate_matches_legacy_sources(action, action_sources):
-            aggregate_conflicts += 1
-
-    if aggregate_account_conflicts:
-        raise ValueError(
-            "招商证券旧 Excel 来源行与 "
-            f"{aggregate_account_conflicts} 条已归属其他账户的公司行动来源冲突；"
-            "本次未导入"
-        )
-    if aggregate_conflicts:
-        raise ValueError(
-            "招商证券旧 Excel 来源行与 "
-            f"{aggregate_conflicts} 条已修改的公司行动税费或净额不一致；"
-            "为避免复用漂移记录，本次未导入"
-        )
-
-    if not valid_legacy_matches:
-        return {}
-
-    pdf_by_conflict: Dict[tuple[Any, ...], List[ParsedFlow]] = defaultdict(list)
-    legacy_by_conflict: Dict[tuple[Any, ...], List[LegacyFlowMatch]] = defaultdict(list)
-    for flow in pdf_rows:
-        pdf_by_conflict[_parsed_flow_conflict_key(flow)].append(flow)
-    for match in valid_legacy_matches:
-        legacy_by_conflict[_stored_flow_conflict_key(match.source_flow)].append(match)
-
-    conflict_groups = 0
-    for key in pdf_by_conflict.keys() & legacy_by_conflict.keys():
-        pdf_counts = Counter(_parsed_flow_economic_key(flow) for flow in pdf_by_conflict[key])
-        legacy_counts = Counter(
-            _stored_flow_economic_key(match.source_flow) for match in legacy_by_conflict[key]
-        )
-        if sum((legacy_counts - pdf_counts).values()):
-            conflict_groups += 1
-    if conflict_groups:
-        raise ValueError(
-            "招商证券 PDF 与旧 Excel 在 "
-            f"{conflict_groups} 个重叠事件组的数量、价格、金额或手续费不一致；"
-            "为避免重复记账，本次未导入，请先核对来源记录"
-        )
-
-    legacy_by_economic_key: Dict[tuple[Any, ...], Deque[LegacyFlowMatch]] = defaultdict(deque)
-    for match in valid_legacy_matches:
-        legacy_by_economic_key[_stored_flow_economic_key(match.source_flow)].append(match)
-
-    planned_matches: Dict[str, LegacyFlowMatch] = {}
-    existing_business_conflicts = 0
-    for flow in pdf_rows:
-        candidates = legacy_by_economic_key.get(_parsed_flow_economic_key(flow))
-        if candidates:
-            match = candidates.popleft()
-            if flow.row_hash in existing_hashes:
-                existing_sources = existing_sources_by_hash.get(flow.row_hash, [])
-                existing_source = existing_sources[0] if len(existing_sources) == 1 else None
-                same_business_record = (
-                    existing_source is not None
-                    and existing_source.broker == BROKER_NAME
-                    and existing_source.statement_type == SOURCE_TYPE
-                    and (
-                        (
-                            match.transaction is not None
-                            and existing_source.transaction_id == match.transaction.id
-                        )
-                        or (
-                            match.corporate_action is not None
-                            and actions_by_hash.get(flow.row_hash) is not None
-                            and actions_by_hash[flow.row_hash].id == match.corporate_action.id
-                        )
-                    )
-                )
-                if not same_business_record:
-                    existing_business_conflicts += 1
-                continue
-            planned_matches[flow.row_hash] = match
-    if existing_business_conflicts:
-        raise ValueError(
-            "招商证券数据库中同时存在 "
-            f"{existing_business_conflicts} 条 PDF 来源和未承接的旧 Excel 业务记录；"
-            "无法证明它们共用同一业务记录，本次未导入"
-        )
-    unmatched_legacy_rows = sum(len(candidates) for candidates in legacy_by_economic_key.values())
-    if unmatched_legacy_rows:
-        raise ValueError(
-            "招商证券旧 Excel 在本份 PDF 覆盖区间内有 "
-            f"{unmatched_legacy_rows} 条有效业务记录未找到一一对应的对账单事件；"
-            "为避免保留重复或缺失记录，本次未导入"
-        )
-    return planned_matches
-
-
 def build_import_result(
     *,
     filename: str,
@@ -1592,13 +849,13 @@ def build_import_result(
     affected_symbols: int,
     errors: List[str],
     warnings: Optional[List[str]] = None,
-    migrated_legacy_rows: int = 0,
-    migrated_unassigned_rows: int = 0,
 ) -> Dict[str, Any]:
     trade_rows = [flow for flow in parsed_rows if flow.transaction_type]
     dividend_rows = [flow for flow in parsed_rows if flow.is_cash_dividend]
     tax_rows = [flow for flow in parsed_rows if flow.is_dividend_tax]
-    cash_rows = [flow for flow in parsed_rows if flow.is_cash_interest]
+    cash_rows = [
+        flow for flow in parsed_rows if flow.is_cash_interest or flow.is_cash_business
+    ]
     eligible_trade_rows = [
         flow
         for flow in trade_rows
@@ -1608,19 +865,14 @@ def build_import_result(
     import_rows = [flow for flow in parsed_rows if flow.row_hash not in existing_hashes]
     dates = [flow.trade_date for flow in parsed_rows]
     parsed_source_rows = {flow.source_row_number for flow in parsed_rows}
-    source_error_rows = {
-        int(match.group(1))
-        for error in errors
-        if (match := SOURCE_ROW_ERROR_PATTERN.match(error))
-        and int(match.group(1)) not in parsed_source_rows
-    }
+    error_rows = source_error_rows(errors, parsed_source_rows)
     excluded_rows = [flow for flow in parsed_rows if flow.excluded]
     # 本批新增（非重复）的排除行：complete_import_batch 用它把"预期跳过"
     # 从 unbooked/error 口径中扣除；审计口径 skipped_excluded_rows 仍含重复行。
     excluded_unbooked_rows = [
         flow for flow in excluded_rows if flow.row_hash not in existing_hashes
     ]
-    skipped_invalid_rows = len(trade_rows) - len(eligible_trade_rows) + len(source_error_rows)
+    skipped_invalid_rows = len(trade_rows) - len(eligible_trade_rows) + len(error_rows)
     skipped_non_trade_rows = max(
         0,
         total_rows
@@ -1628,7 +880,7 @@ def build_import_result(
         - len(dividend_rows)
         - len(tax_rows)
         - len(cash_rows)
-        - len(source_error_rows)
+        - len(error_rows)
         - len(excluded_rows),
     )
 
@@ -1644,8 +896,6 @@ def build_import_result(
         "imported_corporate_actions": imported_corporate_actions,
         "imported_tax_adjustments": imported_tax_adjustments,
         "imported_cash_events": imported_cash_events,
-        "migrated_legacy_rows": migrated_legacy_rows,
-        "migrated_unassigned_rows": migrated_unassigned_rows,
         "duplicate_rows": len(duplicate_rows),
         "skipped_non_trade_rows": skipped_non_trade_rows,
         "skipped_invalid_rows": skipped_invalid_rows,
@@ -1670,6 +920,31 @@ def apply_exclusions(parsed_rows: List[ParsedFlow], excluded_symbols) -> None:
     for flow in parsed_rows:
         if flow.security_code and flow.security_code in excluded_symbols:
             flow.excluded = True
+
+
+def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
+    """领养路径已退役：NULL 账户历史来源必须显式拒绝，绝不静默双记。
+
+    账户级判重按 (user, broker_account, row_hash) 进行，看不见 NULL 桶的
+    旧来源；库约束又允许同一 hash 在 NULL 桶与已分配账户各存一份——若放行，
+    重新导入会给同一笔流水再建一份 canonical 记录。重建后的正常数据不存在
+    这类行；从旧备份恢复的库必须先人工迁移（含旧 Excel 等异构 hash 来源，
+    故按存在性整体拒绝，不做逐 hash 匹配）。
+    """
+    unassigned = (
+        db.query(BrokerFundFlow.id)
+        .filter(
+            BrokerFundFlow.user_id == user_id,
+            BrokerFundFlow.broker == BROKER_NAME,
+            BrokerFundFlow.broker_account_id.is_(None),
+        )
+        .count()
+    )
+    if unassigned:
+        raise ValueError(
+            f"存在 {unassigned} 条未分配账户的{BROKER_NAME}历史来源（领养路径已退役）。"
+            "请先人工迁移或清理这些 NULL 账户流水后再导入，否则会重复入账"
+        )
 
 
 def preview_cmb_fund_flow(
@@ -1697,38 +972,20 @@ def preview_cmb_fund_flow(
     parsed_rows, business_counts, total_rows, errors, warnings = parse_rows_with_warnings(
         contents,
         filename,
+        cash_management_symbols=frozenset(get_cash_management_symbols(db, user_id)),
+        cash_business_map=get_cmb_cash_business_map(db, user_id),
     )
     apply_exclusions(parsed_rows, get_excluded_symbols(db, user_id))
+    reject_unassigned_legacy_sources(db, user_id)
     if account is None:
         raise ValueError("broker_account_id is required for 招商证券 preview")
     validate_statement_account_masks(account, parsed_rows)
-    savepoint = db.begin_nested()
-    try:
-        exact_claim = claim_unassigned_exact_pdf_sources(
-            db,
-            user_id=user_id,
-            broker_account_id=broker_account_id,
-            parsed_rows=parsed_rows,
-        )
-        existing_hashes = get_existing_hashes(
-            db,
-            user_id,
-            [flow.row_hash for flow in parsed_rows],
-            broker_account_id=broker_account_id,
-        )
-        existing_hashes.update(exact_claim.row_hashes)
-        legacy_matches = plan_legacy_excel_matches(
-            db,
-            user_id=user_id,
-            broker_account_id=broker_account_id,
-            parsed_rows=parsed_rows,
-            existing_hashes=existing_hashes,
-        )
-        duplicate_hashes = set(existing_hashes) | set(legacy_matches)
-    finally:
-        if savepoint.is_active:
-            savepoint.rollback()
-        db.expire_all()
+    duplicate_hashes = get_existing_hashes(
+        db,
+        user_id,
+        [flow.row_hash for flow in parsed_rows],
+        broker_account_id=broker_account_id,
+    )
 
     return build_import_result(
         filename=filename,
@@ -1743,8 +1000,6 @@ def preview_cmb_fund_flow(
         affected_symbols=0,
         errors=errors,
         warnings=warnings,
-        migrated_legacy_rows=len(legacy_matches),
-        migrated_unassigned_rows=len(exact_claim.row_hashes),
     )
 
 
@@ -1794,29 +1049,6 @@ def create_broker_fund_flow(
         shareholder_code=flow.shareholder_code,
         notes=flow.notes,
     )
-
-
-def find_dividend_for_tax(
-    db: Session,
-    user_id: int,
-    flow: ParsedFlow,
-    market: str,
-    broker_account_id: Optional[int] = None,
-) -> Optional[CorporateAction]:
-    query = db.query(CorporateAction).filter(
-        CorporateAction.user_id == user_id,
-        CorporateAction.symbol == flow.security_code,
-        CorporateAction.market == market,
-        CorporateAction.action_type == "CASH_DIVIDEND",
-        CorporateAction.currency == flow.currency,
-        CorporateAction.ex_date <= flow.trade_date,
-        CorporateAction.broker_account_id == broker_account_id,
-    )
-    candidates = query.order_by(
-        CorporateAction.ex_date.desc(),
-        CorporateAction.id.desc(),
-    ).all()
-    return candidates[0] if len(candidates) == 1 else None
 
 
 def _source_sequence_value(value: Any) -> tuple[int, Any]:
@@ -1971,8 +1203,11 @@ def import_cmb_fund_flow(
         parsed_rows, business_counts, total_rows, errors, warnings = parse_rows_with_warnings(
             contents,
             filename,
+            cash_management_symbols=frozenset(get_cash_management_symbols(db, user_id)),
+            cash_business_map=get_cmb_cash_business_map(db, user_id),
         )
         apply_exclusions(parsed_rows, get_excluded_symbols(db, user_id))
+        reject_unassigned_legacy_sources(db, user_id)
         account = validate_import_account(
             db,
             user_id=user_id,
@@ -1989,77 +1224,19 @@ def import_cmb_fund_flow(
             period_start=min(dates) if dates else None,
             period_end=max(dates) if dates else None,
         )
-        exact_claim = claim_unassigned_exact_pdf_sources(
-            db,
-            user_id=user_id,
-            broker_account_id=broker_account_id,
-            parsed_rows=parsed_rows,
-        )
         existing_hashes = get_existing_hashes(
             db,
             user_id,
             [flow.row_hash for flow in parsed_rows],
             broker_account_id=broker_account_id,
         )
-        existing_hashes.update(exact_claim.row_hashes)
         duplicate_hashes = set(existing_hashes)
-        legacy_matches = plan_legacy_excel_matches(
-            db,
-            user_id=user_id,
-            broker_account_id=broker_account_id,
-            parsed_rows=parsed_rows,
-            existing_hashes=existing_hashes,
-        )
 
-        imported_cash_events = exact_claim.imported_cash_events
-        migrated_legacy_rows = 0
+        imported_cash_events = 0
         affected_symbols: set[tuple[str, str]] = set()
 
         for flow in parsed_rows:
             if flow.row_hash in existing_hashes:
-                continue
-
-            legacy_match = legacy_matches.get(flow.row_hash)
-            if legacy_match is not None:
-                legacy_source = legacy_match.source_flow
-                legacy_source.broker_account_id = broker_account_id
-                legacy_source.statement_type = LEGACY_EXCEL_STATEMENT_TYPE
-                if legacy_match.transaction is not None:
-                    legacy_match.transaction.broker_account_id = broker_account_id
-                if legacy_match.corporate_action is not None:
-                    legacy_match.corporate_action.broker_account_id = broker_account_id
-                    legacy_source.corporate_action_id = legacy_match.corporate_action.id
-                    action_hashes = set(
-                        ROW_HASH_NOTE_PATTERN.findall(legacy_match.corporate_action.notes or "")
-                    )
-                    if flow.row_hash not in action_hashes:
-                        legacy_match.corporate_action.notes = (
-                            f"{legacy_match.corporate_action.notes or ''}; row_hash={flow.row_hash}"
-                        ).strip("; ")
-
-                if legacy_source.row_hash != flow.row_hash:
-                    db.add(
-                        create_broker_fund_flow(
-                            user_id=user_id,
-                            broker_account_id=broker_account_id,
-                            filename=filename,
-                            flow=flow,
-                            import_batch_id=batch_id,
-                            transaction_id=(
-                                legacy_match.transaction.id
-                                if legacy_match.transaction is not None
-                                else None
-                            ),
-                            corporate_action_id=(
-                                legacy_match.corporate_action.id
-                                if legacy_match.corporate_action is not None
-                                else None
-                            ),
-                        )
-                    )
-                existing_hashes.add(flow.row_hash)
-                duplicate_hashes.add(flow.row_hash)
-                migrated_legacy_rows += 1
                 continue
 
             market = infer_market(flow.security_code, flow.currency, flow.shareholder_code)
@@ -2074,6 +1251,36 @@ def import_cmb_fund_flow(
                     event_date=flow.trade_date,
                     notes=(
                         f"{BROKER_NAME}对账单天添利产品红利; "
+                        f"row={flow.source_row_number}; row_hash={flow.row_hash}"
+                    ),
+                )
+                db.add(cash_event)
+                db.flush()
+                db.add(
+                    create_broker_fund_flow(
+                        user_id=user_id,
+                        broker_account_id=broker_account_id,
+                        filename=filename,
+                        flow=flow,
+                        import_batch_id=batch_id,
+                        cash_event_id=cash_event.id,
+                    )
+                )
+                existing_hashes.add(flow.row_hash)
+                imported_cash_events += 1
+                continue
+
+            if flow.is_cash_business:
+                event_type = flow.cash_event_type
+                cash_event = CashEvent(
+                    user_id=user_id,
+                    broker_account_id=broker_account_id,
+                    event_type=event_type,
+                    amount=abs(flow.amount),
+                    currency=flow.currency,
+                    event_date=flow.trade_date,
+                    notes=(
+                        f"{BROKER_NAME}对账单{flow.business_name}; "
                         f"row={flow.source_row_number}; row_hash={flow.row_hash}"
                     ),
                 )
@@ -2272,8 +1479,6 @@ def import_cmb_fund_flow(
             affected_symbols=recalculated_symbols,
             errors=errors,
             warnings=warnings,
-            migrated_legacy_rows=migrated_legacy_rows,
-            migrated_unassigned_rows=len(exact_claim.row_hashes),
         )
         imported_source_rows = (
             db.query(BrokerFundFlow).filter(BrokerFundFlow.import_batch_id == batch_id).count()

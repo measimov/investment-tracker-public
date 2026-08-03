@@ -5,10 +5,7 @@
         <div class="page-header">
           <span>用户管理</span>
           <div class="header-actions">
-            <el-button type="primary" @click="handleAdd">
-              <el-icon><Plus /></el-icon>
-              添加用户
-            </el-button>
+            <el-button type="primary" :icon="Plus" @click="handleAdd">添加用户</el-button>
           </div>
         </div>
       </template>
@@ -17,8 +14,8 @@
       <div class="responsive-table">
         <el-table :data="users" v-loading="loading" stripe>
           <el-table-column prop="id" label="ID" width="80" />
-          <el-table-column prop="username" label="用户名" width="150" />
-          <el-table-column prop="email" label="邮箱" width="200" />
+          <el-table-column prop="username" label="用户名" min-width="130" show-overflow-tooltip />
+          <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip />
           <el-table-column prop="is_active" label="状态" width="100">
             <template #default="{ row }">
               <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">
@@ -33,12 +30,12 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="created_at" label="创建时间" width="180" sortable>
+          <el-table-column prop="created_at" label="创建时间" min-width="150" sortable>
             <template #default="{ row }">
               {{ formatDateTime(row.created_at) }}
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="280">
+          <el-table-column label="操作" width="280" fixed="right">
             <template #default="{ row }">
               <el-button type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
               <el-button type="warning" size="small" text @click="handleResetPassword(row)"
@@ -52,7 +49,7 @@
     </el-card>
 
     <!-- Create/Edit User Dialog -->
-    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑用户' : '添加用户'" width="500px">
+    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑用户' : '添加用户'" width="560px">
       <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
         <el-form-item label="用户名" prop="username">
           <el-input v-model="form.username" placeholder="请输入用户名" :disabled="isEdit" />
@@ -84,7 +81,7 @@
     </el-dialog>
 
     <!-- Reset Password Dialog -->
-    <el-dialog v-model="resetPasswordVisible" title="重置密码" width="400px">
+    <el-dialog v-model="resetPasswordVisible" title="重置密码" width="420px">
       <el-form
         :model="resetPasswordForm"
         :rules="resetPasswordRules"
@@ -120,25 +117,44 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '../../api'
 import { formatDateTime } from '../../utils/helpers'
+import { isApiError } from '../../utils/apiErrors'
+
+interface UserRow {
+  id: number
+  username: string
+  email: string
+  is_active: boolean
+  is_admin: boolean
+  [key: string]: unknown
+}
+
+type ValidatorCallback = (error?: Error) => void
 
 const loading = ref(false)
-const users = ref([])
+const users = ref<UserRow[]>([])
 const dialogVisible = ref(false)
 const isEdit = ref(false)
-const formRef = ref(null)
+const formRef = ref<FormInstance | null>(null)
 const submitting = ref(false)
 const resetPasswordVisible = ref(false)
-const resetPasswordFormRef = ref(null)
+const resetPasswordFormRef = ref<FormInstance | null>(null)
 const resettingPassword = ref(false)
-const currentUserId = ref(null)
+const currentUserId = ref<number | null>(null)
 
-const form = reactive({
+const form = reactive<{
+  id?: number
+  username: string
+  email: string
+  password: string
+  is_active: boolean
+  is_admin: boolean
+}>({
   username: '',
   email: '',
   password: '',
@@ -151,7 +167,7 @@ const resetPasswordForm = reactive({
   confirm_password: ''
 })
 
-const validatePassword = (rule, value, callback) => {
+const validatePassword = (rule: unknown, value: string, callback: ValidatorCallback) => {
   if (!value) {
     callback(new Error('请输入密码'))
   } else if (value.length < 6) {
@@ -161,7 +177,7 @@ const validatePassword = (rule, value, callback) => {
   }
 }
 
-const validateConfirmPassword = (rule, value, callback) => {
+const validateConfirmPassword = (rule: unknown, value: string, callback: ValidatorCallback) => {
   if (!value) {
     callback(new Error('请再次输入密码'))
   } else if (value !== resetPasswordForm.new_password) {
@@ -206,7 +222,7 @@ function handleAdd() {
   dialogVisible.value = true
 }
 
-function handleEdit(row) {
+function handleEdit(row: UserRow) {
   isEdit.value = true
   Object.assign(form, {
     id: row.id,
@@ -219,7 +235,7 @@ function handleEdit(row) {
 }
 
 async function handleSubmit() {
-  const valid = await formRef.value.validate()
+  const valid = await formRef.value?.validate()
   if (!valid) return
 
   submitting.value = true
@@ -230,7 +246,7 @@ async function handleSubmit() {
         is_active: form.is_active,
         is_admin: form.is_admin
       }
-      await api.updateUser(form.id, updateData)
+      await api.updateUser(form.id as number, updateData)
       ElMessage.success('更新用户成功')
     } else {
       await api.createUser(form)
@@ -240,14 +256,15 @@ async function handleSubmit() {
     loadUsers()
   } catch (error) {
     ElMessage.error(
-      error.response?.data?.detail || (isEdit.value ? '更新用户失败' : '创建用户失败')
+      (isApiError(error) && error.response?.data?.detail) ||
+        (isEdit.value ? '更新用户失败' : '创建用户失败')
     )
   } finally {
     submitting.value = false
   }
 }
 
-function handleResetPassword(row) {
+function handleResetPassword(row: UserRow) {
   currentUserId.value = row.id
   resetPasswordForm.new_password = ''
   resetPasswordForm.confirm_password = ''
@@ -256,22 +273,22 @@ function handleResetPassword(row) {
 }
 
 async function handleResetPasswordSubmit() {
-  const valid = await resetPasswordFormRef.value.validate()
+  const valid = await resetPasswordFormRef.value?.validate()
   if (!valid) return
 
   resettingPassword.value = true
   try {
-    await api.resetUserPassword(currentUserId.value, resetPasswordForm.new_password)
+    await api.resetUserPassword(currentUserId.value as number, resetPasswordForm.new_password)
     ElMessage.success('重置密码成功')
     resetPasswordVisible.value = false
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || '重置密码失败')
+    ElMessage.error((isApiError(error) && error.response?.data?.detail) || '重置密码失败')
   } finally {
     resettingPassword.value = false
   }
 }
 
-function handleDelete(row) {
+function handleDelete(row: UserRow) {
   ElMessageBox.confirm(`确定要删除用户 "${row.username}" 吗？`, '提示', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -283,7 +300,7 @@ function handleDelete(row) {
         ElMessage.success('删除用户成功')
         loadUsers()
       } catch (error) {
-        ElMessage.error(error.response?.data?.detail || '删除用户失败')
+        ElMessage.error((isApiError(error) && error.response?.data?.detail) || '删除用户失败')
       }
     })
     .catch(() => {
@@ -310,17 +327,6 @@ onMounted(() => {
 <style scoped>
 .user-management-page {
   width: 100%;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
 }
 
 @media (max-width: 900px) {

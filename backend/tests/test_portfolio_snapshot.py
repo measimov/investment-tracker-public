@@ -15,26 +15,24 @@ from app.models.transaction import Transaction
 from app.services.holding_service import recalculate_holdings
 from app.services.reconciliation_service import run_and_store_compare
 from app.services.statistics_service import build_portfolio_snapshot
+from tests.helpers import make_account, reset_tables
 
 
-def reset_tables(db):
-    for model in (
-        BrokerFundFlow,
-        IbkrActivityFlow,
-        ReconciliationSnapshot,
-        CashEvent,
-        Holding,
-        CorporateAction,
-        Transaction,
-        BrokerAccount,
-    ):
-        db.query(model).delete()
-    db.commit()
+RESET_MODELS = (
+    BrokerFundFlow,
+    IbkrActivityFlow,
+    ReconciliationSnapshot,
+    CashEvent,
+    Holding,
+    CorporateAction,
+    Transaction,
+    BrokerAccount,
+)
 
 
 def test_portfolio_snapshot_bundles_dashboard_data():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(user_id=1, broker="CMB", account_name="CMB", base_currency="CNY")
         db.add(account)
@@ -81,7 +79,7 @@ def test_portfolio_snapshot_bundles_dashboard_data():
         snapshot = build_portfolio_snapshot(db, 1)
 
         # 表现区块完整携带（含估算口径标记）
-        assert snapshot["performance"]["account_return"]["calculation_status"] == "estimated"
+        assert snapshot["performance"]["account_return"]["calculation_status"] == "exact"
         assert snapshot["performance"]["current_performance"]["current_market_value_cny"] > 0
 
         # 价格新鲜度：600000 新鲜、PCT 陈价并进入警告
@@ -101,15 +99,8 @@ def test_portfolio_snapshot_bundles_dashboard_data():
         assert {m["market"] for m in snapshot["markets"]} == {"A股", "新加坡股"}
         assert snapshot["base_currency"] == "CNY"
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
-
-
-def _make_account(db, name="ACC"):
-    account = BrokerAccount(user_id=1, broker=name, account_name=name, base_currency="CNY")
-    db.add(account)
-    db.flush()
-    return account
 
 
 def _buy(db, account_id, *, symbol="600000", market="A股", quantity="100"):
@@ -127,10 +118,10 @@ def test_price_and_timestamp_selected_atomically_regardless_of_row_order():
 
     for reverse in (False, True):
         db = SessionLocal()
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         try:
-            a = _make_account(db, "A")
-            b = _make_account(db, "B")
+            a = make_account(db, "A")
+            b = make_account(db, "B")
             _buy(db, a.id)
             _buy(db, b.id)
             db.commit()
@@ -154,7 +145,7 @@ def test_price_and_timestamp_selected_atomically_regardless_of_row_order():
             assert freshness[key]["stale"] is False
             assert freshness[key]["price_as_of"] == now.isoformat()
         finally:
-            reset_tables(db)
+            reset_tables(db, RESET_MODELS)
             db.close()
 
 
@@ -162,9 +153,9 @@ def test_account_badge_aggregates_all_scopes_on_latest_date():
     """同日一红一绿的分范围快照：整体必须红，且与创建顺序无关（review #59 P1）。"""
     for first_status_matched in (False, True):
         db = SessionLocal()
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         try:
-            account = _make_account(db, "东财")
+            account = make_account(db, "东财")
             # stock 范围有差异（快照持仓 100 但账本没有）；hk_connect 范围一致（都为空）
             scoped = [
                 ("stock", [{"symbol": "600000", "market": "A股", "quantity": "100"}]),
@@ -193,5 +184,5 @@ def test_account_badge_aggregates_all_scopes_on_latest_date():
             assert statuses["stock"] == "MISMATCHED"
             assert statuses["hk_connect"] == "MATCHED"
         finally:
-            reset_tables(db)
+            reset_tables(db, RESET_MODELS)
             db.close()

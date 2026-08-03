@@ -2,7 +2,7 @@
 
 只做字段裁剪与数组封顶，不做任何新计算——全部数据来自既有服务函数：
 build_portfolio_snapshot / calculate_performance_analytics / get_statistics_by_time。
-估算与实验口径的标记（calculation_status / methodology_notes / status 等）
+权益仓与实验口径的标记（calculation_status / methodology_notes / status 等）
 按 CLAUDE.md 约定逐字保留，由 meta.estimate_semantics 向模型解释含义。
 """
 
@@ -25,11 +25,23 @@ CHAR_BUDGET = 40_000
 PRIMARY_CAPS = {"holdings": 30, "realized": 15, "dividends": 10, "monthly": 24, "curve": 36}
 SHRUNK_CAPS = {"holdings": 20, "realized": 10, "dividends": 10, "monthly": 12, "curve": 24}
 
+# 报告附带的基准指数（字符预算考量取 2 个：本土主基准 + 美股参照）
+LLM_BENCHMARKS = ["000300.SH", "SPX"]
+
 ESTIMATE_SEMANTICS = {
-    "estimated/估算": "该指标以证券交易现金流估算，不含账户现金与真实外部出入金，非券商权威口径。",
+    "exact + invested_securities_only/权益仓口径": (
+        "账户级收益为权益仓口径：仅统计投入证券的资金，口径内精确；"
+        "账户闲置现金与外部出入金按设计不计入、不稀释收益率。转述时须说明口径，不得当作全账户收益。"
+    ),
     "experimental/实验": "该指标为实验性统计（如按笔胜率、TTWR、风险指标），仅供参考。",
     "methodology_notes": "计算方法的口径说明，转述相关数字时必须一并说明。",
     "stale": "价格早于 7 天（含手工维护价），据其估值的市值可能过时。",
+    "benchmark/基准": (
+        "analytics.benchmarks 为基准指数数据：价格指数原币收益率（不含股息、"
+        "不折汇），excess_return_rate 为算术差（百分点），仅供相对参考。"
+        "alignment=first_available 表示基准数据晚于组合区间起点、计量区间不一致，"
+        "此时 comparison 为空，不得自行相减推算超额收益。"
+    ),
 }
 
 
@@ -168,6 +180,24 @@ def _compact(snapshot: Dict, analytics: Dict, monthly: List[Dict], caps: Dict[st
         "methodology": analytics.get("methodology"),
         "warnings": (analytics.get("data_quality") or {}).get("warnings", [])[:20],
         "curve_month_end": _month_end_downsample(analytics.get("curve", []), caps["curve"]),
+        # 基准指数：曲线同法月末降采样（点键名与组合曲线一致，零改动复用）
+        "benchmarks": [
+            {
+                "code": block.get("code"),
+                "name": block.get("name"),
+                "status": block.get("status"),
+                "alignment": block.get("alignment"),
+                "alignment_gap_days": block.get("alignment_gap_days"),
+                "fx_basis": block.get("fx_basis"),
+                "return_basis": block.get("return_basis"),
+                "total_return_rate": block.get("total_return_rate"),
+                "comparison": block.get("comparison"),
+                "curve_month_end": _month_end_downsample(
+                    block.get("points", []), caps["curve"]
+                ),
+            }
+            for block in analytics.get("benchmarks", [])
+        ],
     }
 
     return {
@@ -199,7 +229,8 @@ def serialize_input(payload: Dict[str, Any]) -> str:
 def build_llm_report_input(db: Session, user_id: int) -> Dict[str, Any]:
     snapshot = build_portfolio_snapshot(db, user_id)
     analytics = calculate_performance_analytics(
-        db, user_id, snapshot.get("prices", {}).get("map", {})
+        db, user_id, snapshot.get("prices", {}).get("map", {}),
+        benchmarks=LLM_BENCHMARKS,
     )
     monthly = get_statistics_by_time(db, user_id, "month")
 

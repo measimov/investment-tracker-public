@@ -1,0 +1,19 @@
+{
+  "include": [
+    "vite.config.*",
+    "playwright.config.*",
+    "e2e/**/*",
+    "env.d.ts",
+    "src/utils/dateRange.ts"
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true
+  }
+}

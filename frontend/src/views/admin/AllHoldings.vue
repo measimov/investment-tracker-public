@@ -63,50 +63,50 @@
             width="120"
             v-if="selectedUserId === null"
           />
-          <el-table-column prop="symbol" label="代码" width="100" />
-          <el-table-column prop="name" label="名称" width="120" />
-          <el-table-column prop="market" label="市场" width="100" />
-          <el-table-column prop="quantity" label="持仓量" width="120" align="right">
+          <el-table-column prop="symbol" label="代码" min-width="90" />
+          <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
+          <el-table-column prop="market" label="市场" width="80" />
+          <el-table-column prop="quantity" label="持仓量" min-width="105" align="right">
             <template #default="{ row }">
               {{ formatNumber(row.quantity, 4) }}
             </template>
           </el-table-column>
-          <el-table-column prop="avg_cost" label="平均成本" width="120" align="right">
+          <el-table-column prop="avg_cost" label="平均成本" min-width="105" align="right">
             <template #default="{ row }">
               {{ formatNumber(row.avg_cost, 4) }}
             </template>
           </el-table-column>
-          <el-table-column prop="current_price" label="当前价格" width="120" align="right">
+          <el-table-column prop="current_price" label="当前价格" min-width="105" align="right">
             <template #default="{ row }">
               {{ formatNumber(row.current_price, 4) }}
             </template>
           </el-table-column>
-          <el-table-column prop="currency" label="币种" width="80" />
-          <el-table-column label="总成本" width="120" align="right">
+          <el-table-column prop="currency" label="币种" width="70" />
+          <el-table-column label="总成本" min-width="110" align="right">
             <template #default="{ row }">
               {{ formatNumber(row.total_cost, 2) }}
             </template>
           </el-table-column>
-          <el-table-column label="当前市值" width="120" align="right">
+          <el-table-column label="当前市值" min-width="110" align="right">
             <template #default="{ row }">
               {{ formatNumber(row.quantity * (row.current_price || 0), 2) }}
             </template>
           </el-table-column>
-          <el-table-column label="盈亏" width="120" align="right">
+          <el-table-column label="盈亏" min-width="105" align="right">
             <template #default="{ row }">
               <span :class="getProfitClass(row)">
                 {{ formatNumber(calculateProfit(row), 2) }}
               </span>
             </template>
           </el-table-column>
-          <el-table-column label="盈亏率" width="100" align="right">
+          <el-table-column label="盈亏率" min-width="90" align="right">
             <template #default="{ row }">
               <span :class="getProfitClass(row)">
                 {{ formatPercent(calculateProfitPercent(row)) }}
               </span>
             </template>
           </el-table-column>
-          <el-table-column prop="updated_at" label="最后更新" width="180" sortable>
+          <el-table-column prop="updated_at" label="最后更新" min-width="150" sortable>
             <template #default="{ row }">
               {{ formatDateTime(row.updated_at) }}
             </template>
@@ -117,49 +117,64 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../api'
-import { formatNumber, formatPercent, formatDateTime } from '../../utils/helpers'
+import { formatNumber, formatPercent, formatDateTime, toNumber } from '../../utils/helpers'
+
+interface AdminUser {
+  id: number
+  username: string
+  is_active?: boolean
+  [key: string]: unknown
+}
+
+interface AdminHoldingRow {
+  quantity?: number | string | null
+  total_cost?: number | string | null
+  avg_cost?: number | string | null
+  current_price?: number | string | null
+  [key: string]: unknown
+}
 
 const loading = ref(false)
-const users = ref([])
-const holdings = ref([])
-const selectedUserId = ref(null)
+const users = ref<AdminUser[]>([])
+const holdings = ref<AdminHoldingRow[]>([])
+const selectedUserId = ref<number | null>(null)
 
 const totalQuantity = computed(() => {
-  return holdings.value.reduce((sum, h) => sum + parseFloat(h.quantity || 0), 0)
+  return holdings.value.reduce((sum, h) => sum + toNumber(h.quantity), 0)
 })
 
 const totalCost = computed(() => {
   return holdings.value.reduce((sum, h) => {
-    const cost = parseFloat(h.total_cost || 0)
+    const cost = toNumber(h.total_cost)
     return sum + cost
   }, 0)
 })
 
 const totalValue = computed(() => {
   return holdings.value.reduce((sum, h) => {
-    const value = parseFloat(h.quantity || 0) * parseFloat(h.current_price || 0)
+    const value = toNumber(h.quantity) * toNumber(h.current_price)
     return sum + value
   }, 0)
 })
 
-function calculateProfit(row) {
-  const cost = parseFloat(row.total_cost || 0)
-  const value = parseFloat(row.quantity || 0) * parseFloat(row.current_price || 0)
+function calculateProfit(row: AdminHoldingRow): number {
+  const cost = toNumber(row.total_cost)
+  const value = toNumber(row.quantity) * toNumber(row.current_price)
   return value - cost
 }
 
-function calculateProfitPercent(row) {
-  const cost = parseFloat(row.avg_cost || 0)
-  const currentPrice = parseFloat(row.current_price || 0)
+function calculateProfitPercent(row: AdminHoldingRow): number {
+  const cost = toNumber(row.avg_cost)
+  const currentPrice = toNumber(row.current_price)
   if (cost === 0) return 0
   return ((currentPrice - cost) / cost) * 100
 }
 
-function getProfitClass(row) {
+function getProfitClass(row: AdminHoldingRow): string {
   const profit = calculateProfit(row)
   if (profit > 0) return 'profit-positive'
   if (profit < 0) return 'profit-negative'
@@ -169,7 +184,7 @@ function getProfitClass(row) {
 async function loadUsers() {
   try {
     const response = await api.getUsers()
-    users.value = response.data.filter((user) => user.is_active)
+    users.value = (response.data as AdminUser[]).filter((user) => user.is_active)
   } catch (error) {
     ElMessage.error('加载用户列表失败')
   }
@@ -208,12 +223,6 @@ onMounted(() => {
 <style scoped>
 .all-holdings-page {
   width: 100%;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
 }
 
 .user-selector {

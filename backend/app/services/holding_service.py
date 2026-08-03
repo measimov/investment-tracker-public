@@ -70,6 +70,23 @@ def replay_transactions_per_account(transactions, corporate_actions, symbol: str
     return _replay_events(events, symbol, market, per_account=True)
 
 
+def replay_transactions_merged(transactions, corporate_actions, symbol: str, market: str):
+    """合并单桶重放（per_account=False）：归属矛盾时的降级口径。
+
+    与 replay_transactions_per_account 同一事件构建与排序；返回 NULL 单桶状态。
+    数量总和仍然可信（含送转/拆股因子），只是无法按账户拆分。
+    """
+    events = [
+        {'type': 'transaction', 'date': txn.transaction_date, 'data': txn}
+        for txn in transactions
+    ] + [
+        {'type': 'corporate_action', 'date': action.ex_date, 'data': action}
+        for action in corporate_actions
+    ]
+    events.sort(key=_event_sort_key)
+    return _replay_events(events, symbol, market, per_account=False)
+
+
 def replay_account_buckets(db: Session, user_id: int, symbol: str, market: str):
     """全量按账户重放（只读，不落库），返回 {account_id: 桶状态}。
 

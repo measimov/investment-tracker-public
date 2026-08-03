@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
@@ -16,6 +17,7 @@ from .stock_price_service import (
     retry_with_backoff,
     to_tushare_a_code,
     to_tushare_hk_code,
+    tushare_query_once,
     wait_for_tushare_rate_limit,
 )
 
@@ -92,6 +94,13 @@ def infer_price_currency(market: str, fallback: Optional[str] = None) -> str:
 
 
 def resolve_tushare_history_api(symbol: str, market: str) -> Optional[Dict[str, str]]:
+    if market == "指数":
+        # 基准指数（benchmark_service 目录）：index_daily / index_global，
+        # ts_code 即目录 code，无复权概念
+        from .benchmark_service import resolve_benchmark_history_api
+
+        return resolve_benchmark_history_api(symbol)
+
     if market in {"A股", "B股"}:
         ts_code = to_tushare_a_code(symbol)
         if is_a_share_fund_symbol(symbol):
@@ -712,36 +721,36 @@ def fetch_and_store_yahoo_price_history(
 
 
 def upsert_security_prices(db: Session, prices: List[SecurityPrice]) -> int:
+    """按 (symbol, market, price_date) 原子 upsert（ON CONFLICT DO UPDATE）。
+
+    此前是 query-then-insert：两个会话并发补同一批行时都看不见对方的未提交
+    行、各自 INSERT，唯一键让后提交者整批回滚。全局基准指数把三只固定标的
+    加进了每个用户的同步任务，把这个偶发竞态放大成常态，必须在数据库层原子化。
+    """
     if not prices:
         return 0
 
-    existing = db.query(SecurityPrice).filter(
-        SecurityPrice.symbol == prices[0].symbol,
-        SecurityPrice.market == prices[0].market,
-        SecurityPrice.price_date.in_([price.price_date for price in prices]),
-    ).all()
-    existing_by_date = {price.price_date: price for price in existing}
-
-    changed = 0
-    for price in prices:
-        current = existing_by_date.get(price.price_date)
-        if current:
-            current.ts_code = price.ts_code
-            current.currency = price.currency
-            current.open_price = price.open_price
-            current.high_price = price.high_price
-            current.low_price = price.low_price
-            current.close_price = price.close_price
-            current.pre_close_price = price.pre_close_price
-            current.adj_factor = price.adj_factor
-            current.adj_close_price = price.adj_close_price
-            current.source = price.source
-        else:
-            db.add(price)
-        changed += 1
-
+    update_columns = (
+        "ts_code", "currency", "open_price", "high_price", "low_price",
+        "close_price", "pre_close_price", "adj_factor", "adj_close_price", "source",
+    )
+    rows = [
+        {
+            "symbol": price.symbol,
+            "market": price.market,
+            "price_date": price.price_date,
+            **{column: getattr(price, column) for column in update_columns},
+        }
+        for price in prices
+    ]
+    stmt = pg_insert(SecurityPrice).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        constraint="uix_security_price_symbol_market_date",
+        set_={column: getattr(stmt.excluded, column) for column in update_columns},
+    )
+    db.execute(stmt)
     db.commit()
-    return changed
+    return len(rows)
 
 
 def fetch_and_store_security_price_history(
@@ -854,6 +863,72 @@ def fetch_and_store_security_price_history(
         }
 
 
+def _today() -> date:
+    """可注入的"今天"（测试 monkeypatch 用）。"""
+    return date.today()
+
+
+def _last_weekday_on_or_before(day: date) -> date:
+    while day.weekday() >= 5:  # 5=Sat, 6=Sun
+        day -= timedelta(days=1)
+    return day
+
+
+# Tushare 交易日历接口按市场分组；新加坡等无日历接口的市场退化为工作日启发。
+_TRADE_CAL_API_BY_MARKET = {
+    "A股": ("trade_cal", {"exchange": "SSE"}),
+    "B股": ("trade_cal", {"exchange": "SSE"}),
+    "港股": ("hk_tradecal", {}),
+    "美股": ("us_tradecal", {}),
+}
+
+# 每市场每天缓存一次"最近已完成交易日"：{(api_name, today): last_open_date}
+_trade_cal_cache: Dict[Tuple[str, date], date] = {}
+
+
+def get_last_completed_trading_day(market: str, today: Optional[date] = None) -> date:
+    """该市场最近一个已完成的交易日（≤ 昨天）。
+
+    用 Tushare 交易日历精确判定（每市场每天最多 1 次调用，进程内缓存），
+    法定假日与周末都不会再制造假尾部缺口；日历接口失败或市场无日历时
+    退化为"最近工作日"启发（只覆盖周末）。绝不能用单个标的的空返回推断
+    整市场休市——停牌/摘牌标的会污染其他活跃标的的更新。
+    """
+    today = today or _today()
+    fallback = _last_weekday_on_or_before(today - timedelta(days=1))
+    api_spec = _TRADE_CAL_API_BY_MARKET.get(market)
+    if api_spec is None:
+        return fallback
+
+    api_name, extra = api_spec
+    cache_key = (api_name, today)
+    cached = _trade_cal_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        df = tushare_query_once(
+            api_name,
+            start_date=(today - timedelta(days=20)).strftime("%Y%m%d"),
+            end_date=(today - timedelta(days=1)).strftime("%Y%m%d"),
+            **extra,
+        )
+        open_days = [
+            str(row["cal_date"])
+            for _, row in df.iterrows()
+            if int(row.get("is_open", 0)) == 1
+        ]
+        if not open_days:
+            raise ValueError("交易日历返回区间内无开市日")
+        last_open = datetime.strptime(max(open_days), "%Y%m%d").date()
+    except Exception as exc:
+        logger.warning("获取 %s 交易日历失败，退化为工作日启发: %s", market, str(exc)[:120])
+        last_open = fallback
+
+    _trade_cal_cache[cache_key] = last_open
+    return last_open
+
+
 def get_security_price_coverage(
     db: Session,
     *,
@@ -903,9 +978,21 @@ def fetch_and_store_security_price_history_incremental(
     start_date: date,
     end_date: date,
     currency: Optional[str] = None,
+    calendar_market: Optional[str] = None,
 ) -> Dict[str, Any]:
     coverage_before = get_security_price_coverage(db, symbol=symbol, market=market)
-    ranges = _missing_edge_ranges(coverage_before, start_date, end_date)
+    # 尾部端点钳到该市场最近一个已完成交易日（交易日历精确判定）：当日
+    # 日线收盘前不存在，周末/法定假日也不存在——否则每次刷新会给每个标的
+    # 造出假尾部缺口，短空探测后缓存不前移，下次刷新全量复现。
+    # calendar_market 供无自有日历的市场借用（基准指数按目录日历市场钳制）。
+    effective_end = min(
+        end_date, get_last_completed_trading_day(calendar_market or market)
+    )
+    ranges = (
+        _missing_edge_ranges(coverage_before, start_date, effective_end)
+        if effective_end >= start_date
+        else []
+    )
     if not ranges:
         return {
             "symbol": symbol,
@@ -914,8 +1001,12 @@ def fetch_and_store_security_price_history_incremental(
             "skipped": True,
             "rows": 0,
             "coverage_before": {
-                "start_date": coverage_before["start_date"].isoformat(),
-                "end_date": coverage_before["end_date"].isoformat(),
+                "start_date": coverage_before["start_date"].isoformat()
+                if coverage_before["start_date"]
+                else None,
+                "end_date": coverage_before["end_date"].isoformat()
+                if coverage_before["end_date"]
+                else None,
                 "count": coverage_before["count"],
             },
             "coverage_complete": True,
@@ -967,6 +1058,7 @@ def fetch_and_store_security_price_history_incremental(
                     for start, end in remaining_ranges
                 ],
                 "error": result.get("error"),
+                "coverage_status": result.get("coverage_status"),
             }
         rows += int(result.get("rows") or 0)
 
@@ -1003,19 +1095,3 @@ def fetch_and_store_security_price_history_incremental(
         ],
         "range_results": range_results,
     }
-
-
-def get_cached_security_prices(
-    db: Session,
-    *,
-    symbol: str,
-    market: str,
-    start_date: date,
-    end_date: date,
-) -> List[SecurityPrice]:
-    return db.query(SecurityPrice).filter(
-        SecurityPrice.symbol == symbol,
-        SecurityPrice.market == market,
-        SecurityPrice.price_date >= start_date,
-        SecurityPrice.price_date <= end_date,
-    ).order_by(SecurityPrice.price_date).all()

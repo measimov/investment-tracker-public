@@ -39,21 +39,17 @@ APP_BASE_URL=https://<app-host>
 ENABLE_DOCS=false
 REQUIRE_HTTPS=true
 PRICE_REFRESH_MAX_WORKERS=4
-BACKGROUND_JOB_RETENTION_HOURS=168
-BACKGROUND_JOB_STALE_MINUTES=60
-BACKGROUND_WORKER_ENABLED=true
-BACKGROUND_JOB_POLL_SECONDS=5
-BACKGROUND_JOB_LEASE_SECONDS=300
-BACKGROUND_JOB_MAX_ATTEMPTS=3
-BACKGROUND_JOB_RETRY_BASE_SECONDS=30
 APP_VERSION=1.0.0
 BUILD_SHA=unknown
+
+# 后台任务与 AI 复盘（不配置 LLM_REPORT_* 时定期复盘静默不跑）
+BACKGROUND_WORKER_ENABLED=true
 LLM_REPORT_API_KEY=
 LLM_REPORT_BASE_URL=https://api.deepseek.com
 LLM_REPORT_MODEL=deepseek-v4-pro
-LLM_REPORT_TIMEOUT_SECONDS=120
-LLM_REPORT_MAX_OUTPUT_TOKENS=8192
 ```
+
+其余可调参数（Tushare 限速、价格新鲜度窗口、`BACKGROUND_JOB_*`）见 `.env.example`。
 
 可用以下命令生成 LAN 自签证书：
 
@@ -77,6 +73,9 @@ docker compose up -d
 docker compose ps
 ```
 
+`python manage.py rebuild-holdings` 可随时从交易与公司行动全量重放持仓（幂等；
+输出 Failures 列表说明存在真实超卖数据，修正后重跑）。
+
 访问：
 
 - 前端：`https://<app-host>`
@@ -85,10 +84,10 @@ docker compose ps
 首次部署时运行 `python manage.py seed` 初始化 `admin` / `demo` 两个用户；密码来自 `.env`。应用启动不会自动创建数据库表或写入种子数据，表结构必须由 Alembic 管理。
 
 旧版文件数据库和自动建表部署路径已经废弃。当前部署以 PostgreSQL + `alembic upgrade head` 为准。
-`TUSHARE_TOKEN` 可留空；此时不能主动从 Tushare 刷新行情。`LLM_REPORT_API_KEY`
-留空时 AI 复盘接口保持禁用，定期计划不会调用外部模型。
-启用后，生成报告和追问会把相应的账本输入发送给 `LLM_REPORT_BASE_URL` 指向的
-外部服务；上线前应确认数据范围、供应商条款和隐私要求。
+`TUSHARE_TOKEN` 可留空；此时不能主动从 Tushare 刷新行情，分红公告与基本面档案同步也不可用。
+`LLM_REPORT_API_KEY` 留空时 AI 复盘和标的分析接口保持禁用，定期计划不会调用外部模型。
+启用后，生成报告、追问和标的分析会把相应的账本或公开行情输入发送给
+`LLM_REPORT_BASE_URL` 指向的外部服务；上线前应确认数据范围、供应商条款和隐私要求。
 
 ## 群晖 NAS
 
@@ -165,24 +164,6 @@ Excel 只是便于人工查阅的补充导出，不能替代包含完整应用�
 
 ## 升级
 
-### 从首次公开快照升级
-
-本次快照把 v1.0 之前的历史迁移压缩为
-`20260728_0001_initial_schema.py`，不提供从旧公开快照
-`20260515_0001_initial_schema.py` 的原地 Alembic 升级路径。旧部署必须先生成并读检
-PostgreSQL 备份，保留原数据库用于回滚，再为新版本创建空数据库、执行当前迁移并通过
-受支持的导入流程迁移数据。不要让当前代码直接对旧库运行 `alembic upgrade head`，
-也不要手工修改 `alembic_version` 伪装成新基线。
-
-迁移完交易和公司行动后，可运行以下幂等命令重放账户级持仓；若输出 `Failures`，
-应先修正超卖或缺少期初持仓的数据，再重跑。
-
-```bash
-docker compose run --rm backend python manage.py rebuild-holdings
-```
-
-### 当前基线内升级
-
 推荐顺序：
 
 ```bash
@@ -196,13 +177,10 @@ docker compose up -d
 docker compose logs -f
 ```
 
-当前基线中，招商与东方财富共用的 `broker_fund_flows` 按券商账户去重；
-两个真实账户可以拥有相同的 `row_hash`。IBKR 来源仍保留用户级 hash 约束，
-正式导入只会在来源字段、唯一规范链接、经济事实和账户尾号全部一致时承接
-未分账户旧记录；其他账户、孤儿来源或链接冲突会明确拒绝，不会静默判重。
-一旦 `broker_fund_flows` 出现合法的跨账户重复，不能直接降级到旧的全局唯一约束。
-需要回退时，首选恢复升级前已经读检通过的 `.dump`；不要在生产库上直接执行
-旧迁移。若必须做数据级降级，应先在恢复演练库中查询并人工处理跨账户重复来源。
+v1.0 基线（`20260728_0001`）之前的迁移已压缩，**不存在从更早版本的升级路径**：
+不在基线上的数据库应重建而非迁移。需要回退时，恢复升级前已读检通过的 `.dump`，
+不要在生产库上执行 `alembic downgrade`。注意 `broker_fund_flows` 按券商账户去重，
+两个真实账户可以合法拥有相同的 `row_hash`。
 
 确认健康检查：
 

@@ -6,13 +6,9 @@ import pytest
 from app.core.security import get_password_hash
 from app.database import SessionLocal
 from app.main import app
-from app.models.excluded_security import ExcludedSecurity
+from app.models.security_rule import SecurityRule
 from app.models.user import User
 
-
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
 
 
 @pytest.fixture
@@ -24,12 +20,12 @@ def api_users():
         originals = {u.id: u.hashed_password for u in (demo, admin)}
         for u in (demo, admin):
             u.hashed_password = get_password_hash("excluded-api-password")
-        db.query(ExcludedSecurity).delete()
+        db.query(SecurityRule).delete()
         db.commit()
         yield
         for u in (demo, admin):
             u.hashed_password = originals[u.id]
-        db.query(ExcludedSecurity).delete()
+        db.query(SecurityRule).delete()
         db.commit()
     finally:
         db.close()
@@ -118,7 +114,7 @@ async def test_preview_response_serializes_skipped_excluded_rows(api_users, monk
             base_currency="CNY",
         )
         db.add(account)
-        db.add(ExcludedSecurity(user_id=demo.id, symbol="511880", market="A股"))
+        db.add(SecurityRule(rule_type="EXCLUDE", user_id=demo.id, symbol="511880", market="A股"))
         db.commit()
         db.refresh(account)
         account_id = account.id
@@ -156,7 +152,7 @@ async def test_preview_response_serializes_skipped_excluded_rows(api_users, monk
     monkeypatch.setattr(
         cmb_importer,
         "parse_rows",
-        lambda contents, filename: (flows, {"证券买入": 2}, 2, []),
+        lambda contents, filename, **kwargs: (flows, {"证券买入": 2}, 2, []),
     )
 
     transport = httpx.ASGITransport(app=app)

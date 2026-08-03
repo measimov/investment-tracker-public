@@ -88,6 +88,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: npm run typecheck
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build

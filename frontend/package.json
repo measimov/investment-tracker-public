@@ -6,6 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.app.json --composite false && vue-tsc --noEmit -p tsconfig.node.json --composite false",
+    "format": "prettier --write src e2e",
     "test:e2e": "rm -rf .e2e-work && mkdir -p .e2e-work && playwright test",
     "test:e2e:headed": "rm -rf .e2e-work && mkdir -p .e2e-work && playwright test --headed"
   },
@@ -23,8 +25,12 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "@types/node": "^20.19.43",
     "@vitejs/plugin-vue": "^5.0.3",
+    "@vue/tsconfig": "^0.5.1",
     "prettier": "^3.8.3",
-    "vite": "^5.0.11"
+    "typescript": "~5.6",
+    "vite": "^5.0.11",
+    "vue-tsc": "^2.2.12"
   }
 }

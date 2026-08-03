@@ -14,27 +14,25 @@ from app.models.cash_event import CashEvent
 from app.models.corporate_action import CorporateAction
 from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
-from app.models.excluded_security import ExcludedSecurity
+from app.models.security_rule import SecurityRule
 from app.models.import_batch import ImportBatch
 from app.models.transaction import Transaction
 from app.services import cmb_fund_flow_importer as importer
 from app.services.cmb_fund_flow_importer import ParsedFlow, import_cmb_fund_flow
+from tests.helpers import reset_tables
 
 
-def reset_tables(db):
-    for model in (
-        BrokerFundFlow,
-        IbkrActivityFlow,
-        Holding,
-        CashEvent,
-        CorporateAction,
-        Transaction,
-    ):
-        db.query(model).delete()
-    db.query(ImportBatch).delete()
-    db.query(BrokerAccount).delete()
-    db.query(ExcludedSecurity).delete()
-    db.commit()
+RESET_MODELS = (
+    BrokerFundFlow,
+    IbkrActivityFlow,
+    Holding,
+    CashEvent,
+    CorporateAction,
+    Transaction,
+    ImportBatch,
+    BrokerAccount,
+    SecurityRule,
+)
 
 
 def parsed_flow(
@@ -104,44 +102,6 @@ def sample_flows():
             amount="-10",
         ),
     ]
-
-
-def legacy_flow_from_parsed(
-    flow: ParsedFlow,
-    *,
-    row_hash: str,
-    transaction_id: int | None = None,
-    broker_account_id: int | None = None,
-) -> BrokerFundFlow:
-    return BrokerFundFlow(
-        user_id=1,
-        broker_account_id=broker_account_id,
-        transaction_id=transaction_id,
-        broker="招商证券",
-        row_hash=row_hash,
-        source_filename="legacy.xls",
-        source_row_number=flow.source_row_number,
-        security_code=flow.security_code,
-        security_name=flow.security_name,
-        currency=flow.currency,
-        trade_date=flow.trade_date,
-        trade_price=flow.trade_price,
-        trade_quantity=flow.trade_quantity,
-        amount=flow.amount,
-        cash_balance=flow.cash_balance,
-        remaining_quantity=flow.remaining_quantity,
-        contract_number="legacy-contract",
-        serial_number="legacy-serial",
-        business_name=flow.business_name,
-        stamp_tax=flow.stamp_tax,
-        commission=flow.commission,
-        handling_fee=flow.handling_fee,
-        management_fee=flow.management_fee,
-        settlement_fee=flow.settlement_fee,
-        transfer_fee=flow.transfer_fee,
-        other_fee=flow.other_fee,
-        shareholder_code=flow.shareholder_code,
-    )
 
 
 def pdf_dataframe_row(**overrides):
@@ -461,7 +421,7 @@ def test_cmb_pdf_is_the_only_supported_source_at_api_and_service_boundaries():
 
 def test_cmb_import_links_batch_account_and_keeps_duplicate_attempt(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -476,7 +436,7 @@ def test_cmb_import_links_batch_account_and_keeps_duplicate_attempt(monkeypatch)
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 sample_flows(),
                 {"证券买入": 1, "股息入账": 1, "股息红利税补缴": 1, "其他": 1},
                 4,
@@ -546,7 +506,7 @@ def test_cmb_import_links_batch_account_and_keeps_duplicate_attempt(monkeypatch)
 
 def test_cmb_import_preserves_unresolved_and_unsupported_source_rows(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -581,7 +541,7 @@ def test_cmb_import_preserves_unresolved_and_unsupported_source_rows(monkeypatch
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 [unsupported, unresolved_tax],
                 {"银行转证券": 1, "股息红利税补缴": 1},
                 2,
@@ -632,7 +592,7 @@ def test_cmb_import_preserves_unresolved_and_unsupported_source_rows(monkeypatch
 
 def test_cmb_product_dividend_becomes_linked_interest_cash_event(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -655,10 +615,11 @@ def test_cmb_product_dividend_becomes_linked_interest_cash_event(monkeypatch):
         )
         interest_flow.security_code = "880013"
         interest_flow.security_name = "天添利"
+        interest_flow.is_cash_management_symbol = True  # 表驱动后由 parse 按规则标注
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 [interest_flow],
                 {"产品红利发放": 1},
                 1,
@@ -705,1188 +666,9 @@ def test_cmb_product_dividend_becomes_linked_interest_cash_event(monkeypatch):
         db.close()
 
 
-def test_cmb_claims_exact_unassigned_pdf_source_without_double_counting(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商承接账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-        flow = sample_flows()[0]
-        transaction = Transaction(
-            user_id=1,
-            symbol=flow.security_code,
-            name=flow.security_name,
-            market="A股",
-            transaction_type="BUY",
-            quantity=abs(flow.trade_quantity),
-            price=flow.trade_price,
-            fee=flow.total_fee,
-            transaction_date=flow.trade_date,
-            currency=flow.currency,
-        )
-        db.add(transaction)
-        db.flush()
-        source = importer.create_broker_fund_flow(
-            user_id=1,
-            broker_account_id=None,
-            filename="legacy-cmb.pdf",
-            flow=flow,
-            transaction_id=transaction.id,
-        )
-        db.add(source)
-        db.commit()
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: ([flow], {"证券买入": 1}, 1, []),
-        )
-
-        result = import_cmb_fund_flow(
-            db,
-            1,
-            b"%PDF-existing-source",
-            "cmb.pdf",
-            broker_account_id=account.id,
-        )
-
-        assert result["migrated_unassigned_rows"] == 1
-        assert result["duplicate_rows"] == 1
-        assert result["imported_transactions"] == 0
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-        db.refresh(transaction)
-        db.refresh(source)
-        assert transaction.broker_account_id == account.id
-        assert source.broker_account_id == account.id
-        assert source.statement_type == "cmb_statement_pdf"
-    finally:
-        db.close()
-
-
-def test_cmb_preview_dry_runs_exact_claim_and_legacy_bridge_without_writes(
-    monkeypatch,
-):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商预览账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        exact_flow = sample_flows()[0]
-        legacy_pdf_flow = parsed_flow(
-            row_number=3,
-            row_hash="f" * 64,
-            business_name="证券买入",
-            trade_date=date(2026, 1, 3),
-            quantity="200",
-            price="5",
-            amount="-1001",
-        )
-        legacy_pdf_flow.security_code = "000001"
-        legacy_pdf_flow.security_name = "平安银行"
-
-        exact_transaction = Transaction(
-            user_id=1,
-            symbol=exact_flow.security_code,
-            name=exact_flow.security_name,
-            market="A股",
-            transaction_type="BUY",
-            quantity=abs(exact_flow.trade_quantity),
-            price=exact_flow.trade_price,
-            fee=exact_flow.total_fee,
-            transaction_date=exact_flow.trade_date,
-            currency=exact_flow.currency,
-        )
-        legacy_transaction = Transaction(
-            user_id=1,
-            symbol=legacy_pdf_flow.security_code,
-            name=legacy_pdf_flow.security_name,
-            market="A股",
-            transaction_type="BUY",
-            quantity=abs(legacy_pdf_flow.trade_quantity),
-            price=legacy_pdf_flow.trade_price,
-            fee=legacy_pdf_flow.total_fee,
-            transaction_date=legacy_pdf_flow.trade_date,
-            currency=legacy_pdf_flow.currency,
-        )
-        db.add_all([exact_transaction, legacy_transaction])
-        db.flush()
-        exact_source = importer.create_broker_fund_flow(
-            user_id=1,
-            broker_account_id=None,
-            filename="old.pdf",
-            flow=exact_flow,
-            transaction_id=exact_transaction.id,
-        )
-        legacy_source = legacy_flow_from_parsed(
-            legacy_pdf_flow,
-            row_hash="9" * 64,
-            transaction_id=legacy_transaction.id,
-        )
-        db.add_all([exact_source, legacy_source])
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [exact_flow, legacy_pdf_flow],
-                {"证券买入": 2},
-                2,
-                [],
-            ),
-        )
-
-        result = importer.preview_cmb_fund_flow(
-            db,
-            1,
-            b"%PDF-preview-dry-run",
-            "cmb.pdf",
-            broker_account_id=account.id,
-        )
-
-        assert result["duplicate_rows"] == 2
-        assert result["migrated_unassigned_rows"] == 1
-        assert result["migrated_legacy_rows"] == 1
-        assert db.query(ImportBatch).count() == 0
-        db.refresh(exact_transaction)
-        db.refresh(legacy_transaction)
-        db.refresh(exact_source)
-        db.refresh(legacy_source)
-        assert exact_transaction.broker_account_id is None
-        assert legacy_transaction.broker_account_id is None
-        assert exact_source.broker_account_id is None
-        assert legacy_source.broker_account_id is None
-        assert db.query(Transaction).count() == 2
-        assert db.query(BrokerFundFlow).count() == 2
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_reconciles_legacy_excel_business_records_without_double_counting(
-    monkeypatch,
-):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        flows = sample_flows()
-        transaction = Transaction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(transaction)
-        db.flush()
-
-        trade_hash = "1" * 64
-        dividend_hash = "2" * 64
-        tax_hash = "3" * 64
-        action = CorporateAction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            action_type="CASH_DIVIDEND",
-            ex_date=date(2026, 5, 2),
-            payment_date=date(2026, 5, 2),
-            total_dividend=Decimal("100"),
-            tax_withheld=Decimal("10"),
-            net_dividend=Decimal("90"),
-            currency="CNY",
-            notes=f"row_hash={dividend_hash}; row_hash={tax_hash}",
-        )
-        db.add(action)
-        db.add_all(
-            [
-                legacy_flow_from_parsed(
-                    flows[0],
-                    row_hash=trade_hash,
-                    transaction_id=transaction.id,
-                ),
-                legacy_flow_from_parsed(flows[1], row_hash=dividend_hash),
-                legacy_flow_from_parsed(flows[2], row_hash=tax_hash),
-            ]
-        )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                flows,
-                {"证券买入": 1, "股息入账": 1, "股息红利税补缴": 1},
-                3,
-                [],
-            ),
-        )
-
-        result = import_cmb_fund_flow(
-            db,
-            1,
-            b"%PDF-replaces-legacy-excel",
-            "cmb.pdf",
-            broker_account_id=account.id,
-        )
-
-        assert result["batch_status"] == "COMPLETED"
-        assert result["migrated_legacy_rows"] == 3
-        assert result["duplicate_rows"] == 3
-        assert result["imported_transactions"] == 0
-        assert result["imported_corporate_actions"] == 0
-        assert result["imported_tax_adjustments"] == 0
-        assert db.query(Transaction).count() == 1
-        assert db.query(CorporateAction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 6
-
-        db.refresh(transaction)
-        db.refresh(action)
-        assert transaction.broker_account_id == account.id
-        assert action.broker_account_id == account.id
-        legacy_rows = (
-            db.query(BrokerFundFlow).filter(BrokerFundFlow.source_filename == "legacy.xls").all()
-        )
-        assert {row.broker_account_id for row in legacy_rows} == {account.id}
-        assert {row.statement_type for row in legacy_rows} == {"cmb_fund_flow_excel"}
-        assert sum(row.corporate_action_id == action.id for row in legacy_rows) == 2
-        pdf_rows = (
-            db.query(BrokerFundFlow).filter(BrokerFundFlow.source_filename == "cmb.pdf").all()
-        )
-        assert len(pdf_rows) == 3
-        assert {row.statement_type for row in pdf_rows} == {"cmb_statement_pdf"}
-        assert sum(row.transaction_id is not None for row in pdf_rows) == 1
-        assert sum(row.corporate_action_id == action.id for row in pdf_rows) == 2
-
-        duplicate = import_cmb_fund_flow(
-            db,
-            1,
-            b"%PDF-replaces-legacy-excel",
-            "cmb.pdf",
-            broker_account_id=account.id,
-        )
-        assert duplicate["migrated_legacy_rows"] == 0
-        assert duplicate["duplicate_rows"] == 3
-        assert duplicate["imported_transactions"] == 0
-        assert db.query(BrokerFundFlow).count() == 6
-    finally:
-        db.close()
-
-
-def test_cmb_legacy_excel_matching_consumes_identical_events_as_a_multiset(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        first = parsed_flow(
-            row_number=2,
-            row_hash="a" * 64,
-            business_name="证券买入",
-            trade_date=date(2026, 1, 2),
-            quantity="100",
-            price="10",
-            amount="-1001",
-        )
-        second = parsed_flow(
-            row_number=3,
-            row_hash="b" * 64,
-            business_name="证券买入",
-            trade_date=date(2026, 1, 2),
-            quantity="100",
-            price="10",
-            amount="-1001",
-        )
-        old_transaction = Transaction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(old_transaction)
-        db.flush()
-        db.add(
-            legacy_flow_from_parsed(
-                first,
-                row_hash="c" * 64,
-                transaction_id=old_transaction.id,
-            )
-        )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [first, second],
-                {"证券买入": 2},
-                2,
-                [],
-            ),
-        )
-
-        result = import_cmb_fund_flow(
-            db,
-            1,
-            b"%PDF-two-identical-events",
-            "cmb.pdf",
-            broker_account_id=account.id,
-        )
-
-        assert result["migrated_legacy_rows"] == 1
-        assert result["duplicate_rows"] == 1
-        assert result["imported_transactions"] == 1
-        assert db.query(Transaction).count() == 2
-        assert db.query(BrokerFundFlow).count() == 3
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_near_matching_legacy_excel_rows(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        pdf_flow = sample_flows()[0]
-        old_flow = parsed_flow(
-            row_number=2,
-            row_hash="d" * 64,
-            business_name="证券买入",
-            trade_date=date(2026, 1, 2),
-            quantity="100",
-            price="10.01",
-            amount="-1002",
-        )
-        old_transaction = Transaction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10.01"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(old_transaction)
-        db.flush()
-        legacy = legacy_flow_from_parsed(
-            old_flow,
-            row_hash="e" * 64,
-            transaction_id=old_transaction.id,
-        )
-        db.add(legacy)
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [pdf_flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="数量、价格、金额或手续费不一致"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-conflicting-legacy-row",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        db.refresh(legacy)
-        db.refresh(old_transaction)
-        assert legacy.broker_account_id is None
-        assert old_transaction.broker_account_id is None
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-        assert db.query(ImportBatch).one().status == "FAILED"
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_legacy_multiset_with_more_events_than_statement(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        flow = sample_flows()[0]
-        for index in range(2):
-            transaction = Transaction(
-                user_id=1,
-                symbol="600000",
-                name="浦发银行",
-                market="A股",
-                transaction_type="BUY",
-                quantity=Decimal("100"),
-                price=Decimal("10"),
-                fee=Decimal("1"),
-                transaction_date=date(2026, 1, 2),
-                currency="CNY",
-            )
-            db.add(transaction)
-            db.flush()
-            db.add(
-                legacy_flow_from_parsed(
-                    flow,
-                    row_hash=str(index + 4) * 64,
-                    transaction_id=transaction.id,
-                )
-            )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="重叠事件组"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-fewer-than-legacy",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        assert db.query(Transaction).count() == 2
-        assert db.query(BrokerFundFlow).count() == 2
-        assert {row.broker_account_id for row in db.query(BrokerFundFlow).all()} == {None}
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_drifted_legacy_transaction(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        flow = sample_flows()[0]
-        drifted_transaction = Transaction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="SELL",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(drifted_transaction)
-        db.flush()
-        db.add(
-            legacy_flow_from_parsed(
-                flow,
-                row_hash="6" * 64,
-                transaction_id=drifted_transaction.id,
-            )
-        )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="已修改的交易或公司行动"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-drifted-transaction",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_drifted_legacy_transaction_market(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        flow = sample_flows()[0]
-        drifted_transaction = Transaction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="港股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(drifted_transaction)
-        db.flush()
-        db.add(
-            legacy_flow_from_parsed(
-                flow,
-                row_hash="6" * 64,
-                transaction_id=drifted_transaction.id,
-            )
-        )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="已修改的交易或公司行动"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-drifted-transaction-market",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-    finally:
-        db.close()
-
-
-@pytest.mark.parametrize(
-    ("tax_withheld", "net_dividend"),
-    [
-        ("100", "0"),
-        ("10", "80"),
-    ],
-)
-def test_cmb_pdf_rejects_drifted_legacy_corporate_action_totals(
-    monkeypatch,
-    tax_withheld,
-    net_dividend,
-):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        dividend_flow, tax_flow = sample_flows()[1:]
-        dividend_hash = "d" * 64
-        tax_hash = "e" * 64
-        action = CorporateAction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            action_type="CASH_DIVIDEND",
-            ex_date=date(2026, 5, 2),
-            payment_date=date(2026, 5, 2),
-            total_dividend=Decimal("100"),
-            tax_withheld=Decimal(tax_withheld),
-            net_dividend=Decimal(net_dividend),
-            currency="CNY",
-            notes=f"row_hash={dividend_hash}; row_hash={tax_hash}",
-        )
-        db.add(action)
-        db.add_all(
-            [
-                legacy_flow_from_parsed(dividend_flow, row_hash=dividend_hash),
-                legacy_flow_from_parsed(tax_flow, row_hash=tax_hash),
-            ]
-        )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [dividend_flow, tax_flow],
-                {"股息入账": 1, "股息红利税补缴": 1},
-                2,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="公司行动税费或净额不一致"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-drifted-corporate-action",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        assert db.query(CorporateAction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 2
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_legacy_event_missing_from_statement(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        pdf_flow = sample_flows()[0]
-        legacy_parsed = parsed_flow(
-            row_number=2,
-            row_hash="f" * 64,
-            business_name="证券买入",
-            trade_date=date(2026, 1, 2),
-            quantity="100",
-            price="10",
-            amount="-1001",
-        )
-        legacy_parsed.security_code = "000001"
-        legacy_parsed.security_name = "平安银行"
-        transaction = Transaction(
-            user_id=1,
-            symbol="000001",
-            name="平安银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(transaction)
-        db.flush()
-        legacy = legacy_flow_from_parsed(
-            legacy_parsed,
-            row_hash="f" * 64,
-            transaction_id=transaction.id,
-        )
-        db.add(legacy)
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [pdf_flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="未找到一一对应"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-missing-legacy-event",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        db.refresh(legacy)
-        db.refresh(transaction)
-        assert legacy.broker_account_id is None
-        assert transaction.broker_account_id is None
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_existing_pdf_source_with_independent_legacy_transaction(
-    monkeypatch,
-):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        flow = sample_flows()[0]
-        legacy_transaction = Transaction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        pdf_transaction = Transaction(
-            user_id=1,
-            broker_account_id=account.id,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add_all([legacy_transaction, pdf_transaction])
-        db.flush()
-
-        legacy_source = legacy_flow_from_parsed(
-            flow,
-            row_hash="9" * 64,
-            transaction_id=legacy_transaction.id,
-        )
-        existing_pdf_source = legacy_flow_from_parsed(
-            flow,
-            row_hash=flow.row_hash,
-            transaction_id=pdf_transaction.id,
-            broker_account_id=account.id,
-        )
-        existing_pdf_source.source_filename = "existing.pdf"
-        existing_pdf_source.statement_type = importer.SOURCE_TYPE
-        db.add_all([legacy_source, existing_pdf_source])
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="未承接的旧 Excel"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-existing-dirty-state",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        db.refresh(legacy_source)
-        assert legacy_source.broker_account_id is None
-        assert db.query(Transaction).count() == 2
-        assert db.query(BrokerFundFlow).count() == 2
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_validates_all_legacy_sources_linked_to_corporate_action(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        dividend_flow, tax_flow = sample_flows()[1:]
-        dividend_hash = "d" * 64
-        tax_hash = "e" * 64
-        action = CorporateAction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            action_type="CASH_DIVIDEND",
-            ex_date=date(2026, 5, 2),
-            payment_date=date(2026, 5, 2),
-            total_dividend=Decimal("100"),
-            tax_withheld=Decimal("10"),
-            net_dividend=Decimal("90"),
-            currency="CNY",
-            notes=f"row_hash={dividend_hash}; row_hash={tax_hash}",
-        )
-        db.add(action)
-        db.add_all(
-            [
-                legacy_flow_from_parsed(dividend_flow, row_hash=dividend_hash),
-                legacy_flow_from_parsed(tax_flow, row_hash=tax_hash),
-            ]
-        )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [tax_flow],
-                {"股息红利税补缴": 1},
-                1,
-                [],
-            ),
-        )
-
-        result = import_cmb_fund_flow(
-            db,
-            1,
-            b"%PDF-tax-period-only",
-            "cmb.pdf",
-            broker_account_id=account.id,
-        )
-
-        assert result["migrated_legacy_rows"] == 1
-        assert result["duplicate_rows"] == 1
-        assert result["imported_tax_adjustments"] == 0
-        db.refresh(action)
-        assert action.broker_account_id == account.id
-        sources = db.query(BrokerFundFlow).order_by(BrokerFundFlow.id).all()
-        assert len(sources) == 3
-        assert sources[0].broker_account_id is None
-        assert sources[1].broker_account_id == account.id
-        assert sources[2].broker_account_id == account.id
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_unassigned_source_linked_to_another_account(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        first_account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商账户一",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        second_account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商账户二",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add_all([first_account, second_account])
-        db.flush()
-
-        flow = sample_flows()[0]
-        transaction = Transaction(
-            user_id=1,
-            broker_account_id=first_account.id,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(transaction)
-        db.flush()
-        db.add(
-            legacy_flow_from_parsed(
-                flow,
-                row_hash="7" * 64,
-                transaction_id=transaction.id,
-            )
-        )
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="已归属其他账户"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-account-conflict",
-                "cmb.pdf",
-                broker_account_id=second_account.id,
-            )
-
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_rejects_cross_format_fee_mismatch(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商迁移账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-
-        flow = sample_flows()[0]
-        transaction = Transaction(
-            user_id=1,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("2"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(transaction)
-        db.flush()
-        legacy = legacy_flow_from_parsed(
-            flow,
-            row_hash="8" * 64,
-            transaction_id=transaction.id,
-        )
-        legacy.commission = Decimal("2")
-        db.add(legacy)
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="手续费不一致"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-fee-mismatch",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-    finally:
-        db.close()
-
-
-def test_cmb_pdf_does_not_reuse_legacy_excel_rows_from_another_account(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        first_account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商账户一",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        second_account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商账户二",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add_all([first_account, second_account])
-        db.flush()
-
-        flow = sample_flows()[0]
-        old_transaction = Transaction(
-            user_id=1,
-            broker_account_id=first_account.id,
-            symbol="600000",
-            name="浦发银行",
-            market="A股",
-            transaction_type="BUY",
-            quantity=Decimal("100"),
-            price=Decimal("10"),
-            fee=Decimal("1"),
-            transaction_date=date(2026, 1, 2),
-            currency="CNY",
-        )
-        db.add(old_transaction)
-        db.flush()
-        legacy = legacy_flow_from_parsed(
-            flow,
-            row_hash="f" * 64,
-            transaction_id=old_transaction.id,
-            broker_account_id=first_account.id,
-        )
-        db.add(legacy)
-        db.commit()
-
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [flow],
-                {"证券买入": 1},
-                1,
-                [],
-            ),
-        )
-
-        result = import_cmb_fund_flow(
-            db,
-            1,
-            b"%PDF-other-account",
-            "cmb.pdf",
-            broker_account_id=second_account.id,
-        )
-
-        assert result["migrated_legacy_rows"] == 0
-        assert result["duplicate_rows"] == 0
-        assert result["imported_transactions"] == 1
-        assert db.query(Transaction).count() == 2
-        db.refresh(legacy)
-        assert legacy.broker_account_id == first_account.id
-    finally:
-        db.close()
-
-
 def test_cmb_same_rows_import_once_per_broker_account(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         first_account = BrokerAccount(
             user_id=1,
@@ -1909,7 +691,7 @@ def test_cmb_same_rows_import_once_per_broker_account(monkeypatch):
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 sample_flows(),
                 {"证券买入": 1, "股息入账": 1, "股息红利税补缴": 1},
                 3,
@@ -1956,7 +738,7 @@ def test_cmb_formal_import_requires_broker_account():
 
 def test_cmb_failed_parse_leaves_failed_batch(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -1971,7 +753,7 @@ def test_cmb_failed_parse_leaves_failed_batch(monkeypatch):
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (_ for _ in ()).throw(ValueError("broken PDF")),
+            lambda contents, filename, **kwargs: (_ for _ in ()).throw(ValueError("broken PDF")),
         )
 
         with pytest.raises(ValueError, match="broken PDF"):
@@ -1995,7 +777,7 @@ def test_cmb_failed_parse_leaves_failed_batch(monkeypatch):
 
 def test_cmb_import_rejects_unowned_or_wrong_broker_account(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         wrong_broker = BrokerAccount(
             user_id=1,
@@ -2037,7 +819,7 @@ def test_cmb_import_rejects_unowned_or_wrong_broker_account(monkeypatch):
 
 def test_cmb_unassigned_tax_matches_only_unassigned_dividend():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -2088,7 +870,7 @@ def test_cmb_tax_is_left_unlinked_when_account_has_multiple_candidate_dividends(
     monkeypatch,
 ):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -2133,7 +915,7 @@ def test_cmb_tax_is_left_unlinked_when_account_has_multiple_candidate_dividends(
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 [tax_flow],
                 {"股息红利税补缴": 1},
                 1,
@@ -2162,96 +944,11 @@ def test_cmb_tax_is_left_unlinked_when_account_has_multiple_candidate_dividends(
         db.close()
 
 
-def test_cmb_exact_claim_rejects_inconsistent_full_action_source_aggregate(
-    monkeypatch,
-):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = BrokerAccount(
-            user_id=1,
-            broker="招商证券",
-            account_name="招商严格承接账户",
-            base_currency="CNY",
-            account_number_masked="****A123",
-        )
-        db.add(account)
-        db.flush()
-        dividend_flow, tax_flow = sample_flows()[1:]
-        action = CorporateAction(
-            user_id=1,
-            symbol="600000",
-            market="A股",
-            action_type="CASH_DIVIDEND",
-            ex_date=date(2026, 5, 2),
-            total_dividend=Decimal("100"),
-            tax_withheld=Decimal("10"),
-            net_dividend=Decimal("91"),
-            currency="CNY",
-            notes=(
-                f"row_hash={dividend_flow.row_hash}; "
-                f"row_hash={tax_flow.row_hash}"
-            ),
-        )
-        db.add(action)
-        db.flush()
-        db.add_all(
-            [
-                importer.create_broker_fund_flow(
-                    user_id=1,
-                    broker_account_id=None,
-                    filename="old.pdf",
-                    flow=dividend_flow,
-                    corporate_action_id=action.id,
-                ),
-                importer.create_broker_fund_flow(
-                    user_id=1,
-                    broker_account_id=None,
-                    filename="old.pdf",
-                    flow=tax_flow,
-                    corporate_action_id=action.id,
-                ),
-            ]
-        )
-        db.commit()
-        monkeypatch.setattr(
-            importer,
-            "parse_rows",
-            lambda contents, filename: (
-                [dividend_flow, tax_flow],
-                {"股息入账": 1, "股息红利税补缴": 1},
-                2,
-                [],
-            ),
-        )
-
-        with pytest.raises(ValueError, match="全部股息、税费或净额聚合不一致"):
-            import_cmb_fund_flow(
-                db,
-                1,
-                b"%PDF-inconsistent-exact-action",
-                "cmb.pdf",
-                broker_account_id=account.id,
-            )
-
-        batch = db.query(ImportBatch).one()
-        assert batch.status == "FAILED"
-        assert batch.archived_count == 0
-        assert batch.imported_count == 0
-        db.refresh(action)
-        assert action.broker_account_id is None
-        assert {
-            source.broker_account_id for source in db.query(BrokerFundFlow).all()
-        } == {None}
-    finally:
-        db.close()
-
-
 def test_cmb_preview_reports_masks_and_formal_import_requires_full_coverage(
     monkeypatch,
 ):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -2282,7 +979,7 @@ def test_cmb_preview_reports_masks_and_formal_import_requires_full_coverage(
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 flows,
                 {"银行转存": 3},
                 3,
@@ -2334,7 +1031,7 @@ def test_cmb_preview_reports_masks_and_formal_import_requires_full_coverage(
 
 def test_cmb_precommit_account_oversell_rolls_back_entire_batch(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -2357,7 +1054,7 @@ def test_cmb_precommit_account_oversell_rolls_back_entire_batch(monkeypatch):
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 [sell_flow],
                 {"证券卖出": 1},
                 1,
@@ -2391,7 +1088,7 @@ def test_cmb_preview_rejects_exact_file_already_imported_to_other_account(
     monkeypatch,
 ):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         first_account = BrokerAccount(
             user_id=1,
@@ -2412,7 +1109,7 @@ def test_cmb_preview_rejects_exact_file_already_imported_to_other_account(
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 sample_flows(),
                 {"证券买入": 1, "股息入账": 1, "股息红利税补缴": 1},
                 3,
@@ -2641,7 +1338,7 @@ def hk_connect_parsed_flow(**overrides):
 
 def test_cmb_hk_connect_import_books_hkd_transaction_with_converted_fee(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     account = BrokerAccount(
         user_id=1,
         broker="招商证券",
@@ -2657,7 +1354,7 @@ def test_cmb_hk_connect_import_books_hkd_transaction_with_converted_fee(monkeypa
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: ([flow], {"证券买入": 1}, 1, []),
+            lambda contents, filename, **kwargs: ([flow], {"证券买入": 1}, 1, []),
         )
 
         result = import_cmb_fund_flow(
@@ -2680,7 +1377,7 @@ def test_cmb_hk_connect_import_books_hkd_transaction_with_converted_fee(monkeypa
         assert stored.settlement_rate == flow.settlement_rate
         assert stored.transaction_id == transaction.id
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -2803,14 +1500,14 @@ def test_cmb_parser_version_tracks_booking_semantics():
 
     若本断言失败，说明你改了 parser 行为——请升级 PARSER_VERSION 并更新此处。
     """
-    assert importer.PARSER_VERSION == "8"
+    assert importer.PARSER_VERSION == "10"
 
 
 def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
     """排除清单标的：交易与股息只归档不入账，正常标的不受影响；
     预览与正式导入的 skipped_excluded_rows 口径一致。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -2820,7 +1517,7 @@ def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
             account_number_masked="****A123",
         )
         db.add(account)
-        db.add(ExcludedSecurity(user_id=1, symbol="511880", market="A股", note="货币基金"))
+        db.add(SecurityRule(rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"))
         db.commit()
         db.refresh(account)
 
@@ -2843,7 +1540,7 @@ def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 flows,
                 {"证券买入": 2, "股息入账": 1},
                 3,
@@ -2875,7 +1572,7 @@ def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
                 assert flow.transaction_id is None
                 assert flow.corporate_action_id is None
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -2883,7 +1580,7 @@ def test_cmb_excluded_rows_do_not_mask_genuinely_invalid_rows(monkeypatch):
     """排除行 + 真正无效行：批次仍为 PARTIAL——预期跳过的抵扣
     只作用于排除行本身，不掩盖真实的数据问题。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = BrokerAccount(
             user_id=1,
@@ -2893,7 +1590,7 @@ def test_cmb_excluded_rows_do_not_mask_genuinely_invalid_rows(monkeypatch):
             account_number_masked="****A123",
         )
         db.add(account)
-        db.add(ExcludedSecurity(user_id=1, symbol="511880", market="A股"))
+        db.add(SecurityRule(rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股"))
         db.commit()
         db.refresh(account)
 
@@ -2909,7 +1606,7 @@ def test_cmb_excluded_rows_do_not_mask_genuinely_invalid_rows(monkeypatch):
         monkeypatch.setattr(
             importer,
             "parse_rows",
-            lambda contents, filename: (
+            lambda contents, filename, **kwargs: (
                 [excluded_buy, invalid_trade],
                 {"证券买入": 2},
                 2,
@@ -2926,5 +1623,5 @@ def test_cmb_excluded_rows_do_not_mask_genuinely_invalid_rows(monkeypatch):
         batch = db.get(ImportBatch, result["import_batch_id"])
         assert batch.error_count >= 1
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()

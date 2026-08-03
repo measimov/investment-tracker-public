@@ -5,10 +5,10 @@
         <div class="card-header">
           <span>汇率管理</span>
           <div class="header-actions">
-            <el-button type="primary" @click="refreshFromAPI" :loading="refreshing">
+            <el-button :icon="Refresh" @click="refreshFromAPI" :loading="refreshing">
               从API更新汇率
             </el-button>
-            <el-button type="success" @click="showAddDialog"> 手动添加汇率 </el-button>
+            <el-button type="primary" :icon="Plus" @click="showAddDialog">手动添加汇率</el-button>
           </div>
         </div>
       </template>
@@ -53,10 +53,10 @@
               </el-statistic>
               <div class="rate-info">
                 <el-text size="small" type="info">
-                  更新: {{ formatDate(latestRates.effective_date) }}
+                  更新: {{ formatDate(latestRates?.effective_date) }}
                 </el-text>
-                <el-tag size="small" :type="getSourceType(latestRates.source)">
-                  {{ latestRates.source }}
+                <el-tag size="small" :type="getSourceType(latestRates?.source || '')">
+                  {{ latestRates?.source }}
                 </el-tag>
               </div>
             </el-card>
@@ -73,19 +73,21 @@
           <el-skeleton animated :rows="7" />
         </div>
         <div v-else class="responsive-table">
-          <el-table :data="rateHistory" stripe style="width: 100%" v-loading="loadingHistory">
+          <el-table :data="rateHistory" stripe v-loading="loadingHistory">
             <template #empty>
               <el-empty description="暂无汇率历史记录" :image-size="88" />
             </template>
-            <el-table-column prop="from_currency" label="源币种" width="100" />
-            <el-table-column prop="to_currency" label="目标币种" width="100" />
-            <el-table-column prop="rate" label="汇率" width="150">
+            <el-table-column prop="from_currency" label="源币种" min-width="90" />
+            <el-table-column prop="to_currency" label="目标币种" min-width="90" />
+            <el-table-column prop="rate" label="汇率" min-width="110" align="right">
               <template #default="{ row }">
-                {{ Number(row.rate).toFixed(4) }}
+                {{ formatNumber(row.rate, 4) }}
               </template>
             </el-table-column>
-            <el-table-column prop="effective_date" label="生效日期" width="120" />
-            <el-table-column prop="source" label="来源" width="100">
+            <el-table-column label="生效日期" min-width="110">
+              <template #default="{ row }">{{ formatDate(row.effective_date) }}</template>
+            </el-table-column>
+            <el-table-column prop="source" label="来源" min-width="90">
               <template #default="{ row }">
                 <el-tag size="small" :type="getSourceType(row.source)">
                   {{ row.source }}
@@ -99,12 +101,12 @@
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="created_at" label="创建时间" width="180">
+            <el-table-column prop="created_at" label="创建时间" min-width="150">
               <template #default="{ row }">
                 {{ formatDateTime(row.created_at) }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="150">
+            <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" type="primary" @click="editRate(row)"> 编辑 </el-button>
                 <el-button size="small" type="danger" @click="deleteRate(row.id)"> 删除 </el-button>
@@ -116,7 +118,7 @@
     </el-card>
 
     <!-- 添加/编辑汇率对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editingRate ? '编辑汇率' : '添加汇率'" width="500px">
+    <el-dialog v-model="dialogVisible" :title="editingRate ? '编辑汇率' : '添加汇率'" width="560px">
       <el-form :model="rateForm" :rules="rules" ref="rateFormRef" label-width="100px">
         <el-form-item label="源币种" prop="from_currency">
           <el-select
@@ -192,30 +194,58 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
+import { Refresh, Plus } from '@element-plus/icons-vue'
 import { computed, ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import api from '@/api'
 import { CURRENCIES } from '@/utils/currency'
+import { formatNumber, todayLocalISODate } from '@/utils/helpers'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import { formatDate, formatDateTime } from '@/utils/helpers'
 
-const latestRates = ref(null)
-const rateHistory = ref([])
+interface RateRow {
+  id: number
+  from_currency: string
+  to_currency: string
+  rate: number | string
+  effective_date: string
+  source: string
+  is_active: boolean
+  [key: string]: unknown
+}
+
+interface LatestRates {
+  base_currency?: string
+  rates?: Record<string, number | string>
+  effective_date?: string
+  source?: string
+  [key: string]: unknown
+}
+
+const latestRates = ref<LatestRates | null>(null)
+const rateHistory = ref<RateRow[]>([])
 const loadingLatest = ref(false)
 const loadingHistory = ref(false)
 const hasLoaded = ref(false)
 const dialogVisible = ref(false)
 const refreshing = ref(false)
 const submitting = ref(false)
-const editingRate = ref(null)
+const editingRate = ref<RateRow | null>(null)
 
-const rateFormRef = ref(null)
-const rateForm = ref({
+const rateFormRef = ref<FormInstance | null>(null)
+const rateForm = ref<{
+  from_currency: string
+  to_currency: string
+  rate: number | null
+  effective_date: string
+  source: string
+  is_active: boolean
+}>({
   from_currency: '',
   to_currency: 'CNY',
   rate: null,
-  effective_date: new Date().toISOString().split('T')[0],
+  effective_date: todayLocalISODate(),
   source: 'manual',
   is_active: true
 })
@@ -300,7 +330,7 @@ const showAddDialog = () => {
     from_currency: '',
     to_currency: 'CNY',
     rate: null,
-    effective_date: new Date().toISOString().split('T')[0],
+    effective_date: todayLocalISODate(),
     source: 'manual',
     is_active: true
   }
@@ -308,7 +338,7 @@ const showAddDialog = () => {
 }
 
 // 编辑汇率
-const editRate = (rate) => {
+const editRate = (rate: RateRow) => {
   editingRate.value = rate
   rateForm.value = {
     from_currency: rate.from_currency,
@@ -358,7 +388,7 @@ const submitRate = async () => {
 }
 
 // 删除汇率
-const deleteRate = async (id) => {
+const deleteRate = async (id: number) => {
   try {
     await ElMessageBox.confirm('确定要删除这条汇率记录吗？', '警告', {
       type: 'warning'
@@ -376,8 +406,8 @@ const deleteRate = async (id) => {
 }
 
 // 获取来源类型
-const getSourceType = (source) => {
-  const types = {
+const getSourceType = (source: string) => {
+  const types: Record<string, 'success' | 'warning' | 'info'> = {
     api: 'success',
     manual: 'warning',
     system: 'info'
@@ -393,19 +423,6 @@ onMounted(() => {
 <style scoped>
 .exchange-rates-page {
   width: 100%;
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .current-rates {
@@ -459,17 +476,6 @@ onMounted(() => {
 .history-skeleton {
   min-height: 300px;
   padding: 12px 0;
-}
-
-:deep(.el-statistic__head) {
-  font-size: 13px;
-  color: var(--app-text-muted);
-}
-
-:deep(.el-statistic__content) {
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.022em;
 }
 
 @media (max-width: 900px) {

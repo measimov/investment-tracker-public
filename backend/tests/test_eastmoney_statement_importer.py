@@ -13,27 +13,30 @@ from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.import_batch import ImportBatch
 from app.models.reconciliation_snapshot import ReconciliationSnapshot
-from app.models.excluded_security import ExcludedSecurity
+from app.models.security_rule import SecurityRule
 from app.models.transaction import Transaction
 from app.services.eastmoney_statement_importer import (
     EastmoneyStatementContext,
     EastmoneyStatementPosition,
-    create_broker_fund_flow,
     import_eastmoney_statement,
     parse_table_rows,
     preview_eastmoney_statement,
 )
+from tests.helpers import reset_tables
 
 
-def reset_tables(db):
-    for model in (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction):
-        db.query(model).delete()
-    db.query(CashEvent).delete()
-    db.query(ReconciliationSnapshot).delete()
-    db.query(ImportBatch).delete()
-    db.query(BrokerAccount).delete()
-    db.query(ExcludedSecurity).delete()
-    db.commit()
+RESET_MODELS = (
+    BrokerFundFlow,
+    IbkrActivityFlow,
+    Holding,
+    CorporateAction,
+    Transaction,
+    CashEvent,
+    ReconciliationSnapshot,
+    ImportBatch,
+    BrokerAccount,
+    SecurityRule,
+)
 
 
 def statement_context(
@@ -450,7 +453,7 @@ def test_eastmoney_rejects_scope_conflict_and_malformed_numeric_field():
 
 def test_eastmoney_import_creates_transactions_and_corporate_actions(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = create_eastmoney_account(db)
         context = statement_context(
@@ -580,7 +583,7 @@ def test_eastmoney_import_creates_transactions_and_corporate_actions(monkeypatch
 
 def test_eastmoney_missing_opening_position_rolls_back_entire_batch(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = create_eastmoney_account(db)
         context = statement_context(
@@ -629,7 +632,7 @@ def test_eastmoney_missing_opening_position_rolls_back_entire_batch(monkeypatch)
 
 def test_eastmoney_mismatched_scope_reconciliation_rolls_back_canonical_rows(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = create_eastmoney_account(db)
         source_rows = [sample_rows()[0]]
@@ -666,280 +669,9 @@ def test_eastmoney_mismatched_scope_reconciliation_rolls_back_canonical_rows(mon
         db.close()
 
 
-def test_eastmoney_claims_exact_unassigned_source_without_double_counting(monkeypatch):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = create_eastmoney_account(db)
-        source_rows = [sample_rows()[0]]
-        parsed_rows, _, _, errors = parse_table_rows(source_rows)
-        assert errors == []
-        flow = parsed_rows[0]
-        transaction = Transaction(
-            user_id=1,
-            symbol=flow.security_code,
-            name=flow.security_name,
-            market="A股",
-            transaction_type=flow.transaction_type,
-            quantity=abs(flow.trade_quantity),
-            price=flow.normalized_transaction_price,
-            fee=flow.normalized_transaction_fee,
-            transaction_date=flow.trade_date,
-            currency=flow.normalized_transaction_currency,
-        )
-        db.add(transaction)
-        db.flush()
-        source = create_broker_fund_flow(
-            user_id=1,
-            broker_account_id=None,
-            filename="legacy-eastmoney.pdf",
-            flow=flow,
-            transaction_id=transaction.id,
-        )
-        source.row_hash = flow.legacy_row_hash
-        db.add(source)
-        db.commit()
-
-        context = statement_context(
-            positions=[
-                EastmoneyStatementPosition(
-                    symbol=flow.security_code,
-                    name=flow.security_name,
-                    market="A股",
-                    quantity=abs(flow.trade_quantity),
-                )
-            ]
-        )
-        patch_statement(monkeypatch, source_rows, context)
-
-        preview = preview_eastmoney_statement(
-            db,
-            1,
-            b"%PDF-legacy-source",
-            "eastmoney.pdf",
-            broker_account_id=account.id,
-        )
-        assert preview["migrated_unassigned_rows"] == 1
-        assert preview["duplicate_rows"] == 1
-        assert db.query(ImportBatch).count() == 0
-        db.refresh(transaction)
-        db.refresh(source)
-        assert transaction.broker_account_id is None
-        assert source.broker_account_id is None
-
-        result = import_eastmoney_statement(
-            db,
-            1,
-            b"%PDF-legacy-source",
-            "eastmoney.pdf",
-            broker_account_id=account.id,
-        )
-
-        assert result["migrated_unassigned_rows"] == 1
-        assert result["duplicate_rows"] == 1
-        assert result["imported_transactions"] == 0
-        assert result["reconciliation_status"] == "MATCHED"
-        assert db.query(Transaction).count() == 1
-        assert db.query(BrokerFundFlow).count() == 1
-        db.refresh(transaction)
-        db.refresh(source)
-        assert transaction.broker_account_id == account.id
-        assert source.broker_account_id == account.id
-        batch = db.get(ImportBatch, result["import_batch_id"])
-        assert batch.imported_count == 0
-        assert batch.archived_count == 0
-    finally:
-        db.close()
-
-
-def test_eastmoney_exact_claim_validates_all_dividend_tax_sources_and_preview_is_dry_run(
-    monkeypatch,
-):
-    db = SessionLocal()
-    reset_tables(db)
-    try:
-        account = create_eastmoney_account(db)
-        source_rows = [sample_rows()[3], sample_rows()[4]]
-        parsed_rows, _, _, errors = parse_table_rows(source_rows)
-        assert errors == []
-        dividend_flow, tax_flow = parsed_rows
-        action = CorporateAction(
-            user_id=1,
-            symbol=dividend_flow.security_code,
-            name=dividend_flow.security_name,
-            market="A股",
-            action_type="CASH_DIVIDEND",
-            ex_date=dividend_flow.trade_date,
-            payment_date=dividend_flow.trade_date,
-            total_dividend=Decimal("100"),
-            tax_withheld=Decimal("9"),
-            net_dividend=Decimal("91"),
-            currency="CNY",
-            notes=(
-                f"row_hash={dividend_flow.legacy_row_hash}; row_hash={tax_flow.legacy_row_hash}"
-            ),
-        )
-        db.add(action)
-        db.flush()
-        sources = []
-        for flow in parsed_rows:
-            source = create_broker_fund_flow(
-                user_id=1,
-                broker_account_id=None,
-                filename="legacy-eastmoney.pdf",
-                flow=flow,
-                corporate_action_id=action.id,
-            )
-            source.row_hash = flow.legacy_row_hash
-            sources.append(source)
-        db.add_all(sources)
-        db.commit()
-        patch_statement(monkeypatch, source_rows, statement_context(positions=[]))
-
-        with pytest.raises(ValueError, match="全部股息/红利税来源聚合不一致"):
-            preview_eastmoney_statement(
-                db,
-                1,
-                b"%PDF-legacy-actions",
-                "eastmoney-actions.pdf",
-                broker_account_id=account.id,
-            )
-        db.refresh(action)
-        for source in sources:
-            db.refresh(source)
-            assert source.broker_account_id is None
-        assert action.broker_account_id is None
-        assert db.query(ImportBatch).count() == 0
-
-        action.tax_withheld = Decimal("10")
-        action.net_dividend = Decimal("90")
-        action.notes = (
-            f"row_hash={dividend_flow.legacy_row_hash}; "
-            f"row_hash={dividend_flow.legacy_row_hash}; "
-            f"row_hash={tax_flow.legacy_row_hash}"
-        )
-        db.commit()
-        with pytest.raises(ValueError, match="重复 row_hash"):
-            preview_eastmoney_statement(
-                db,
-                1,
-                b"%PDF-legacy-actions",
-                "eastmoney-actions.pdf",
-                broker_account_id=account.id,
-            )
-
-        action.notes = f"row_hash={dividend_flow.legacy_row_hash}; row_hash={'0' * 64}"
-        db.commit()
-        with pytest.raises(ValueError, match="来源缺失或不唯一"):
-            preview_eastmoney_statement(
-                db,
-                1,
-                b"%PDF-legacy-actions",
-                "eastmoney-actions.pdf",
-                broker_account_id=account.id,
-            )
-
-        action.notes = (
-            f"row_hash={dividend_flow.legacy_row_hash}; row_hash={tax_flow.legacy_row_hash}"
-        )
-        sources[0].trade_date = date(2026, 2, 9)
-        db.commit()
-        with pytest.raises(ValueError, match="股息来源日期"):
-            preview_eastmoney_statement(
-                db,
-                1,
-                b"%PDF-legacy-actions",
-                "eastmoney-actions.pdf",
-                broker_account_id=account.id,
-            )
-
-        sources[0].trade_date = dividend_flow.trade_date
-        sources[1].trade_date = date(2026, 2, 9)
-        db.commit()
-        with pytest.raises(ValueError, match="红利税来源日期"):
-            preview_eastmoney_statement(
-                db,
-                1,
-                b"%PDF-legacy-actions",
-                "eastmoney-actions.pdf",
-                broker_account_id=account.id,
-            )
-
-        sources[1].trade_date = tax_flow.trade_date
-        db.commit()
-        extra_dividend_source = create_broker_fund_flow(
-            user_id=1,
-            broker_account_id=None,
-            filename="legacy-eastmoney-extra.pdf",
-            flow=dividend_flow,
-            corporate_action_id=action.id,
-        )
-        extra_dividend_source.row_hash = "1" * 64
-        extra_dividend_source.amount = Decimal("360")
-        sources[0].amount = Decimal("360")
-        action.notes = (
-            f"row_hash={dividend_flow.legacy_row_hash}; "
-            f"row_hash={extra_dividend_source.row_hash}; "
-            f"row_hash={tax_flow.legacy_row_hash}"
-        )
-        db.add(extra_dividend_source)
-        db.commit()
-        with pytest.raises(ValueError, match="来源聚合不一致"):
-            preview_eastmoney_statement(
-                db,
-                1,
-                b"%PDF-legacy-actions",
-                "eastmoney-actions.pdf",
-                broker_account_id=account.id,
-            )
-
-        sources[0].amount = dividend_flow.amount
-        action.notes = (
-            f"row_hash={dividend_flow.legacy_row_hash}; row_hash={tax_flow.legacy_row_hash}"
-        )
-        db.delete(extra_dividend_source)
-        db.commit()
-        preview = preview_eastmoney_statement(
-            db,
-            1,
-            b"%PDF-legacy-actions",
-            "eastmoney-actions.pdf",
-            broker_account_id=account.id,
-        )
-        assert preview["migrated_unassigned_rows"] == 2
-        assert preview["duplicate_rows"] == 2
-        db.refresh(action)
-        for source in sources:
-            db.refresh(source)
-            assert source.broker_account_id is None
-        assert action.broker_account_id is None
-        assert db.query(ImportBatch).count() == 0
-
-        result = import_eastmoney_statement(
-            db,
-            1,
-            b"%PDF-legacy-actions",
-            "eastmoney-actions.pdf",
-            broker_account_id=account.id,
-        )
-        assert result["migrated_unassigned_rows"] == 2
-        assert result["duplicate_rows"] == 2
-        assert result["imported_corporate_actions"] == 0
-        assert result["imported_tax_adjustments"] == 0
-        assert result["batch_status"] == "COMPLETED"
-        db.refresh(action)
-        assert action.broker_account_id == account.id
-        for source in sources:
-            db.refresh(source)
-            assert source.broker_account_id == account.id
-            assert source.corporate_action_id == action.id
-    finally:
-        db.close()
-
-
 def test_eastmoney_tax_requires_exactly_one_account_dividend_candidate(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = create_eastmoney_account(db)
         for ex_date in (date(2026, 2, 9), date(2026, 2, 11)):
@@ -990,7 +722,7 @@ def test_eastmoney_tax_requires_exactly_one_account_dividend_candidate(monkeypat
 
 def test_eastmoney_hk_import_preserves_all_rows_fees_and_snapshot(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = create_eastmoney_account(db)
         context = statement_context(
@@ -1096,7 +828,7 @@ def test_eastmoney_hk_import_preserves_all_rows_fees_and_snapshot(monkeypatch):
 
 def test_eastmoney_requires_account_and_rejects_same_file_across_accounts(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         context = statement_context(
             statement_type="hk_connect",
@@ -1150,7 +882,7 @@ def test_eastmoney_requires_account_and_rejects_same_file_across_accounts(monkey
 
 def test_eastmoney_preview_does_not_create_import_batch(monkeypatch):
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         patch_statement(monkeypatch, sample_rows(), statement_context())
         account = create_eastmoney_account(db)
@@ -1211,10 +943,10 @@ def test_excluded_security_archives_rows_and_passes_snapshot_gate(monkeypatch):
     """排除清单标的（货币基金 511880）：交易只归档不入账；对账单持仓节
     含该标的时，自动快照经统一比对过滤后仍 MATCHED，整批不被门禁拒绝。"""
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         account = create_eastmoney_account(db)
-        db.add(ExcludedSecurity(user_id=1, symbol="511880", market="A股", note="货币基金"))
+        db.add(SecurityRule(rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"))
         db.commit()
 
         rows = [
@@ -1263,5 +995,5 @@ def test_excluded_security_archives_rows_and_passes_snapshot_gate(monkeypatch):
             {"symbol": "511880", "market": "A股"}
         ]
     finally:
-        reset_tables(db)
+        reset_tables(db, RESET_MODELS)
         db.close()

@@ -20,11 +20,26 @@ from .api import (
     cash_events,
     reconciliation_snapshots,
     excluded_securities,
+    security_rules,
     llm_reports,
+    security_profiles,
 )
 from .core.logging import configure_logging, get_app_logger
 from .services.background_job_store import cleanup_expired_jobs, interrupt_stale_jobs
-from .services.job_worker import start_worker, stop_worker
+from .services.exchange_rate_service import refresh_rates_if_stale
+from .services.job_worker import register_periodic_task, start_worker, stop_worker
+
+# 汇率每日快照：6 小时检查一次，今日已有则零外呼（幂等，非 Tushare）
+register_periodic_task(refresh_rates_if_stale, interval_seconds=6 * 3600)
+
+# 基准指数尾部补齐：已有数据的基准每日推进到最近已完成交易日；
+# 冷启动回填由用户区间驱动（history-sync / analytics refresh），无 token 静默
+from .services.benchmark_service import (  # noqa: E402
+    PERIODIC_INTERVAL_SECONDS as BENCHMARK_REFRESH_SECONDS,
+    refresh_benchmark_tails,
+)
+
+register_periodic_task(refresh_benchmark_tails, interval_seconds=BENCHMARK_REFRESH_SECONDS)
 
 
 configure_logging()
@@ -86,9 +101,19 @@ app.include_router(
     tags=["Excluded Securities"],
 )
 app.include_router(
+    security_rules.router,
+    prefix="/api/security-rules",
+    tags=["Security Rules"],
+)
+app.include_router(
     llm_reports.router,
     prefix="/api/llm-reports",
     tags=["LLM Reports"],
+)
+app.include_router(
+    security_profiles.router,
+    prefix="/api/securities",
+    tags=["Security Profiles"],
 )
 
 

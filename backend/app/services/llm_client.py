@@ -33,8 +33,13 @@ def chat_completion(
     *,
     max_tokens: int | None = None,
     temperature: float = 0.3,
+    response_format: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """单次对话补全。返回 {"content", "model", "usage"}。"""
+    """单次对话补全。返回 {"content", "model", "usage"}。
+
+    response_format={"type": "json_object"} 启用 JSON mode（DeepSeek/OpenAI
+    兼容）：模型保证输出合法 JSON，供结构化产物（标的分析标签）使用。
+    """
     if not is_llm_configured():
         # 形如 <deepseek-api-key> 的占位符视同未配置：照抄示例文件不应打真实请求
         raise LLMNotConfiguredError("未配置 LLM API Key（llm_report_api_key）")
@@ -48,6 +53,8 @@ def chat_completion(
         "temperature": temperature,
         "stream": False,
     }
+    if response_format is not None:
+        payload["response_format"] = response_format
     try:
         response = httpx.post(
             url,

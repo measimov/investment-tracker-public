@@ -98,29 +98,7 @@ def test_exchange_rates():
         except Exception as e:
             print(f"  ❌ ¥{cny_amount}: {e}")
 
-    # 4. 测试双币种转换
-    print("\n4️⃣  测试双币种转换")
-    print("-" * 60)
-
-    test_amounts = [
-        (10000, "USD"),
-        (50000, "HKD"),
-        (5000, "SGD"),
-        (100000, "CNY"),
-    ]
-
-    for amount, currency in test_amounts:
-        try:
-            result = exchange_rate_service.convert_amount_to_both_currencies(
-                db, Decimal(str(amount)), currency
-            )
-            print(f"  {currency} {amount:,}")
-            print(f"    -> CNY: ¥{float(result['cny']):,.2f}")
-            print(f"    -> USD: ${float(result['usd']):,.2f}")
-        except Exception as e:
-            print(f"  ❌ {currency} {amount}: {e}")
-
-    # 5. 测试汇率信息获取
+    # 5. 测试汇率详细信息
     print("\n5️⃣  测试汇率详细信息")
     print("-" * 60)
 

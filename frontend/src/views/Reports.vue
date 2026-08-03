@@ -6,7 +6,7 @@
           <div>
             <h2>AI 复盘报告</h2>
             <p class="page-subtitle">
-              基于账本全量内部数据生成复盘，并可就报告内容追问讨论（估算口径原样呈现）。
+              基于账本全量内部数据生成复盘，并可就报告内容追问讨论（口径标注原样呈现）。
             </p>
           </div>
           <div class="header-actions">
@@ -38,7 +38,7 @@
             <el-empty
               v-if="!loadingList && reports.length === 0"
               description="暂无报告，点击右上角生成第一份复盘"
-              :image-size="80"
+              :image-size="88"
             />
             <div
               v-for="report in reports"
@@ -124,7 +124,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
@@ -134,9 +134,31 @@ import { formatDateTime } from '@/utils/helpers'
 import { renderMarkdown } from '@/utils/markdown'
 import { pollJobUntilDone } from '@/utils/polling'
 
-const reports = ref([])
-const detail = ref(null)
-const selectedId = ref(null)
+interface ReportListItem {
+  id: number
+  title: string
+  trigger_source?: string
+  created_at?: string
+  [key: string]: unknown
+}
+
+interface ReportMessage {
+  id: number
+  role: string
+  content: string
+  [key: string]: unknown
+}
+
+interface ReportDetail extends ReportListItem {
+  model?: string
+  total_tokens?: number | null
+  content: string
+  messages: ReportMessage[]
+}
+
+const reports = ref<ReportListItem[]>([])
+const detail = ref<ReportDetail | null>(null)
+const selectedId = ref<number | null>(null)
 const loadingList = ref(false)
 const loadingDetail = ref(false)
 const generating = ref(false)
@@ -148,7 +170,7 @@ async function loadReports({ selectFirst = false } = {}) {
   loadingList.value = true
   // 仅在本次列表请求成功时才允许自动选首项：失败回退旧列表再自动选中，
   // 会在删除后刷新失败的场景里重新请求刚删掉的 id
-  let firstId = null
+  let firstId: number | null = null
   try {
     const response = await api.getLlmReports()
     reports.value = response.data
@@ -164,7 +186,7 @@ async function loadReports({ selectFirst = false } = {}) {
   }
 }
 
-async function selectReport(id) {
+async function selectReport(id: number) {
   selectedId.value = id
   loadingDetail.value = true
   try {
@@ -194,11 +216,12 @@ async function generateReport() {
       timeoutMessage: '报告仍在生成中，请稍后刷新列表查看',
       failureMessage: '报告生成失败'
     })
-    if (job?.report_id) {
+    const reportId = job?.report_id
+    if (typeof reportId === 'number') {
       ElMessage.success('报告已生成')
       selectedId.value = null
       await loadReports()
-      await selectReport(job.report_id)
+      await selectReport(reportId)
     }
   } catch (error) {
     ElMessage.error(getApiErrorMessage(error, '报告生成失败'))
@@ -234,7 +257,7 @@ async function ask() {
   }
 }
 
-async function removeReport(id) {
+async function removeReport(id: number) {
   try {
     await ElMessageBox.confirm('删除后报告与全部追问记录不可恢复，确认删除？', '删除报告', {
       type: 'warning'
@@ -262,7 +285,7 @@ async function loadSchedule() {
   }
 }
 
-async function saveSchedule(cadence) {
+async function saveSchedule(cadence: string) {
   try {
     await api.updateLlmReportSchedule(cadence)
     ElMessage.success(
@@ -287,14 +310,6 @@ onMounted(async () => {
   margin: 0 auto;
 }
 
-.page-header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
 .page-header h2 {
   margin: 0 0 4px;
 }
@@ -303,12 +318,6 @@ onMounted(async () => {
   margin: 0;
   color: var(--app-text-soft);
   font-size: 13px;
-}
-
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
 }
 
 .schedule-select {

@@ -5,10 +5,6 @@ from app.config import settings
 from app.main import app
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
 
 @pytest.mark.anyio
 async def test_root_exposes_version_and_build_metadata():

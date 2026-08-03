@@ -18,7 +18,7 @@ Optimizations:
 from enum import Enum
 from typing import TypedDict, Optional, Dict, Any
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import os
@@ -142,7 +142,10 @@ def price_result(
 ) -> PriceResult:
     return {
         "price": price,
-        "timestamp": datetime.now(),
+        # aware UTC：naive 本地时间写入 timestamptz 会被按 UTC 解释，
+        # 在 UTC+8 环境产生"未来 8 小时"的时间戳，令新鲜度判定恒真、
+        # 主动刷新长期全部跳过（实测 elapsed = -4556s）。
+        "timestamp": datetime.now(timezone.utc),
         "source": source,
         "success": success,
         "error": error,
@@ -155,6 +158,10 @@ _tushare_rate_lock = Lock()
 _tushare_last_call_by_api: Dict[str, float] = {}
 
 
+# 全局限速键：所有 Tushare 调用共享（并发线程与不同 API 一并节流）。
+_TUSHARE_GLOBAL_KEY = "__global__"
+
+
 def get_tushare_min_interval(api_name: str) -> float:
     """Return provider-specific call spacing to avoid known Tushare quota bursts."""
     if api_name in {"hk_mins", "hk_daily"}:
@@ -163,24 +170,40 @@ def get_tushare_min_interval(api_name: str) -> float:
 
 
 def wait_for_tushare_rate_limit(api_name: str):
-    min_interval = get_tushare_min_interval(api_name)
-    if min_interval <= 0:
+    """全局闸 + per-API 闸在同一个锁临界区内合并计算，只 sleep 一次，
+    并在真正放行时同时更新两个时间戳。
+
+    分两段等待会留竞态：线程 A 先记全局时间戳、再进 per-API 长等待期间，
+    线程 B 会看到"全局间隔已过"而与 A 几乎同时放行不同 API，跨接口突刺
+    依旧。锁贯穿 sleep 即天然串行化所有调用。"""
+    global_interval = settings.tushare_global_min_interval_seconds
+    api_interval = get_tushare_min_interval(api_name)
+    if global_interval <= 0 and api_interval <= 0:
         return
 
     with _tushare_rate_lock:
-        last_call = _tushare_last_call_by_api.get(api_name)
         now = time.monotonic()
-        if last_call is not None:
-            elapsed = now - last_call
-            if elapsed < min_interval:
-                sleep_seconds = min_interval - elapsed
+        release_at = now
+        last_global = _tushare_last_call_by_api.get(_TUSHARE_GLOBAL_KEY)
+        if global_interval > 0 and last_global is not None:
+            release_at = max(release_at, last_global + global_interval)
+        last_api = _tushare_last_call_by_api.get(api_name)
+        if api_interval > 0 and last_api is not None:
+            release_at = max(release_at, last_api + api_interval)
+
+        sleep_seconds = release_at - now
+        if sleep_seconds > 0:
+            if sleep_seconds > 1:
                 logger.info(
                     "Tushare %s 限速等待 %.1fs，避免触发接口频率限制",
                     api_name,
                     sleep_seconds,
                 )
-                time.sleep(sleep_seconds)
-        _tushare_last_call_by_api[api_name] = time.monotonic()
+            time.sleep(sleep_seconds)
+
+        stamp = time.monotonic()
+        _tushare_last_call_by_api[_TUSHARE_GLOBAL_KEY] = stamp
+        _tushare_last_call_by_api[api_name] = stamp
 
 
 def get_tushare_pro():
@@ -354,9 +377,14 @@ def retry_with_backoff(func, max_retries=3, initial_delay=1.0, max_delay=10.0):
         except Exception as e:
             last_exception = e
 
-            # Don't retry on certain errors
+            # Don't retry on certain errors. 配额/权限类错误重试只会火上浇油
+            # （限流窗口内连打 3 次），必须立刻失败。
             error_str = str(e).lower()
-            if any(x in error_str for x in ["not found", "不存在", "invalid symbol", "无效"]):
+            non_retryable = [
+                "not found", "不存在", "invalid symbol", "无效",
+                "每分钟最多访问", "权限", "积分不足", "抱歉，您",
+            ]
+            if any(x in error_str for x in non_retryable):
                 logger.error(f"Non-retryable error: {str(e)}")
                 raise
 
@@ -589,7 +617,8 @@ def update_all_holdings_prices(db: Session, user_id: int = None) -> Dict[str, An
     skipped_list = []
     pending_holdings = []
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
+    freshness_window = settings.price_refresh_freshness_seconds
 
     logger.info("======== 开始批量刷新股价 ========")
     logger.info(f"总持仓数: {len(holdings)}")
@@ -597,13 +626,13 @@ def update_all_holdings_prices(db: Session, user_id: int = None) -> Dict[str, An
 
     for holding in holdings:
         if holding.price_updated_at:
-            compare_now = (
-                datetime.now(holding.price_updated_at.tzinfo)
-                if holding.price_updated_at.tzinfo
-                else now
-            )
-            elapsed = (compare_now - holding.price_updated_at).total_seconds()
-            if elapsed < 600:  # 10 minutes
+            last_updated = holding.price_updated_at
+            if last_updated.tzinfo is None:
+                last_updated = last_updated.replace(tzinfo=timezone.utc)
+            elapsed = (now - last_updated).total_seconds()
+            # 负 elapsed = 时间戳在未来（历史 naive 本地时间写入造成的脏数据）
+            # ——必须视为过期立即刷新，让首次刷新用 aware UTC 覆盖自愈。
+            if 0 <= elapsed < freshness_window:
                 logger.info(f"  ⏭️  跳过: 最近{int(elapsed)}秒前已更新")
                 skipped_list.append(
                     {"symbol": holding.symbol, "reason": f"最近{int(elapsed)}秒前已更新"}
@@ -696,7 +725,7 @@ def update_all_holdings_prices(db: Session, user_id: int = None) -> Dict[str, An
     # Commit all successful updates
     try:
         db.commit()
-        end_time = datetime.now()
+        end_time = datetime.now(timezone.utc)
         total_time = (end_time - now).total_seconds()
 
         logger.info("\n======== 批量刷新完成 ========")

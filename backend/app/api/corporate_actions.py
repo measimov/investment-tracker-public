@@ -1,12 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+import os
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List, Optional
-from datetime import date
+from typing import Any, Dict, List, Optional
+from datetime import date, timedelta
+from ..config import settings
 from ..database import get_db
 from ..models.corporate_action import CorporateAction
+from ..models.corporate_action_suggestion import CorporateActionSuggestion
 from ..models.broker_account import BrokerAccount
 from ..models.broker_fund_flow import BrokerFundFlow
+from ..models.holding import Holding
 from ..models.ibkr_activity_flow import IbkrActivityFlow
+from ..models.security_event import SecurityEvent
 from ..models.user import User
 from ..schemas.corporate_action import (
     CorporateActionCreate,
@@ -15,13 +21,37 @@ from ..schemas.corporate_action import (
     CashDividendCreate,
     StockDividendCreate
 )
+from ..schemas.corporate_action_suggestion import (
+    SecurityEventResponse,
+    SuggestionAccept,
+    SuggestionResponse,
+)
 from ..services import exchange_rate_service
 from ..services.statistics_service import cash_dividend_amounts
+from ..services.dividend_sync_jobs import (
+    get_dividend_sync_job,
+    run_dividend_sync_job,
+    start_dividend_sync_job,
+)
+from ..services.dividend_sync_service import (
+    SuggestionStateError,
+    accept_suggestion,
+    ignore_suggestion,
+    restore_suggestion,
+)
 from ..services.holding_service import lock_record, lock_security_timeline, recalculate_holdings
 from ..core.deps import get_current_active_user
 from ._ownership import get_owned_record
 
 router = APIRouter()
+
+
+def _require_tushare_configured() -> None:
+    if not (os.environ.get("TUSHARE_TOKEN") or settings.tushare_token):
+        raise HTTPException(
+            status_code=409,
+            detail="未配置 TUSHARE_TOKEN，无法同步分红公告；请在 backend/.env 中配置后重启。",
+        )
 
 
 def _validate_owned_references(db: Session, user_id: int, data: dict) -> None:
@@ -229,26 +259,6 @@ def get_corporate_actions_count(
         unassigned_account=unassigned_account,
     ).count()
     return {"total": total}
-
-
-@router.get("/symbol/{symbol}", response_model=List[CorporateActionResponse])
-def get_actions_by_symbol(
-    symbol: str,
-    market: Optional[str] = Query(None, description="市场筛选"),
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """获取特定股票的所有公司行动记录"""
-    query = db.query(CorporateAction).filter(
-        CorporateAction.symbol.ilike(f"%{symbol.strip()}%"),
-        CorporateAction.user_id == current_user.id
-    )
-
-    if market:
-        query = query.filter(CorporateAction.market == market)
-
-    actions = query.order_by(CorporateAction.ex_date.desc()).all()
-    return actions
 
 
 @router.get("/statistics/summary")
@@ -471,3 +481,189 @@ def delete_corporate_action(
         raise
 
     return None
+
+
+@router.get("/symbol/{symbol}", response_model=List[CorporateActionResponse])
+def get_actions_by_symbol(
+    symbol: str,
+    market: Optional[str] = Query(None, description="市场筛选"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db)
+):
+    """获取特定股票的所有公司行动记录。兼容保留：外部 API 客户端可能依赖。"""
+    query = db.query(CorporateAction).filter(
+        CorporateAction.symbol.ilike(f"%{symbol.strip()}%"),
+        CorporateAction.user_id == current_user.id
+    )
+    if market:
+        query = query.filter(CorporateAction.market == market)
+    return query.order_by(CorporateAction.ex_date.desc()).all()
+
+
+# ---------------------------------------------------------------------------
+# 分红公告建议（Tushare 同步；仅 A/B 股）与标的事件
+# ---------------------------------------------------------------------------
+
+
+@router.post("/dividend-sync-jobs")
+def start_dividend_sync(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """启动分红公告同步 job（去重：每用户单活跃任务）。"""
+    _require_tushare_configured()
+    job = start_dividend_sync_job(current_user.id)
+    if job["status"] == "queued":
+        background_tasks.add_task(run_dividend_sync_job, job["id"])
+    return job
+
+
+@router.get("/dividend-sync-jobs/{job_id}")
+def get_dividend_sync_status(
+    job_id: str,
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    job = get_dividend_sync_job(job_id, current_user.id)
+    if not job:
+        raise HTTPException(status_code=404, detail="同步任务不存在")
+    return job
+
+
+@router.get("/suggestions", response_model=List[SuggestionResponse])
+def list_suggestions(
+    status: Optional[str] = Query(None, description="按状态筛选；缺省为 NEW+MATCHED"),
+    symbol: Optional[str] = Query(None),
+    market: Optional[str] = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    query = db.query(CorporateActionSuggestion).filter(
+        CorporateActionSuggestion.user_id == current_user.id
+    )
+    if status:
+        query = query.filter(CorporateActionSuggestion.status == status.upper())
+    else:
+        query = query.filter(CorporateActionSuggestion.status.in_(["NEW", "MATCHED"]))
+    if symbol and symbol.strip():
+        query = query.filter(CorporateActionSuggestion.symbol == symbol.strip())
+    if market:
+        query = query.filter(CorporateActionSuggestion.market == market)
+    return (
+        query.order_by(CorporateActionSuggestion.ex_date.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+@router.get("/suggestions/count")
+def count_suggestions(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, int]:
+    """待处理建议计数（NEW 徽标）。"""
+    total = db.query(CorporateActionSuggestion).filter(
+        CorporateActionSuggestion.user_id == current_user.id,
+        CorporateActionSuggestion.status == "NEW",
+    ).count()
+    return {"total": total}
+
+
+@router.post("/suggestions/{suggestion_id}/accept", response_model=CorporateActionResponse)
+def accept_dividend_suggestion(
+    suggestion_id: int,
+    payload: SuggestionAccept,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """接受建议 → 创建正式公司行动记录（同事务重算持仓）。
+
+    仅 NEW 可接受；并发接受由服务层记录锁串行化（第二个会话 409）。
+    """
+    overrides = payload.model_dump(exclude_unset=True)
+    if overrides.get("broker_account_id") is not None:
+        get_owned_record(
+            db, BrokerAccount, overrides["broker_account_id"], current_user.id,
+            "Broker account not found",
+        )
+    try:
+        return accept_suggestion(db, current_user, suggestion_id, overrides)
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SuggestionStateError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/suggestions/{suggestion_id}/ignore", response_model=SuggestionResponse)
+def ignore_dividend_suggestion(
+    suggestion_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """忽略建议（幂等）；已接受的不可忽略。状态转换在服务层记录锁内进行。"""
+    try:
+        return ignore_suggestion(db, current_user.id, suggestion_id)
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SuggestionStateError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/suggestions/{suggestion_id}/restore", response_model=SuggestionResponse)
+def restore_dividend_suggestion(
+    suggestion_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """恢复被忽略的建议到原状态（误点退路）。状态转换在服务层记录锁内进行。"""
+    try:
+        return restore_suggestion(db, current_user.id, suggestion_id)
+    except LookupError as exc:
+        db.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SuggestionStateError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/security-events", response_model=List[SecurityEventResponse])
+def list_security_events(
+    days_ahead: int = Query(90, ge=1, le=365, description="返回未来 N 天内的事件"),
+    days_back: int = Query(0, ge=0, le=365, description="额外包含过去 N 天的事件"),
+    symbol: Optional[str] = Query(None),
+    market: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """当前用户持仓标的的事件（全局数据按持仓过滤；供持仓页事件角标）。"""
+    today = date.today()
+    query = db.query(SecurityEvent).filter(
+        SecurityEvent.event_date >= today - timedelta(days=days_back),
+        SecurityEvent.event_date <= today + timedelta(days=days_ahead),
+    )
+    if symbol:
+        query = query.filter(SecurityEvent.symbol == symbol)
+        if market:
+            query = query.filter(SecurityEvent.market == market)
+    else:
+        held = db.query(Holding.symbol, Holding.market).filter(
+            Holding.user_id == current_user.id, Holding.quantity > 0
+        ).distinct().all()
+        if not held:
+            return []
+        keys = {(s, m) for s, m in held}
+        candidates = query.order_by(SecurityEvent.event_date.asc()).all()
+        return [e for e in candidates if (e.symbol, e.market) in keys]
+    return query.order_by(SecurityEvent.event_date.asc()).all()

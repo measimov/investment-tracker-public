@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -17,11 +16,23 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models.broker_account import BrokerAccount
+from ..models.cash_event import CashEvent
 from ..models.corporate_action import CorporateAction
 from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.transaction import Transaction
 from ..core.logging import get_app_logger
+from ..services import broker_import_common
+from ..services.broker_import_common import (
+    HASH_DUPLICATE_OCCURRENCE_FIELD,
+    normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间
+    strip_text,
+)
 from ..services.holding_service import recalculate_holdings
+from ..services.security_rule_service import (
+    get_excluded_symbols,
+    get_name_overrides,
+    get_relistings,
+)
 from ..services.import_batch_service import (
     complete_import_batch,
     fail_import_batch,
@@ -41,7 +52,9 @@ BROKER_NAME = "IBKR"
 SOURCE_TYPE = "ibkr_activity_csv"
 SOURCE_TYPE_XLSX = "ibkr_trade_history_xlsx"
 PARSER_NAME = "ibkr_activity"
-PARSER_VERSION = "4"
+# 入账语义变化必须升版（审计批次可区分）：v6 = 排除规则表驱动，
+# 命中标的只归档不入账且不进 eligible 判重
+PARSER_VERSION = "6"
 # trade_history.xlsx（reporting API 自制导出，规范格式）的 All Trades 表。
 # 只含成交（STK/OPT/CASH），不含股息与预扣税 —— 股息仍需其他来源。
 XLSX_TRADE_SHEET = "All Trades"
@@ -68,23 +81,12 @@ DIVIDEND_TYPE = "股息"
 WITHHOLDING_TAX_TYPE = "外国预扣税"
 CASH_ACTIVITY_TYPES = {"贷方利息", "借方利息", "存款", "调整"}
 FX_ACTIVITY_TYPE = "外汇交易组成部分"
+# 可入账为 CashEvent 的现金业务；"调整" 是 FX 折算损益等纸面项，只归档不入账。
+# Transaction History 报表的金额列一律为基础货币（USD）等值，原币种在说明里
+# （如 "HKD 贷方利息"）——按基础货币入账并在备注保留原说明。
+IBKR_CASH_EVENT_TYPES = {"存款", "贷方利息", "借方利息"}
 OPTION_MONTHS = "JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC"
 SYNTHETIC_RELISTING_MARKER = "synthetic_relisting_transfer"
-KNOWN_RELISTINGS = [
-    {
-        "old_symbol": "01263",
-        "old_market": "港股",
-        "old_currency": "HKD",
-        "new_symbol": "PCT",
-        "new_market": "新加坡股",
-        "new_currency": "SGD",
-        "name": "柏能集团",
-    }
-]
-KNOWN_SECURITY_NAMES = {
-    ("01263", "港股"): "柏能集团",
-    ("PCT", "新加坡股"): "柏能集团",
-}
 HASH_FIELDS = [
     "broker",
     "trade_date",
@@ -100,8 +102,6 @@ HASH_FIELDS = [
     "commission",
     "net_amount",
 ]
-HASH_DUPLICATE_OCCURRENCE_FIELD = "duplicate_occurrence"
-
 logger = get_app_logger(__name__)
 
 
@@ -162,20 +162,60 @@ class ParsedIbkrFlow:
             and self.skip_reason is None
         )
 
+    @property
+    def cash_amount(self) -> Optional[Decimal]:
+        if self.net_amount is not None:
+            return self.net_amount
+        return self.gross_amount
+
+    @property
+    def cash_event_type(self) -> Optional[str]:
+        """现金业务行的 CashEvent 类型；调整（纸面损益）与方向异常返回 None。"""
+        if self.activity_type not in IBKR_CASH_EVENT_TYPES:
+            return None
+        amount = self.cash_amount
+        if amount is None or amount == 0:
+            return None
+        if self.activity_type == "存款":
+            return "DEPOSIT" if amount > 0 else "WITHDRAWAL"
+        if self.activity_type == "贷方利息":
+            return "INTEREST" if amount > 0 else None
+        return "FEE" if amount < 0 else None  # 借方利息
+
+    @property
+    def is_cash_business(self) -> bool:
+        return self.skip_reason == "cash" and self.cash_event_type is not None
+
+    @property
+    def fx_legs(self) -> Optional[tuple[tuple[str, Decimal], tuple[str, Decimal]]]:
+        """外汇兑换的两条现金腿 ((币种, 带符号金额), ...)。
+
+        数量列是货币对基础腿的带符号净额（说明"外汇交易基础货币净额"），
+        对价腿 = -数量×价格；总额/净额列只是折算损益，不是现金流。
+        佣金另行（IBKR 现汇佣金以账户基础货币收取，见 fx 入账处）。
+        """
+        if self.skip_reason != "fx" or self.quantity is None or self.quantity == 0:
+            return None
+        if self.price is None or self.price <= 0:
+            return None
+        parts = strip_text(self.raw_symbol).upper().split(".")
+        if len(parts) != 2 or not all(len(p) == 3 and p.isalpha() for p in parts):
+            return None
+        # 腿币种以货币对代码为准；Price Currency 列与对价币不一致说明列漂移，
+        # 宁可归档报警也不把现金记进错误币种
+        if self.price_currency and self.price_currency.upper() != parts[1]:
+            return None
+        return (
+            (parts[0], self.quantity),
+            (parts[1], -(self.quantity * self.price)),
+        )
+
 
 @dataclass
 class ExistingSourceResolution:
     booked_hashes: set[str] = field(default_factory=set)
     duplicate_hashes: set[str] = field(default_factory=set)
     unresolved_tax_sources: Dict[str, IbkrActivityFlow] = field(default_factory=dict)
-    claimable_source_hashes: set[str] = field(default_factory=set)
-    claimable_canonical_keys: set[tuple[str, int]] = field(default_factory=set)
-
-
-def strip_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).replace("\ufeff", "").strip()
 
 
 def _account_parts(value: Optional[str]) -> tuple[str, str, bool]:
@@ -319,20 +359,8 @@ def parse_trade_date(value: Any) -> Optional[date]:
         return None
 
 
-def normalize_hash_value(value: Any) -> str:
-    if isinstance(value, Decimal):
-        return format(value.normalize(), "f")
-    if isinstance(value, date):
-        return value.isoformat()
-    return strip_text(value)
-
-
 def calculate_row_hash(values: Dict[str, Any]) -> str:
-    fields = HASH_FIELDS
-    if values.get(HASH_DUPLICATE_OCCURRENCE_FIELD):
-        fields = HASH_FIELDS + [HASH_DUPLICATE_OCCURRENCE_FIELD]
-    payload = "|".join(normalize_hash_value(values.get(field, "")) for field in fields)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return broker_import_common.calculate_row_hash(values, HASH_FIELDS)
 
 
 def detect_encoding(contents: bytes) -> str:
@@ -499,8 +527,6 @@ def lookup_tushare_security_name(symbol: str, market: Optional[str]) -> Optional
     """
     if not symbol or not market:
         return None
-    if (symbol, market) in KNOWN_SECURITY_NAMES:
-        return KNOWN_SECURITY_NAMES[(symbol, market)]
 
     if market in {"A股", "B股"}:
         df = tushare_query_once(
@@ -537,23 +563,26 @@ def lookup_tushare_security_name(symbol: str, market: Optional[str]) -> Optional
 # 成功查到的名称按进程生命周期缓存：预览→导入两次调用只查一次外网。
 # 查不到/查失败不缓存，下批次可再试（单次尝试代价已很低）。
 _resolved_name_cache: Dict[tuple[str, str], str] = {}
-NAME_LOOKUP_WORKERS = 8
+NAME_LOOKUP_WORKERS = 4
 NAME_LOOKUP_MAX_CONSECUTIVE_FAILURES = 3
 
 
 def resolve_security_names(
     targets: List[tuple[str, str]],
+    *,
+    name_overrides: Optional[Dict[tuple[str, str], str]] = None,
 ) -> Dict[tuple[str, str], Optional[str]]:
     """Batch name resolution: cached → concurrent single-attempt lookups.
 
     连续失败达到阈值即熔断（token 缺失/网络故障时批内所有查询都会失败，
     无谓等待正是"预览卡死 2 分钟"的根因），剩余标的直接降级为已知名称表。
     """
+    name_overrides = name_overrides or {}
     results: Dict[tuple[str, str], Optional[str]] = {}
     pending: List[tuple[str, str]] = []
     for key in targets:
-        if key in KNOWN_SECURITY_NAMES:
-            results[key] = KNOWN_SECURITY_NAMES[key]
+        if key in name_overrides:
+            results[key] = name_overrides[key]
         elif key in _resolved_name_cache:
             results[key] = _resolved_name_cache[key]
         else:
@@ -596,7 +625,11 @@ def resolve_security_names(
     return results
 
 
-def enrich_security_names(parsed_rows: List[ParsedIbkrFlow]) -> None:
+def enrich_security_names(
+    parsed_rows: List[ParsedIbkrFlow],
+    *,
+    name_overrides: Optional[Dict[tuple[str, str], str]] = None,
+) -> None:
     targets = sorted(
         {
             (flow.symbol, flow.market)
@@ -606,7 +639,7 @@ def enrich_security_names(parsed_rows: List[ParsedIbkrFlow]) -> None:
             and flow.market
         }
     )
-    name_cache = resolve_security_names(targets)
+    name_cache = resolve_security_names(targets, name_overrides=name_overrides)
 
     for flow in parsed_rows:
         if flow.symbol and flow.market:
@@ -733,7 +766,11 @@ def is_ibkr_xlsx_filename(filename: str) -> bool:
 
 
 def parse_rows(
-    contents: bytes, filename: str
+    contents: bytes,
+    filename: str,
+    *,
+    name_overrides: Optional[Dict[tuple[str, str], str]] = None,
+    excluded_symbols: frozenset = frozenset(),
 ) -> tuple[List[ParsedIbkrFlow], Dict[str, int], int, List[str]]:
     if is_ibkr_xlsx_filename(filename):
         data_rows, base_currency, total_rows, errors = read_ibkr_trade_history_xlsx(
@@ -802,6 +839,13 @@ def parse_rows(
         else:
             skip_reason = "unsupported"
 
+        # 排除清单（security_rules EXCLUDE）：命中标的的行只归档不入账，
+        # 且不进 eligible 判重——被 owner 删除交易的标的（如 FXE）留下的
+        # 孤儿来源行因此不再阻断重导。放在跳过原因链之后、行权持仓策略
+        # 之前：排除优先于入账语义，且不参与持仓推演。
+        if skip_reason is None and symbol and symbol in excluded_symbols:
+            skip_reason = "excluded"
+
         fee_in_price_currency = Decimal("0")
         if activity_type in set(TRADE_TYPES) | EXERCISE_TYPES:
             fee_in_price_currency = trade_fee_in_price_currency(
@@ -862,7 +906,7 @@ def parse_rows(
         )
 
     apply_exercise_import_policy(parsed_rows)
-    enrich_security_names(parsed_rows)
+    enrich_security_names(parsed_rows, name_overrides=name_overrides)
     return parsed_rows, business_counts, total_rows, errors
 
 
@@ -1016,7 +1060,6 @@ def resolve_existing_sources(
     *,
     broker_account_id: int,
     broker_account: BrokerAccount,
-    claim_unassigned: bool = False,
 ) -> ExistingSourceResolution:
     flow_by_hash = {flow.row_hash: flow for flow in parsed_rows}
     hash_list = list(flow_by_hash)
@@ -1108,10 +1151,8 @@ def resolve_existing_sources(
         action_sources_by_id.setdefault(source.corporate_action_id, []).append(source)
 
     resolution = ExistingSourceResolution()
-    claimable_records: Dict[tuple[str, int], Any] = {}
-    claimable_sources: Dict[int, IbkrActivityFlow] = {}
     for source in sources:
-        if source.broker_account_id not in {None, broker_account_id}:
+        if source.broker_account_id != broker_account_id:
             raise _unsafe_existing_source(
                 source,
                 "历史来源记录属于其他券商账户"
@@ -1130,8 +1171,6 @@ def resolve_existing_sources(
                 and source.skip_reason == "unattributed_tax"
             ):
                 resolution.unresolved_tax_sources[source.row_hash] = source
-                if source.broker_account_id is None:
-                    claimable_sources[source.id] = source
                 continue
             raise _unsafe_existing_source(
                 source,
@@ -1181,38 +1220,14 @@ def resolve_existing_sources(
                 "链接股息与其唯一股息来源、税款来源或金额汇总不一致",
             )
 
-        canonical_needs_claim = canonical_record.broker_account_id is None
-        source_needs_claim = source.broker_account_id is None
         if canonical_record.broker_account_id != broker_account_id:
-            if canonical_record.broker_account_id is not None:
-                raise _unsafe_existing_source(
-                    source,
-                    "链接的规范记录属于其他券商账户"
-                    f"（实际={canonical_record.broker_account_id}，所选={broker_account_id}）",
-                )
-            canonical_key = (canonical_type, canonical_id)
-            claimable_records[canonical_key] = canonical_record
-            resolution.claimable_canonical_keys.add(canonical_key)
-        if canonical_needs_claim or source_needs_claim:
-            resolution.claimable_source_hashes.add(source.row_hash)
-            if canonical_type == "corporate_action":
-                for linked_source in action_sources_by_id.get(canonical_id, []):
-                    if linked_source.broker_account_id is None:
-                        claimable_sources[linked_source.id] = linked_source
-            elif source_needs_claim:
-                claimable_sources[source.id] = source
-        else:
-            resolution.duplicate_hashes.add(source.row_hash)
-
+            raise _unsafe_existing_source(
+                source,
+                "链接的规范记录属于其他券商账户"
+                f"（实际={canonical_record.broker_account_id}，所选={broker_account_id}）",
+            )
+        resolution.duplicate_hashes.add(source.row_hash)
         resolution.booked_hashes.add(source.row_hash)
-
-    if claim_unassigned:
-        for canonical_record in claimable_records.values():
-            canonical_record.broker_account_id = broker_account_id
-            db.add(canonical_record)
-        for source in claimable_sources.values():
-            source.broker_account_id = broker_account_id
-            db.add(source)
 
     return resolution
 
@@ -1237,21 +1252,36 @@ def build_import_result(
     imported_corporate_actions: int,
     imported_tax_adjustments: int,
     affected_symbols: int,
+    imported_cash_events: int = 0,
     errors: List[str],
     warnings: Optional[List[str]] = None,
     source_accounts: Optional[List[str]] = None,
-    claimable_unassigned_rows: int = 0,
-    migrated_unassigned_rows: int = 0,
     canonical_objects_changed: int = 0,
 ) -> Dict[str, Any]:
     rows = eligible_rows(parsed_rows)
     trade_rows = [flow for flow in rows if flow.is_trade]
     dividend_rows = [flow for flow in rows if flow.is_cash_dividend]
     tax_rows = [flow for flow in rows if flow.is_withholding_tax]
+    # 可入账的现金/外汇行与交易/股息/税同属审计口径：它们会生成 CashEvent
+    # 并计入 booked/duplicate，而不是被当成"未入账来源"拖垮批次状态
+    bookable_cash_rows = [
+        flow
+        for flow in parsed_rows
+        if flow.is_cash_business or flow.fx_legs is not None
+    ]
+    # "调整"（FX 折算损益等纸面项）是设计上有意只归档的行：预期跳过，
+    # 不算数据问题；方向异常/货币对异常的行不在此列，仍按未解决行处理
+    expected_archived_rows = [
+        flow
+        for flow in parsed_rows
+        if flow.skip_reason == "cash"
+        and flow.activity_type not in IBKR_CASH_EVENT_TYPES
+    ]
+    audited_rows = rows + bookable_cash_rows
     seen_hashes: set[str] = set()
     duplicate_rows = []
     import_rows = []
-    for flow in rows:
+    for flow in audited_rows:
         if flow.row_hash in existing_hashes or flow.row_hash in seen_hashes:
             duplicate_rows.append(flow)
         else:
@@ -1264,11 +1294,12 @@ def build_import_result(
         "cash": len([flow for flow in parsed_rows if flow.skip_reason == "cash"]),
         "unsupported": len([flow for flow in parsed_rows if flow.skip_reason == "unsupported"]),
         "invalid": len([flow for flow in parsed_rows if flow.skip_reason == "invalid"]),
+        "excluded": len([flow for flow in parsed_rows if flow.skip_reason == "excluded"]),
     }
     booked_source_rows = len(
-        [flow for flow in rows if flow.row_hash in booked_source_hashes]
+        [flow for flow in audited_rows if flow.row_hash in booked_source_hashes]
     )
-    eligible_unbooked_source_rows = max(0, len(rows) - booked_source_rows)
+    eligible_unbooked_source_rows = max(0, len(audited_rows) - booked_source_rows)
     unbooked_source_rows = max(0, total_rows - booked_source_rows)
 
     return {
@@ -1285,14 +1316,41 @@ def build_import_result(
         "booked_source_rows": booked_source_rows,
         "unbooked_source_rows": unbooked_source_rows,
         "eligible_unbooked_source_rows": eligible_unbooked_source_rows,
-        "claimable_unassigned_rows": claimable_unassigned_rows,
-        "migrated_unassigned_rows": migrated_unassigned_rows,
         "duplicate_rows": len(duplicate_rows),
-        "skipped_non_trade_rows": total_rows - len(trade_rows) - len(dividend_rows) - len(tax_rows),
+        "skipped_non_trade_rows": max(
+            0,
+            total_rows
+            - len(trade_rows)
+            - len(dividend_rows)
+            - len(tax_rows)
+            - len(bookable_cash_rows)
+            - len(expected_archived_rows)
+            - skip_counts["excluded"],
+        ),
+        "expected_archived_rows": len(expected_archived_rows),
+        "skipped_excluded_rows": skip_counts["excluded"],
+        "excluded_unbooked_rows": len(
+            [
+                flow
+                for flow in parsed_rows
+                if flow.skip_reason == "excluded" and flow.row_hash not in existing_hashes
+            ]
+        ),
         "skipped_invalid_rows": skip_counts["invalid"] + len(errors),
         "skipped_option_rows": skip_counts["option"],
-        "skipped_fx_rows": skip_counts["fx"],
-        "skipped_cash_rows": skip_counts["cash"],
+        # 跳过计数只含真正不入账的行；可入账现金/外汇行分列在 eligible_* 里，
+        # 否则预览会把将要入账的存款/利息显示成"现金类跳过"误导用户
+        "skipped_fx_rows": skip_counts["fx"]
+        - len([flow for flow in parsed_rows if flow.fx_legs is not None]),
+        "skipped_cash_rows": skip_counts["cash"]
+        - len([flow for flow in parsed_rows if flow.is_cash_business]),
+        "eligible_cash_event_rows": len(
+            [flow for flow in parsed_rows if flow.is_cash_business]
+        ),
+        "eligible_fx_rows": len(
+            [flow for flow in parsed_rows if flow.fx_legs is not None]
+        ),
+        "imported_cash_events": imported_cash_events,
         "skipped_unsupported_rows": skip_counts["unsupported"],
         "affected_symbols": affected_symbols,
         "date_start": min(dates).isoformat() if dates else None,
@@ -1304,20 +1362,6 @@ def build_import_result(
         "errors": errors[:50],
         "warnings": (warnings or [])[:50],
     }
-
-
-def _action_is_tax_candidate(action: CorporateAction, flow: ParsedIbkrFlow) -> bool:
-    return (
-        action.user_id is not None
-        and action.symbol == flow.symbol
-        and action.market == flow.market
-        and action.action_type == "CASH_DIVIDEND"
-        and action.currency == flow.base_currency
-        and (
-            action.ex_date == flow.trade_date
-            or action.payment_date == flow.trade_date
-        )
-    )
 
 
 def preview_booked_source_hashes(
@@ -1337,24 +1381,13 @@ def preview_booked_source_hashes(
         if flow.is_cash_dividend and flow.row_hash not in resolution.booked_hashes
     ]
     for flow in parsed_rows:
-        if (flow.is_trade or flow.is_cash_dividend) and flow.row_hash not in booked_hashes:
+        if (
+            flow.is_trade
+            or flow.is_cash_dividend
+            or flow.is_cash_business
+            or flow.fx_legs is not None
+        ) and flow.row_hash not in booked_hashes:
             booked_hashes.add(flow.row_hash)
-
-    claimable_action_ids = {
-        canonical_id
-        for canonical_type, canonical_id in resolution.claimable_canonical_keys
-        if canonical_type == "corporate_action"
-    }
-    claimable_actions = (
-        {
-            action.id: action
-            for action in db.query(CorporateAction)
-            .filter(CorporateAction.id.in_(claimable_action_ids))
-            .all()
-        }
-        if claimable_action_ids
-        else {}
-    )
 
     for flow in parsed_rows:
         if not flow.is_withholding_tax or flow.row_hash in booked_hashes:
@@ -1368,11 +1401,6 @@ def preview_booked_source_hashes(
                 broker_account_id=broker_account_id,
             )
         }
-        candidate_ids.update(
-            action.id
-            for action in claimable_actions.values()
-            if _action_is_tax_candidate(action, flow)
-        )
         virtual_candidates = [
             dividend
             for dividend in prospective_dividends
@@ -1391,6 +1419,95 @@ def preview_booked_source_hashes(
                 f"found {candidate_count}"
             )
     return booked_hashes
+
+
+def resolve_archived_only_hashes(
+    db: Session,
+    user_id: int,
+    parsed_rows: List[ParsedIbkrFlow],
+    *,
+    broker_account_id: int,
+) -> set[str]:
+    """期权与现金/外汇行的独立归档判重（预览与正式导入共用）。
+
+    这些行不入 resolve_existing_sources（那里只看 eligible 行）：
+    同账户既有归档行返回其 hash 集合，归属他账户则阻断。
+    """
+    archived_only_hashes = [
+        flow.row_hash
+        for flow in parsed_rows
+        if flow.skip_reason in ("option", "cash", "fx", "excluded")
+    ]
+    existing: set[str] = set()
+    if not archived_only_hashes:
+        return existing
+    for existing_archived in (
+        db.query(IbkrActivityFlow)
+        .filter(
+            IbkrActivityFlow.user_id == user_id,
+            IbkrActivityFlow.row_hash.in_(archived_only_hashes),
+        )
+        .all()
+    ):
+        if existing_archived.broker_account_id != broker_account_id:
+            raise ValueError(
+                "IBKR 归档来源记录无法安全判重："
+                f"row_hash={existing_archived.row_hash} 已归属其他券商账户"
+                f"（broker_account_id={existing_archived.broker_account_id}）。"
+                "请确认此前是否选错账户导入；当前导入不会静默跳过该记录"
+            )
+        existing.add(existing_archived.row_hash)
+    return existing
+
+
+def cash_flow_anomaly_warning(flow: ParsedIbkrFlow) -> Optional[str]:
+    """现金/外汇行的异常报警文案（预览、导入、回填共用同一口径）。"""
+    if flow.skip_reason == "cash":
+        amount = flow.cash_amount
+        if (
+            flow.activity_type in IBKR_CASH_EVENT_TYPES
+            and amount is not None
+            and amount != 0
+            and flow.cash_event_type is None
+        ):
+            return (
+                f"row {flow.source_row_number}: {flow.activity_type} 金额方向与"
+                f"业务类型不符（{amount}），已归档未入账，请人工核对"
+            )
+        return None
+    if flow.skip_reason == "fx" and flow.fx_legs is None:
+        return (
+            f"row {flow.source_row_number}: 外汇兑换行货币对无法解析或与 "
+            f"Price Currency 列不一致（{flow.raw_symbol} / "
+            f"{flow.price_currency or '-'}），已归档未入账，请人工核对"
+        )
+    return None
+
+
+def cash_flow_anomaly_warnings(parsed_rows: List[ParsedIbkrFlow]) -> List[str]:
+    warnings: List[str] = []
+    for flow in parsed_rows:
+        warning = cash_flow_anomaly_warning(flow)
+        if warning is not None:
+            warnings.append(warning)
+    return warnings
+
+
+def mark_archived_bookable_duplicates(
+    parsed_rows: List[ParsedIbkrFlow],
+    existing_archived_hashes: set[str],
+    *,
+    duplicate_hashes: set[str],
+    booked_source_hashes: set[str],
+) -> None:
+    """既有归档且可入账的现金/外汇行按"已入账重复"计入审计口径。"""
+    for flow in parsed_rows:
+        if (
+            (flow.is_cash_business or flow.fx_legs is not None)
+            and flow.row_hash in existing_archived_hashes
+        ):
+            duplicate_hashes.add(flow.row_hash)
+            booked_source_hashes.add(flow.row_hash)
 
 
 def preview_ibkr_activity(
@@ -1415,7 +1532,12 @@ def preview_ibkr_activity(
         broker=BROKER_NAME,
         contents=contents,
     )
-    parsed_rows, business_counts, total_rows, errors = parse_rows(contents, filename)
+    parsed_rows, business_counts, total_rows, errors = parse_rows(
+        contents,
+        filename,
+        name_overrides=get_name_overrides(db, user_id),
+        excluded_symbols=frozenset(get_excluded_symbols(db, user_id)),
+    )
     is_xlsx = is_ibkr_xlsx_filename(filename)
     source_accounts = validate_statement_accounts(
         parsed_rows, broker_account, allow_missing_accounts=is_xlsx
@@ -1428,6 +1550,7 @@ def preview_ibkr_activity(
         if is_xlsx and not source_accounts
         else []
     )
+    warnings_extra.extend(cash_flow_anomaly_warnings(parsed_rows))
     resolution = resolve_existing_sources(
         db,
         user_id,
@@ -1443,12 +1566,24 @@ def preview_ibkr_activity(
         resolution=resolution,
         errors=errors,
     )
+    # 现金/外汇行的归档判重与正式导入共用：既有行计入 duplicate/booked，
+    # 他账户归档行同样在预览阶段阻断
+    existing_archived_hashes = resolve_archived_only_hashes(
+        db, user_id, parsed_rows, broker_account_id=broker_account_id
+    )
+    duplicate_hashes = set(resolution.duplicate_hashes)
+    mark_archived_bookable_duplicates(
+        parsed_rows,
+        existing_archived_hashes,
+        duplicate_hashes=duplicate_hashes,
+        booked_source_hashes=booked_source_hashes,
+    )
     return build_import_result(
         filename=filename,
         total_rows=total_rows,
         parsed_rows=parsed_rows,
         business_counts=business_counts,
-        existing_hashes=resolution.duplicate_hashes,
+        existing_hashes=duplicate_hashes,
         booked_source_hashes=booked_source_hashes,
         imported_transactions=0,
         imported_corporate_actions=0,
@@ -1457,7 +1592,6 @@ def preview_ibkr_activity(
         errors=errors,
         warnings=warnings_extra,
         source_accounts=source_accounts,
-        claimable_unassigned_rows=len(resolution.claimable_source_hashes),
     )
 
 
@@ -1501,6 +1635,91 @@ def create_ibkr_activity_flow(
     )
 
 
+def create_cash_events_for_flow(
+    db: Session,
+    *,
+    flow: ParsedIbkrFlow,
+    archived: IbkrActivityFlow,
+    warnings: Optional[List[str]] = None,
+) -> int:
+    """为一条已归档的现金/外汇行创建链接的 CashEvent，返回创建数量。
+
+    现金业务行（存款/利息）一行一事件；外汇兑换行两条腿各一事件、
+    佣金再一事件（IBKR 现汇佣金以账户基础货币收取，且腿净额不含佣金，
+    故单独入账不重复计费）。调整（纸面损益）与方向异常的行不入账，
+    方向异常报 warning。导入与回填共用此口径。
+    """
+
+    def _event(event_type: str, amount: Decimal, currency: str, label: str) -> CashEvent:
+        event = CashEvent(
+            user_id=archived.user_id,
+            broker_account_id=archived.broker_account_id,
+            event_type=event_type,
+            amount=abs(amount),
+            currency=currency,
+            event_date=flow.trade_date,
+            notes=(
+                f"{BROKER_NAME}对账单{label}(导入); "
+                f"{flow.description or flow.activity_type}; "
+                f"row_hash={flow.row_hash}"
+            ),
+        )
+        db.add(event)
+        return event
+
+    if flow.is_cash_business:
+        event = _event(
+            flow.cash_event_type,
+            flow.cash_amount,
+            flow.price_currency or flow.base_currency,
+            flow.activity_type,
+        )
+        db.flush()
+        archived.cash_event_id = event.id
+        return 1
+
+    if flow.skip_reason == "cash":
+        if warnings is not None:
+            warning = cash_flow_anomaly_warning(flow)
+            if warning is not None:
+                warnings.append(warning)
+        return 0
+
+    legs = flow.fx_legs
+    if legs is None:
+        if warnings is not None:
+            warning = cash_flow_anomaly_warning(flow)
+            if warning is not None:
+                warnings.append(warning)
+        return 0
+
+    (base_currency, base_amount), (quote_currency, quote_amount) = legs
+    base_event = _event(
+        "FX_IN" if base_amount > 0 else "FX_OUT",
+        base_amount,
+        base_currency,
+        f"外汇兑换{flow.raw_symbol}基础腿",
+    )
+    quote_event = _event(
+        "FX_IN" if quote_amount > 0 else "FX_OUT",
+        quote_amount,
+        quote_currency,
+        f"外汇兑换{flow.raw_symbol}对价腿",
+    )
+    fee_event = None
+    if flow.commission:
+        fee_event = _event(
+            "FEE",
+            flow.commission,
+            flow.base_currency,
+            f"外汇兑换{flow.raw_symbol}佣金",
+        )
+    db.flush()
+    archived.cash_event_id = base_event.id
+    archived.fx_quote_cash_event_id = quote_event.id
+    if fee_event is not None:
+        archived.fx_fee_cash_event_id = fee_event.id
+    return 3 if fee_event is not None else 2
 def find_dividend_for_tax(
     db: Session,
     user_id: int,
@@ -1630,9 +1849,11 @@ def apply_known_relisting_transfers(
     *,
     broker_account_id: Optional[int] = None,
     import_batch_id: Optional[int] = None,
+    relistings: Optional[List[Dict[str, Any]]] = None,
 ) -> int:
+    """转板映射由调用方注入（security_rules RELISTING 类型），不再读模块常量。"""
     created = 0
-    for relisting in KNOWN_RELISTINGS:
+    for relisting in relistings or []:
         old_symbol = relisting["old_symbol"]
         old_market = relisting["old_market"]
         new_symbol = relisting["new_symbol"]
@@ -1797,15 +2018,20 @@ def import_ibkr_activity(
     imported_transactions = 0
     imported_corporate_actions = 0
     imported_tax_adjustments = 0
+    imported_cash_events = 0
     imported_transfer_transactions = 0
     canonical_action_ids_changed: set[int] = set()
     booked_source_hashes: set[str] = set()
     source_accounts: List[str] = []
-    migrated_unassigned_rows = 0
     duplicate_hashes: set[str] = set()
 
     try:
-        parsed_rows, business_counts, total_rows, errors = parse_rows(contents, filename)
+        parsed_rows, business_counts, total_rows, errors = parse_rows(
+            contents,
+            filename,
+            name_overrides=get_name_overrides(db, user_id),
+            excluded_symbols=frozenset(get_excluded_symbols(db, user_id)),
+        )
         is_xlsx = is_ibkr_xlsx_filename(filename)
         source_accounts = validate_statement_accounts(
             parsed_rows, broker_account, allow_missing_accounts=is_xlsx
@@ -1831,11 +2057,9 @@ def import_ibkr_activity(
             eligible_rows(parsed_rows),
             broker_account_id=broker_account_id,
             broker_account=broker_account,
-            claim_unassigned=True,
         )
         duplicate_hashes = set(resolution.duplicate_hashes)
         booked_source_hashes.update(resolution.booked_hashes)
-        migrated_unassigned_rows = len(resolution.claimable_source_hashes)
 
         affected_symbols: set[tuple[str, str]] = set()
         pending_tax_flows: List[ParsedIbkrFlow] = [
@@ -1850,27 +2074,18 @@ def import_ibkr_activity(
         # 与 resolve_existing_sources 同口径：仅同账户可判重——归属其他账户
         # 的既有来源说明此前选错了账户，必须阻塞并提示，不能静默视为重复
         # （(user_id, row_hash) 唯一约束也使正确账户无法再补录该审计来源）。
-        option_hashes = [
-            flow.row_hash for flow in parsed_rows if flow.skip_reason == "option"
-        ]
-        existing_option_hashes: set[str] = set()
-        if option_hashes:
-            for existing_option in (
-                db.query(IbkrActivityFlow)
-                .filter(
-                    IbkrActivityFlow.user_id == user_id,
-                    IbkrActivityFlow.row_hash.in_(option_hashes),
-                )
-                .all()
-            ):
-                if existing_option.broker_account_id != broker_account_id:
-                    raise ValueError(
-                        "IBKR 期权来源记录无法安全判重："
-                        f"row_hash={existing_option.row_hash} 已归属其他券商账户"
-                        f"（broker_account_id={existing_option.broker_account_id}）。"
-                        "请确认此前是否选错账户导入；当前导入不会静默跳过该记录"
-                    )
-                existing_option_hashes.add(existing_option.row_hash)
+        # 现金/外汇/期权行的归档判重与预览共用同一通道；异常行报警也在
+        # 批级统一产生（重导入时行已归档、不再逐行入账，逐行报警会漏）
+        warnings_extra.extend(cash_flow_anomaly_warnings(parsed_rows))
+        existing_archived_hashes = resolve_archived_only_hashes(
+            db, user_id, parsed_rows, broker_account_id=broker_account_id
+        )
+        mark_archived_bookable_duplicates(
+            parsed_rows,
+            existing_archived_hashes,
+            duplicate_hashes=duplicate_hashes,
+            booked_source_hashes=booked_source_hashes,
+        )
 
         for flow in parsed_rows:
             if not flow.is_trade and not flow.is_cash_dividend and not flow.is_withholding_tax:
@@ -1878,19 +2093,43 @@ def import_ibkr_activity(
                 # 不影响持仓，原始行留在 ibkr_activity_flows 供审计与去重。
                 # 系统的已实现盈亏因此不含期权部分，报表口径需注明。
                 if (
-                    flow.skip_reason == "option"
-                    and flow.row_hash not in existing_option_hashes
+                    flow.skip_reason in ("cash", "fx")
+                    and flow.row_hash not in existing_archived_hashes
                     and flow.row_hash not in booked_source_hashes
                 ):
-                    archived_option = create_ibkr_activity_flow(
+                    archived_cash = create_ibkr_activity_flow(
                         user_id=user_id,
                         filename=filename,
                         flow=flow,
                         broker_account_id=broker_account_id,
                         import_batch_id=batch_id,
                     )
-                    archived_option.skip_reason = "option"
-                    db.add(archived_option)
+                    db.add(archived_cash)
+                    # warnings=None：异常报警已在批级统一产生
+                    imported_cash_events += create_cash_events_for_flow(
+                        db,
+                        flow=flow,
+                        archived=archived_cash,
+                        warnings=None,
+                    )
+                    booked_source_hashes.add(flow.row_hash)
+                    continue
+                if (
+                    flow.skip_reason in ("option", "excluded")
+                    and flow.row_hash not in existing_archived_hashes
+                    and flow.row_hash not in booked_source_hashes
+                ):
+                    # create_ibkr_activity_flow 已带上 flow.skip_reason
+                    # （option/excluded），不得覆写——审计记录要保留真实原因
+                    db.add(
+                        create_ibkr_activity_flow(
+                            user_id=user_id,
+                            filename=filename,
+                            flow=flow,
+                            broker_account_id=broker_account_id,
+                            import_batch_id=batch_id,
+                        )
+                    )
                     booked_source_hashes.add(flow.row_hash)
                 continue
             if flow.row_hash in resolution.booked_hashes:
@@ -2035,6 +2274,7 @@ def import_ibkr_activity(
             affected_symbols,
             broker_account_id=broker_account_id,
             import_batch_id=batch_id,
+            relistings=get_relistings(db, user_id),
         )
         imported_transactions += imported_transfer_transactions
         canonical_objects_changed = (
@@ -2068,10 +2308,10 @@ def import_ibkr_activity(
             imported_corporate_actions=imported_corporate_actions,
             imported_tax_adjustments=imported_tax_adjustments,
             affected_symbols=recalculated_symbols,
+            imported_cash_events=imported_cash_events,
             errors=errors,
             warnings=warnings_extra,
             source_accounts=source_accounts,
-            migrated_unassigned_rows=migrated_unassigned_rows,
             canonical_objects_changed=canonical_objects_changed,
         )
         imported_source_rows = (

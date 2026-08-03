@@ -17,10 +17,6 @@ from app.services import llm_report_scheduler
 from app.services.background_job_store import create_or_get_active_job
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
 
 def _cleanup(db):
     db.query(LlmReportMessage).delete()

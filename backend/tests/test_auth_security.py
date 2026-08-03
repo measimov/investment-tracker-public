@@ -11,10 +11,6 @@ from app.models.transaction import Transaction
 from app.models.user import User
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
 
 def _clean_auth_test_data(db, user_id: int) -> None:
     symbols = ["COOKIE001", "BEARER001"]

@@ -57,11 +57,6 @@ def pytest_configure(config):
         )
 
 
-@pytest.fixture(scope="session")
-def test_database_url():
-    return os.environ["DATABASE_URL"]
-
-
 def _seed_test_users(database_url: str) -> None:
     engine = create_engine(database_url, pool_pre_ping=True)
     with engine.begin() as conn:

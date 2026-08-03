@@ -106,3 +106,5 @@ certbot-webroot/
 *.swp
 *.swo
 *~
+.pytest_cache/
+test-results/

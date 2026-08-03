@@ -47,3 +47,6 @@ class CashEventResponse(CashEventBase):
     broker_account_id: Optional[int]
     created_at: datetime
     updated_at: datetime
+    # 由券商流水导入/回填生成（被 BrokerFundFlow 链接）：API 层不可改删，
+    # 前端据此显示只读标记
+    imported: bool = False

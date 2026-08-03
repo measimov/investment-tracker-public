@@ -21,32 +21,10 @@ from app.services.statistics_service import (
     calculate_performance_summary,
     calculate_realized_pnl_fifo,
 )
+from tests.helpers import add_transaction, reset_tables
 
 
-def reset_tables(db):
-    for model in (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction):
-        db.query(model).delete()
-    db.commit()
-
-
-def add_transaction(db, **overrides):
-    values = {
-        "user_id": 1,
-        "symbol": "AAPL",
-        "name": "Apple",
-        "market": "美股",
-        "transaction_type": "BUY",
-        "quantity": Decimal("100"),
-        "price": Decimal("10"),
-        "fee": Decimal("0"),
-        "transaction_date": date(2026, 1, 1),
-        "currency": "USD",
-    }
-    values.update(overrides)
-    txn = Transaction(**values)
-    db.add(txn)
-    db.flush()
-    return txn
+RESET_MODELS = (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction)
 
 
 def test_transaction_source_selection_prefers_rich_identifiers_deterministically():
@@ -113,7 +91,7 @@ def test_transaction_source_selection_prefers_rich_identifiers_deterministically
 
 def test_validate_no_oversell_rejects_excess_sell():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         buy = add_transaction(db)
         sell = add_transaction(
@@ -131,7 +109,7 @@ def test_validate_no_oversell_rejects_excess_sell():
 
 def test_recalculate_same_day_buy_before_sell():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -160,7 +138,7 @@ def test_recalculate_same_day_buy_before_sell():
 
 def test_realized_pnl_ignores_oversell_rows_defensively():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(db)
         add_transaction(
@@ -201,7 +179,7 @@ def test_realized_pnl_ignores_oversell_rows_defensively():
 
 def test_cash_dividend_does_not_overwrite_holding_identity():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,
@@ -238,7 +216,7 @@ def test_cash_dividend_does_not_overwrite_holding_identity():
 
 def test_account_total_return_combines_realized_unrealized_and_dividends():
     db = SessionLocal()
-    reset_tables(db)
+    reset_tables(db, RESET_MODELS)
     try:
         add_transaction(
             db,

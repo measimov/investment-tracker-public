@@ -13,6 +13,11 @@ class IbkrActivityFlow(Base):
     )
     transaction_id = Column(Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True)
     corporate_action_id = Column(Integer, ForeignKey("corporate_actions.id", ondelete="SET NULL"), nullable=True, index=True)
+    # 现金入账链接：现金业务行只用 cash_event_id；外汇兑换行一行两条现金腿
+    # （基础币 cash_event_id + 对价币 fx_quote_cash_event_id），佣金另计一条。
+    cash_event_id = Column(Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    fx_quote_cash_event_id = Column(Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    fx_fee_cash_event_id = Column(Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True)
     broker_account_id = Column(
         Integer,
         ForeignKey("broker_accounts.id", ondelete="SET NULL"),

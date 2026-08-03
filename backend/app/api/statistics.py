@@ -6,6 +6,7 @@ from typing import Dict, List, Any
 from ..database import get_db
 from ..models.user import User
 from ..core.deps import get_current_active_user
+from ..services import benchmark_service
 from ..services.statistics_service import (
     build_portfolio_snapshot,
     get_summary_statistics,
@@ -114,6 +115,22 @@ def get_performance_summary_server_priced(
     return result
 
 
+MAX_BENCHMARKS = 3
+
+
+def _parse_benchmarks(raw: str) -> list[str]:
+    """逗号分隔的基准 code；未知 code → 422，上限 3 个。空串 = 不算基准。"""
+    codes = [code.strip() for code in (raw or "").split(",") if code.strip()]
+    if not codes:
+        return []
+    if len(codes) > MAX_BENCHMARKS:
+        raise HTTPException(status_code=422, detail=f"最多同时对比 {MAX_BENCHMARKS} 个基准")
+    unknown = [code for code in codes if not benchmark_service.is_valid_benchmark(code)]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"未知基准代码: {', '.join(unknown)}")
+    return codes
+
+
 def _run_performance_analytics(
     db: Session,
     user_id: int,
@@ -122,6 +139,7 @@ def _run_performance_analytics(
     end_date: date | None,
     risk_free_rate: Decimal,
     refresh_history: bool,
+    benchmarks: str = "",
 ) -> Dict[str, Any]:
     _validate_date_range(start_date, end_date)
     return calculate_performance_analytics(
@@ -132,6 +150,7 @@ def _run_performance_analytics(
         end_date=end_date,
         risk_free_rate=risk_free_rate,
         refresh_history=refresh_history,
+        benchmarks=_parse_benchmarks(benchmarks),
     )
 
 
@@ -142,6 +161,7 @@ def get_performance_analytics(
     end_date: date | None = Query(None),
     risk_free_rate: Decimal = Query(Decimal("0")),
     refresh_history: bool = Query(False),
+    benchmarks: str = Query("", description="逗号分隔的基准指数 code，最多 3 个"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -154,7 +174,7 @@ def get_performance_analytics(
     """
     return _run_performance_analytics(
         db, current_user.id, current_prices,
-        start_date, end_date, risk_free_rate, refresh_history,
+        start_date, end_date, risk_free_rate, refresh_history, benchmarks,
     )
 
 
@@ -164,6 +184,7 @@ def get_performance_analytics_server_priced(
     end_date: date | None = Query(None),
     risk_free_rate: Decimal = Query(Decimal("0")),
     refresh_history: bool = Query(False),
+    benchmarks: str = Query("", description="逗号分隔的基准指数 code，最多 3 个"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
@@ -171,11 +192,19 @@ def get_performance_analytics_server_priced(
     prices, sources, freshness = resolve_server_prices(db, current_user.id)
     result = _run_performance_analytics(
         db, current_user.id, prices,
-        start_date, end_date, risk_free_rate, refresh_history,
+        start_date, end_date, risk_free_rate, refresh_history, benchmarks,
     )
     result.setdefault("data_quality", {})["price_sources"] = sources
     result["data_quality"]["price_freshness"] = freshness
     return result
+
+
+@router.get("/benchmarks", response_model=List[Dict[str, Any]])
+def list_benchmarks(
+    current_user: User = Depends(get_current_active_user),
+):
+    """基准指数目录（供前端选择器；无用户数据，登录即可读）。"""
+    return benchmark_service.benchmark_catalog()
 
 
 @router.post("/performance-history-sync", response_model=Dict[str, Any])

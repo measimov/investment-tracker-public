@@ -77,9 +77,9 @@ def _fake_snapshot(holding_count: int) -> dict:
             },
             "account_return": {
                 "total_return_cny": 999.0,
-                "calculation_status": "estimated",
+                "calculation_status": "exact",
                 "methodology_notes": [
-                    "Account cash and external deposits or withdrawals are not included.",
+                    "权益仓口径：仅统计投入证券的资金，口径内精确。",
                 ],
             },
         },
@@ -118,6 +118,31 @@ def _fake_analytics() -> dict:
             for month in range(1, 7)
             for day in (5, 15, 28)
         ],
+        "benchmarks": [
+            {
+                "code": "000300.SH",
+                "name": "沪深300",
+                "status": "ok",
+                "fx_basis": "index_native",
+                "return_basis": "price_index_excl_dividends",
+                "total_return_rate": 5.0,
+                "max_drawdown_rate": -8.4,
+                "comparison": {
+                    "benchmark_total_return_rate": 5.0,
+                    "excess_return_rate": 40.3,
+                    "excess_basis": "arithmetic_pp",
+                    "benchmark_max_drawdown_rate": -8.4,
+                    "beta": None,
+                },
+                "points": [
+                    {"date": f"2026-{month:02d}-{day:02d}",
+                     "cumulative_return_rate": float(month) / 2}
+                    for month in range(1, 7)
+                    for day in (5, 15, 28)
+                ],
+            },
+            {"code": "SPX", "name": "标普500", "status": "no_data"},
+        ],
     }
 
 
@@ -142,9 +167,9 @@ def test_compact_caps_arrays_and_preserves_estimate_labels():
     assert len(payload["price_quality"]["stale_keys"]) == 20
     assert payload["price_quality"]["stale_count"] == 30
 
-    # 估算/实验标签逐字保留
-    assert payload["account_return"]["calculation_status"] == "estimated"
-    assert "external deposits" in payload["account_return"]["methodology_notes"][0]
+    # 权益仓/实验标签逐字保留
+    assert payload["account_return"]["calculation_status"] == "exact"
+    assert "权益仓口径" in payload["account_return"]["methodology_notes"][0]
     assert payload["analytics"]["trade_skill"]["status"] == "experimental"
     assert payload["analytics"]["methodology"]["return_method"] == "ttwr_proxy"
     assert "estimate_semantics" in payload["meta"]
@@ -153,6 +178,17 @@ def test_compact_caps_arrays_and_preserves_estimate_labels():
     rec = payload["accounts"][0]["latest_reconciliation"]
     assert rec["status"] == "MISMATCHED"
     assert "compared_at" not in serialize_input(rec)
+
+    # 基准块：月末降采样封顶、comparison 原样保留、原始 points 不透传、
+    # 语义字典含基准条目
+    benchmarks = payload["analytics"]["benchmarks"]
+    assert [b["code"] for b in benchmarks] == ["000300.SH", "SPX"]
+    hs300 = benchmarks[0]
+    assert hs300["comparison"]["excess_basis"] == "arithmetic_pp"
+    assert len(hs300["curve_month_end"]) <= PRIMARY_CAPS["curve"]
+    assert "points" not in serialize_input(hs300)
+    assert benchmarks[1]["status"] == "no_data"
+    assert "benchmark/基准" in payload["meta"]["estimate_semantics"]
 
 
 def test_month_end_downsample_keeps_first_last_and_month_ends():
@@ -185,7 +221,9 @@ def test_char_budget_triggers_secondary_shrink(monkeypatch):
     snapshot = _fake_snapshot(35)
     analytics = _fake_analytics()
     monkeypatch.setattr(mod, "build_portfolio_snapshot", lambda db, uid: snapshot)
-    monkeypatch.setattr(mod, "calculate_performance_analytics", lambda db, uid, prices: analytics)
+    monkeypatch.setattr(
+        mod, "calculate_performance_analytics", lambda db, uid, prices, **kw: analytics
+    )
     monkeypatch.setattr(mod, "get_statistics_by_time", lambda db, uid, g: [{"period": "x"}] * 30)
     monkeypatch.setattr(mod, "CHAR_BUDGET", 1)  # 强制触发二级收缩
 

@@ -2,7 +2,6 @@
   <div class="account-data-page">
     <section class="page-intro">
       <div>
-        <p class="eyebrow">DATA FOUNDATION</p>
         <h1>账户数据</h1>
         <p>把券商账户、现金活动和月末核对放在一起，先保证数据可信，再看收益。</p>
       </div>
@@ -47,7 +46,7 @@
             <el-button type="primary" :icon="Plus" @click="openAccountDialog()">新增账户</el-button>
           </div>
 
-          <div class="responsive-table">
+          <div v-if="!isMobileView" class="responsive-table desktop-data-table">
             <el-table :data="accounts" v-loading="loading.accounts" stripe row-key="id">
               <template #empty>
                 <el-empty description="尚未登记券商账户">
@@ -82,6 +81,47 @@
               </el-table-column>
             </el-table>
           </div>
+
+          <div v-else v-loading="loading.accounts" class="mobile-card-list">
+            <el-empty v-if="!accounts.length" description="尚未登记券商账户" :image-size="88">
+              <el-button type="primary" @click="openAccountDialog()">新增第一个账户</el-button>
+            </el-empty>
+            <article
+              v-for="row in accounts"
+              :key="row.id"
+              class="mobile-card"
+              data-testid="account-card"
+            >
+              <div class="mobile-card-head">
+                <div class="mobile-card-title">
+                  <span class="mobile-card-symbol">{{ accountName(row) }}</span>
+                  <span class="mobile-card-name">
+                    {{ row.account_number_masked || '未填写尾号' }}
+                  </span>
+                </div>
+                <div class="mobile-card-tags">
+                  <el-tag :type="row.is_active === false ? 'info' : 'success'" size="small">
+                    {{ row.is_active === false ? '停用' : '启用' }}
+                  </el-tag>
+                </div>
+              </div>
+
+              <div class="mobile-card-meta">
+                <span>{{ row.broker || row.broker_name || '未填写券商' }}</span>
+                <span>{{ row.base_currency }}</span>
+                <span v-if="row.notes">{{ row.notes }}</span>
+              </div>
+
+              <div class="mobile-card-actions">
+                <el-button type="primary" size="small" text @click="openAccountDialog(row)">
+                  编辑
+                </el-button>
+                <el-button type="danger" size="small" text @click="removeAccount(row)">
+                  删除空账户
+                </el-button>
+              </div>
+            </article>
+          </div>
         </el-tab-pane>
 
         <el-tab-pane name="cash">
@@ -92,7 +132,9 @@
           <div class="section-toolbar">
             <div>
               <h2>现金事件</h2>
-              <p>保存真实资金变化，为后续校准账户收益；当前收益统计仍是估算口径。</p>
+              <p>
+                保存真实资金变化，用于现金对账与出入金追踪；收益统计为权益仓口径（仅证券投入，不含账户现金）。
+              </p>
             </div>
             <el-button
               type="primary"
@@ -127,10 +169,10 @@
             </el-form-item>
           </el-form>
 
-          <div class="responsive-table">
+          <div v-if="!isMobileView" class="responsive-table desktop-data-table">
             <el-table :data="filteredCashEvents" v-loading="loading.cash" stripe row-key="id">
               <template #empty>
-                <el-empty description="暂无现金事件" />
+                <el-empty description="暂无现金事件" :image-size="88" />
               </template>
               <el-table-column prop="event_date" label="日期" width="120">
                 <template #default="{ row }">{{
@@ -157,11 +199,61 @@
               <el-table-column prop="notes" label="备注" min-width="200" show-overflow-tooltip />
               <el-table-column label="操作" width="140" fixed="right">
                 <template #default="{ row }">
-                  <el-button type="primary" text @click="openCashDialog(row)">编辑</el-button>
-                  <el-button type="danger" text @click="removeCashEvent(row)">删除</el-button>
+                  <template v-if="!row.imported">
+                    <el-button type="primary" text @click="openCashDialog(row)">编辑</el-button>
+                    <el-button type="danger" text @click="removeCashEvent(row)">删除</el-button>
+                  </template>
+                  <el-tag v-else type="info" size="small">导入生成 · 只读</el-tag>
                 </template>
               </el-table-column>
             </el-table>
+          </div>
+
+          <div v-else v-loading="loading.cash" class="mobile-card-list">
+            <el-empty
+              v-if="!filteredCashEvents.length"
+              description="暂无现金事件"
+              :image-size="88"
+            />
+            <article
+              v-for="row in filteredCashEvents"
+              :key="row.id"
+              class="mobile-card"
+              data-testid="cash-event-card"
+            >
+              <div class="mobile-card-head">
+                <div class="mobile-card-title">
+                  <span class="mobile-card-symbol" :class="amountClass(row)">
+                    {{ signedAmount(row) }}
+                  </span>
+                  <span class="mobile-card-name">
+                    {{ accountLabel(row.broker_account_id || row.account_id) }}
+                  </span>
+                </div>
+                <div class="mobile-card-tags">
+                  <el-tag :type="cashTypeTag(row.event_type)" size="small">
+                    {{ cashTypeLabel(row.event_type) }}
+                  </el-tag>
+                </div>
+              </div>
+
+              <div class="mobile-card-meta">
+                <span>{{ formatDate(row.event_date || row.occurred_at) }}</span>
+                <span v-if="row.notes">{{ row.notes }}</span>
+              </div>
+
+              <div class="mobile-card-actions">
+                <template v-if="!row.imported">
+                  <el-button type="primary" size="small" text @click="openCashDialog(row)">
+                    编辑
+                  </el-button>
+                  <el-button type="danger" size="small" text @click="removeCashEvent(row)">
+                    删除
+                  </el-button>
+                </template>
+                <el-tag v-else type="info" size="small">导入生成 · 只读</el-tag>
+              </div>
+            </article>
           </div>
         </el-tab-pane>
 
@@ -180,7 +272,7 @@
           <div class="responsive-table">
             <el-table :data="importBatches" v-loading="loading.batches" stripe row-key="id">
               <template #empty>
-                <el-empty description="暂无可追溯的导入批次" />
+                <el-empty description="暂无可追溯的导入批次" :image-size="88" />
               </template>
               <el-table-column label="导入时间" min-width="160">
                 <template #default="{ row }">{{
@@ -246,10 +338,10 @@
             </el-button>
           </div>
 
-          <div class="responsive-table">
+          <div v-if="!isMobileView" class="responsive-table desktop-data-table">
             <el-table :data="snapshots" v-loading="loading.snapshots" stripe row-key="id">
               <template #empty>
-                <el-empty description="暂无月末核对记录" />
+                <el-empty description="暂无月末核对记录" :image-size="88" />
               </template>
               <el-table-column prop="snapshot_date" label="核对日期" width="125">
                 <template #default="{ row }">{{ formatDate(row.snapshot_date) }}</template>
@@ -305,36 +397,122 @@
               </el-table-column>
             </el-table>
           </div>
+
+          <div v-else v-loading="loading.snapshots" class="mobile-card-list">
+            <el-empty v-if="!snapshots.length" description="暂无月末核对记录" :image-size="88" />
+            <article
+              v-for="row in snapshots"
+              :key="row.id"
+              class="mobile-card"
+              data-testid="snapshot-card"
+            >
+              <div class="mobile-card-head">
+                <div class="mobile-card-title">
+                  <span class="mobile-card-symbol">{{ formatDate(row.snapshot_date) }}</span>
+                  <span class="mobile-card-name">
+                    {{ accountLabel(row.broker_account_id || row.account_id) }}
+                  </span>
+                </div>
+                <div class="mobile-card-tags">
+                  <el-tag
+                    :type="snapshotStatusTag(row.status)"
+                    size="small"
+                    :class="{ 'diff-tag-clickable': row.diff_detail }"
+                    @click="row.diff_detail && openDiffDialog(row)"
+                  >
+                    {{ snapshotStatusLabel(row) }}
+                  </el-tag>
+                </div>
+              </div>
+
+              <div class="mobile-card-meta">
+                <span>现金 {{ jsonSummary(row.cash_balances || row.reported_cash) }}</span>
+                <span>持仓 {{ positionSummary(row.positions || row.reported_positions) }}</span>
+                <span v-if="row.source_filename">{{ row.source_filename }}</span>
+                <span v-if="row.notes">{{ row.notes }}</span>
+              </div>
+
+              <div class="mobile-card-actions">
+                <el-button
+                  size="small"
+                  text
+                  :loading="comparingSnapshotId === row.id"
+                  @click="compareSnapshot(row)"
+                >
+                  重新比对
+                </el-button>
+                <template v-if="!row.import_batch_id">
+                  <el-button type="primary" size="small" text @click="openSnapshotDialog(row)">
+                    编辑
+                  </el-button>
+                  <el-button type="danger" size="small" text @click="removeSnapshot(row)">
+                    删除
+                  </el-button>
+                </template>
+                <el-tag v-else type="info" size="small">导入生成 · 只读</el-tag>
+              </div>
+            </article>
+          </div>
         </el-tab-pane>
         <el-tab-pane name="exclusions">
           <template #label>
-            <span class="tab-label"><Remove />排除清单</span>
+            <span class="tab-label"><Remove />特例规则</span>
           </template>
 
           <div class="section-toolbar">
             <div>
-              <h2>现金管理标的排除清单</h2>
-              <p>清单内标的（如货币基金）导入时只归档不入账，月末核对双侧忽略。</p>
+              <h2>账本特例规则</h2>
+              <p>
+                六类规则：排除标的＝导入只归档不入账、对账双侧忽略；现金管理标的＝其"产品红利发放"按利息入账（并非排除）；转板映射、名称覆盖、行情缺口豁免、招商现金业务用于修正导入与行情口径。
+              </p>
             </div>
-            <el-button type="primary" :icon="Plus" @click="openExclusionDialog">
-              新增排除
-            </el-button>
+            <el-button type="primary" :icon="Plus" @click="openRuleDialog">新增规则</el-button>
           </div>
 
+          <el-form :inline="true" class="compact-filter">
+            <el-form-item label="规则类型">
+              <el-select
+                v-model="ruleFilters.ruleType"
+                clearable
+                placeholder="全部类型"
+                @change="loadSecurityRules"
+              >
+                <el-option
+                  v-for="item in ruleTypeOptions"
+                  :key="item.value"
+                  :label="item.label"
+                  :value="item.value"
+                />
+              </el-select>
+            </el-form-item>
+          </el-form>
+
           <div class="responsive-table">
-            <el-table :data="exclusions" v-loading="loading.exclusions" stripe row-key="id">
+            <el-table :data="securityRules" v-loading="loading.rules" stripe row-key="id">
               <template #empty>
-                <el-empty description="暂无排除标的" />
+                <el-empty description="暂无特例规则" :image-size="88" />
               </template>
-              <el-table-column prop="symbol" label="代码" width="140" />
-              <el-table-column prop="market" label="市场" width="120" />
-              <el-table-column prop="note" label="备注" min-width="220" show-overflow-tooltip />
+              <el-table-column label="类型" width="130">
+                <template #default="{ row }">
+                  <el-tag :type="ruleTypeTag(row.rule_type)" size="small">
+                    {{ ruleTypeLabel(row.rule_type) }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="symbol" label="标的/业务名" min-width="140" />
+              <el-table-column label="市场" width="110">
+                <template #default="{ row }">{{ row.market || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="摘要" min-width="190" show-overflow-tooltip>
+                <template #default="{ row }">{{ ruleSummary(row) }}</template>
+              </el-table-column>
+              <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
               <el-table-column label="创建时间" min-width="170">
                 <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
               </el-table-column>
               <el-table-column label="操作" width="100" fixed="right">
                 <template #default="{ row }">
-                  <el-button type="danger" text @click="removeExclusion(row)">删除</el-button>
+                  <el-button type="danger" text @click="removeRule(row)">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -410,7 +588,7 @@
     <el-dialog
       v-model="cashDialog.visible"
       :title="cashDialog.id ? '编辑现金事件' : '新增现金事件'"
-      width="600px"
+      width="560px"
     >
       <el-form ref="cashFormRef" :model="cashForm" :rules="cashRules" label-width="100px">
         <el-form-item label="账户" prop="broker_account_id">
@@ -478,7 +656,7 @@
     <el-dialog
       v-model="snapshotDialog.visible"
       :title="snapshotDialog.id ? '编辑月末核对' : '新增月末核对'"
-      width="700px"
+      width="720px"
     >
       <el-alert
         title="根据券商月结单核对后，记录报表余额、核对状态和差异说明。"
@@ -491,7 +669,7 @@
         ref="snapshotFormRef"
         :model="snapshotForm"
         :rules="snapshotRules"
-        label-width="110px"
+        label-width="100px"
       >
         <el-form-item label="账户" prop="broker_account_id">
           <el-select v-model="snapshotForm.broker_account_id" placeholder="选择账户">
@@ -656,30 +834,106 @@
       </el-descriptions>
     </el-drawer>
 
-    <el-dialog v-model="exclusionDialog.visible" title="新增排除标的" width="420px">
-      <el-form
-        ref="exclusionFormRef"
-        :model="exclusionForm"
-        :rules="exclusionRules"
-        label-width="80px"
-      >
-        <el-form-item label="代码" prop="symbol">
-          <el-input v-model="exclusionForm.symbol" placeholder="如 511880" />
+    <el-dialog v-model="ruleDialog.visible" title="新增特例规则" width="560px">
+      <el-form ref="ruleFormRef" :model="ruleForm" :rules="ruleRules" label-width="100px">
+        <el-form-item label="规则类型" prop="rule_type">
+          <el-select v-model="ruleForm.rule_type">
+            <el-option
+              v-for="item in ruleTypeOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
+          <div class="rule-type-hint">{{ ruleTypeHint(ruleForm.rule_type) }}</div>
         </el-form-item>
-        <el-form-item label="市场" prop="market">
-          <el-select v-model="exclusionForm.market" style="width: 100%">
+
+        <el-form-item
+          :label="ruleForm.rule_type === 'CMB_CASH_BUSINESS' ? '业务名' : '代码'"
+          prop="symbol"
+        >
+          <el-input
+            v-model="ruleForm.symbol"
+            :placeholder="
+              ruleForm.rule_type === 'CMB_CASH_BUSINESS' ? '如 招现宝收益' : '如 511880'
+            "
+          />
+        </el-form-item>
+        <el-form-item v-if="ruleForm.rule_type !== 'CMB_CASH_BUSINESS'" label="市场" prop="market">
+          <el-select v-model="ruleForm.market">
             <el-option v-for="m in marketOptions" :key="m" :label="m" :value="m" />
           </el-select>
         </el-form-item>
+
+        <template v-if="ruleForm.rule_type === 'RELISTING'">
+          <el-form-item label="旧币种" prop="old_currency">
+            <el-select v-model="ruleForm.old_currency">
+              <el-option v-for="c in currencyOptions" :key="c" :label="c" :value="c" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="新代码" prop="new_symbol">
+            <el-input v-model="ruleForm.new_symbol" placeholder="如 PCT" />
+          </el-form-item>
+          <el-form-item label="新市场" prop="new_market">
+            <el-select v-model="ruleForm.new_market">
+              <el-option v-for="m in marketOptions" :key="m" :label="m" :value="m" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="新币种" prop="new_currency">
+            <el-select v-model="ruleForm.new_currency">
+              <el-option v-for="c in currencyOptions" :key="c" :label="c" :value="c" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="名称">
+            <el-input v-model="ruleForm.name" placeholder="转板后标的名称，如 柏能集团" />
+          </el-form-item>
+        </template>
+
+        <el-form-item v-if="ruleForm.rule_type === 'NAME_OVERRIDE'" label="名称" prop="name">
+          <el-input v-model="ruleForm.name" placeholder="覆盖显示的标的名称" />
+        </el-form-item>
+
+        <template v-if="ruleForm.rule_type === 'PRICE_GAP_EXEMPTION'">
+          <el-form-item label="开始日期" prop="start_date">
+            <el-date-picker
+              v-model="ruleForm.start_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="缺口开始日"
+            />
+          </el-form-item>
+          <el-form-item label="结束日期">
+            <el-date-picker
+              v-model="ruleForm.end_date"
+              type="date"
+              value-format="YYYY-MM-DD"
+              placeholder="留空表示至今"
+            />
+          </el-form-item>
+        </template>
+
+        <el-form-item
+          v-if="ruleForm.rule_type === 'CMB_CASH_BUSINESS'"
+          label="事件类型"
+          prop="event_type"
+        >
+          <el-select v-model="ruleForm.event_type">
+            <el-option
+              v-for="item in cmbEventTypeOptions"
+              :key="item.value"
+              :label="`${item.label}（${item.value}）`"
+              :value="item.value"
+            />
+          </el-select>
+        </el-form-item>
+
         <el-form-item label="备注">
-          <el-input v-model="exclusionForm.note" placeholder="如 货币基金，专注股票投资回报" />
+          <el-input v-model="ruleForm.note" placeholder="如 货币基金，专注股票投资回报" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="exclusionDialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="exclusionDialog.saving" @click="saveExclusion">
-          保存
-        </el-button>
+        <el-button @click="ruleDialog.visible = false">取消</el-button>
+        <el-button type="primary" :loading="ruleDialog.saving" @click="saveRule">保存</el-button>
       </template>
     </el-dialog>
 
@@ -697,7 +951,7 @@
 
         <h4>持仓比对</h4>
         <el-table :data="diffDialog.row.diff_detail?.positions || []" size="small" stripe>
-          <template #empty><el-empty description="无持仓数据" :image-size="60" /></template>
+          <template #empty><el-empty description="无持仓数据" :image-size="88" /></template>
           <el-table-column prop="symbol" label="代码" width="110" />
           <el-table-column prop="market" label="市场" width="90" />
           <el-table-column label="快照数量" width="110" align="right">
@@ -723,7 +977,7 @@
           title="分范围对账单的现金余额只属于该报表范围，不与账户级推导现金比对。"
         />
         <el-table v-else :data="diffDialog.row.diff_detail?.cash || []" size="small" stripe>
-          <template #empty><el-empty description="无现金数据" :image-size="60" /></template>
+          <template #empty><el-empty description="无现金数据" :image-size="88" /></template>
           <el-table-column prop="currency" label="币种" width="90" />
           <el-table-column prop="snapshot_balance" label="快照余额" width="130" align="right" />
           <el-table-column prop="derived_balance" label="推导余额" width="130" align="right" />
@@ -740,7 +994,7 @@
           <h4>账户归属矛盾</h4>
           <ul class="diff-notes">
             <li
-              v-for="item in diffDialog.row.diff_detail.replay_inconsistent"
+              v-for="item in diffDialog.row.diff_detail?.replay_inconsistent || []"
               :key="`${item.symbol}-${item.market}`"
             >
               {{ item.symbol }}（{{ item.market }}）：{{ item.reason }}
@@ -765,50 +1019,174 @@
   </div>
 </template>
 
-<script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, type Ref } from 'vue'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { CircleCheck, Coin, Files, Plus, Refresh, Remove, Wallet } from '@element-plus/icons-vue'
 import api from '@/api'
 import { getApiErrorMessage } from '@/utils/apiErrors'
-import { formatDate, formatDateTime, formatNumber } from '@/utils/helpers'
+import { formatDate, formatDateTime, formatNumber, todayLocalISODate } from '@/utils/helpers'
+import { formatLocalDate } from '@/utils/dateRange'
+import { useMediaQuery } from '@/composables/useMediaQuery'
 
-const localDateString = (date) =>
-  [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, '0'),
-    String(date.getDate()).padStart(2, '0')
-  ].join('-')
-const today = () => localDateString(new Date())
+interface AccountRow {
+  id: number
+  account_name?: string
+  name?: string
+  broker?: string
+  broker_name?: string
+  account_number_masked?: string
+  base_currency?: string
+  is_active?: boolean
+  notes?: string
+  [key: string]: unknown
+}
+
+interface CashEventRow {
+  id: number
+  broker_account_id?: number | null
+  account_id?: number | null
+  event_date?: string
+  occurred_at?: string
+  event_type?: string
+  amount?: number | string | null
+  currency?: string | null
+  notes?: string | null
+  [key: string]: unknown
+}
+
+interface ImportBatchRow {
+  id: number
+  broker_account_id?: number | null
+  account_id?: number | null
+  created_at?: string
+  imported_at?: string
+  period_start?: string
+  period_end?: string
+  statement_start_date?: string
+  statement_end_date?: string
+  status?: string
+  source_filename?: string | null
+  original_filename?: string | null
+  source_type?: string | null
+  parser_name?: string | null
+  parser_version?: string | null
+  source_sha256?: string | null
+  file_sha256?: string | null
+  row_count?: number | null
+  total_rows?: number | null
+  archived_count?: number | null
+  imported_count?: number | null
+  duplicate_count?: number | null
+  skipped_count?: number | null
+  error_count?: number | null
+  error_message?: string | null
+  [key: string]: unknown
+}
+
+interface DiffDetail {
+  positions?: Array<Record<string, unknown>>
+  cash?: Array<Record<string, unknown>>
+  summary?: { cash_compared?: boolean; [key: string]: unknown }
+  replay_inconsistent?: Array<{ symbol?: string; market?: string; reason?: string }>
+  methodology_notes?: string[]
+  [key: string]: unknown
+}
+
+interface SnapshotRow {
+  id: number
+  broker_account_id?: number | null
+  account_id?: number | null
+  snapshot_date?: string
+  source_filename?: string | null
+  cash_balances?: unknown
+  reported_cash?: unknown
+  positions?: unknown
+  reported_positions?: unknown
+  status?: string
+  statement_scope?: string | null
+  diff_detail?: DiffDetail | null
+  compared_at?: string | null
+  notes?: string | null
+  [key: string]: unknown
+}
+
+interface SecurityRuleRow {
+  id: number
+  rule_type: string
+  symbol: string
+  market: string | null
+  payload: Record<string, unknown> | null
+  note: string | null
+  created_at: string
+  [key: string]: unknown
+}
+
+interface SnapshotCashRowInput {
+  currency: string
+  amount: number
+}
+
+interface SnapshotPositionRowInput {
+  symbol: string
+  market: string
+  quantity: number
+  currency?: string | null
+  [key: string]: unknown
+}
+
+interface DialogState {
+  visible: boolean
+  id: number | null
+  saving: boolean
+}
+
+const today = () => todayLocalISODate()
 const monthEnd = () => {
   const now = new Date()
-  return localDateString(new Date(now.getFullYear(), now.getMonth(), 0))
+  return formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 0))
 }
-const rowsFrom = (payload) => {
-  const data = payload?.data ?? payload
-  return Array.isArray(data) ? data : data?.items || data?.results || []
+const rowsFrom = <T,>(payload: unknown): T[] => {
+  const data = (payload as { data?: unknown } | null | undefined)?.data ?? payload
+  if (Array.isArray(data)) return data as T[]
+  const container = data as { items?: T[]; results?: T[] } | null | undefined
+  return container?.items || container?.results || []
 }
 
+const isMobileView = useMediaQuery('(max-width: 640px)')
 const activeTab = ref('accounts')
-const accounts = ref([])
-const cashEvents = ref([])
-const importBatches = ref([])
-const snapshots = ref([])
-const exclusions = ref([])
+const accounts = ref<AccountRow[]>([])
+const cashEvents = ref<CashEventRow[]>([])
+const importBatches = ref<ImportBatchRow[]>([])
+const snapshots = ref<SnapshotRow[]>([])
+const securityRules = ref<SecurityRuleRow[]>([])
 const refreshing = ref(false)
 const loading = reactive({
   accounts: false,
   cash: false,
   batches: false,
   snapshots: false,
-  exclusions: false
+  rules: false
 })
 const batchDrawerVisible = ref(false)
-const selectedBatch = ref(null)
+const selectedBatch = ref<ImportBatchRow | null>(null)
 
 const brokerOptions = ['招商证券', '东方财富证券', 'IBKR', '汇丰香港']
 const currencyOptions = ['CNY', 'HKD', 'USD', 'SGD']
-const marketOptions = ['A股', 'B股', '港股', '美股', '新加坡股']
+// 与后端 VALID_MARKETS 对齐（快照持仓行与特例规则表单共用）
+const marketOptions = ['A股', 'B股', '港股', '美股', '新加坡股', '加密货币']
+// CMB 业务映射可选事件类型：不含 FX_IN/FX_OUT（IBKR 外汇兑换专用，
+// CMB 方向校验不认识，后端 CMB_ALLOWED_EVENT_TYPES 同步拒绝）
+const cmbEventTypeOptions = [
+  { label: '入金', value: 'DEPOSIT' },
+  { label: '出金', value: 'WITHDRAWAL' },
+  { label: '利息', value: 'INTEREST' },
+  { label: '费用', value: 'FEE' },
+  { label: '税费', value: 'TAX' },
+  { label: '转入', value: 'TRANSFER_IN' },
+  { label: '转出', value: 'TRANSFER_OUT' },
+  { label: '其他', value: 'OTHER' }
+]
 const cashTypeOptions = [
   { label: '入金', value: 'DEPOSIT' },
   { label: '出金', value: 'WITHDRAWAL' },
@@ -822,46 +1200,137 @@ const cashTypeOptions = [
   { label: '其他', value: 'OTHER' }
 ]
 
-const accountDialog = reactive({ visible: false, id: null, saving: false })
-const cashDialog = reactive({ visible: false, id: null, saving: false })
-const snapshotDialog = reactive({ visible: false, id: null, saving: false })
-const exclusionDialog = reactive({ visible: false, saving: false })
-const accountFormRef = ref()
-const cashFormRef = ref()
-const snapshotFormRef = ref()
-const exclusionFormRef = ref()
-const accountForm = reactive({})
-const cashForm = reactive({})
-const snapshotForm = reactive({})
-const exclusionForm = reactive({ symbol: '', market: 'A股', note: '' })
-const exclusionRules = {
-  symbol: [{ required: true, message: '请输入证券代码', trigger: 'blur' }],
-  market: [{ required: true, message: '请选择市场', trigger: 'change' }]
+const accountDialog = reactive<DialogState>({ visible: false, id: null, saving: false })
+const cashDialog = reactive<DialogState>({ visible: false, id: null, saving: false })
+const snapshotDialog = reactive<DialogState>({ visible: false, id: null, saving: false })
+const ruleDialog = reactive({ visible: false, saving: false })
+const accountFormRef = ref<FormInstance>()
+const cashFormRef = ref<FormInstance>()
+const snapshotFormRef = ref<FormInstance>()
+const ruleFormRef = ref<FormInstance>()
+const accountForm = reactive<{
+  account_name?: string
+  broker?: string
+  account_number_masked?: string
+  base_currency?: string
+  is_active?: boolean
+  notes?: string
+}>({})
+const cashForm = reactive<{
+  broker_account_id?: number | null
+  event_date?: string
+  event_type?: string
+  amount?: number | null
+  currency?: string
+  notes?: string
+}>({})
+const snapshotForm = reactive<{
+  broker_account_id?: number | null
+  snapshot_date?: string
+  source_filename?: string
+  cashRows: SnapshotCashRowInput[]
+  positionRows: SnapshotPositionRowInput[]
+  notes?: string
+}>({ cashRows: [], positionRows: [] })
+// 六类特例规则：一个表单承载全部字段，按 rule_type 动态显示与校验
+const RULE_TYPE_LABELS: Record<string, string> = {
+  EXCLUDE: '排除标的',
+  CASH_MANAGEMENT: '现金管理标的',
+  RELISTING: '转板映射',
+  NAME_OVERRIDE: '名称覆盖',
+  PRICE_GAP_EXEMPTION: '行情缺口豁免',
+  CMB_CASH_BUSINESS: '招商现金业务'
 }
-const diffDialog = reactive({ visible: false, row: null })
-const comparingSnapshotId = ref(null)
+const ruleTypeOptions = Object.entries(RULE_TYPE_LABELS).map(([value, label]) => ({ value, label }))
+const RULE_TYPE_HINTS: Record<string, string> = {
+  EXCLUDE: '导入只归档不入账，对账比对双侧忽略该标的（高影响：现金/收益都不再计入）',
+  CASH_MANAGEMENT: '并非排除：该标的的"产品红利发放"按利息（INTEREST）入账，而不是股息',
+  RELISTING: '旧标的退市转新市场重新上市，导入时自动生成转换交易',
+  NAME_OVERRIDE: '行情源查不到名称时使用的手工显示名',
+  PRICE_GAP_EXEMPTION: '该区间行情永久缺失（停牌-摘牌等），历史同步跳过且不计失败',
+  CMB_CASH_BUSINESS: '招商对账单业务名 → 现金事件类型的入账口径'
+}
+const ruleTypeHint = (type: string) => RULE_TYPE_HINTS[type] || ''
+const ruleTypeLabel = (type: string) => RULE_TYPE_LABELS[type] || type
+const ruleTypeTag = (type: string) =>
+  (
+    ({
+      EXCLUDE: 'danger',
+      CASH_MANAGEMENT: 'warning',
+      RELISTING: 'primary',
+      NAME_OVERRIDE: 'success'
+    }) as Record<string, 'danger' | 'warning' | 'primary' | 'success'>
+  )[type] || 'info'
+const ruleFilters = reactive<{ ruleType: string }>({ ruleType: '' })
+const ruleForm = reactive({
+  rule_type: 'EXCLUDE',
+  symbol: '',
+  market: 'A股',
+  note: '',
+  // RELISTING
+  old_currency: '',
+  new_symbol: '',
+  new_market: '',
+  new_currency: '',
+  // RELISTING / NAME_OVERRIDE
+  name: '',
+  // PRICE_GAP_EXEMPTION
+  start_date: '',
+  end_date: '',
+  // CMB_CASH_BUSINESS
+  event_type: ''
+})
+const ruleRules = computed<FormRules>(() => {
+  const isCmb = ruleForm.rule_type === 'CMB_CASH_BUSINESS'
+  const rules: FormRules = {
+    rule_type: [{ required: true, message: '请选择规则类型', trigger: 'change' }],
+    symbol: [
+      { required: true, message: isCmb ? '请输入业务名' : '请输入证券代码', trigger: 'blur' }
+    ]
+  }
+  if (!isCmb) rules.market = [{ required: true, message: '请选择市场', trigger: 'change' }]
+  if (ruleForm.rule_type === 'RELISTING') {
+    rules.old_currency = [{ required: true, message: '请选择旧币种', trigger: 'change' }]
+    rules.new_symbol = [{ required: true, message: '请输入新代码', trigger: 'blur' }]
+    rules.new_market = [{ required: true, message: '请选择新市场', trigger: 'change' }]
+    rules.new_currency = [{ required: true, message: '请选择新币种', trigger: 'change' }]
+  }
+  if (ruleForm.rule_type === 'NAME_OVERRIDE')
+    rules.name = [{ required: true, message: '请输入覆盖名称', trigger: 'blur' }]
+  if (ruleForm.rule_type === 'PRICE_GAP_EXEMPTION')
+    rules.start_date = [{ required: true, message: '请选择开始日期', trigger: 'change' }]
+  if (isCmb) rules.event_type = [{ required: true, message: '请选择事件类型', trigger: 'change' }]
+  return rules
+})
+const diffDialog = reactive<{ visible: boolean; row: SnapshotRow | null }>({
+  visible: false,
+  row: null
+})
+const comparingSnapshotId = ref<number | null>(null)
 
-const DIFF_ITEM_LABELS = {
+const DIFF_ITEM_LABELS: Record<string, string> = {
   MATCH: '一致',
   QUANTITY_MISMATCH: '数量差',
   MISSING_IN_SYSTEM: '系统缺记录',
   MISSING_IN_SNAPSHOT: '快照缺记录'
 }
 
-const diffItemLabel = (status) => DIFF_ITEM_LABELS[status] || status
-const diffItemTag = (status) => (status === 'MATCH' ? 'success' : 'danger')
+const diffItemLabel = (status: string) => DIFF_ITEM_LABELS[status] || status
+const diffItemTag = (status: string) => (status === 'MATCH' ? 'success' : 'danger')
 
-function openDiffDialog(row) {
+function openDiffDialog(row: SnapshotRow) {
   diffDialog.row = row
   diffDialog.visible = true
 }
 
-async function compareSnapshot(row) {
+async function compareSnapshot(row: SnapshotRow) {
   comparingSnapshotId.value = row.id
   try {
     const response = await api.compareReconciliationSnapshot(row.id)
     ElMessage.success(
-      response.data.status === 'MATCHED' ? '比对一致' : '比对发现差异，点击状态查看明细'
+      response.data.status === 'MATCHED'
+        ? snapshotStatusLabel(response.data)
+        : '比对发现差异，点击状态查看明细'
     )
     await loadSnapshots()
   } catch (error) {
@@ -870,7 +1339,10 @@ async function compareSnapshot(row) {
     comparingSnapshotId.value = null
   }
 }
-const cashFilters = reactive({ accountId: null, eventType: '' })
+const cashFilters = reactive<{ accountId: number | null; eventType: string }>({
+  accountId: null,
+  eventType: ''
+})
 
 const accountRules = {
   account_name: [{ required: true, message: '请输入账户名称', trigger: 'blur' }],
@@ -889,12 +1361,12 @@ const snapshotRules = {
   snapshot_date: [{ required: true, message: '请选择日期', trigger: 'change' }]
 }
 
-const accountName = (account) =>
+const accountName = (account: AccountRow | null | undefined) =>
   account?.account_name ||
   account?.name ||
   [account?.broker, account?.account_number_masked].filter(Boolean).join(' ') ||
   '未命名账户'
-const accountLabel = (id) => {
+const accountLabel = (id: unknown) => {
   const account = accounts.value.find((item) => String(item.id) === String(id))
   return account ? accountName(account) : '未关联账户'
 }
@@ -909,7 +1381,7 @@ const latestBatchDate = computed(() => {
     .map((item) => item.created_at || item.imported_at)
     .filter(Boolean)
     .sort()
-  return dates.length ? formatDate(dates.at(-1)) : '尚无'
+  return dates.length ? formatDate(dates[dates.length - 1]) : '尚无'
 })
 const filteredCashEvents = computed(() =>
   cashEvents.value.filter((item) => {
@@ -921,7 +1393,7 @@ const filteredCashEvents = computed(() =>
   })
 )
 
-function resetAccountForm(row = {}) {
+function resetAccountForm(row: Partial<AccountRow> = {}) {
   Object.assign(accountForm, {
     account_name: row.account_name || row.name || '',
     broker: row.broker || row.broker_name || '',
@@ -932,7 +1404,7 @@ function resetAccountForm(row = {}) {
   })
 }
 
-function resetCashForm(row = {}) {
+function resetCashForm(row: Partial<CashEventRow> = {}) {
   Object.assign(cashForm, {
     broker_account_id: row.broker_account_id || row.account_id || accounts.value[0]?.id || null,
     event_date: (row.event_date || row.occurred_at || today()).slice(0, 10),
@@ -947,7 +1419,7 @@ function resetCashForm(row = {}) {
   })
 }
 
-function resetSnapshotForm(row = {}) {
+function resetSnapshotForm(row: Partial<SnapshotRow> = {}) {
   const cashBalances = normalizeJson(row.cash_balances || row.reported_cash, {})
   const positions = normalizeJson(row.positions || row.reported_positions, [])
   Object.assign(snapshotForm, {
@@ -961,7 +1433,10 @@ function resetSnapshotForm(row = {}) {
         }))
       : [{ currency: 'CNY', amount: 0 }],
     positionRows: Array.isArray(positions)
-      ? positions.map((item) => ({ ...item, quantity: Number(item.quantity) }))
+      ? positions.map((item: SnapshotPositionRowInput) => ({
+          ...item,
+          quantity: Number(item.quantity)
+        }))
       : [],
     notes: row.notes || ''
   })
@@ -982,115 +1457,161 @@ function addPositionRow() {
   })
 }
 
-function openAccountDialog(row) {
+function openAccountDialog(row?: AccountRow) {
   accountDialog.id = row?.id || null
   resetAccountForm(row)
   accountDialog.visible = true
 }
 
-function openCashDialog(row) {
+function openCashDialog(row?: CashEventRow) {
   cashDialog.id = row?.id || null
   resetCashForm(row)
   cashDialog.visible = true
 }
 
-function openSnapshotDialog(row) {
+function openSnapshotDialog(row?: SnapshotRow) {
   snapshotDialog.id = row?.id || null
   resetSnapshotForm(row)
   snapshotDialog.visible = true
 }
 
-async function loadAccounts() {
-  loading.accounts = true
-  try {
-    accounts.value = rowsFrom(await api.getBrokerAccounts())
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '账户加载失败'))
-  } finally {
-    loading.accounts = false
+// 列表加载工厂：loading 键 + 目标 ref + 拉取函数 + 失败文案，形状完全一致
+function makeLoader<T>(
+  loadingKey: keyof typeof loading,
+  target: Ref<T[]>,
+  fetcher: () => Promise<unknown>,
+  failureMessage: string
+) {
+  return async () => {
+    loading[loadingKey] = true
+    try {
+      target.value = rowsFrom<T>(await fetcher())
+    } catch (error) {
+      ElMessage.error(getApiErrorMessage(error, failureMessage))
+    } finally {
+      loading[loadingKey] = false
+    }
   }
 }
 
-async function loadCashEvents() {
-  loading.cash = true
+const loadAccounts = makeLoader('accounts', accounts, () => api.getBrokerAccounts(), '账户加载失败')
+const loadCashEvents = makeLoader(
+  'cash',
+  cashEvents,
+  () => api.getCashEvents({ limit: 1000 }),
+  '现金事件加载失败'
+)
+const loadImportBatches = makeLoader(
+  'batches',
+  importBatches,
+  () => api.getImportBatches({ limit: 1000 }),
+  '导入批次加载失败'
+)
+const loadSnapshots = makeLoader(
+  'snapshots',
+  snapshots,
+  () => api.getReconciliationSnapshots({ limit: 1000 }),
+  '月末核对加载失败'
+)
+// 筛选切换是竞态高发区：慢的旧响应不得覆盖新筛选的结果——捕获请求
+// 令牌，只接纳仍是最新请求的响应（含 loading 归位与错误提示）
+let rulesRequestToken = 0
+async function loadSecurityRules() {
+  rulesRequestToken += 1
+  const token = rulesRequestToken
+  const requestedType = ruleFilters.ruleType
+  loading.rules = true
   try {
-    cashEvents.value = rowsFrom(await api.getCashEvents({ limit: 1000 }))
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '现金事件加载失败'))
-  } finally {
-    loading.cash = false
-  }
-}
-
-async function loadImportBatches() {
-  loading.batches = true
-  try {
-    importBatches.value = rowsFrom(await api.getImportBatches({ limit: 1000 }))
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '导入批次加载失败'))
-  } finally {
-    loading.batches = false
-  }
-}
-
-async function loadSnapshots() {
-  loading.snapshots = true
-  try {
-    snapshots.value = rowsFrom(await api.getReconciliationSnapshots({ limit: 1000 }))
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '月末核对加载失败'))
-  } finally {
-    loading.snapshots = false
-  }
-}
-
-async function loadExclusions() {
-  loading.exclusions = true
-  try {
-    exclusions.value = rowsFrom(await api.getExcludedSecurities())
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '排除清单加载失败'))
-  } finally {
-    loading.exclusions = false
-  }
-}
-
-function openExclusionDialog() {
-  Object.assign(exclusionForm, { symbol: '', market: 'A股', note: '' })
-  exclusionDialog.visible = true
-}
-
-async function saveExclusion() {
-  if (!(await exclusionFormRef.value?.validate().catch(() => false))) return
-  exclusionDialog.saving = true
-  try {
-    await api.createExcludedSecurity({ ...exclusionForm })
-    ElMessage.success('已加入排除清单；导入与对账比对将忽略该标的')
-    exclusionDialog.visible = false
-    await loadExclusions()
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '排除标的保存失败'))
-  } finally {
-    exclusionDialog.saving = false
-  }
-}
-
-async function removeExclusion(row) {
-  try {
-    await ElMessageBox.confirm(
-      `移出排除清单后，${row.symbol} 在后续导入时会重新入账。确认移出？`,
-      '移出排除清单',
-      { type: 'warning' }
+    const response = await api.getSecurityRules(
+      requestedType ? { rule_type: requestedType } : undefined
     )
-  } catch {
-    return
-  }
-  try {
-    await api.deleteExcludedSecurity(row.id)
-    ElMessage.success('已移出排除清单')
-    await loadExclusions()
+    if (token !== rulesRequestToken) return
+    securityRules.value = rowsFrom<SecurityRuleRow>(response)
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '移出失败'))
+    if (token !== rulesRequestToken) return
+    ElMessage.error(getApiErrorMessage(error, '特例规则加载失败'))
+  } finally {
+    if (token === rulesRequestToken) loading.rules = false
+  }
+}
+
+// 摘要列：把 payload 压成一行可读文本，按类型各取要点
+function ruleSummary(row: SecurityRuleRow): string {
+  const payload = row.payload || {}
+  switch (row.rule_type) {
+    case 'RELISTING':
+      return `→ ${payload.new_symbol} ${payload.new_market} ${payload.new_currency}`
+    case 'NAME_OVERRIDE':
+      return String(payload.name ?? '—')
+    case 'PRICE_GAP_EXEMPTION':
+      return `${payload.start_date} ~ ${payload.end_date || '至今'}`
+    case 'CMB_CASH_BUSINESS':
+      return `→ ${payload.event_type}`
+    default:
+      return '—'
+  }
+}
+
+function openRuleDialog() {
+  Object.assign(ruleForm, {
+    rule_type: ruleFilters.ruleType || 'EXCLUDE',
+    symbol: '',
+    market: 'A股',
+    note: '',
+    old_currency: '',
+    new_symbol: '',
+    new_market: '',
+    new_currency: '',
+    name: '',
+    start_date: '',
+    end_date: '',
+    event_type: ''
+  })
+  ruleDialog.visible = true
+}
+
+function buildRulePayload(): Record<string, unknown> | null {
+  switch (ruleForm.rule_type) {
+    case 'RELISTING': {
+      const payload: Record<string, unknown> = {
+        new_symbol: ruleForm.new_symbol.trim(),
+        new_market: ruleForm.new_market,
+        new_currency: ruleForm.new_currency,
+        old_currency: ruleForm.old_currency
+      }
+      if (ruleForm.name.trim()) payload.name = ruleForm.name.trim()
+      return payload
+    }
+    case 'NAME_OVERRIDE':
+      return { name: ruleForm.name.trim() }
+    case 'PRICE_GAP_EXEMPTION':
+      return { start_date: ruleForm.start_date, end_date: ruleForm.end_date || null }
+    case 'CMB_CASH_BUSINESS':
+      return { event_type: ruleForm.event_type }
+    default:
+      // EXCLUDE / CASH_MANAGEMENT 不携带 payload
+      return null
+  }
+}
+
+async function saveRule() {
+  if (!(await ruleFormRef.value?.validate().catch(() => false))) return
+  ruleDialog.saving = true
+  try {
+    await api.createSecurityRule({
+      rule_type: ruleForm.rule_type,
+      symbol: ruleForm.symbol.trim(),
+      market: ruleForm.rule_type === 'CMB_CASH_BUSINESS' ? null : ruleForm.market,
+      payload: buildRulePayload(),
+      note: ruleForm.note.trim() || null
+    })
+    ElMessage.success('特例规则已创建，导入、对账与行情将按规则处理')
+    ruleDialog.visible = false
+    await loadSecurityRules()
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '特例规则保存失败'))
+  } finally {
+    ruleDialog.saving = false
   }
 }
 
@@ -1101,44 +1622,66 @@ async function refreshAll() {
     loadCashEvents(),
     loadImportBatches(),
     loadSnapshots(),
-    loadExclusions()
+    loadSecurityRules()
   ])
   refreshing.value = false
 }
 
-async function saveAccount() {
-  if (!(await accountFormRef.value?.validate().catch(() => false))) return
-  accountDialog.saving = true
-  try {
-    const payload = { ...accountForm }
-    if (accountDialog.id) await api.updateBrokerAccount(accountDialog.id, payload)
-    else await api.createBrokerAccount(payload)
-    ElMessage.success(accountDialog.id ? '账户已更新' : '账户已新增')
-    accountDialog.visible = false
-    await loadAccounts()
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '账户保存失败'))
-  } finally {
-    accountDialog.saving = false
+// 表单保存工厂：校验 → 创建/更新 → 按分支提示 → 关窗重载（快照另有专属校验，不并入）
+function makeSaver({
+  formRef,
+  dialog,
+  buildPayload,
+  update,
+  create,
+  messages,
+  reload
+}: {
+  formRef: Ref<FormInstance | undefined>
+  dialog: DialogState
+  buildPayload: () => Record<string, unknown>
+  update: (id: number, payload: Record<string, unknown>) => Promise<unknown>
+  create: (payload: Record<string, unknown>) => Promise<unknown>
+  messages: { updated: string; created: string; failure: string }
+  reload: () => Promise<unknown>
+}) {
+  return async () => {
+    if (!(await formRef.value?.validate().catch(() => false))) return
+    dialog.saving = true
+    try {
+      const payload = buildPayload()
+      if (dialog.id) await update(dialog.id, payload)
+      else await create(payload)
+      ElMessage.success(dialog.id ? messages.updated : messages.created)
+      dialog.visible = false
+      await reload()
+    } catch (error) {
+      ElMessage.error(getApiErrorMessage(error, messages.failure))
+    } finally {
+      dialog.saving = false
+    }
   }
 }
 
-async function saveCashEvent() {
-  if (!(await cashFormRef.value?.validate().catch(() => false))) return
-  cashDialog.saving = true
-  try {
-    const payload = { ...cashForm }
-    if (cashDialog.id) await api.updateCashEvent(cashDialog.id, payload)
-    else await api.createCashEvent(payload)
-    ElMessage.success(cashDialog.id ? '现金事件已更新' : '现金事件已新增')
-    cashDialog.visible = false
-    await loadCashEvents()
-  } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '现金事件保存失败'))
-  } finally {
-    cashDialog.saving = false
-  }
-}
+const saveAccount = makeSaver({
+  formRef: accountFormRef,
+  dialog: accountDialog,
+  buildPayload: () => ({ ...accountForm }),
+  update: (id, payload) => api.updateBrokerAccount(id, payload),
+  create: (payload) => api.createBrokerAccount(payload),
+  messages: { updated: '账户已更新', created: '账户已新增', failure: '账户保存失败' },
+  reload: () => loadAccounts()
+})
+
+const saveCashEvent = makeSaver({
+  formRef: cashFormRef,
+  dialog: cashDialog,
+  buildPayload: () => ({ ...cashForm }),
+  update: (id, payload) => api.updateCashEvent(id, payload),
+  create: (payload) => api.createCashEvent(payload),
+  messages: { updated: '现金事件已更新', created: '现金事件已新增', failure: '现金事件保存失败' },
+  reload: () => loadCashEvents()
+})
 
 async function saveSnapshot() {
   if (!(await snapshotFormRef.value?.validate().catch(() => false))) return
@@ -1185,7 +1728,7 @@ async function saveSnapshot() {
   }
 }
 
-async function confirmDelete(title, message) {
+async function confirmDelete(title: string, message: string) {
   await ElMessageBox.confirm(message, title, {
     type: 'warning',
     confirmButtonText: '删除',
@@ -1193,46 +1736,77 @@ async function confirmDelete(title, message) {
   })
 }
 
-async function removeAccount(row) {
-  try {
-    await confirmDelete(
-      '删除账户',
-      `仅空账户可以删除。若“${accountName(row)}”已有交易或审计记录，请编辑账户并将其停用。`
-    )
-    await api.deleteBrokerAccount(row.id)
-    ElMessage.success('账户已删除')
-    await loadAccounts()
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close')
-      ElMessage.error(getApiErrorMessage(error, '账户删除失败'))
+// 删除处理工厂：确认 → 删除 → 成功提示 → 重载；message 支持函数以插入行数据
+function makeRemover<T>({
+  title,
+  message,
+  request,
+  successMessage,
+  failureMessage,
+  reload
+}: {
+  title: string
+  message: string | ((row: T) => string)
+  request: (row: T) => Promise<unknown>
+  successMessage: string
+  failureMessage: string
+  reload: () => Promise<unknown>
+}) {
+  return async (row: T) => {
+    try {
+      await confirmDelete(title, typeof message === 'function' ? message(row) : message)
+      await request(row)
+      ElMessage.success(successMessage)
+      await reload()
+    } catch (error) {
+      if (error !== 'cancel' && error !== 'close')
+        ElMessage.error(getApiErrorMessage(error, failureMessage))
+    }
   }
 }
 
-async function removeCashEvent(row) {
-  try {
-    await confirmDelete('删除现金事件', '该操作会影响后续账户收益校准，确认删除？')
-    await api.deleteCashEvent(row.id)
-    ElMessage.success('现金事件已删除')
-    await loadCashEvents()
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close')
-      ElMessage.error(getApiErrorMessage(error, '现金事件删除失败'))
-  }
-}
+const removeAccount = makeRemover<AccountRow>({
+  title: '删除账户',
+  message: (row) =>
+    `仅空账户可以删除。若“${accountName(row)}”已有交易或审计记录，请编辑账户并将其停用。`,
+  request: (row) => api.deleteBrokerAccount(row.id),
+  successMessage: '账户已删除',
+  failureMessage: '账户删除失败',
+  reload: () => loadAccounts()
+})
 
-async function removeSnapshot(row) {
-  try {
-    await confirmDelete('删除核对记录', '确认删除这条月末核对记录？')
-    await api.deleteReconciliationSnapshot(row.id)
-    ElMessage.success('核对记录已删除')
-    await loadSnapshots()
-  } catch (error) {
-    if (error !== 'cancel' && error !== 'close')
-      ElMessage.error(getApiErrorMessage(error, '核对记录删除失败'))
-  }
-}
+const removeCashEvent = makeRemover<CashEventRow>({
+  title: '删除现金事件',
+  message: '该操作会影响后续账户收益校准，确认删除？',
+  request: (row) => api.deleteCashEvent(row.id),
+  successMessage: '现金事件已删除',
+  failureMessage: '现金事件删除失败',
+  reload: () => loadCashEvents()
+})
 
-async function openBatchDetails(row) {
+const removeSnapshot = makeRemover<SnapshotRow>({
+  title: '删除核对记录',
+  message: '确认删除这条月末核对记录？',
+  request: (row) => api.deleteReconciliationSnapshot(row.id),
+  successMessage: '核对记录已删除',
+  failureMessage: '核对记录删除失败',
+  reload: () => loadSnapshots()
+})
+
+const removeRule = makeRemover<SecurityRuleRow>({
+  title: '删除特例规则',
+  // EXCLUDE 删除后果与旧排除清单一致：后续导入会重新入账，保留原警示
+  message: (row) =>
+    row.rule_type === 'EXCLUDE'
+      ? `移出排除清单后，${row.symbol} 在后续导入时会重新入账。确认移出？`
+      : `确认删除「${ruleTypeLabel(row.rule_type)}」规则 ${row.symbol}？删除后导入与统计不再应用该规则。`,
+  request: (row) => api.deleteSecurityRule(row.id),
+  successMessage: '特例规则已删除',
+  failureMessage: '特例规则删除失败',
+  reload: () => loadSecurityRules()
+})
+
+async function openBatchDetails(row: ImportBatchRow) {
   selectedBatch.value = row
   batchDrawerVisible.value = true
   try {
@@ -1243,68 +1817,74 @@ async function openBatchDetails(row) {
   }
 }
 
-const cashTypeLabel = (type) =>
+const cashTypeLabel = (type: string | undefined) =>
   cashTypeOptions.find((item) => item.value === type)?.label || type || '其他'
-const cashTypeTag = (type) => {
-  if (['DEPOSIT', 'INTEREST', 'TRANSFER_IN', 'FX_IN'].includes(type)) return 'success'
-  if (['WITHDRAWAL', 'FEE', 'TAX', 'TRANSFER_OUT', 'FX_OUT'].includes(type)) return 'warning'
+const cashTypeTag = (type: string | undefined) => {
+  if (['DEPOSIT', 'INTEREST', 'TRANSFER_IN', 'FX_IN'].includes(type || '')) return 'success'
+  if (['WITHDRAWAL', 'FEE', 'TAX', 'TRANSFER_OUT', 'FX_OUT'].includes(type || '')) return 'warning'
   return 'info'
 }
-const cashDirection = (row) =>
-  ['WITHDRAWAL', 'FEE', 'TAX', 'TRANSFER_OUT', 'FX_OUT'].includes(row.event_type) ? -1 : 1
-const signedAmount = (row) => {
+const cashDirection = (row: CashEventRow) =>
+  ['WITHDRAWAL', 'FEE', 'TAX', 'TRANSFER_OUT', 'FX_OUT'].includes(row.event_type || '') ? -1 : 1
+const signedAmount = (row: CashEventRow) => {
   const value = Math.abs(Number(row.amount || 0)) * cashDirection(row)
   const prefix = value > 0 ? '+' : ''
   return `${prefix}${formatNumber(value)} ${row.currency || ''}`
 }
-const amountClass = (row) => ({
+const amountClass = (row: CashEventRow) => ({
   'amount-positive': cashDirection(row) > 0,
   'amount-negative': cashDirection(row) < 0
 })
-const reportPeriod = (row) => {
+const reportPeriod = (row: ImportBatchRow) => {
   const start = row.period_start || row.statement_start_date
   const end = row.period_end || row.statement_end_date
   return start || end ? `${start || '?'} 至 ${end || '?'}` : '未声明报表区间'
 }
-const batchStatusLabel = (status) =>
-  ({
-    COMPLETED: '完成',
-    SUCCESS: '完成',
-    FAILED: '失败',
-    PARTIAL: '部分完成',
-    PROCESSING: '处理中',
-    PENDING: '等待中'
-  })[String(status).toUpperCase()] ||
+const batchStatusLabel = (status: string | undefined) =>
+  (
+    ({
+      COMPLETED: '完成',
+      SUCCESS: '完成',
+      FAILED: '失败',
+      PARTIAL: '部分完成',
+      PROCESSING: '处理中',
+      PENDING: '等待中'
+    }) as Record<string, string>
+  )[String(status).toUpperCase()] ||
   status ||
   '未知'
-const batchStatusTag = (status) => {
+const batchStatusTag = (status: string | undefined) => {
   const value = String(status).toUpperCase()
   if (['COMPLETED', 'SUCCESS'].includes(value)) return 'success'
   if (value === 'FAILED') return 'danger'
   if (value === 'PARTIAL') return 'warning'
   return 'info'
 }
-const snapshotStatusLabel = (row) => {
+const snapshotStatusLabel = (row: SnapshotRow | null | undefined) => {
   const status = String(row?.status || '').toUpperCase()
   // 分范围对账单不比对现金，绿色语义限定为"持仓一致"，避免误读为整体对账完成
   if (status === 'MATCHED' && row?.statement_scope) return '持仓一致'
   return (
-    {
-      PENDING: '待比对',
-      MATCHED: '比对一致',
-      MISMATCHED: '有差异'
-    }[status] ||
+    (
+      {
+        PENDING: '待比对',
+        MATCHED: '比对一致',
+        MISMATCHED: '有差异'
+      } as Record<string, string>
+    )[status] ||
     row?.status ||
     '待比对'
   )
 }
-const snapshotStatusTag = (status) => {
+const snapshotStatusTag = (status: string | undefined) => {
   const value = String(status).toUpperCase()
   if (value === 'MATCHED') return 'success'
   if (value === 'MISMATCHED') return 'danger'
   return 'warning'
 }
-const normalizeJson = (value, fallback) => {
+// 后端 JSON 字段可能以字符串形式返回，解析失败回退默认值；返回 any 供调用方按形状使用
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const normalizeJson = (value: unknown, fallback: unknown): any => {
   if (value == null) return fallback
   if (typeof value === 'string') {
     try {
@@ -1315,14 +1895,14 @@ const normalizeJson = (value, fallback) => {
   }
   return value
 }
-const jsonSummary = (value) => {
+const jsonSummary = (value: unknown) => {
   const data = normalizeJson(value, {})
   if (!data || Array.isArray(data) || typeof data !== 'object') return '-'
-  const entries = Object.entries(data)
+  const entries = Object.entries(data as Record<string, number | string>)
   if (!entries.length) return '-'
   return entries.map(([currency, amount]) => `${currency} ${formatNumber(amount)}`).join(' · ')
 }
-const positionSummary = (value) => {
+const positionSummary = (value: unknown) => {
   const data = normalizeJson(value, [])
   if (Array.isArray(data)) return data.length ? `${data.length} 个标的` : '-'
   if (data && typeof data === 'object') return `${Object.keys(data).length} 个标的`
@@ -1345,19 +1925,12 @@ onMounted(refreshAll)
   gap: 24px;
 }
 
-.eyebrow {
-  margin: 0 0 6px;
-  color: var(--app-primary);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-}
-
 .page-intro h1 {
   margin: 0;
   color: var(--app-text);
-  font-size: clamp(25px, 4vw, 34px);
-  letter-spacing: -0.04em;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .page-intro p:last-child,
@@ -1390,13 +1963,14 @@ onMounted(refreshAll)
 
 .summary-item strong {
   color: var(--app-text);
-  font-size: 25px;
-  letter-spacing: -0.04em;
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
 }
 
 .summary-item .summary-date {
   overflow: hidden;
-  font-size: 18px;
+  font-size: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1429,7 +2003,7 @@ onMounted(refreshAll)
 
 .section-toolbar h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   letter-spacing: -0.02em;
 }
 
@@ -1442,11 +2016,6 @@ onMounted(refreshAll)
   padding: 12px 16px 0;
   border-radius: var(--app-radius-inner);
   background: var(--app-surface-muted);
-}
-
-.responsive-table {
-  width: 100%;
-  overflow-x: auto;
 }
 
 .primary-cell {
@@ -1615,5 +2184,11 @@ onMounted(refreshAll)
   color: var(--app-text-muted);
   font-size: 13px;
   line-height: 1.7;
+}
+.rule-type-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
 }
 </style>

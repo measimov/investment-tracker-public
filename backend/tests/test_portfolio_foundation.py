@@ -19,10 +19,6 @@ from app.models.reconciliation_snapshot import ReconciliationSnapshot
 from app.models.transaction import Transaction
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
 
 def _headers(username: str) -> dict[str, str]:
     # Tokens must be backed by a server-side session since issue #36.

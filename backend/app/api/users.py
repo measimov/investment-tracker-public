@@ -91,26 +91,14 @@ def create_user(
     return UserSchema.model_validate(db_user)
 
 
+
 @router.get("/{user_id}", response_model=UserSchema)
 def get_user(
     user_id: int,
     current_user: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get user by ID (admin only).
-
-    Args:
-        user_id: User ID
-        current_user: Current admin user
-        db: Database session
-
-    Returns:
-        User information
-
-    Raises:
-        HTTPException: If user not found
-    """
+    """Get user by ID (admin only). 兼容保留：外部 API 客户端可能依赖。"""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(
@@ -118,7 +106,6 @@ def get_user(
             detail="User not found"
         )
     return UserSchema.model_validate(user)
-
 
 @router.put("/{user_id}", response_model=UserSchema)
 def update_user(

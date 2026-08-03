@@ -57,7 +57,6 @@ def rebuild_holdings() -> int:
     finally:
         db.close()
 
-
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()

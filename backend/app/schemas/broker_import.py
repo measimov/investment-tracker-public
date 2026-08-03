@@ -36,19 +36,23 @@ class BrokerImportResult(BaseModel):
     booked_source_rows: int = 0
     unbooked_source_rows: int = 0
     eligible_unbooked_source_rows: int = 0
-    claimable_unassigned_rows: int = 0
-    migrated_legacy_rows: int = 0
-    migrated_unassigned_rows: int = 0
     duplicate_rows: int
     skipped_non_trade_rows: int
     skipped_invalid_rows: int
     skipped_option_rows: int = 0
+    # IBKR：可入账的现金业务/外汇行（生成 CashEvent），与"跳过"分列展示
+    eligible_cash_event_rows: int = 0
+    eligible_fx_rows: int = 0
+    # 设计上有意只归档的行（如 IBKR「调整」纸面损益），预期跳过不拖批次状态
+    expected_archived_rows: int = 0
     skipped_fx_rows: int = 0
     skipped_cash_rows: int = 0
     skipped_unsupported_rows: int = 0
     skipped_conflict_rows: int = 0
     # 排除清单命中的行数：只归档不入账，预览时必须可见（高影响配置需事前核对）
     skipped_excluded_rows: int = 0
+    # 本批新增（非重复）的排除行：批次状态的预期跳过抵扣口径
+    excluded_unbooked_rows: int = 0
     affected_symbols: int
     date_start: Optional[str] = None
     date_end: Optional[str] = None

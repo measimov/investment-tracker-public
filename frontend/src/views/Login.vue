@@ -67,17 +67,17 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { User, Lock } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, type FormInstance } from 'element-plus'
 
 const router = useRouter()
 const authStore = useAuthStore()
 
-const loginFormRef = ref(null)
+const loginFormRef = ref<FormInstance | null>(null)
 const loading = ref(false)
 const errorMessage = ref('')
 

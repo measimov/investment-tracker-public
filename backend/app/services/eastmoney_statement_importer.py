@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import re
 from dataclasses import dataclass
@@ -19,7 +18,16 @@ from ..models.cash_event import CashEvent
 from ..models.corporate_action import CorporateAction
 from ..models.reconciliation_snapshot import ReconciliationSnapshot
 from ..models.transaction import Transaction
-from ..services.excluded_security_service import get_excluded_symbols
+from ..services import broker_import_common
+from ..services.broker_import_common import (
+    HASH_DUPLICATE_OCCURRENCE_FIELD,
+    find_dividend_for_tax,
+    normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间
+    parse_strict_decimal,
+    source_error_rows,
+    strip_text,
+)
+from ..services.security_rule_service import get_excluded_symbols
 from ..services.holding_service import recalculate_holdings
 from ..services.import_batch_service import (
     complete_import_batch,
@@ -117,10 +125,7 @@ LEGACY_HASH_FIELDS = [
     "transfer_fee",
     "cash_balance",
 ]
-HASH_DUPLICATE_OCCURRENCE_FIELD = "duplicate_occurrence"
-STRICT_DECIMAL_PATTERN = re.compile(r"^[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)$")
 AMOUNT_TOLERANCE = Decimal("0.02")
-SOURCE_ROW_ERROR_PATTERN = re.compile(r"^row (\d+):")
 ROW_HASH_NOTE_PATTERN = re.compile(r"\brow_hash=([0-9a-f]{64})\b")
 POSITION_REQUIRED_COLUMNS = {"证券代码", "证券名称", "持仓数量"}
 
@@ -239,21 +244,6 @@ class ParsedEastmoneyFlow:
         return self.total_fee / self.settlement_rate
 
 
-@dataclass
-class ExactSourceClaim:
-    flow: ParsedEastmoneyFlow
-    source: BrokerFundFlow
-    transaction: Optional[Transaction] = None
-    action: Optional[CorporateAction] = None
-    cash_event: Optional[CashEvent] = None
-
-
-def strip_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return str(value).replace("\ufeff", "").strip()
-
-
 def parse_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
     text = strip_text(value).replace(",", "")
     if not text or text == "--":
@@ -274,16 +264,6 @@ def parse_optional_decimal(value: Any) -> Optional[Decimal]:
         return None
 
 
-def parse_strict_decimal(value: Any) -> Optional[Decimal]:
-    text = strip_text(value)
-    if not text or not STRICT_DECIMAL_PATTERN.fullmatch(text):
-        return None
-    try:
-        return Decimal(text.replace(",", ""))
-    except InvalidOperation:
-        return None
-
-
 def parse_trade_date(value: Any) -> Optional[date]:
     text = strip_text(value)
     if not re.fullmatch(r"\d{8}", text):
@@ -294,20 +274,8 @@ def parse_trade_date(value: Any) -> Optional[date]:
         return None
 
 
-def normalize_hash_value(value: Any) -> str:
-    if isinstance(value, Decimal):
-        return format(value.normalize(), "f")
-    if isinstance(value, date):
-        return value.isoformat()
-    return strip_text(value)
-
-
 def calculate_row_hash(values: Dict[str, Any], *, fields: Optional[List[str]] = None) -> str:
-    fields = fields or HASH_FIELDS
-    if values.get(HASH_DUPLICATE_OCCURRENCE_FIELD):
-        fields = fields + [HASH_DUPLICATE_OCCURRENCE_FIELD]
-    payload = "|".join(normalize_hash_value(values.get(field, "")) for field in fields)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return broker_import_common.calculate_row_hash(values, fields or HASH_FIELDS)
 
 
 def infer_market(symbol: str) -> Optional[str]:
@@ -941,143 +909,6 @@ def _validate_corporate_action_source_aggregate(
         )
 
 
-def claim_unassigned_exact_sources(
-    db: Session,
-    *,
-    user_id: int,
-    broker_account_id: int,
-    flows: Iterable[ParsedEastmoneyFlow],
-    dry_run: bool = False,
-) -> set[str]:
-    """
-    Move exact pre-account source rows onto the selected account without
-    creating a second economic record.
-
-    A source is claimed only when its linked transaction, company action, or
-    cash event still agrees with the statement. Drift or cross-account links
-    stop the import before any claim is committed.
-    """
-    flow_list = list(flows)
-    hash_list = list(
-        {row_hash for flow in flow_list for row_hash in (flow.row_hash, flow.legacy_row_hash)}
-    )
-    if not hash_list:
-        return set()
-
-    sources = (
-        db.query(BrokerFundFlow)
-        .filter(
-            BrokerFundFlow.user_id == user_id,
-            BrokerFundFlow.broker == BROKER_NAME,
-            BrokerFundFlow.broker_account_id.is_(None),
-            BrokerFundFlow.row_hash.in_(hash_list),
-        )
-        .all()
-    )
-    sources_by_hash = {source.row_hash: source for source in sources}
-    claims: List[ExactSourceClaim] = []
-    claimed_source_ids: set[int] = set()
-
-    for flow in flow_list:
-        source = sources_by_hash.get(flow.row_hash) or sources_by_hash.get(flow.legacy_row_hash)
-        if source is None or source.id in claimed_source_ids:
-            continue
-
-        transaction = db.get(Transaction, source.transaction_id) if source.transaction_id else None
-        if flow.is_trade:
-            if transaction is None or not _transaction_matches_flow(transaction, flow):
-                raise ValueError("东方财富旧来源行对应交易缺失或已修改；为避免重复记账，本次未导入")
-            if transaction.user_id != user_id or transaction.broker_account_id not in (
-                None,
-                broker_account_id,
-            ):
-                raise ValueError("东方财富旧来源行对应交易已归属其他账户；本次未导入")
-
-        action = (
-            db.get(CorporateAction, source.corporate_action_id)
-            if source.corporate_action_id
-            else None
-        )
-        if (flow.is_cash_dividend or flow.is_dividend_tax) and action is None:
-            action_candidates = (
-                db.query(CorporateAction)
-                .filter(
-                    CorporateAction.user_id == user_id,
-                    CorporateAction.notes.contains(source.row_hash),
-                )
-                .all()
-            )
-            if len(action_candidates) == 1:
-                action = action_candidates[0]
-        if flow.is_cash_dividend or flow.is_dividend_tax:
-            if action is None or not _corporate_action_matches_flow(action, flow):
-                raise ValueError(
-                    "东方财富旧来源行对应公司行动缺失或已修改；为避免重复记账，本次未导入"
-                )
-            if action.user_id != user_id or action.broker_account_id not in (
-                None,
-                broker_account_id,
-            ):
-                raise ValueError("东方财富旧来源行对应公司行动已归属其他账户；本次未导入")
-
-        cash_event = db.get(CashEvent, source.cash_event_id) if source.cash_event_id else None
-        if flow.is_cash_fee:
-            if cash_event is None or not _cash_event_matches_flow(cash_event, flow):
-                raise ValueError(
-                    "东方财富旧来源行对应现金费用缺失或已修改；为避免重复记账，本次未导入"
-                )
-            if cash_event.user_id != user_id or cash_event.broker_account_id not in (
-                None,
-                broker_account_id,
-            ):
-                raise ValueError("东方财富旧来源行对应现金费用已归属其他账户；本次未导入")
-
-        claims.append(
-            ExactSourceClaim(
-                flow=flow,
-                source=source,
-                transaction=transaction,
-                action=action,
-                cash_event=cash_event,
-            )
-        )
-        claimed_source_ids.add(source.id)
-
-    action_claims: Dict[int, List[BrokerFundFlow]] = {}
-    actions: Dict[int, CorporateAction] = {}
-    for claim in claims:
-        if claim.action is None:
-            continue
-        actions[claim.action.id] = claim.action
-        action_claims.setdefault(claim.action.id, []).append(claim.source)
-    for action_id, selected_sources in action_claims.items():
-        _validate_corporate_action_source_aggregate(
-            db,
-            user_id=user_id,
-            broker_account_id=broker_account_id,
-            action=actions[action_id],
-            selected_sources=selected_sources,
-        )
-
-    claimed_hashes = {claim.flow.row_hash for claim in claims}
-    if dry_run:
-        return claimed_hashes
-
-    for claim in claims:
-        if claim.transaction is not None:
-            claim.transaction.broker_account_id = broker_account_id
-        if claim.action is not None:
-            claim.action.broker_account_id = broker_account_id
-            claim.source.corporate_action_id = claim.action.id
-        if claim.cash_event is not None:
-            claim.cash_event.broker_account_id = broker_account_id
-        claim.source.broker_account_id = broker_account_id
-        claim.source.statement_type = claim.source.statement_type or claim.flow.statement_type
-
-    db.flush()
-    return claimed_hashes
-
-
 def build_import_result(
     *,
     filename: str,
@@ -1092,7 +923,6 @@ def build_import_result(
     imported_cash_events: int,
     affected_symbols: int,
     errors: List[str],
-    migrated_unassigned_rows: int = 0,
 ) -> Dict[str, Any]:
     rows = eligible_rows(parsed_rows)
     trade_rows = [flow for flow in rows if flow.is_trade]
@@ -1116,12 +946,7 @@ def build_import_result(
 
     dates = [flow.trade_date for flow in parsed_rows]
     parsed_source_rows = {flow.source_row_number for flow in parsed_rows}
-    source_error_rows = {
-        int(match.group(1))
-        for error in errors
-        if (match := SOURCE_ROW_ERROR_PATTERN.match(error))
-        and int(match.group(1)) not in parsed_source_rows
-    }
+    error_rows = source_error_rows(errors, parsed_source_rows)
     skip_counts = {
         "unsupported": len([flow for flow in new_source_rows if flow.skip_reason == "unsupported"]),
         "invalid": len([flow for flow in new_source_rows if flow.skip_reason == "invalid"]),
@@ -1153,10 +978,9 @@ def build_import_result(
         "imported_corporate_actions": imported_corporate_actions,
         "imported_tax_adjustments": imported_tax_adjustments,
         "imported_cash_events": imported_cash_events,
-        "migrated_unassigned_rows": migrated_unassigned_rows,
         "duplicate_rows": len(duplicate_rows),
         "skipped_non_trade_rows": skipped_non_trade_rows,
-        "skipped_invalid_rows": skip_counts["invalid"] + len(source_error_rows),
+        "skipped_invalid_rows": skip_counts["invalid"] + len(error_rows),
         "skipped_option_rows": 0,
         "skipped_fx_rows": 0,
         "skipped_cash_rows": 0,
@@ -1195,6 +1019,31 @@ def apply_exclusions(parsed_rows: List[ParsedEastmoneyFlow], excluded_symbols) -
             flow.skip_reason = "excluded"
 
 
+def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
+    """领养路径已退役：NULL 账户历史来源必须显式拒绝，绝不静默双记。
+
+    账户级判重按 (user, broker_account, row_hash) 进行，看不见 NULL 桶的
+    旧来源；库约束又允许同一 hash 在 NULL 桶与已分配账户各存一份——若放行，
+    重新导入会给同一笔流水再建一份 canonical 记录。重建后的正常数据不存在
+    这类行；从旧备份恢复的库必须先人工迁移（含旧 Excel 等异构 hash 来源，
+    故按存在性整体拒绝，不做逐 hash 匹配）。
+    """
+    unassigned = (
+        db.query(BrokerFundFlow.id)
+        .filter(
+            BrokerFundFlow.user_id == user_id,
+            BrokerFundFlow.broker == BROKER_NAME,
+            BrokerFundFlow.broker_account_id.is_(None),
+        )
+        .count()
+    )
+    if unassigned:
+        raise ValueError(
+            f"存在 {unassigned} 条未分配账户的{BROKER_NAME}历史来源（领养路径已退役）。"
+            "请先人工迁移或清理这些 NULL 账户流水后再导入，否则会重复入账"
+        )
+
+
 def preview_eastmoney_statement(
     db: Session,
     user_id: int,
@@ -1210,6 +1059,7 @@ def preview_eastmoney_statement(
         broker_account_id=broker_account_id,
         broker=BROKER_NAME,
     )
+    reject_unassigned_legacy_sources(db, user_id)
     validate_source_file_account(
         db,
         user_id=user_id,
@@ -1222,20 +1072,12 @@ def preview_eastmoney_statement(
     context = read_eastmoney_statement_context(contents)
     if any(flow.statement_type != context.statement_type for flow in parsed_rows):
         raise ValueError("东方财富 statement title and flow table scope do not match")
-    claimed_hashes = claim_unassigned_exact_sources(
-        db,
-        user_id=user_id,
-        broker_account_id=broker_account_id,
-        flows=parsed_rows,
-        dry_run=True,
-    )
     existing_hashes = get_existing_hashes(
         db,
         user_id,
         parsed_rows,
         broker_account_id=broker_account_id,
     )
-    existing_hashes.update(claimed_hashes)
     return build_import_result(
         filename=filename,
         total_rows=total_rows,
@@ -1249,7 +1091,6 @@ def preview_eastmoney_statement(
         imported_cash_events=0,
         affected_symbols=0,
         errors=errors,
-        migrated_unassigned_rows=len(claimed_hashes),
     )
 
 
@@ -1298,28 +1139,6 @@ def create_broker_fund_flow(
             f"canonical_event={canonical_event_type(flow.business_name)}"
         ),
     )
-
-
-def find_dividend_for_tax(
-    db: Session,
-    user_id: int,
-    flow: ParsedEastmoneyFlow,
-    market: str,
-    broker_account_id: Optional[int] = None,
-) -> Optional[CorporateAction]:
-    query = db.query(CorporateAction).filter(
-        CorporateAction.user_id == user_id,
-        CorporateAction.symbol == flow.security_code,
-        CorporateAction.market == market,
-        CorporateAction.action_type == "CASH_DIVIDEND",
-        CorporateAction.currency == flow.currency,
-        CorporateAction.ex_date <= flow.trade_date,
-        CorporateAction.broker_account_id == broker_account_id,
-    )
-    candidates = (
-        query.order_by(CorporateAction.ex_date.desc(), CorporateAction.id.desc()).limit(2).all()
-    )
-    return candidates[0] if len(candidates) == 1 else None
 
 
 def statement_market(statement_type: str) -> str:
@@ -1553,6 +1372,7 @@ def import_eastmoney_statement(
     records_committed = False
 
     try:
+        reject_unassigned_legacy_sources(db, user_id)
         parsed_rows, business_counts, total_rows, errors = parse_rows(contents, filename)
         apply_exclusions(parsed_rows, get_excluded_symbols(db, user_id))
         context = read_eastmoney_statement_context(contents)
@@ -1567,19 +1387,12 @@ def import_eastmoney_statement(
         )
         db.commit()
         db.refresh(batch)
-        claimed_hashes = claim_unassigned_exact_sources(
-            db,
-            user_id=user_id,
-            broker_account_id=broker_account_id,
-            flows=parsed_rows,
-        )
         existing_hashes = get_existing_hashes(
             db,
             user_id,
             parsed_rows,
             broker_account_id=broker_account_id,
         )
-        existing_hashes.update(claimed_hashes)
         duplicate_hashes = set(existing_hashes)
 
         affected_symbols: set[tuple[str, str]] = set()
@@ -1758,7 +1571,6 @@ def import_eastmoney_statement(
             imported_cash_events=imported_cash_events,
             affected_symbols=recalculated_symbols,
             errors=errors,
-            migrated_unassigned_rows=len(claimed_hashes),
         )
         imported_source_rows = (
             db.query(BrokerFundFlow).filter(BrokerFundFlow.import_batch_id == batch_id).count()

@@ -19,10 +19,6 @@ from app.models.user import User
 from app.services.statistics_service import get_dividend_summary
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
 
 @pytest.fixture
 def dividend_scenario():
