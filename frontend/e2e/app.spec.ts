@@ -275,6 +275,12 @@ test('shows created transactions, holdings, and total realized return', async ({
   await expect(page).toHaveURL(/\/securities\//)
   await expect(page.getByText('暂无 AI 分析')).toBeVisible()
   await expect(page.getByTestId('generate-analysis-button')).toBeVisible()
+  // 商业画像/财报摘要/利润质量三区块按 A股 capabilities 渲染（空态不隐藏）
+  await expect(page.getByTestId('business-profile-section')).toBeVisible()
+  await expect(page.getByText('暂无商业画像', { exact: false })).toBeVisible()
+  await expect(page.getByTestId('report-digest-section')).toBeVisible()
+  await expect(page.getByTestId('backfill-digests-button')).toBeVisible()
+  await expect(page.getByTestId('earnings-quality-section')).toBeVisible()
   await page.goBack()
 
   await page.goto('/statistics')
@@ -1240,4 +1246,946 @@ test('standard CSV import attributes rows to the selected broker account', async
   } finally {
     await deleteTemporaryUser(request, adminToken, createdUser.id)
   }
+})
+
+test('slow responses from a previous security never leak into the current one', async ({
+  page,
+  request
+}) => {
+  // [评审回归] 同业跳转复用同一路由组件实例：A 的 analysis 响应晚于 B 返回时，
+  // 若没有请求身份守卫，A 的分析会写进 B 的页面（标题是 B、内容是 A）。
+  // 必须走点击同业的客户端路由——整页 goto 会被浏览器中止在途请求，复现不了。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  let releaseSlowA: (() => void) | null = null
+  const slowAReleased = new Promise<void>((resolve) => {
+    releaseSlowA = resolve
+  })
+
+  const profileBody = (symbol: string) => ({
+    symbol,
+    market: 'A股',
+    supported: true,
+    capabilities: { structured: true, report_digest: true, risk_signals: true },
+    datasets: {},
+    latest_periods: {},
+    events: [],
+    report_digests: [],
+    digest_progress: { digested: 0, failed_capped: 0 },
+    business: {
+      profile: {
+        商业模式: `${symbol} 的商业模式说明`,
+        业务分部: [],
+        上游依赖: [],
+        下游需求: [],
+        供应商集中度: '未披露',
+        客户集中度: '未披露',
+        行业与竞争: '—',
+        估值观察因子: []
+      },
+      peers: [{ symbol: 'RACEB', name: '同业标的B', industry: '银行' }],
+      industry: '银行'
+    },
+    earnings_quality: { status: 'no_data' }
+  })
+
+  // A 的档案立刻返回（页面渲染出同业链接），A 的分析挂起
+  await page.route('**/api/securities/**/profile', async (route) => {
+    const isA = route.request().url().includes('RACEA')
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(profileBody(isA ? 'RACEA' : 'RACEB'))
+    })
+  })
+
+  await page.route('**/api/securities/**/analysis', async (route) => {
+    const isA = route.request().url().includes('RACEA')
+    if (isA) await slowAReleased
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: isA ? 1 : 2,
+        symbol: isA ? 'RACEA' : 'RACEB',
+        market: 'A股',
+        name: isA ? '标的A' : '标的B',
+        tags: [isA ? '业绩下滑' : '业绩增长'],
+        risk_level: isA ? 'high' : 'low',
+        summary: isA ? 'A的摘要不得出现在B页面' : 'B的摘要',
+        content: isA ? '## 财务质量趋势\nA的全文正文' : '## 财务质量趋势\nB的全文正文',
+        model: 'deepseek-v4-pro'
+      })
+    })
+  })
+
+  await page.goto('/securities/A股/RACEA')
+  await expect(page.getByTestId('peer-list')).toContainText('同业标的B')
+
+  // 点击同业 → 客户端路由切到 B；B 的两个请求都正常返回
+  await page.getByTestId('peer-list').getByText('同业标的B').click()
+  await expect(page).toHaveURL(/RACEB/)
+  await expect(page.getByText('B的摘要')).toBeVisible()
+  await expect(page.getByTestId('business-profile-section')).toContainText('RACEB 的商业模式')
+
+  // 放行 A 的迟到响应：不得覆盖 B 的页面
+  releaseSlowA!()
+  await page.waitForTimeout(1000)
+
+  await expect(page).toHaveURL(/RACEB/)
+  await expect(page.getByText('B的摘要')).toBeVisible()
+  await expect(page.getByText('A的摘要不得出现在B页面')).toHaveCount(0)
+  await expect(page.locator('body')).not.toContainText('A的全文正文')
+  await expect(page.getByTestId('risk-level-tag')).toContainText('低')
+})
+
+test('an older request for the same security cannot overwrite a newer one (ABA)', async ({
+  page,
+  request
+}) => {
+  // [评审回归] 请求身份不能只用 market/symbol：A₁（慢）→ 切 B → 切回 A 发起
+  // A₂（快），A₂ 渲染后 A₁ 才到，业务 key 又相等，旧 A₁ 会覆盖更新的 A₂。
+  // 守卫必须是单调递增的请求代次。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  let releaseA1: (() => void) | null = null
+  const a1Released = new Promise<void>((resolve) => {
+    releaseA1 = resolve
+  })
+  let aRequestCount = 0
+
+  const profileBody = (symbol: string, peer: string) => ({
+    symbol,
+    market: 'A股',
+    supported: true,
+    capabilities: { structured: true, report_digest: true, risk_signals: true },
+    datasets: {},
+    latest_periods: {},
+    events: [],
+    report_digests: [],
+    digest_progress: { digested: 0, failed_capped: 0 },
+    business: {
+      profile: {
+        商业模式: `${symbol} 的商业模式说明`,
+        业务分部: [],
+        上游依赖: [],
+        下游需求: [],
+        供应商集中度: '未披露',
+        客户集中度: '未披露',
+        行业与竞争: '—',
+        估值观察因子: []
+      },
+      peers: [{ symbol: peer, name: `同业${peer}`, industry: '银行' }],
+      industry: '银行'
+    },
+    earnings_quality: { status: 'no_data' }
+  })
+
+  await page.route('**/api/securities/**/profile', async (route) => {
+    const isA = route.request().url().includes('ABAA')
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(isA ? profileBody('ABAA', 'ABAB') : profileBody('ABAB', 'ABAA'))
+    })
+  })
+
+  await page.route('**/api/securities/**/analysis', async (route) => {
+    const isA = route.request().url().includes('ABAA')
+    if (!isA) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 2,
+          symbol: 'ABAB',
+          market: 'A股',
+          name: '标的B',
+          tags: ['业绩增长'],
+          risk_level: 'medium',
+          summary: 'B的摘要',
+          content: '## 财务质量趋势\nB的全文',
+          model: 'deepseek-v4-pro'
+        })
+      })
+      return
+    }
+    aRequestCount += 1
+    const generation = aRequestCount
+    if (generation === 1) await a1Released // A₁ 挂起，A₂ 立即返回
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 1,
+        symbol: 'ABAA',
+        market: 'A股',
+        name: '标的A',
+        tags: [generation === 1 ? '业绩下滑' : '业绩增长'],
+        risk_level: generation === 1 ? 'high' : 'low',
+        summary: generation === 1 ? 'A第一代陈旧摘要' : 'A第二代最新摘要',
+        content: `## 财务质量趋势\nA第${generation}代全文`,
+        model: 'deepseek-v4-pro'
+      })
+    })
+  })
+
+  // A₁ 发起并挂起
+  await page.goto('/securities/A股/ABAA')
+  await expect(page.getByTestId('peer-list')).toContainText('同业ABAB')
+
+  // 切到 B（客户端路由），B 正常返回
+  await page.getByTestId('peer-list').getByText('同业ABAB').click()
+  await expect(page).toHaveURL(/ABAB/)
+  await expect(page.getByText('B的摘要')).toBeVisible()
+
+  // 切回 A，发起 A₂ 并立即完成
+  await page.getByTestId('peer-list').getByText('同业ABAA').click()
+  await expect(page).toHaveURL(/ABAA/)
+  await expect(page.getByText('A第二代最新摘要')).toBeVisible()
+
+  // 放行 A₁：同一标的的旧代次请求不得覆盖 A₂
+  releaseA1!()
+  await page.waitForTimeout(1000)
+
+  await expect(page.getByText('A第二代最新摘要')).toBeVisible()
+  await expect(page.getByText('A第一代陈旧摘要')).toHaveCount(0)
+  await expect(page.locator('body')).not.toContainText('A第1代全文')
+  await expect(page.getByTestId('risk-level-tag')).toContainText('低')
+})
+
+test('shows staged progress while generating an AI analysis', async ({ page, request }) => {
+  // 进度全部走 route mock，不触发真实 LLM
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  const profileBody = {
+    symbol: 'PROG01',
+    market: 'A股',
+    supported: true,
+    capabilities: { structured: true, report_digest: true, risk_signals: true },
+    datasets: {},
+    latest_periods: {},
+    events: [],
+    report_digests: [],
+    digest_progress: { digested: 0, failed_capped: 0 },
+    business: { profile: null, peers: [], industry: null },
+    earnings_quality: { status: 'no_data' }
+  }
+  await page.route('**/api/securities/**/profile', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(profileBody)
+    })
+  )
+  await page.route('**/api/securities/**/analysis', (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"无"}' })
+  )
+  await page.route('**/PROG01/analysis-jobs', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'job-prog',
+        status: 'queued',
+        stage_label: '排队中',
+        total: 6,
+        completed: 0,
+        progress_percent: 0
+      })
+    })
+  )
+
+  // 阶段脚本：同步基本面 → 生成分析（LLM）→ 成功
+  const script = [
+    { status: 'running', stage_label: '同步基本面档案', completed: 1, progress_percent: 16.67 },
+    { status: 'running', stage_label: '生成分析（LLM）', completed: 5, progress_percent: 83.33 },
+    { status: 'succeeded', stage_label: '已完成', completed: 6, progress_percent: 100 }
+  ]
+  let tick = 0
+  await page.route('**/api/securities/analysis-jobs/job-prog', (route) => {
+    const payload = script[Math.min(tick, script.length - 1)]
+    tick += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'job-prog', total: 6, ...payload })
+    })
+  })
+
+  await page.goto('/securities/A股/PROG01')
+  await page.getByTestId('generate-analysis-button').click()
+
+  const progress = page.getByTestId('analysis-progress')
+  await expect(progress).toContainText('同步基本面档案', { timeout: 15000 })
+  await expect(progress).toContainText('1/6')
+  await expect(progress).toContainText('生成分析（LLM）', { timeout: 15000 })
+  // 成功后进度块收起（分析正文本身即完成证据）
+  await expect(page.getByText('分析已生成')).toBeVisible({ timeout: 15000 })
+  await expect(progress).toHaveCount(0)
+})
+
+test('a failed analysis keeps the progress block with its error', async ({ page, request }) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  await page.route('**/api/securities/**/profile', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        symbol: 'FAIL01',
+        market: 'A股',
+        supported: true,
+        capabilities: { structured: true, report_digest: true, risk_signals: true },
+        datasets: {},
+        latest_periods: {},
+        events: [],
+        report_digests: [],
+        digest_progress: { digested: 0, failed_capped: 0 },
+        business: { profile: null, peers: [], industry: null },
+        earnings_quality: { status: 'no_data' }
+      })
+    })
+  )
+  await page.route('**/api/securities/**/analysis', (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"无"}' })
+  )
+  await page.route('**/FAIL01/analysis-jobs', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'job-fail', status: 'queued', total: 6, completed: 0 })
+    })
+  )
+  await page.route('**/api/securities/analysis-jobs/job-fail', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'job-fail',
+        status: 'failed',
+        stage_label: '生成分析（LLM）',
+        total: 6,
+        completed: 5,
+        progress_percent: 83.33,
+        error: 'LLM 输出解析失败：tags 含白名单外标签'
+      })
+    })
+  )
+
+  await page.goto('/securities/A股/FAIL01')
+  await page.getByTestId('generate-analysis-button').click()
+
+  const progress = page.getByTestId('analysis-progress')
+  await expect(progress).toBeVisible({ timeout: 15000 })
+  await expect(progress).toContainText('LLM 输出解析失败')
+  await expect(progress.locator('.el-progress.is-exception')).toHaveCount(1)
+  // 按钮恢复可用（不再 loading）
+  await expect(page.getByTestId('generate-analysis-button')).toBeEnabled()
+})
+
+test('analysis progress of a previous security never leaks into the current one', async ({
+  page,
+  request
+}) => {
+  // [评审回归] pollJobUntilDone 的 onUpdate 是每轮无条件调用的（取消检查在
+  // fetch 之前），所以 onUpdate 内部必须自己判代次。泄漏窗口只在"响应已在
+  // 途中时发生了导航"，因此这里必须挂起 A 的轮询响应、切到 B 之后再放行。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  let releaseA: (() => void) | null = null
+  const aReleased = new Promise<void>((resolve) => {
+    releaseA = resolve
+  })
+
+  const profileBody = (symbol: string, peer: string) => ({
+    symbol,
+    market: 'A股',
+    supported: true,
+    capabilities: { structured: true, report_digest: true, risk_signals: true },
+    datasets: {},
+    latest_periods: {},
+    events: [],
+    report_digests: [],
+    digest_progress: { digested: 0, failed_capped: 0 },
+    business: {
+      profile: null,
+      peers: [{ symbol: peer, name: `同业${peer}`, industry: '银行' }],
+      industry: '银行'
+    },
+    earnings_quality: { status: 'no_data' }
+  })
+  await page.route('**/api/securities/**/profile', (route) => {
+    const isA = route.request().url().includes('LEAKA')
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(isA ? profileBody('LEAKA', 'LEAKB') : profileBody('LEAKB', 'LEAKA'))
+    })
+  })
+  await page.route('**/api/securities/**/analysis', (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: '{"detail":"无"}' })
+  )
+  await page.route('**/LEAKA/analysis-jobs', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'job-leak', status: 'queued', total: 6, completed: 0 })
+    })
+  )
+  // A 的第一次轮询响应挂起，直到 B 已经渲染完成才放行
+  await page.route('**/api/securities/analysis-jobs/job-leak', async (route) => {
+    await aReleased
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'job-leak',
+        status: 'running',
+        stage_label: 'A标的的分析阶段',
+        total: 6,
+        completed: 3,
+        progress_percent: 50
+      })
+    })
+  })
+
+  await page.goto('/securities/A股/LEAKA')
+  await page.getByTestId('generate-analysis-button').click()
+  // 启动响应已渲染出「排队中」，此时第一次轮询正挂起
+  await expect(page.getByTestId('analysis-progress')).toContainText('排队中')
+
+  await page.getByTestId('peer-list').getByText('同业LEAKB').click()
+  await expect(page).toHaveURL(/LEAKB/)
+  await expect(page.getByTestId('analysis-progress')).toHaveCount(0)
+
+  // 放行 A 的迟到响应：不得画进 B 的页面
+  releaseA!()
+  await page.waitForTimeout(1500)
+
+  await expect(page).toHaveURL(/LEAKB/)
+  await expect(page.getByTestId('analysis-progress')).toHaveCount(0)
+  await expect(page.locator('body')).not.toContainText('A标的的分析阶段')
+})
+
+// 持仓页批量分析：全部走 route mock，不触发真实 LLM
+const BATCH_HOLDINGS = [
+  {
+    id: 1,
+    symbol: 'BAT001',
+    name: '批量测试A',
+    market: 'A股',
+    broker_account_id: null,
+    quantity: 100,
+    avg_cost: 10,
+    total_cost: 1000,
+    currency: 'CNY',
+    current_price: 12,
+    price_updated_at: null
+  },
+  {
+    id: 2,
+    symbol: 'BAT002',
+    name: '批量测试B',
+    market: 'A股',
+    broker_account_id: null,
+    quantity: 50,
+    avg_cost: 20,
+    total_cost: 1000,
+    currency: 'CNY',
+    current_price: 22,
+    price_updated_at: null
+  },
+  {
+    id: 3,
+    symbol: 'BATBTC',
+    name: '不支持市场',
+    market: '加密货币',
+    broker_account_id: null,
+    quantity: 1,
+    avg_cost: 100,
+    total_cost: 100,
+    currency: 'USD',
+    current_price: 110,
+    price_updated_at: null
+  }
+]
+
+async function mockHoldingsPage(page: Page, holdings: ApiRow[] = BATCH_HOLDINGS) {
+  await page.route('**/api/holdings*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(holdings)
+    })
+  )
+  await page.route('**/api/broker-accounts*', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/corporate-actions/security-events*', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+}
+
+// 后端目标预览：已排除清仓/EXCLUDE/现金管理标的，前端确认框必须用这个数
+async function mockBatchTargets(page: Page, total: number) {
+  await page.route('**/api/securities/analysis-batch-targets', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        total,
+        targets: Array.from({ length: total }, (_, index) => ({
+          symbol: `T${index}`,
+          market: 'A股'
+        }))
+      })
+    })
+  )
+}
+
+test('one-click batch analysis asks for confirmation and shows progress', async ({
+  page,
+  request
+}) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await mockHoldingsPage(page)
+  // [评审回归] 后端排除了现金管理标的：持仓有 2 只 A股，但真实目标只有 1 只
+  await mockBatchTargets(page, 1)
+
+  let analysesCall = 0
+  await page.route('**/api/securities/analyses', (route) => {
+    analysesCall += 1
+    // 第一次没有分析，任务推进后返回一条（标签列应随之亮起）
+    const body =
+      analysesCall <= 1
+        ? []
+        : [
+            {
+              symbol: 'BAT001',
+              market: 'A股',
+              tags: ['业绩增长'],
+              risk_level: 'low',
+              summary: 'B 摘要'
+            }
+          ]
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body)
+    })
+  })
+  await page.route('**/api/securities/active-analysis-jobs', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+
+  let startCalls = 0
+  await page.route('**/api/securities/analysis-batch-jobs', (route) => {
+    startCalls += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'batch-1',
+        type: 'security_analysis_batch',
+        status: 'queued',
+        total: 2,
+        completed: 0,
+        progress_percent: 0
+      })
+    })
+  })
+
+  const script = [
+    {
+      status: 'running',
+      completed: 1,
+      progress_percent: 50,
+      success_count: 1,
+      failed_count: 0,
+      skipped_count: 0,
+      current_symbol: 'BAT002',
+      current_market: 'A股',
+      current_stage: '生成分析（LLM）',
+      results: [{ symbol: 'BAT001', market: 'A股', status: 'succeeded' }]
+    },
+    {
+      status: 'succeeded',
+      completed: 2,
+      progress_percent: 100,
+      success_count: 2,
+      failed_count: 0,
+      skipped_count: 0,
+      current_symbol: null,
+      current_market: null,
+      results: [
+        { symbol: 'BAT001', market: 'A股', status: 'succeeded' },
+        { symbol: 'BAT002', market: 'A股', status: 'succeeded' }
+      ]
+    }
+  ]
+  let tick = 0
+  await page.route('**/api/securities/analysis-batch-jobs/batch-1', (route) => {
+    const payload = script[Math.min(tick, script.length - 1)]
+    tick += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'batch-1', total: 2, ...payload })
+    })
+  })
+
+  await page.goto('/holdings')
+  await expect(page.getByTestId('analyze-all-button')).toBeVisible()
+
+  // 二次确认必须给出数量与耗时量级；取消则不发请求
+  await page.getByTestId('analyze-all-button').click()
+  const dialog = page.locator('.el-message-box')
+  // 数量来自后端预览（1 只），不是前端按市场本地估算的 2 只
+  await expect(dialog).toContainText('1 只')
+  await expect(dialog).toContainText('预计耗时')
+  await expect(dialog).toContainText('自动跳过')
+  await dialog.getByRole('button', { name: '取消' }).click()
+  expect(startCalls).toBe(0)
+
+  await page.getByTestId('analyze-all-button').click()
+  await page.locator('.el-message-box').getByRole('button', { name: '开始分析' }).click()
+  // 确认后到 POST 之间隔着预览 resolve 与 axios 往返，用 poll 而不是即刻断言
+  await expect.poll(() => startCalls, { timeout: 15000 }).toBe(1)
+
+  const progress = page.getByTestId('batch-analysis-progress')
+  await expect(progress).toContainText('1/2', { timeout: 15000 })
+  // [评审回归] 启动后按钮只禁用、不转圈（轮询要跑数十分钟）
+  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+  await expect(page.getByTestId('analyze-all-button').locator('.is-loading')).toHaveCount(0)
+  await expect(progress).toContainText('BAT002 A股')
+  await expect(progress).toContainText('成功 1 · 跳过 0 · 失败 0')
+  await expect(page.getByText('批量分析完成：成功 2 只')).toBeVisible({ timeout: 15000 })
+  // 完成后标签列刷新
+  await expect(page.getByTestId('ai-tags').first()).toBeVisible()
+})
+
+test('batch analysis progress is restored when returning to the holdings page', async ({
+  page,
+  request
+}) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await mockHoldingsPage(page)
+  await mockBatchTargets(page, 5)
+  await page.route('**/api/securities/analyses', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/securities/active-analysis-jobs', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          id: 'batch-live',
+          type: 'security_analysis_batch',
+          status: 'running',
+          total: 5,
+          completed: 2,
+          progress_percent: 40,
+          success_count: 2,
+          failed_count: 0,
+          skipped_count: 0,
+          current_symbol: 'BAT002',
+          current_market: 'A股'
+        }
+      ])
+    })
+  )
+  await page.route('**/api/securities/analysis-batch-jobs/batch-live', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'batch-live',
+        status: 'running',
+        total: 5,
+        completed: 2,
+        progress_percent: 40,
+        success_count: 2,
+        failed_count: 0,
+        skipped_count: 0,
+        current_symbol: 'BAT002',
+        current_market: 'A股'
+      })
+    })
+  )
+
+  // 不点任何按钮，直接进入页面即应接上进行中的任务
+  await page.goto('/holdings')
+  const progress = page.getByTestId('batch-analysis-progress')
+  await expect(progress).toBeVisible({ timeout: 15000 })
+  await expect(progress).toContainText('2/5')
+  // 任务活跃时按钮禁用（避免重复发起）
+  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+})
+
+test('digest backfill button previews gaps and shows generated counts', async ({
+  page,
+  request
+}) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await mockHoldingsPage(page)
+  await mockBatchTargets(page, 2)
+  await page.route('**/api/securities/analyses', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/securities/active-analysis-jobs', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/securities/digest-backfill-preview', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        targets_total: 2,
+        targets_without_digest: 1,
+        digests_existing: 4,
+        per_symbol_budget: 4
+      })
+    })
+  )
+  let startCalls = 0
+  await page.route('**/api/securities/digest-backfill-jobs', (route) => {
+    startCalls += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'digest-1',
+        type: 'report_digest_batch',
+        status: 'queued',
+        total: 2,
+        completed: 0,
+        progress_percent: 0
+      })
+    })
+  })
+  const script = [
+    {
+      status: 'running',
+      completed: 1,
+      progress_percent: 50,
+      success_count: 1,
+      failed_count: 0,
+      digests_generated: 4,
+      symbols_with_remaining: 1,
+      current_symbol: 'BAT002',
+      current_market: 'A股'
+    },
+    {
+      status: 'succeeded',
+      completed: 2,
+      progress_percent: 100,
+      success_count: 2,
+      failed_count: 0,
+      digests_generated: 7,
+      symbols_with_remaining: 1,
+      current_symbol: null,
+      current_market: null
+    }
+  ]
+  let tick = 0
+  await page.route('**/api/securities/digest-backfill-jobs/digest-1', (route) => {
+    const payload = script[Math.min(tick, script.length - 1)]
+    tick += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ id: 'digest-1', total: 2, ...payload })
+    })
+  })
+
+  await page.goto('/holdings')
+  const button = page.getByTestId('digest-backfill-button')
+  await expect(button).toBeVisible()
+
+  // 确认框数字来自纯 DB 预览；取消不发请求
+  await button.click()
+  const dialog = page.locator('.el-message-box')
+  await expect(dialog).toContainText('2 只持仓标的')
+  await expect(dialog).toContainText('1 只目前一份摘要都没有')
+  await expect(dialog).toContainText('最多补 4 份')
+  await dialog.getByRole('button', { name: '取消' }).click()
+  expect(startCalls).toBe(0)
+
+  await button.click()
+  await page.locator('.el-message-box').getByRole('button', { name: '开始回填' }).click()
+  await expect.poll(() => startCalls, { timeout: 15000 }).toBe(1)
+
+  const progress = page.getByTestId('digest-backfill-progress')
+  await expect(progress).toContainText('1/2', { timeout: 15000 })
+  await expect(progress).toContainText('已生成摘要 4 份')
+  // 回填活跃时一键分析禁用（互斥，后端 409 兜底、前端体验先行）
+  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+  // 完成提示要说清"还有更早年份可续跑"——这是加深十年的唯一入口
+  await expect(page.getByText(/新生成 7 份；1 只标的还有更早年份可补/)).toBeVisible({
+    timeout: 15000
+  })
+})
+
+test('stopping the batch view halts polling but says the job keeps running', async ({
+  page,
+  request
+}) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await mockHoldingsPage(page)
+  await page.route('**/api/securities/analyses', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/securities/active-analysis-jobs', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          id: 'batch-stop',
+          type: 'security_analysis_batch',
+          status: 'running',
+          total: 9,
+          completed: 1
+        }
+      ])
+    })
+  )
+  let polls = 0
+  await page.route('**/api/securities/analysis-batch-jobs/batch-stop', (route) => {
+    polls += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 'batch-stop',
+        status: 'running',
+        total: 9,
+        completed: 1,
+        progress_percent: 11
+      })
+    })
+  })
+
+  await page.goto('/holdings')
+  const progress = page.getByTestId('batch-analysis-progress')
+  await expect(progress).toBeVisible({ timeout: 15000 })
+  // 文案必须诚实：这不是"取消"
+  await expect(progress).toContainText('后台任务会继续运行')
+  await expect(progress).toContainText('继续消耗 token')
+
+  await page.getByTestId('stop-watching-batch').click()
+  await expect(progress).toHaveCount(0)
+  const pollsAfterStop = polls
+  await page.waitForTimeout(6000) // 跨过一个轮询间隔
+  expect(polls).toBe(pollsAfterStop)
+})
+
+test('the batch button is disabled when no holding is analyzable', async ({ page, request }) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await mockHoldingsPage(page, [BATCH_HOLDINGS[2]]) // 只有加密货币
+  await mockBatchTargets(page, 0)
+  await page.route('**/api/securities/analyses', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/securities/active-analysis-jobs', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+
+  await page.goto('/holdings')
+  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+})
+
+test('the confirm dialog waits for the server target preview', async ({ page, request }) => {
+  // [评审回归] 预览在途期间不得用本地估算弹确认框：batchTargetCount 初值为 null
+  // 时若直接回退本地数，用户在预览慢时点按钮就会看到错误的目标数与 token 预期。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await mockHoldingsPage(page) // 本地可见 2 只 A股
+  await page.route('**/api/securities/analyses', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/securities/active-analysis-jobs', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+
+  let releasePreview: (() => void) | null = null
+  const previewReleased = new Promise<void>((resolve) => {
+    releasePreview = resolve
+  })
+  await page.route('**/api/securities/analysis-batch-targets', async (route) => {
+    await previewReleased
+    // 服务端真实目标只有 1 只（另一只被现金管理规则排除）
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ total: 1, targets: [{ symbol: 'BAT001', market: 'A股' }] })
+    })
+  })
+
+  await page.goto('/holdings')
+  await expect(page.getByTestId('analyze-all-button')).toBeVisible()
+
+  // 预览仍挂起：点击后不得出现任何确认框（更不能显示本地估算的 2 只）
+  await page.getByTestId('analyze-all-button').click()
+  await page.waitForTimeout(1000)
+  await expect(page.locator('.el-message-box')).toHaveCount(0)
+
+  // 放行预览：确认框出现且用服务端数字
+  releasePreview!()
+  const dialog = page.locator('.el-message-box')
+  await expect(dialog).toBeVisible({ timeout: 15000 })
+  await expect(dialog).toContainText('1 只')
+  await expect(dialog).not.toContainText('2 只')
+})
+
+test('a preview that resolves to zero explains instead of opening the confirm dialog', async ({
+  page,
+  request
+}) => {
+  // 预览已 ready 且为 0 时按钮本来就是禁用的；这里覆盖的是另一条路径——
+  // 预览**在途时**按钮按本地估算可点，点下去后预览返回 0，必须如实告知而
+  // 不是弹一个"将对 2 只标的"的确认框。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await mockHoldingsPage(page) // 本地看起来有 2 只可分析
+  await page.route('**/api/securities/analyses', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+  await page.route('**/api/securities/active-analysis-jobs', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+  )
+
+  let releasePreview: (() => void) | null = null
+  const previewReleased = new Promise<void>((resolve) => {
+    releasePreview = resolve
+  })
+  await page.route('**/api/securities/analysis-batch-targets', async (route) => {
+    await previewReleased
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ total: 0, targets: [] }) // 后端排除后一只不剩
+    })
+  })
+
+  await page.goto('/holdings')
+  await page.getByTestId('analyze-all-button').click()
+  releasePreview!()
+
+  await expect(page.getByText('当前没有可分析的持仓标的', { exact: false })).toBeVisible({
+    timeout: 15000
+  })
+  await expect(page.locator('.el-message-box')).toHaveCount(0)
 })

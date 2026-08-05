@@ -18,7 +18,7 @@ from .background_job_store import (
     create_or_get_active_job,
     get_job,
     handle_job_failure,
-    update_job,
+    set_job_progress,
 )
 from .job_worker import register_runner
 
@@ -38,18 +38,9 @@ JOB_TYPE = "performance_history_sync"
 
 
 def _set_job_progress(job_id: str, **updates) -> None:
-    status = updates.pop("status", None)
-    error = updates.pop("error", None)
+    """本地薄封装（保留 finished_at 兼容剔除）；实现见 background_job_store。"""
     updates.pop("finished_at", None)
-    update_job(
-        job_id,
-        JOB_TYPE,
-        data_updates=updates,
-        status=status,
-        error=error,
-        calculate_progress=True,
-        required_status="running",
-    )
+    set_job_progress(job_id, JOB_TYPE, **updates)
 
 
 def _default_history_sync_end_date() -> date:
@@ -310,7 +301,10 @@ def run_performance_history_sync_job(job_id: str) -> None:
         execute_performance_history_sync_job(claimed)
     except Exception as exc:
         logger.exception("Performance history job %s failed", job_id)
-        handle_job_failure(job_id, JOB_TYPE, str(exc))
+        handle_job_failure(
+            job_id, JOB_TYPE, str(exc),
+            required_attempt_count=claimed.get("attempt_count"),
+        )
 
 
 def get_performance_history_sync_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:

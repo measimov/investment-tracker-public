@@ -524,6 +524,49 @@ body {
   color: var(--app-text);
 }
 
+/* ── 后台任务进度块：轮询型长任务的统一外观 ─────────────────────
+   历史行情同步 / 标的 AI 分析 / 批量分析共用。此前只有 Statistics 一处
+   scoped 副本，新增两处若各抄一份就会重演 .mobile-card 的 drift 教训
+   （见下方注释）。视图只负责往三个槽位填内容：header（状态 + 计数）、
+   detail（分项计数）、error（失败原因）。 */
+.job-progress {
+  padding: 12px;
+  margin-bottom: 14px;
+  background: var(--app-surface-secondary);
+  border: 1px solid var(--app-separator);
+  border-radius: var(--app-radius-sm);
+}
+
+.job-progress-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.job-progress-detail {
+  margin-top: 8px;
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.job-progress-error {
+  margin-top: 8px;
+  color: var(--app-danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .job-progress-header {
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
 /* ── 移动卡片列表（≤640）：窄屏把表格换成卡片时的共用外观 ─────────
    Transactions / Holdings / AccountData / CorporateActions 共用一套。
    此前 Transactions 与 Holdings 各揣一份 drift 的双胞胎（卡片间距、
@@ -565,6 +608,41 @@ body {
 
   .mobile-card-title {
     min-width: 0;
+  }
+
+  /* 标题即入口：按钮而非 div，键盘可聚焦、读屏可识别。
+     44px 下限是拇指点击的最小可靠区域（iOS HIG） */
+  .mobile-card-title-link {
+    display: block;
+    min-height: 44px;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .mobile-card-title-link .mobile-card-symbol {
+    color: var(--app-primary);
+  }
+
+  .mobile-card-title-link:active .mobile-card-symbol {
+    opacity: 0.6;
+  }
+
+  .mobile-card-title-link:focus-visible {
+    outline: 2px solid var(--app-primary);
+    outline-offset: 2px;
+    border-radius: var(--app-radius-sm);
+  }
+
+  .mobile-card-title-chevron {
+    margin-left: 2px;
+    color: var(--app-text-muted);
+    font-size: 13px;
+    vertical-align: middle;
   }
 
   .mobile-card-symbol {

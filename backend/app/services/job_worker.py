@@ -58,7 +58,12 @@ def execute_claimed_job(claimed: Dict[str, Any]) -> None:
             claimed["job_type"],
             claimed.get("attempt_count"),
         )
-        store.handle_job_failure(claimed["id"], claimed["job_type"], str(exc))
+        store.handle_job_failure(
+            claimed["id"], claimed["job_type"], str(exc),
+            # 只有本次 attempt 仍是当前 attempt 时才改写：租约过期被接管后，
+            # 旧 runner 的异常不得把接管者的执行重新排队/标失败
+            required_attempt_count=claimed.get("attempt_count"),
+        )
 
 
 class JobWorker:

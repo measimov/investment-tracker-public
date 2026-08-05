@@ -372,8 +372,8 @@
               </el-tag>
             </div>
 
-            <div v-if="historySyncJob" class="history-sync-progress">
-              <div class="sync-progress-header">
+            <div v-if="historySyncJob" class="job-progress">
+              <div class="job-progress-header">
                 <span>{{ historySyncStatusText }}</span>
                 <span>
                   {{ historySyncJob.completed || 0 }}/{{ historySyncJob.total || 0 }}
@@ -387,12 +387,12 @@
                 :status="historySyncProgressStatus"
                 :stroke-width="10"
               />
-              <div class="sync-progress-detail">
+              <div class="job-progress-detail">
                 成功 {{ historySyncJob.success_count || 0 }} · 跳过
                 {{ historySyncJob.skipped_count || 0 }} · 失败
                 {{ historySyncJob.failed_count || 0 }}
               </div>
-              <div v-if="historySyncJob.error" class="sync-progress-error">
+              <div v-if="historySyncJob.error" class="job-progress-error">
                 {{ historySyncJob.error }}
               </div>
             </div>
@@ -1879,37 +1879,6 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 
-.history-sync-progress {
-  padding: 12px;
-  margin-bottom: 14px;
-  background: var(--app-surface-secondary);
-  border: 1px solid var(--app-separator);
-  border-radius: var(--app-radius-sm);
-}
-
-.sync-progress-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-  color: var(--app-text);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.sync-progress-detail {
-  margin-top: 8px;
-  color: var(--app-text-muted);
-  font-size: 12px;
-}
-
-.sync-progress-error {
-  margin-top: 8px;
-  color: var(--app-danger);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .stat-detail {
   margin-top: 16px;
   padding: 4px 0;
@@ -1999,11 +1968,6 @@ onUnmounted(() => {
 
   .metric-value {
     font-size: 18px;
-  }
-
-  .sync-progress-header {
-    flex-direction: column;
-    gap: 4px;
   }
 
   .stat-item {

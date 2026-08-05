@@ -4,7 +4,7 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`c901a0dc6d0966b89544891dc35e2fe749bf165e` (2026-08-03).
+`775820ecacf8fba8be664c1555b13e02effd4cde` (2026-08-05).
 
 Before syncing a new public release:
 
@@ -29,5 +29,7 @@ Public-only adaptations:
   isolated-test wording.
 - Keep `TUSHARE_TOKEN` optional (empty default) in `.env.example`,
   `docker-compose.yml`, and deployment docs.
+- Test report fixtures contain excerpts and metadata from public regulatory
+  filings; they do not contain broker statements or user portfolio data.
 - Treat the squashed `20260728_0001_initial_schema.py` as a fresh pre-v1.0
   baseline; it is not an in-place upgrade from the first public snapshot.

@@ -95,7 +95,10 @@ def run_llm_report_job(job_id: str) -> None:
         execute_llm_report_job(claimed)
     except Exception as exc:
         logger.exception("LLM report job %s failed", job_id)
-        handle_job_failure(job_id, JOB_TYPE, str(exc))
+        handle_job_failure(
+            job_id, JOB_TYPE, str(exc),
+            required_attempt_count=claimed.get("attempt_count"),
+        )
 
 
 def get_llm_report_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:

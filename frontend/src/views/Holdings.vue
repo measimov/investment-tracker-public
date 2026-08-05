@@ -8,6 +8,33 @@
             <el-button type="success" :icon="Refresh" @click="refreshPrices" :loading="refreshing">
               一键刷新股价
             </el-button>
+            <el-tooltip :disabled="analyzableCount > 0" content="当前持仓没有 A股/美股/港股 标的">
+              <span>
+                <el-button
+                  type="primary"
+                  :icon="MagicStick"
+                  :loading="batchStarting"
+                  :disabled="analyzableCount === 0 || isBatchActive || isDigestActive"
+                  data-testid="analyze-all-button"
+                  @click="analyzeAllHoldings"
+                >
+                  一键分析所有持仓
+                </el-button>
+              </span>
+            </el-tooltip>
+            <el-tooltip :disabled="analyzableCount > 0" content="当前持仓没有 A股/美股/港股 标的">
+              <span>
+                <el-button
+                  :icon="Notebook"
+                  :loading="digestStarting"
+                  :disabled="analyzableCount === 0 || isBatchActive || isDigestActive"
+                  data-testid="digest-backfill-button"
+                  @click="backfillAllDigests"
+                >
+                  补齐财报摘要
+                </el-button>
+              </span>
+            </el-tooltip>
             <el-select
               v-model="selectedAccount"
               placeholder="选择账户"
@@ -41,6 +68,95 @@
           </div>
         </div>
       </template>
+
+      <div v-if="batchJob" class="job-progress" data-testid="batch-analysis-progress">
+        <div class="job-progress-header">
+          <span>{{ batchStatusText }}</span>
+          <span>
+            {{ batchJob.completed || 0 }}/{{ batchJob.total || 0 }}
+            <template v-if="batchJob.current_symbol">
+              · {{ batchJob.current_symbol }} {{ batchJob.current_market }}
+              <template v-if="batchJob.current_stage">（{{ batchJob.current_stage }}）</template>
+            </template>
+          </span>
+        </div>
+        <el-progress :percentage="batchPercent" :status="batchProgressStatus" :stroke-width="10" />
+        <div class="job-progress-detail">
+          成功 {{ batchJob.success_count || 0 }} · 跳过 {{ batchJob.skipped_count || 0 }} · 失败
+          {{ batchJob.failed_count || 0 }}
+          <template v-if="batchEtaText">· 预计剩余 {{ batchEtaText }}</template>
+        </div>
+        <div v-if="recentBatchResults.length" class="batch-recent">
+          <span
+            v-for="item in recentBatchResults"
+            :key="`${item.symbol}:${item.market}`"
+            :class="{ 'batch-recent-failed': item.status === 'failed' }"
+          >
+            {{ item.symbol }} {{ batchResultLabel(item) }}
+          </span>
+        </div>
+        <div v-if="batchJob.abort_reason" class="job-progress-error">
+          {{ batchJob.abort_reason }}
+        </div>
+        <div v-if="isBatchActive" class="job-progress-actions">
+          <el-button
+            size="small"
+            type="danger"
+            text
+            data-testid="cancel-batch-button"
+            @click="cancelBatchAnalysis"
+          >
+            终止任务
+          </el-button>
+          <el-button size="small" text data-testid="stop-watching-batch" @click="stopWatchingBatch">
+            停止查看进度
+          </el-button>
+          <span class="batch-hint">
+            「停止查看」只停止本页轮询，后台任务会继续运行并继续消耗
+            token；重新进入持仓页可继续查看。
+          </span>
+        </div>
+      </div>
+
+      <div v-if="digestJob" class="job-progress" data-testid="digest-backfill-progress">
+        <div class="job-progress-header">
+          <span>{{ digestStatusText }}</span>
+          <span>
+            {{ digestJob.completed || 0 }}/{{ digestJob.total || 0 }}
+            <template v-if="digestJob.current_symbol">
+              · {{ digestJob.current_symbol }} {{ digestJob.current_market }}
+            </template>
+          </span>
+        </div>
+        <el-progress
+          :percentage="digestPercent"
+          :status="digestProgressStatus"
+          :stroke-width="10"
+        />
+        <div class="job-progress-detail">
+          已生成摘要 {{ digestJob.digests_generated || 0 }} 份 · 标的成功
+          {{ digestJob.success_count || 0 }} · 失败 {{ digestJob.failed_count || 0 }}
+          <template v-if="digestEtaText">· 预计剩余 {{ digestEtaText }}</template>
+        </div>
+        <div v-if="digestJob.abort_reason" class="job-progress-error">
+          {{ digestJob.abort_reason }}
+        </div>
+        <div v-if="isDigestActive" class="job-progress-actions">
+          <el-button
+            size="small"
+            type="danger"
+            text
+            data-testid="cancel-digest-backfill"
+            @click="cancelDigestBackfill"
+          >
+            终止任务
+          </el-button>
+          <el-button size="small" text @click="stopWatchingDigest">停止查看进度</el-button>
+          <span class="batch-hint">
+            「停止查看」只停止本页轮询，后台任务会继续运行；重新进入持仓页可继续查看。
+          </span>
+        </div>
+      </div>
 
       <div v-if="!isMobileView" class="responsive-table desktop-data-table">
         <el-table :data="visibleHoldings" v-loading="loading" stripe>
@@ -197,10 +313,21 @@
           data-testid="holding-card"
         >
           <div class="mobile-card-head">
-            <div class="mobile-card-title">
-              <span class="mobile-card-symbol">{{ row.symbol }}</span>
-              <span class="mobile-card-name">{{ row.name }}</span>
-            </div>
+            <!-- 移动端此前是纯 span：桌面端标题是 el-link 可进标的档案，手机上
+                 整页没有任何入口，AI 分析/财报摘要在手机上根本打不开 -->
+            <button
+              type="button"
+              class="mobile-card-title mobile-card-title-link"
+              data-testid="holding-card-title"
+              :aria-label="`查看 ${row.name || row.symbol} 的标的档案`"
+              @click="openSecurityDetail(row)"
+            >
+              <span class="mobile-card-symbol" data-testid="holding-card-symbol">
+                {{ row.symbol }}
+                <el-icon class="mobile-card-title-chevron"><ArrowRight /></el-icon>
+              </span>
+              <span v-if="row.name" class="mobile-card-name">{{ row.name }}</span>
+            </button>
             <div class="mobile-card-tags">
               <el-tag size="small" effect="plain">{{ row.market }}</el-tag>
               <el-tag size="small" type="info" effect="plain">
@@ -209,6 +336,21 @@
               <el-tag v-if="upcomingEvent(row)" type="warning" size="small" effect="plain">
                 {{ upcomingEvent(row)!.label }}·{{ upcomingEvent(row)!.daysText }}
               </el-tag>
+              <!-- AI 标签：移动端只取 1 个（标签行已有市场/账户/事件三个 tag）。
+                   没有这块，手机上发起批量分析后回到本页看不到任何结果 -->
+              <template v-if="analysisFor(row)">
+                <el-tag
+                  :type="riskTagType(analysisFor(row)!.risk_level)"
+                  size="small"
+                  effect="plain"
+                  data-testid="ai-tags"
+                >
+                  {{ RISK_LABELS[analysisFor(row)!.risk_level] || analysisFor(row)!.risk_level }}
+                </el-tag>
+                <el-tag v-if="analysisFor(row)!.tags[0]" size="small" effect="plain" type="warning">
+                  {{ analysisFor(row)!.tags[0] }}
+                </el-tag>
+              </template>
             </div>
           </div>
 
@@ -392,10 +534,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowRight, MagicStick, Notebook, QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import api from '../api'
 import { useHoldingsStore, type Holding } from '../stores/holdings'
 import { useTransactionsStore } from '../stores/transactions'
@@ -720,9 +862,16 @@ function getProfitColor(row: Holding) {
 }
 
 onMounted(async () => {
+  isUnmounted = false
   await Promise.all([loadExchangeRates(), loadHoldings(), loadBrokerAccounts()])
   loadSecurityEvents()
   loadSecurityAnalyses()
+  loadBatchTargetCount()
+  attachToActiveBatchJob() // 刷新页面/切走再回来时接上进行中的批量任务
+})
+
+onUnmounted(() => {
+  isUnmounted = true
 })
 
 // ---------------------------------------------------------------------------
@@ -761,6 +910,481 @@ async function loadSecurityAnalyses() {
     securityAnalyses.value = map
   } catch {
     // 标签列失败静默：不打断持仓主流程
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 批量分析（一键分析所有持仓）
+//
+// 后端是串行长任务（数十分钟到数小时），前端只负责启动、轮询展示与终止。
+// 三种语义严格区分，文案不得混用：
+//   离开页面   → 任务继续，回来自动恢复（无 UI）
+//   停止查看   → 只停本页轮询，token 照烧
+//   终止任务   → 真正中止（后端在标的边界收尾）
+// ---------------------------------------------------------------------------
+
+// 与后端 security_profile_service.SUPPORTED_MARKETS 对齐；其余市场后端 409
+const ANALYZABLE_MARKETS = new Set(['A股', '美股', '港股'])
+// 纯 UI 量级提示：单标的实测 1~3 分钟（同步基本面 + 已有摘要 + LLM 生成）
+const MINUTES_PER_SYMBOL_LOW = 1
+const MINUTES_PER_SYMBOL_HIGH = 3
+const BATCH_POLL_INTERVAL_MS = 5000
+// 先定墙钟上限（6 小时）再反推次数；超时只是停止本页轮询，任务仍在后台
+const BATCH_POLL_MAX_ATTEMPTS = 4320
+
+interface BatchResultRow {
+  symbol: string
+  market: string
+  status: string
+  error?: string | null
+  reason?: string | null
+}
+
+interface AnalysisBatchJob {
+  id?: string
+  status?: string
+  total?: number
+  completed?: number
+  progress_percent?: number | string | null
+  success_count?: number
+  failed_count?: number
+  skipped_count?: number
+  current_symbol?: string | null
+  current_market?: string | null
+  current_stage?: string | null
+  results?: BatchResultRow[]
+  abort_reason?: string | null
+  cancelled?: boolean
+  started_at?: string | null
+  [key: string]: unknown
+}
+
+const batchJob = ref<AnalysisBatchJob | null>(null)
+const batchStarting = ref(false)
+const batchWatchStopped = ref(false)
+let isUnmounted = false
+
+// 目标数以后端预览为准：后端还会排除已清仓、EXCLUDE 与 CASH_MANAGEMENT 标的，
+// 只按支持市场在本地算会虚高（持有货币基金时尤其明显），启动后 job.total 又
+// 突然变小。
+//
+// 三态而不是"count 为 null 就回退"：null 既表示"还没取到"也表示"取失败了"，
+// 混在一起会让预览**在途期间**也用本地数——用户此时点按钮就会看到错误的目标数。
+// 因此确认框前必须等预览定案，只有**确定失败**才回退本地估算。
+type BatchTargetsState = 'idle' | 'loading' | 'ready' | 'failed'
+
+const batchTargetCount = ref<number | null>(null)
+const batchTargetsState = ref<BatchTargetsState>('idle')
+let batchTargetsPromise: Promise<void> | null = null
+
+const localAnalyzableCount = computed(
+  () =>
+    new Set(
+      holdings.value
+        .filter((row) => ANALYZABLE_MARKETS.has(row.market))
+        .map((row) => `${row.symbol}:${row.market}`)
+    ).size
+)
+
+// 按钮的启用判据：预览在途/失败时用本地估算保持可点（宁可点开后再告知
+// "没有可分析标的"，也不要把按钮错误地禁掉）。确认框里的数字另走 resolve。
+const analyzableCount = computed(() =>
+  batchTargetsState.value === 'ready' && batchTargetCount.value !== null
+    ? batchTargetCount.value
+    : localAnalyzableCount.value
+)
+
+function loadBatchTargetCount(force = false): Promise<void> {
+  if (batchTargetsPromise && !force) return batchTargetsPromise
+  batchTargetsState.value = 'loading'
+  batchTargetsPromise = (async () => {
+    try {
+      const response = await api.getSecurityAnalysisBatchTargets()
+      if (isUnmounted) return
+      batchTargetCount.value = Number(response.data?.total ?? 0)
+      batchTargetsState.value = 'ready'
+    } catch {
+      if (isUnmounted) return
+      batchTargetsState.value = 'failed' // 确定失败后才允许回退本地估算
+    }
+  })()
+  return batchTargetsPromise
+}
+
+/** 确认框用的目标数：等预览定案；只有确定失败才退回本地估算。 */
+async function resolveBatchTargetCount(): Promise<number> {
+  if (batchTargetsState.value !== 'ready') await loadBatchTargetCount()
+  if (batchTargetsState.value === 'ready' && batchTargetCount.value !== null) {
+    return batchTargetCount.value
+  }
+  return localAnalyzableCount.value
+}
+
+const isBatchActive = computed(
+  () => batchJob.value?.status === 'queued' || batchJob.value?.status === 'running'
+)
+
+const batchPercent = computed(() =>
+  Math.max(0, Math.min(100, Math.round(Number(batchJob.value?.progress_percent || 0))))
+)
+
+const batchProgressStatus = computed(() => {
+  const status = batchJob.value?.status
+  if (status === 'failed') return 'exception'
+  if (status === 'interrupted') return 'warning'
+  if (status === 'succeeded') return 'success'
+  return undefined
+})
+
+const BATCH_STATUS_LABELS: Record<string, string> = {
+  queued: '批量分析排队中',
+  running: '批量分析进行中',
+  succeeded: '批量分析完成',
+  failed: '批量分析失败',
+  interrupted: '批量分析已终止'
+}
+
+const batchStatusText = computed(
+  () => BATCH_STATUS_LABELS[String(batchJob.value?.status || '')] || '批量分析进行中'
+)
+
+const recentBatchResults = computed<BatchResultRow[]>(() =>
+  [...(batchJob.value?.results || [])].slice(-5).reverse()
+)
+
+function batchResultLabel(item: BatchResultRow): string {
+  if (item.status === 'succeeded') return '已分析'
+  if (item.status === 'skipped') return '已跳过'
+  return '失败'
+}
+
+// 剩余时间估计：数小时的任务没有 ETA，用户读不出"还要多久"与"是不是卡死了"
+const batchEtaText = computed(() => {
+  const job = batchJob.value
+  if (!job || !isBatchActive.value) return ''
+  const completed = Number(job.completed || 0)
+  const total = Number(job.total || 0)
+  if (completed < 2 || total <= completed || !job.started_at) return ''
+  const elapsedMs = Date.now() - Date.parse(job.started_at)
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return ''
+  const remainingMinutes = Math.round(((elapsedMs / completed) * (total - completed)) / 60000)
+  if (remainingMinutes < 1) return '不到 1 分钟'
+  if (remainingMinutes < 90) return `约 ${remainingMinutes} 分钟`
+  return `约 ${(remainingMinutes / 60).toFixed(1)} 小时`
+})
+
+function batchEstimateText(count: number): string {
+  const low = count * MINUTES_PER_SYMBOL_LOW
+  const high = count * MINUTES_PER_SYMBOL_HIGH
+  if (high <= 90) return `${low}~${high} 分钟`
+  return `约 ${(low / 60).toFixed(1)}~${(high / 60).toFixed(1)} 小时`
+}
+
+async function analyzeAllHoldings() {
+  batchStarting.value = true
+  // 先等目标预览定案，确认框里的数量/耗时/token 预期不能用在途的本地估算
+  const targetCount = await resolveBatchTargetCount()
+  if (isUnmounted) return
+  if (targetCount === 0) {
+    batchStarting.value = false
+    ElMessage.info('当前没有可分析的持仓标的（A股/美股/港股，且不含已排除与现金管理标的）')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将对 ${targetCount} 只持仓标的（A股/美股/港股）逐个同步基本面并调用 LLM 生成分析，` +
+        `预计耗时 ${batchEstimateText(targetCount)}，会消耗较多 LLM token。\n` +
+        `24 小时内已分析过的标的会自动跳过；任务在后台运行，关闭页面不会中断。`,
+      '一键分析所有持仓',
+      { type: 'warning', confirmButtonText: '开始分析', cancelButtonText: '取消' }
+    )
+  } catch {
+    batchStarting.value = false
+    return // 用户取消
+  }
+
+  batchWatchStopped.value = false
+  try {
+    const response = await api.startSecurityAnalysisBatchJob()
+    if (isUnmounted) return
+    batchJob.value = response.data as AnalysisBatchJob
+    // 启动完成即收起 loading：轮询要跑数十分钟到数小时，让按钮一直转圈既无
+    // 信息量（进度块已经在显示了），也与"活跃时只禁用"的设计不符
+    batchStarting.value = false
+    await watchBatchJob(response.data.id)
+  } catch (error) {
+    if (isUnmounted) return
+    ElMessage.error(getApiErrorMessage(error, '批量分析启动失败'))
+  } finally {
+    if (!isUnmounted) batchStarting.value = false
+  }
+}
+
+async function watchBatchJob(jobId: string) {
+  try {
+    const job = await pollJobUntilDone(() => api.getSecurityAnalysisBatchJob(jobId), {
+      intervalMs: BATCH_POLL_INTERVAL_MS,
+      maxAttempts: BATCH_POLL_MAX_ATTEMPTS,
+      isCancelled: () => isUnmounted || batchWatchStopped.value,
+      onUpdate: (job) => {
+        if (isUnmounted || batchWatchStopped.value) return
+        const previous = Number(batchJob.value?.completed || 0)
+        batchJob.value = job as AnalysisBatchJob
+        // 每完成一只就刷一次标签列：标签一格一格亮起来是最好的进度反馈
+        if (Number(job.completed || 0) > previous) loadSecurityAnalyses()
+      },
+      timeoutMessage: '批量分析仍在后台运行；重新进入持仓页可继续查看进度',
+      failureMessage: '批量分析失败'
+    })
+    if (!job || isUnmounted) return
+    await loadSecurityAnalyses()
+    loadBatchTargetCount(true) // 新鲜度窗口变了，下次的目标数随之变化
+    const success = Number(job.success_count || 0)
+    const skipped = Number(job.skipped_count || 0)
+    const failed = Number(job.failed_count || 0)
+    const summary =
+      `批量分析完成：成功 ${success} 只` +
+      (skipped ? `，跳过 ${skipped} 只` : '') +
+      (failed ? `，失败 ${failed} 只` : '')
+    if (!failed) ElMessage.success(summary)
+    else if (success > 0) ElMessage.warning(summary)
+    else ElMessage.error('批量分析全部失败，请检查 LLM 配置后重试')
+  } catch (error) {
+    if (isUnmounted || batchWatchStopped.value) return
+    // 终止是用户主动行为，不当作错误弹红
+    if (batchJob.value?.cancelled) {
+      await loadSecurityAnalyses()
+      ElMessage.info('批量分析已终止，已生成的分析已保留')
+      return
+    }
+    ElMessage.error(getApiErrorMessage(error, '批量分析失败'))
+  }
+}
+
+async function cancelBatchAnalysis() {
+  const jobId = batchJob.value?.id
+  if (!jobId) return
+  try {
+    await ElMessageBox.confirm(
+      '已生成的分析会保留，未开始的标的不再分析。当前正在分析的标的会先跑完再停止。',
+      '终止批量分析',
+      { type: 'warning', confirmButtonText: '终止', cancelButtonText: '继续运行' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api.cancelSecurityAnalysisBatchJob(jobId)
+    if (!isUnmounted) ElMessage.info('已请求终止，当前标的完成后停止')
+  } catch (error) {
+    if (!isUnmounted) ElMessage.error(getApiErrorMessage(error, '终止失败'))
+  }
+}
+
+function stopWatchingBatch() {
+  batchWatchStopped.value = true
+  batchJob.value = null
+}
+
+// ---------------------------------------------------------------------------
+// 批量财报摘要回填（商业画像与"财报要点"的原料；可重复触发续跑加深至十年）
+// ---------------------------------------------------------------------------
+
+interface DigestBatchJob {
+  id: string
+  type?: string
+  status: string
+  total?: number
+  completed?: number
+  progress_percent?: number
+  success_count?: number
+  failed_count?: number
+  digests_generated?: number
+  digests_blocked?: number
+  symbols_with_remaining?: number
+  current_symbol?: string | null
+  current_market?: string | null
+  cancelled?: boolean
+  abort_reason?: string | null
+  started_at?: string | null
+  [key: string]: unknown
+}
+
+const digestJob = ref<DigestBatchJob | null>(null)
+const digestStarting = ref(false)
+const digestWatchStopped = ref(false)
+
+const isDigestActive = computed(
+  () => digestJob.value?.status === 'queued' || digestJob.value?.status === 'running'
+)
+
+const digestPercent = computed(() =>
+  Math.max(0, Math.min(100, Math.round(Number(digestJob.value?.progress_percent || 0))))
+)
+
+const digestProgressStatus = computed(() => {
+  const status = digestJob.value?.status
+  if (status === 'failed') return 'exception'
+  if (status === 'interrupted') return 'warning'
+  if (status === 'succeeded') return 'success'
+  return undefined
+})
+
+const DIGEST_STATUS_LABELS: Record<string, string> = {
+  queued: '财报摘要回填排队中',
+  running: '财报摘要回填进行中',
+  succeeded: '财报摘要回填完成',
+  failed: '财报摘要回填失败',
+  interrupted: '财报摘要回填已终止'
+}
+
+const digestStatusText = computed(
+  () => DIGEST_STATUS_LABELS[String(digestJob.value?.status || '')] || '财报摘要回填进行中'
+)
+
+const digestEtaText = computed(() => {
+  const job = digestJob.value
+  if (!job || !isDigestActive.value) return ''
+  const completed = Number(job.completed || 0)
+  const total = Number(job.total || 0)
+  if (completed < 2 || total <= completed || !job.started_at) return ''
+  const elapsedMs = Date.now() - Date.parse(job.started_at)
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return ''
+  const remainingMinutes = Math.round(((elapsedMs / completed) * (total - completed)) / 60000)
+  if (remainingMinutes < 1) return '不到 1 分钟'
+  if (remainingMinutes < 90) return `约 ${remainingMinutes} 分钟`
+  return `约 ${(remainingMinutes / 60).toFixed(1)} 小时`
+})
+
+async function backfillAllDigests() {
+  digestStarting.value = true
+  // 预览是纯 DB 统计（不打外网），失败时如实说取不到，不用本地估算凑数——
+  // 本地根本不知道每个标的已有几份摘要
+  let preview: { targets_total: number; targets_without_digest: number; per_symbol_budget: number }
+  try {
+    preview = (await api.getDigestBackfillPreview()).data
+  } catch (error) {
+    if (!isUnmounted) {
+      digestStarting.value = false
+      ElMessage.error(getApiErrorMessage(error, '获取回填预览失败'))
+    }
+    return
+  }
+  if (isUnmounted) return
+  if (!preview.targets_total) {
+    digestStarting.value = false
+    ElMessage.info('当前没有可回填的持仓标的（A股/美股/港股）')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将为 ${preview.targets_total} 只持仓标的下载财报原文并生成 AI 摘要` +
+        `（其中 ${preview.targets_without_digest} 只目前一份摘要都没有）。\n` +
+        `每只本轮最多补 ${preview.per_symbol_budget} 份（新→旧）；已有的期数自动跳过，` +
+        `再次点击本按钮可继续向更早年份加深，直至十年补满。\n` +
+        `预计每只 2-8 分钟（下载与解析 PDF 为主），任务在后台运行，关闭页面不会中断。`,
+      '补齐财报摘要',
+      { type: 'warning', confirmButtonText: '开始回填', cancelButtonText: '取消' }
+    )
+  } catch {
+    digestStarting.value = false
+    return // 用户取消
+  }
+
+  digestWatchStopped.value = false
+  try {
+    const response = await api.startDigestBackfillJob()
+    if (isUnmounted) return
+    digestJob.value = response.data as DigestBatchJob
+    digestStarting.value = false
+    await watchDigestJob(response.data.id)
+  } catch (error) {
+    if (isUnmounted) return
+    ElMessage.error(getApiErrorMessage(error, '批量回填启动失败'))
+  } finally {
+    if (!isUnmounted) digestStarting.value = false
+  }
+}
+
+async function watchDigestJob(jobId: string) {
+  try {
+    const job = await pollJobUntilDone(() => api.getDigestBackfillJob(jobId), {
+      intervalMs: BATCH_POLL_INTERVAL_MS,
+      maxAttempts: BATCH_POLL_MAX_ATTEMPTS,
+      isCancelled: () => isUnmounted || digestWatchStopped.value,
+      onUpdate: (job) => {
+        if (isUnmounted || digestWatchStopped.value) return
+        digestJob.value = job as DigestBatchJob
+      },
+      timeoutMessage: '回填仍在后台运行；重新进入持仓页可继续查看进度',
+      failureMessage: '批量回填失败'
+    })
+    if (!job || isUnmounted) return
+    const generated = Number(job.digests_generated || 0)
+    const blocked = Number(job.digests_blocked || 0)
+    const remaining = Number(job.symbols_with_remaining || 0)
+    const failed = Number(job.failed_count || 0)
+    let summary = `财报摘要回填完成：新生成 ${generated} 份`
+    if (remaining) summary += `；${remaining} 只标的还有更早年份可补，再次点击可继续加深`
+    if (blocked) summary += `；${blocked} 份报告已永久失败（多次重试仍无法下载或摘要）`
+    if (failed) summary += `；${failed} 只标的失败`
+    // 有永久失败也不能弹绿：绿色 + "新生成 0 份" 会让用户以为一切正常
+    if (!failed && !blocked) ElMessage.success(summary)
+    else ElMessage.warning(summary)
+  } catch (error) {
+    if (isUnmounted || digestWatchStopped.value) return
+    if (digestJob.value?.cancelled) {
+      ElMessage.info('回填已终止，已生成的摘要已保留，可再次触发续跑')
+      return
+    }
+    ElMessage.error(getApiErrorMessage(error, '批量回填失败'))
+  }
+}
+
+async function cancelDigestBackfill() {
+  const jobId = digestJob.value?.id
+  if (!jobId) return
+  try {
+    await ElMessageBox.confirm(
+      '已生成的摘要会保留，未开始的标的不再处理。当前标的会先跑完再停止。',
+      '终止财报摘要回填',
+      { type: 'warning', confirmButtonText: '终止', cancelButtonText: '继续运行' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await api.cancelDigestBackfillJob(jobId)
+    if (!isUnmounted) ElMessage.info('已请求终止，当前标的完成后停止')
+  } catch (error) {
+    if (!isUnmounted) ElMessage.error(getApiErrorMessage(error, '终止失败'))
+  }
+}
+
+function stopWatchingDigest() {
+  digestWatchStopped.value = true
+  digestJob.value = null
+}
+
+async function attachToActiveBatchJob() {
+  try {
+    const response = await api.listActiveAnalysisJobs()
+    const jobs = (response.data || []) as AnalysisBatchJob[]
+    const analysis = jobs.find((job) => job.type === 'security_analysis_batch')
+    if (analysis?.id && !isUnmounted) {
+      batchWatchStopped.value = false
+      batchJob.value = analysis
+      await watchBatchJob(analysis.id)
+      return
+    }
+    const digest = jobs.find((job) => job.type === 'report_digest_batch')
+    if (digest?.id && !isUnmounted) {
+      digestWatchStopped.value = false
+      digestJob.value = digest as DigestBatchJob
+      await watchDigestJob(digest.id)
+    }
+  } catch {
+    // 恢复失败静默：不打断持仓主流程
   }
 }
 
@@ -834,6 +1458,33 @@ function eventTooltip(row: { symbol: string; market: string }): string {
 </script>
 
 <style scoped>
+/* 批量进度块的通用外观走 styles.css 的 .job-progress 套件；这里只留批量特有的 */
+.batch-recent {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
+.batch-recent-failed {
+  color: var(--app-danger);
+}
+
+.job-progress-actions {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-hint {
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+
 .summary-alert {
   margin-bottom: 12px;
 }

@@ -402,7 +402,7 @@ const api = {
     return apiClient.get('/corporate-actions/security-events', { params })
   },
 
-  // 标的档案（基本面数据 + LLM 分析；A股 only）
+  // 标的档案（基本面数据 + LLM 分析；A股/美股/港股）
   listSecurityAnalyses() {
     return apiClient.get('/securities/analyses')
   },
@@ -423,6 +423,50 @@ const api = {
   },
   getSecurityAnalysisJob(id: string) {
     return apiClient.get(`/securities/analysis-jobs/${id}`)
+  },
+  getReportSections(market: string, symbol: string) {
+    return apiClient.get(
+      `/securities/${encodeURIComponent(market)}/${encodeURIComponent(symbol)}/report-sections`
+    )
+  },
+  startReportBackfillJob(market: string, symbol: string) {
+    return apiClient.post(
+      `/securities/${encodeURIComponent(market)}/${encodeURIComponent(symbol)}/report-backfill-jobs`
+    )
+  },
+  // 批量分析（持仓页一键分析；每用户单活跃任务，可能运行数十分钟到数小时）
+  startSecurityAnalysisBatchJob(params?: QueryParams) {
+    return apiClient.post('/securities/analysis-batch-jobs', null, { params })
+  },
+  // 目标预览：确认框的数量/耗时估算必须与后端真实目标一致
+  getSecurityAnalysisBatchTargets() {
+    return apiClient.get('/securities/analysis-batch-targets')
+  },
+  getSecurityAnalysisBatchJob(jobId: string) {
+    return apiClient.get(`/securities/analysis-batch-jobs/${jobId}`)
+  },
+  cancelSecurityAnalysisBatchJob(jobId: string) {
+    return apiClient.post(`/securities/analysis-batch-jobs/${jobId}/cancel`)
+  },
+  // 无活跃任务时后端返回 200 + 空数组（刷新页面后恢复进度显示用）
+  listActiveAnalysisJobs() {
+    return apiClient.get('/securities/active-analysis-jobs')
+  },
+  getReportBackfillJob(id: string) {
+    return apiClient.get(`/securities/report-backfill-jobs/${id}`)
+  },
+  // 批量财报摘要回填（持仓页：一次给全部持仓补摘要，可重复触发续跑加深）
+  getDigestBackfillPreview() {
+    return apiClient.get('/securities/digest-backfill-preview')
+  },
+  startDigestBackfillJob() {
+    return apiClient.post('/securities/digest-backfill-jobs')
+  },
+  getDigestBackfillJob(jobId: string) {
+    return apiClient.get(`/securities/digest-backfill-jobs/${jobId}`)
+  },
+  cancelDigestBackfillJob(jobId: string) {
+    return apiClient.post(`/securities/digest-backfill-jobs/${jobId}/cancel`)
   },
 
   // AI 复盘报告（LLM）

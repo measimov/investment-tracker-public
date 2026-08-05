@@ -54,7 +54,10 @@ def run_price_refresh_job(job_id: str) -> None:
         execute_price_refresh_job(claimed)
     except Exception as exc:
         logger.exception("Price refresh job %s failed", job_id)
-        handle_job_failure(job_id, JOB_TYPE, str(exc))
+        handle_job_failure(
+            job_id, JOB_TYPE, str(exc),
+            required_attempt_count=claimed.get("attempt_count"),
+        )
 
 
 def get_price_refresh_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:

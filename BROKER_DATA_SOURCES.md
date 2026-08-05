@@ -14,8 +14,10 @@
   已用真实 token 验证连通（2026-08-02），三基准全部可用、无需兜底源。
 - **标的基本面（A股 only）**：`fina_indicator` / `forecast` / `express` / `daily_basic` /
   `dividend` / `fina_audit` / `pledge_stat` / `stk_holdertrade` 八接口已用真实 token
-  逐一实测可用（2026-08-02，注意增减持接口名为 stk_holdertrade）；港/美股无对应
-  接口，标的档案显式降级。
+  逐一实测可用（2026-08-02，注意增减持接口名为 stk_holdertrade）；三大报表
+  `income` / `balancesheet` / `cashflow` 同日实测可用（返回 85-152 列、仅合并
+  报表 report_type=1，同报告期存在多次披露/修正行）。港/美股无对应接口，
+  标的档案显式降级。
 
 本文区分三类事实：
 

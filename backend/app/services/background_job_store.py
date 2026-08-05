@@ -1,3 +1,5 @@
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -7,8 +9,11 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 from ..config import settings
+from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from ..models.background_job import BackgroundJob
+
+logger = get_app_logger(__name__)
 
 
 ACTIVE_STATUSES = {"queued", "running"}
@@ -257,25 +262,34 @@ def claim_next_runnable_job(
         db.close()
 
 
-def handle_job_failure(job_id: str, job_type: str, error: str) -> Optional[Dict[str, Any]]:
+def handle_job_failure(
+    job_id: str,
+    job_type: str,
+    error: str,
+    *,
+    required_attempt_count: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
     """Requeue a failed attempt with bounded exponential backoff, or fail it.
 
     Called for unexpected execution errors. Deterministic application-level
     failures should mark the job failed directly via update_job instead.
+
+    required_attempt_count 与 update_job 同义且同样重要：租约过期被接管后，
+    旧 attempt 的 runner 仍可能抛异常走到这里。不校验 attempt 就会把**接管者
+    正在跑的那一次**重新排队或直接标失败——僵尸执行照样能改写新 owner 的任务，
+    正是接管保护要消除的竞态。
     """
     now = _utcnow()
     db = SessionLocal()
     try:
-        job = (
-            db.query(BackgroundJob)
-            .filter(
-                BackgroundJob.id == job_id,
-                BackgroundJob.job_type == job_type,
-                BackgroundJob.status == "running",
-            )
-            .with_for_update()
-            .first()
+        query = db.query(BackgroundJob).filter(
+            BackgroundJob.id == job_id,
+            BackgroundJob.job_type == job_type,
+            BackgroundJob.status == "running",
         )
+        if required_attempt_count is not None:
+            query = query.filter(BackgroundJob.attempt_count == required_attempt_count)
+        job = query.with_for_update().first()
         if job is None:
             return None
         attempts = job.attempt_count or 0
@@ -341,7 +355,14 @@ def update_job(
     error: Optional[str] = None,
     calculate_progress: bool = False,
     required_status: Optional[str] = None,
+    required_attempt_count: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
+    """更新任务状态/进度；running 任务顺带续租。
+
+    required_attempt_count：只有 attempt_count 未变（本次执行未被接管）才写入。
+    租约过期后 worker 会重新认领并 attempt_count+1，此时旧执行的线程仍活着——
+    没有这道判据，僵尸线程会给接管者续租、并用自己的终态覆盖接管者的结果。
+    """
     now = _utcnow()
     db = SessionLocal()
     try:
@@ -351,6 +372,8 @@ def update_job(
         )
         if required_status:
             query = query.filter(BackgroundJob.status == required_status)
+        if required_attempt_count is not None:
+            query = query.filter(BackgroundJob.attempt_count == required_attempt_count)
         job = query.with_for_update().first()
         if not job:
             return None
@@ -382,6 +405,126 @@ def update_job(
         return _serialize(job)
     finally:
         db.close()
+
+
+def find_active_job_of_types(
+    user_id: int,
+    job_types: List[str],
+    *,
+    exclude_job_type: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """该用户在给定 job_type 集合中的任一活跃任务。
+
+    partial unique index 只覆盖单一 (user_id, job_type)，因此同一用户可以同时
+    跑单标的分析与批量分析——两者都在打同一批外部 API，会双倍消耗配额。
+    需要跨类型互斥的调用方用本函数显式预检。
+    """
+    types = [t for t in job_types if t != exclude_job_type]
+    if not types:
+        return None
+    db = SessionLocal()
+    try:
+        job = (
+            db.query(BackgroundJob)
+            .filter(
+                BackgroundJob.user_id == user_id,
+                BackgroundJob.job_type.in_(types),
+                BackgroundJob.status.in_(ACTIVE_STATUSES),
+            )
+            .order_by(BackgroundJob.created_at.desc())
+            .first()
+        )
+        return _serialize(job) if job else None
+    finally:
+        db.close()
+
+
+def set_job_progress(
+    job_id: str,
+    job_type: str,
+    *,
+    required_attempt_count: Optional[int] = None,
+    **updates: Any,
+) -> Optional[Dict[str, Any]]:
+    """运行中回写进度（并续租）：status/error 单独提出，其余浅合并进 data。
+
+    调用方只需传业务字段，例如
+    `set_job_progress(job_id, JOB_TYPE, completed=3, current_symbol="600036")`。
+    """
+    status = updates.pop("status", None)
+    error = updates.pop("error", None)
+    return update_job(
+        job_id,
+        job_type,
+        data_updates=updates or None,
+        status=status,
+        error=error,
+        calculate_progress=True,
+        required_status="running",
+        required_attempt_count=required_attempt_count,
+    )
+
+
+@contextmanager
+def job_heartbeat(
+    job_id: str,
+    job_type: str,
+    *,
+    attempt_count: Optional[int] = None,
+    interval_seconds: Optional[float] = None,
+    max_seconds: Optional[float] = None,
+):
+    """守护线程周期续租，覆盖**单次调用内部**就超过租约的区间。
+
+    阶段性进度回写解决"用户看得见的进度"，但一次 pdfplumber 解析大年报或一次
+    120s 超时的 LLM 调用本身就可能吃掉整个租约；租约过期会被 worker 当作 stale
+    接管重跑（并发双跑、重复烧 token）。
+
+    - interval 默认 = 租约 / 3，确保每个租约周期内至少续租两次。
+    - max_seconds 是护栏：超过后停止续租，把真正卡死的任务交还给 stale 回收，
+      避免制造"永不过期的僵尸任务"。
+    - attempt_count 传入后，一旦被接管（attempt_count 变化）续租即自动失效。
+    """
+    lease = settings.background_job_lease_seconds
+    interval = interval_seconds or max(lease / 3, 5)
+    deadline_seconds = (
+        max_seconds
+        if max_seconds is not None
+        else settings.background_job_stale_minutes * 60
+    )
+    stop_event = threading.Event()
+
+    def beat() -> None:
+        elapsed = 0.0
+        while not stop_event.wait(interval):
+            elapsed += interval
+            if elapsed >= deadline_seconds:
+                logger.warning(
+                    "任务 %s(%s) 心跳超过 %.0fs 上限，停止续租", job_id, job_type,
+                    deadline_seconds,
+                )
+                return
+            try:
+                updated = update_job(
+                    job_id,
+                    job_type,
+                    required_status="running",
+                    required_attempt_count=attempt_count,
+                )
+                if updated is None:
+                    return  # 已终态或已被接管：本次执行不再持有该任务
+            except Exception as exc:  # 心跳失败不得影响业务执行
+                logger.warning("任务 %s 心跳续租失败: %s", job_id, str(exc)[:150])
+
+    thread = threading.Thread(
+        target=beat, name=f"job-heartbeat-{job_id[:8]}", daemon=True
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        stop_event.set()
+        thread.join(timeout=5)
 
 
 def get_job(job_id: str, job_type: str, user_id: int) -> Optional[Dict[str, Any]]:

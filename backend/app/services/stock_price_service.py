@@ -169,6 +169,82 @@ def get_tushare_min_interval(api_name: str) -> float:
     return 0.0
 
 
+# ---------------------------------------------------------------------------
+# 接口级频率错误的自适应冷却
+#
+# Tushare 的低频接口（fina_audit / pledge_stat / stk_holdertrade 等在低积分
+# 账号上是"每分钟 1 次"）没有 per-interface 闸，批量分析连打必然撞限。
+# 预设固定长间隔会拖慢正常路径（11 个数据集里 3 个各等 60s，单标的分析从
+# 1.5 分钟变 4.5 分钟），所以改为**错误驱动**：只有真撞限了才对该接口冷却。
+#
+# 冷却状态是进程内的（与 _tushare_last_call_by_api 同前提）。当前部署是单
+# uvicorn 进程无 --workers；若将来多进程，两者需一并迁到 Redis/DB。
+# ---------------------------------------------------------------------------
+
+# 频率类：接口级、可等待恢复。致命类：token 失效/无权限，对整批等价。
+# 判定顺序敏感——"抱歉，您"是频率消息的前缀（"抱歉，您每分钟最多访问该接口500次"），
+# 必须先判频率。
+TUSHARE_RATE_SIGNATURES = ("每分钟最多访问", "每小时最多访问", "每天最多访问")
+TUSHARE_FATAL_SIGNATURES = ("积分不足", "权限", "抱歉，您")
+
+_tushare_cooldown_until: Dict[str, float] = {}
+_tushare_cooldown_strikes: Dict[str, int] = {}
+
+
+def classify_tushare_error(message: Any) -> str:
+    """"rate"（接口级频率，可冷却降级）/ "fatal"（token 或权限，整批等价）/ "other"。"""
+    text = str(message or "")
+    if any(signature in text for signature in TUSHARE_RATE_SIGNATURES):
+        return "rate"
+    if any(signature in text for signature in TUSHARE_FATAL_SIGNATURES):
+        return "fatal"
+    return "other"
+
+
+def note_tushare_rate_error(api_name: str, message: Any = "") -> float:
+    """记录接口频率错误并置冷却截止；返回本次冷却秒数。
+
+    指数退避 base→2×base→…，封顶 tushare_cooldown_max_seconds。base 取 65s
+    而非 60s：覆盖"每分钟"滑动窗口的边界。
+    """
+    with _tushare_rate_lock:
+        strikes = _tushare_cooldown_strikes.get(api_name, 0) + 1
+        _tushare_cooldown_strikes[api_name] = strikes
+        seconds = min(
+            settings.tushare_cooldown_base_seconds * (2 ** (strikes - 1)),
+            settings.tushare_cooldown_max_seconds,
+        )
+        _tushare_cooldown_until[api_name] = time.monotonic() + seconds
+    logger.warning(
+        "Tushare %s 触发接口频率限制（第 %d 次），冷却 %.0fs：%s",
+        api_name, strikes, seconds, str(message)[:150],
+    )
+    return seconds
+
+
+def clear_tushare_cooldown(api_name: str) -> None:
+    """调用成功即清零该接口的冷却与连击计数。"""
+    if api_name not in _tushare_cooldown_until and api_name not in _tushare_cooldown_strikes:
+        return
+    with _tushare_rate_lock:
+        _tushare_cooldown_until.pop(api_name, None)
+        _tushare_cooldown_strikes.pop(api_name, None)
+
+
+def tushare_cooldown_remaining(api_name: str) -> float:
+    """该接口剩余冷却秒数；<=0 表示无冷却。
+
+    调用方（sync_symbol_profile）据此决定"短冷却等一下"还是"长冷却跳过"。
+    **绝不能把这个等待放进 wait_for_tushare_rate_limit**——那里的 sleep 在
+    _tushare_rate_lock 临界区内，塞进十几分钟的冷却会让全进程所有 Tushare
+    调用（行情刷新、汇率、历史同步）一起阻塞。
+    """
+    until = _tushare_cooldown_until.get(api_name)
+    if until is None:
+        return 0.0
+    return max(0.0, until - time.monotonic())
+
+
 def wait_for_tushare_rate_limit(api_name: str):
     """全局闸 + per-API 闸在同一个锁临界区内合并计算，只 sleep 一次，
     并在真正放行时同时更新两个时间戳。
@@ -245,7 +321,11 @@ def configure_tushare_client_endpoint(pro_client) -> None:
 
 
 def tushare_query(api_name: str, **kwargs):
-    """Call a Tushare Pro API with the service's existing retry behavior."""
+    """Call a Tushare Pro API with the service's existing retry behavior.
+
+    这里是唯一同时持有 api_name 与原始错误文案的位置，因此接口级频率错误的
+    冷却记录挂在这一层（retry_with_backoff 对这些文案是快速失败，不会退避）。
+    """
 
     def fetch():
         wait_for_tushare_rate_limit(api_name)
@@ -255,7 +335,14 @@ def tushare_query(api_name: str, **kwargs):
             raise ValueError(f"tushare {api_name} 返回空数据")
         return data
 
-    return retry_with_backoff(fetch, max_retries=3, initial_delay=0.5, max_delay=3.0)
+    try:
+        result = retry_with_backoff(fetch, max_retries=3, initial_delay=0.5, max_delay=3.0)
+    except Exception as exc:
+        if classify_tushare_error(exc) == "rate":
+            note_tushare_rate_error(api_name, exc)
+        raise
+    clear_tushare_cooldown(api_name)
+    return result
 
 
 def tushare_query_once(api_name: str, **kwargs):

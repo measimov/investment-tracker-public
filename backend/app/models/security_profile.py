@@ -15,7 +15,7 @@ from ..database import Base
 
 
 class SecurityProfileData(Base):
-    """标的基本面数据表（全局，与 SecurityPrice 同定位，A股 only）。
+    """标的基本面数据表（全局，与 SecurityPrice 同定位；A股/美股/港股）。
 
     通用 JSON 存储：消费方只有 LLM（吃 JSON）与详情面板（展示表格），无
     关系查询需求，逐接口建表属过度设计。dataset 即 Tushare 接口名族，
@@ -40,7 +40,10 @@ class SecurityProfileData(Base):
         CheckConstraint(
             "dataset IN ("
             "'fina_indicator', 'forecast', 'express', 'daily_basic', "
-            "'dividend_history', 'fina_audit', 'pledge_stat', 'stk_holdertrade'"
+            "'dividend_history', 'fina_audit', 'pledge_stat', 'stk_holdertrade', "
+            "'income', 'balancesheet', 'cashflow', "
+            "'report_section', 'report_digest', 'business_profile', 'peer_list', "
+            "'edgar_companyfacts', 'yahoo_fundamentals', 'report_target_plan'"
             ")",
             name="ck_security_profile_dataset",
         ),

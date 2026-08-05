@@ -26,6 +26,14 @@ from .api import (
 )
 from .core.logging import configure_logging, get_app_logger
 from .services.background_job_store import cleanup_expired_jobs, interrupt_stale_jobs
+
+# 后台任务 runner 显式注册：worker 只认领 _runners 里已注册的 job_type，
+# 而注册发生在各 jobs 模块的 import 副作用里。只被路由函数体**懒加载**的模块
+# （report_digest_jobs / report_digest_batch_jobs）在冷启动时不会被导入——
+# 进程若在任务入队后重启，且没有用户再访问对应路由，queued/租约过期的任务
+# 永远不会被接管，只能被 stale 清理中断。这与 job 模块宣称的恢复语义相反。
+from .services import report_digest_batch_jobs as _report_digest_batch_jobs  # noqa: F401
+from .services import report_digest_jobs as _report_digest_jobs  # noqa: F401
 from .services.exchange_rate_service import refresh_rates_if_stale
 from .services.job_worker import register_periodic_task, start_worker, stop_worker
 
