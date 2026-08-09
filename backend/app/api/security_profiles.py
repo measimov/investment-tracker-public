@@ -1,7 +1,13 @@
 """标的档案 API：基本面数据、LLM 分析与分析任务。
 
-分析与档案是全局数据（不分用户）：登录即可读；分析任务按用户入队
-（每用户单活跃任务去重）。支持市场见 SUPPORTED_MARKETS（A股/美股/港股），其他市场显式 409。
+**全局表读取口径**（issue #137，全仓三处读取端点统一为这一条并各自声明）：
+分析与档案是全局数据（不分用户），登录即可读；**列表端点缺省按当前持仓
+收敛**（组合视角，如 /analyses），**单标的端点按请求标的返回**（允许查
+未持仓标的——详情页在建仓前调研正是这个场景）。corporate_actions 的
+/security-events 同口径。
+
+分析任务按用户入队（每用户单活跃任务去重）。支持市场见 SUPPORTED_MARKETS
+（A股/美股/港股），其他市场显式 409。
 """
 
 from typing import Any, Dict, List
@@ -73,7 +79,10 @@ def list_holding_analyses(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """当前用户持仓标的的最新分析摘要（持仓页 AI 标签列，一次取全）。"""
+    """当前用户持仓标的的最新分析摘要（持仓页 AI 标签列，一次取全）。
+
+    列表端点：按持仓收敛（见模块 docstring 的全局表读取口径）。
+    """
     held = (
         db.query(Holding.symbol, Holding.market)
         .filter(Holding.user_id == current_user.id, Holding.quantity > 0)
@@ -234,7 +243,10 @@ def get_latest_analysis(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """最新一条完整分析（含 Markdown 全文）。"""
+    """最新一条完整分析（含 Markdown 全文）。
+
+    单标的端点：允许查未持仓标的（见模块 docstring 的全局表读取口径）。
+    """
     analysis = _latest_analysis(db, symbol, market)
     if not analysis:
         raise HTTPException(status_code=404, detail="该标的暂无分析，请先生成")
@@ -253,7 +265,10 @@ def get_symbol_profile(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """基本面档案（分组、封顶）+ 标的事件 + 财报摘要，供详情页展示。"""
+    """基本面档案（分组、封顶）+ 标的事件 + 财报摘要，供详情页展示。
+
+    单标的端点：允许查未持仓标的（见模块 docstring 的全局表读取口径）。
+    """
     from ..services.report_digest_service import digest_progress, load_report_digests
 
     from ..services.business_profile_service import load_business_profile

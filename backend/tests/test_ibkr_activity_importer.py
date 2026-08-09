@@ -79,6 +79,11 @@ def stub_parsed_rows(monkeypatch, *flows: importer.ParsedIbkrFlow) -> None:
 
 
 def test_ibkr_import_resolves_name_from_symbol_lookup(monkeypatch):
+    """名称补齐由 enrich_security_names 负责（已移出 parse_rows）。
+
+    parse_rows 现在是纯函数：不打外网、不读进程级缓存，所以它只解析出
+    symbol/description，name 留给编排层补。
+    """
     monkeypatch.setattr(
         importer,
         "lookup_tushare_security_name",
@@ -86,6 +91,7 @@ def test_ibkr_import_resolves_name_from_symbol_lookup(monkeypatch):
             ("00883", "港股"): "中国海洋石油",
         }.get((symbol, market)),
     )
+    monkeypatch.setattr(importer, "_resolved_name_cache", {})
 
     contents = ibkr_csv(
         "Transaction History,Data,2026-05-07,U***00001,CNOOC LTD-H,买,883,"
@@ -96,8 +102,57 @@ def test_ibkr_import_resolves_name_from_symbol_lookup(monkeypatch):
 
     assert errors == []
     assert rows[0].symbol == "00883"
-    assert rows[0].name == "中国海洋石油"
     assert rows[0].description == "CNOOC LTD-H"
+    # parse 阶段不查名
+    assert rows[0].name is None
+
+    importer.enrich_security_names(rows)
+
+    assert rows[0].name == "中国海洋石油"
+
+
+def test_parse_rows_does_not_touch_the_network(monkeypatch):
+    """parse_rows 的纯度守卫：解析期间不得调用查名接口。
+
+    此前它在末尾内嵌 enrich_security_names，于是同一份字节输入两次解析可能
+    因外网状态/进程缓存得到不同的 name，且预览延迟与外网耦合。
+    """
+    calls = []
+    monkeypatch.setattr(
+        importer,
+        "lookup_tushare_security_name",
+        lambda symbol, market: calls.append((symbol, market)) or "不该被调用",
+    )
+    monkeypatch.setattr(importer, "_resolved_name_cache", {})
+
+    contents = ibkr_csv(
+        "Transaction History,Data,2026-05-07,U***00001,CNOOC LTD-H,买,883,"
+        "1000.0,27.36,HKD,-3493.05,-2.79,-3499.52"
+    )
+    rows, _, _, _ = parse_rows(contents, "ibkr.csv")
+
+    assert calls == [], f"parse_rows 仍在打外网：{calls}"
+    assert rows[0].name is None
+
+
+def test_parse_rows_is_deterministic_regardless_of_lookup(monkeypatch):
+    """同样的字节输入恒得同样的解析结果——与外网返回什么无关。"""
+    contents = ibkr_csv(
+        "Transaction History,Data,2026-05-07,U***00001,CNOOC LTD-H,买,883,"
+        "1000.0,27.36,HKD,-3493.05,-2.79,-3499.52"
+    )
+
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda s, m: "甲")
+    monkeypatch.setattr(importer, "_resolved_name_cache", {})
+    first, _, _, _ = parse_rows(contents, "ibkr.csv")
+
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda s, m: "乙")
+    monkeypatch.setattr(importer, "_resolved_name_cache", {})
+    second, _, _, _ = parse_rows(contents, "ibkr.csv")
+
+    assert [(r.symbol, r.name, r.description) for r in first] == [
+        (r.symbol, r.name, r.description) for r in second
+    ]
 
 
 def test_ibkr_option_detection_covers_occ_and_hk_alias_formats():
@@ -1107,3 +1162,291 @@ def test_name_lookup_overrides_never_hit_network(monkeypatch):
     key = ("01263", "港股")
     results = importer.resolve_security_names([key], name_overrides={key: "柏能集团"})
     assert results[key] == "柏能集团"
+
+
+# ---------------------------------------------------------------------------
+# issue #132 子项 A：持仓重算的事务边界
+#
+# IBKR 是三家导入器里唯一没有 pre-commit 持仓校验的（招商有
+# validate_account_positions_before_commit，东财有 validate_account_position_history
+# + 对账 MATCHED 门），所以它是唯一真的会走到"commit 之后重算失败"的通道。
+# ---------------------------------------------------------------------------
+
+
+def _import_lone_sell(db, monkeypatch):
+    """导入一份只有卖出、没有任何买入的对账单。
+
+    合并桶重放必然超卖（在所有账户加起来也没有可卖的量），
+    recalculate_holdings 抛 ValueError。
+    """
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    account = BrokerAccount(
+        user_id=1,
+        broker="IBKR",
+        account_name="IBKR 事务边界账户",
+        account_number_masked="****0001",
+        base_currency="USD",
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    contents = ibkr_csv(
+        "Transaction History,Data,2026-02-10,U***00001,APPLE INC,卖,AAPL,"
+        "-100.0,15.0,USD,1500.0,-1.0,1499.0"
+    )
+    return account, contents
+
+
+def test_ibkr_recalculation_failure_rolls_back_the_whole_batch(monkeypatch):
+    """重算失败 = 整批回滚 + FAILED，而不是 commit 后留下过期持仓。
+
+    改动前：db.commit() 先执行，重算失败只 errors.append → 批次 PARTIAL，
+    交易已落库但 holdings 停在导入前的值（数字变了、持仓表没跟上）；进程若在
+    commit 与重算之间崩溃，连 PARTIAL 都不会有，持仓静默过期。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account, contents = _import_lone_sell(db, monkeypatch)
+
+        with pytest.raises(ValueError, match="超过可用数量|exceeds available"):
+            import_ibkr_activity(
+                db, 1, contents, "ibkr-lone-sell.csv", broker_account_id=account.id
+            )
+        db.rollback()
+
+        # 整批回滚：交易/归档源行/持仓都不得留下
+        assert db.query(Transaction).count() == 0
+        assert db.query(IbkrActivityFlow).count() == 0
+        assert db.query(Holding).count() == 0
+
+        batch = db.query(ImportBatch).order_by(ImportBatch.id.desc()).first()
+        assert batch is not None, "失败也要留审计记录"
+        assert batch.status == "FAILED", (
+            f"重算失败应整批回滚为 FAILED，实际 {batch.status}："
+            f"{(batch.error_message or '')[:120]}"
+        )
+    finally:
+        db.close()
+
+
+def test_ibkr_successful_import_keeps_holdings_consistent(monkeypatch):
+    """正常路径不受事务边界改动影响：持仓与交易一致。"""
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = BrokerAccount(
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 正常账户",
+            account_number_masked="****0001",
+            base_currency="USD",
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+
+        contents = ibkr_csv(
+            "Transaction History,Data,2026-01-05,U***00001,APPLE INC,买,AAPL,"
+            "100.0,10.0,USD,-1000.0,-1.0,-1001.0",
+            "Transaction History,Data,2026-02-10,U***00001,APPLE INC,卖,AAPL,"
+            "-40.0,15.0,USD,600.0,-1.0,599.0",
+        )
+        result = import_ibkr_activity(
+            db, 1, contents, "ibkr-ok.csv", broker_account_id=account.id
+        )
+
+        assert result["imported_transactions"] == 2
+        holding = db.query(Holding).filter_by(user_id=1, symbol="AAPL", market="美股").one()
+        assert holding.quantity == Decimal("60.00000000")
+
+        batch = db.query(ImportBatch).order_by(ImportBatch.id.desc()).first()
+        assert batch.status in ("COMPLETED", "PARTIAL")
+    finally:
+        db.close()
+
+
+def test_ibkr_relisting_transfer_is_visible_to_recalculation(monkeypatch):
+    """转板补建的交易必须在重算前 flush（SessionLocal 是 autoflush=False）。
+
+    重算移进事务后暴露的隐性依赖：此前 apply_known_relisting_transfers 只
+    db.add 不 flush，靠随后的 db.commit() 顺带落库，重算才看得到那些交易。
+    把重算提前而不补 flush，转板标的会被误判成"卖出超过可用数量 0"。
+    """
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    from app.models.security_rule import SecurityRule
+
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        # RESET_MODELS 不含 SecurityRule：同文件其它转板用例会留下同键规则，
+        # 只清本用例要播的那一条，避免影响它们的前置状态。
+        db.query(SecurityRule).filter(
+            SecurityRule.user_id == 1, SecurityRule.rule_type == "RELISTING",
+            SecurityRule.symbol == "01263",
+        ).delete()
+        db.commit()
+        seed_security_rule(db, 1, "RELISTING", "01263", "港股", payload=PCT_RELISTING_PAYLOAD)
+        account = BrokerAccount(
+            user_id=1, broker="IBKR", account_name="转板账户",
+            account_number_masked="****0001", base_currency="USD",
+        )
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+
+        contents = ibkr_csv(
+            "Transaction History,Data,2025-12-09,U***00001,PC PARTNER GROUP LTD,"
+            "买,1263,2000.0,5.41,HKD,-1390.37,-2.313,-1394.136",
+            "Transaction History,Data,2026-05-04,U***00001,PC PARTNER GROUP LTD,"
+            "卖,PCT,-1000.0,1.91,SGD,1495.3963,-1.957325,1493.438975",
+        )
+        result = import_ibkr_activity(
+            db, 1, contents, "ibkr-relisting.csv", broker_account_id=account.id
+        )
+
+        # 关键：转板标的不得因未 flush 被误判成超卖而整批失败
+        assert result["errors"] == []
+        assert result["batch_status"] in ("COMPLETED", "PARTIAL")
+        new_holding = (
+            db.query(Holding)
+            .filter(Holding.user_id == 1, Holding.symbol == "PCT",
+                    Holding.market == "新加坡股")
+            .one()
+        )
+        assert new_holding.quantity == Decimal("1000.00000000")
+    finally:
+        db.query(SecurityRule).filter(
+            SecurityRule.user_id == 1, SecurityRule.rule_type == "RELISTING",
+            SecurityRule.symbol == "01263",
+        ).delete()
+        db.commit()
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# issue #132 子项 B 前置：「未归属税行重导恢复」端到端验证
+#
+# 这套机制（标记 unattributed_tax → 重导识别 unresolved_tax_sources → 就地
+# 转正）此前零测试覆盖。下沉到招商/东财之前必须先验证住——否则等于把一套
+# 未经验证的机制复制两份。
+# ---------------------------------------------------------------------------
+
+
+def _ibkr_account(db, name="IBKR 税行恢复账户"):
+    account = BrokerAccount(
+        user_id=1, broker="IBKR", account_name=name,
+        account_number_masked="****0001", base_currency="USD",
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+def test_ibkr_unattributed_tax_is_recovered_on_reimport(monkeypatch):
+    """税行先到、股息后到：重导必须就地转正，而不是永久失联。
+
+    这正是招商/东财缺失的能力（它们无链接归档 + hash 判重后，补齐股息重导
+    也会被跳过，tax_withheld 永远缺失）。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _ibkr_account(db)
+        tax_flow = parsed_ibkr_flow("a1" * 32, activity_type="外国预扣税", gross_amount="-1.5")
+
+        # 第一次导入：只有税行，找不到股息候选
+        stub_parsed_rows(monkeypatch, tax_flow)
+        first = import_ibkr_activity(db, 1, b"file-1", "ibkr.csv", broker_account_id=account.id)
+
+        assert first["batch_status"] == "PARTIAL"
+        assert any("found 0" in e for e in first["errors"])
+        orphan = db.query(IbkrActivityFlow).filter_by(row_hash=tax_flow.row_hash).one()
+        orphan_id = orphan.id
+        assert orphan.skip_reason == "unattributed_tax"
+        assert orphan.corporate_action_id is None
+        assert db.query(CorporateAction).count() == 0
+
+        # 第二次导入：同一税行 + 补上同日同标的股息
+        dividend_flow = parsed_ibkr_flow("b2" * 32, activity_type="股息", gross_amount="10")
+        stub_parsed_rows(monkeypatch, dividend_flow, tax_flow)
+        second = import_ibkr_activity(db, 1, b"file-2", "ibkr.csv", broker_account_id=account.id)
+
+        assert second["errors"] == []
+        assert second["imported_tax_adjustments"] == 1
+
+        action = db.query(CorporateAction).one()
+        assert action.action_type == "CASH_DIVIDEND"
+        assert action.tax_withheld == Decimal("1.5")
+        assert action.net_dividend == Decimal("8.5")
+
+        # 就地转正：同一行（id 不变），不是插新行
+        recovered = db.query(IbkrActivityFlow).filter_by(row_hash=tax_flow.row_hash).one()
+        assert recovered.id == orphan_id
+        assert recovered.skip_reason is None
+        assert recovered.corporate_action_id == action.id
+        assert "attributed during account-scoped re-import" in (recovered.notes or "")
+    finally:
+        db.close()
+
+
+def test_ibkr_recovered_tax_is_not_applied_twice(monkeypatch):
+    """转正之后再导同一文件：税额不得二次叠加（幂等）。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _ibkr_account(db, "IBKR 幂等账户")
+        tax_flow = parsed_ibkr_flow("c3" * 32, activity_type="外国预扣税", gross_amount="-1.5")
+        dividend_flow = parsed_ibkr_flow("d4" * 32, activity_type="股息", gross_amount="10")
+
+        stub_parsed_rows(monkeypatch, tax_flow)
+        import_ibkr_activity(db, 1, b"f1", "ibkr.csv", broker_account_id=account.id)
+        stub_parsed_rows(monkeypatch, dividend_flow, tax_flow)
+        import_ibkr_activity(db, 1, b"f2", "ibkr.csv", broker_account_id=account.id)
+
+        action = db.query(CorporateAction).one()
+        assert action.tax_withheld == Decimal("1.5")
+
+        # 第三次：完全相同的文件重导
+        third = import_ibkr_activity(db, 1, b"f3", "ibkr.csv", broker_account_id=account.id)
+
+        db.refresh(action)
+        assert action.tax_withheld == Decimal("1.5"), "重导不得把税额再叠加一次"
+        assert third["imported_tax_adjustments"] == 0
+        assert third["errors"] == []
+        # 该 hash 仍只有一行归档
+        assert db.query(IbkrActivityFlow).filter_by(row_hash=tax_flow.row_hash).count() == 1
+    finally:
+        db.close()
+
+
+def test_ibkr_tax_stays_unattributed_while_candidates_remain_ambiguous(monkeypatch):
+    """重导时股息候选仍不唯一（两条同日同标的）：保持未归属、不重复建行。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _ibkr_account(db, "IBKR 歧义账户")
+        tax_flow = parsed_ibkr_flow("e5" * 32, activity_type="外国预扣税", gross_amount="-1.5")
+
+        stub_parsed_rows(monkeypatch, tax_flow)
+        import_ibkr_activity(db, 1, b"f1", "ibkr.csv", broker_account_id=account.id)
+
+        # 两条同日同标的股息 → 候选数 2，仍无法唯一归属
+        div_a = parsed_ibkr_flow("f6" * 32, activity_type="股息", gross_amount="10")
+        div_b = parsed_ibkr_flow("a7" * 32, activity_type="股息", gross_amount="20")
+        stub_parsed_rows(monkeypatch, div_a, div_b, tax_flow)
+        second = import_ibkr_activity(db, 1, b"f2", "ibkr.csv", broker_account_id=account.id)
+
+        assert any("found 2" in e for e in second["errors"])
+        rows = db.query(IbkrActivityFlow).filter_by(row_hash=tax_flow.row_hash).all()
+        assert len(rows) == 1, "歧义时不得重复建归档行"
+        assert rows[0].skip_reason == "unattributed_tax"
+        assert rows[0].corporate_action_id is None
+        # 两条股息本身都正常入账且未被记税
+        for action in db.query(CorporateAction).all():
+            assert action.tax_withheld == Decimal("0")
+    finally:
+        db.close()

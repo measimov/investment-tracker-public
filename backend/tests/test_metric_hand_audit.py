@@ -17,7 +17,7 @@ from app.models.security_price import SecurityPrice
 from app.models.transaction import Transaction
 from app.services.portfolio.fifo import calculate_fifo_pnl
 from app.services.portfolio.metrics import calculate_risk_metrics, xirr
-from app.services.statistics_service import (
+from app.services.statistics import (
     calculate_performance_analytics,
     calculate_performance_summary,
 )
@@ -103,11 +103,15 @@ def _curve_point(day, daily_return, cumulative, drawdown):
 def test_risk_metrics_match_hand_computed_definitions():
     """收益序列 [+1%, −2%, +3%, 0%]、跨度 4 天、rf=0：
     - 累计 = 1.01×0.98×1.03×1.00 − 1 = 1.949394%
-    - 年化 = 1.01949394^(365/4) − 1
-    - 样本波动率(n−1) = sqrt(0.0013/3)，年化因子 = sqrt(365×4/4)
-    - 夏普 = 0.005/std × sqrt(365)
+    - 年化 = 1.01949394^(365.25/4) − 1
+    - 样本波动率(n−1) = sqrt(0.0013/3)，年化因子 = sqrt(365.25×4/4)
+    - 夏普 = 0.005/std × sqrt(365.25)
     - 索提诺分母按全样本 N：sqrt(0.0004/4) = 0.01
     - 卡玛 = 年化 / |maxDD|
+
+    年化天数基准统一为 365.25（issue #138）：此前风险指标用 365、XIRR 用
+    365.25，同一响应里两个"年化"基准不同且无字段说明——本文件下方的 XIRR
+    用例（:153）当时就已经写着 365.25，两个基准在同一份手算文档里并存。
     """
     cumulative = [1.0, -1.02, 1.949394, 1.949394]
     curve = [
@@ -121,12 +125,13 @@ def test_risk_metrics_match_hand_computed_definitions():
 
     mean = 0.005
     std = (0.0013 / 3) ** 0.5              # 样本方差（n−1）
-    annual_factor = 365 ** 0.5             # periods/year = 365×4样本/4天 = 365
+    annual_factor = 365.25 ** 0.5          # periods/year = 365.25×4样本/4天 = 365.25
     assert metrics["observation_span_days"] == 4
     assert metrics["risk_sample_count"] == 4
     assert metrics["total_return_rate"] == pytest.approx(1.949394)
+    assert metrics["annualization_days_basis"] == 365.25
     assert metrics["annualized_return_rate"] == pytest.approx(
-        (1.01949394 ** (365 / 4) - 1) * 100, rel=1e-6
+        (1.01949394 ** (365.25 / 4) - 1) * 100, rel=1e-6
     )
     assert metrics["annualized_volatility"] == pytest.approx(std * annual_factor * 100, rel=1e-9)
     assert metrics["sharpe_ratio"] == pytest.approx(mean / std * annual_factor, rel=1e-9)
@@ -134,7 +139,7 @@ def test_risk_metrics_match_hand_computed_definitions():
     assert metrics["sortino_ratio"] == pytest.approx(mean / 0.01 * annual_factor, rel=1e-9)
     assert metrics["max_drawdown_rate"] == pytest.approx(-2.0)
     assert metrics["calmar_ratio"] == pytest.approx(
-        ((1.01949394 ** (365 / 4) - 1)) / 0.02, rel=1e-6
+        ((1.01949394 ** (365.25 / 4) - 1)) / 0.02, rel=1e-6
     )
 
 

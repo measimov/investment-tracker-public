@@ -491,8 +491,11 @@
           type="warning"
           :closable="false"
           show-icon
-          title="存在待人工复核的未入账来源，可继续导入并保留审计记录"
-          :description="brokerPreview.warnings.slice(0, 8).join('；')"
+          :title="`存在待人工复核的未入账来源，可继续导入并保留审计记录${messageCountSuffix(
+            brokerPreview.warnings,
+            brokerPreview.warnings_total
+          )}`"
+          :description="brokerPreview.warnings.slice(0, PREVIEW_MESSAGE_LIMIT).join('；')"
         />
         <el-alert
           v-if="brokerPreview.errors?.length"
@@ -500,9 +503,30 @@
           type="error"
           :closable="false"
           show-icon
-          title="存在需要先处理的数据问题，当前不允许正式导入"
-          :description="brokerPreview.errors.slice(0, 8).join('；')"
+          :title="`存在需要先处理的数据问题，当前不允许正式导入${messageCountSuffix(
+            brokerPreview.errors,
+            brokerPreview.errors_total
+          )}`"
+          :description="brokerPreview.errors.slice(0, PREVIEW_MESSAGE_LIMIT).join('；')"
         />
+        <div v-if="brokerPreview.diagnostics" class="preview-diagnostics">
+          <el-collapse>
+            <el-collapse-item name="diagnostics">
+              <template #title>
+                <span>诊断报告（已脱敏，可直接发给维护者）</span>
+              </template>
+              <p class="preview-diagnostics__note">
+                报告只含版式指纹、标签词表与数值的比值/位数：不含金额、数量、价格与证券名称；
+                文件名与 PDF 元数据只回传结构分类和不可逆摘要，不含原文。
+              </p>
+              <div class="preview-diagnostics__actions">
+                <el-button size="small" @click="handleCopyDiagnostics">复制</el-button>
+                <el-button size="small" @click="handleDownloadDiagnostics">下载 JSON</el-button>
+              </div>
+              <pre class="preview-diagnostics__body">{{ diagnosticsText }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
       </div>
       <template #footer>
         <div class="mobile-dialog-footer">
@@ -582,6 +606,9 @@ interface BrokerPreview {
   date_end?: string
   warnings?: string[]
   errors?: string[]
+  warnings_total?: number
+  errors_total?: number
+  diagnostics?: Record<string, unknown> | null
   batch_status?: string
   reconciliation_status?: string
   [key: string]: unknown
@@ -625,6 +652,34 @@ const brokerPreviewHasBlockingErrors = computed(
     brokerPreview.value?.batch_status === 'FAILED' ||
     brokerPreview.value?.reconciliation_status === 'MISMATCHED'
 )
+// 后端把 errors/warnings 截到 50 条，这里再截到 8 条。没有"共 N 条"的话，
+// "看到 8 条"和"一共 8 条"在界面上完全无法区分——排查会建立在错误的前提上。
+const PREVIEW_MESSAGE_LIMIT = 8
+const messageCountSuffix = (messages?: string[], total?: number) => {
+  const shown = Math.min(messages?.length || 0, PREVIEW_MESSAGE_LIMIT)
+  // `||` 而非 `??`：后端漏填时 total 是 0，用 `??` 会在列出 8 条错误的同时
+  // 显示"共 0 条"——比不显示更糟
+  const all = total || messages?.length || 0
+  return all > shown ? `（已显示 ${shown} / 共 ${all} 条）` : `（共 ${all} 条）`
+}
+const diagnosticsText = computed(() =>
+  brokerPreview.value?.diagnostics ? JSON.stringify(brokerPreview.value.diagnostics, null, 2) : ''
+)
+const handleCopyDiagnostics = async () => {
+  try {
+    await navigator.clipboard.writeText(diagnosticsText.value)
+    ElMessage.success('诊断报告已复制')
+  } catch {
+    // 非 HTTPS 环境下 clipboard API 不可用——报障者常常正是这种部署
+    ElMessage.warning('无法自动复制，请手动选中下方文本，或改用「下载 JSON」')
+  }
+}
+const handleDownloadDiagnostics = () => {
+  downloadFile(
+    new Blob([diagnosticsText.value], { type: 'application/json' }),
+    `cmb-import-diagnostics-${todayLocalISODate()}.json`
+  )
+}
 const brokerImportAccountOptions = computed(() => {
   const keywordMap: Record<string, string[]> = {
     cmb: ['招商'],
@@ -1122,6 +1177,34 @@ onMounted(() => {
 
 .preview-alert {
   margin-top: 12px;
+}
+
+.preview-diagnostics {
+  margin-top: 12px;
+}
+
+.preview-diagnostics__note {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin: 0 0 8px;
+}
+
+.preview-diagnostics__actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.preview-diagnostics__body {
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+  font-size: 12px;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 @media (max-width: 900px) {

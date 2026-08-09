@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 from ..core.logging import get_app_logger
+from ..core.timeutil import to_local_date
 from ..models.security_profile import SecurityProfileData
 from .stock_price_service import (
     classify_tushare_error,
@@ -589,4 +590,6 @@ def profile_fetched_date(db: Session, symbol: str, market: str) -> Optional[date
         )
         .scalar()
     )
-    return latest.date() if latest else None
+    # 必须换算到本地日：fetched_at 存 UTC，而调用方/展示侧的"今天"是 date.today()
+    # （本地）。直接 .date() 会让本地 0-8 点触发的分析显示成前一天。
+    return to_local_date(latest)

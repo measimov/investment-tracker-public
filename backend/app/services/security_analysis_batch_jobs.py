@@ -23,16 +23,19 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..core.logging import get_app_logger
-from ..database import SessionLocal
 from ..models.holding import Holding
 from ..models.security_profile import SecurityAnalysis
 from .background_job_store import (
-    claim_job,
+    JobOwnershipLostError,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
-    job_heartbeat,
-    set_job_progress,
+)
+from .job_runtime import (
+    batch_execution,
+    is_cancel_requested,
+    make_batch_progress,
+    request_job_cancel,
+    run_job_inline,
 )
 from .job_worker import register_runner
 from .llm_client import LLMClientError, LLMNotConfiguredError
@@ -203,25 +206,11 @@ def start_batch_analysis_job(
 
 
 def request_batch_cancel(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
-    """置中止标志；执行循环在**每只标的开始前**检查，当前标的跑完即收尾。
-
-    不做线程级强杀：正在进行的 LLM 调用已经花掉了 token，中途丢弃只会浪费。
-    """
-    job = get_job(job_id, JOB_TYPE, user_id)
-    if not job:
-        return None
-    if job.get("status") not in ("queued", "running"):
-        return job
-    from .background_job_store import update_job
-
-    return update_job(
-        job_id, JOB_TYPE, data_updates={"cancel_requested": True}
-    ) or job
+    return request_job_cancel(job_id, JOB_TYPE, user_id)
 
 
 def _is_cancel_requested(job_id: str, user_id: int) -> bool:
-    job = get_job(job_id, JOB_TYPE, user_id)
-    return bool(job and job.get("cancel_requested"))
+    return is_cancel_requested(job_id, JOB_TYPE, user_id)
 
 
 def _classify_batch_failure(exc: Exception) -> str:
@@ -245,152 +234,144 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
     digest_max_new = FULL_MODE_DIGEST_MAX_NEW if data.get("mode") == "full" else 0
     pause = settings.security_analysis_batch_pause_seconds
 
-    def progress(**updates: Any) -> None:
-        set_job_progress(job_id, JOB_TYPE, required_attempt_count=attempt, **updates)
+    progress = make_batch_progress(job_id, JOB_TYPE, attempt)
+    with batch_execution(
+        job_id, JOB_TYPE, attempt=attempt,
+        max_seconds=settings.security_analysis_batch_max_seconds,
+        logger=logger, label="批量分析",
+    ) as db:
+        fresh = _recent_analysis_keys(db, targets, int(data.get("freshness_hours") or 0))
+        counters = {
+            "success_count": int(data.get("success_count") or 0),
+            "failed_count": int(data.get("failed_count") or 0),
+            "skipped_count": int(data.get("skipped_count") or 0),
+        }
+        results: List[Dict[str, Any]] = list(data.get("results") or [])
+        consecutive = 0
 
-    db = SessionLocal()
-    try:
-        with job_heartbeat(
-            job_id, JOB_TYPE, attempt_count=attempt,
-            max_seconds=settings.security_analysis_batch_max_seconds,
-        ):
-            fresh = _recent_analysis_keys(db, targets, int(data.get("freshness_hours") or 0))
-            counters = {
-                "success_count": int(data.get("success_count") or 0),
-                "failed_count": int(data.get("failed_count") or 0),
-                "skipped_count": int(data.get("skipped_count") or 0),
-            }
-            results: List[Dict[str, Any]] = list(data.get("results") or [])
-            consecutive = 0
+        for index, target in enumerate(targets, start=1):
+            key = _target_key(target)
+            if key in done:
+                continue  # 续跑：上次已处理
 
-            for index, target in enumerate(targets, start=1):
-                key = _target_key(target)
-                if key in done:
-                    continue  # 续跑：上次已处理
-
-                if _is_cancel_requested(job_id, user_id):
-                    progress(
-                        status="interrupted", cancelled=True,
-                        current_symbol=None, current_market=None, current_stage=None,
-                        abort_reason="用户终止；已生成的分析已保留，未开始的标的未分析。",
-                        **counters,
-                    )
-                    return
-
-                if key in fresh:
-                    counters["skipped_count"] += 1
-                    done.add(key)
-                    results.append({**target, "status": "skipped", "reason": "近期已分析"})
-                    progress(
-                        completed=len(done), results=results[-RESULTS_KEPT:],
-                        completed_keys=sorted(done), **counters,
-                    )
-                    continue
-
+            if _is_cancel_requested(job_id, user_id):
                 progress(
-                    current_symbol=target["symbol"], current_market=target["market"],
-                    current_stage=None, completed=len(done), **counters,
+                    status="interrupted", cancelled=True,
+                    current_symbol=None, current_market=None, current_stage=None,
+                    abort_reason="用户终止；已生成的分析已保留，未开始的标的未分析。",
+                    **counters,
                 )
-                started = time.monotonic()
-                try:
-                    outcome = analyze_one(
-                        db, target["symbol"], target["market"],
-                        digest_max_new=digest_max_new,
-                        on_stage=lambda stage, extra: progress(
-                            current_stage=ANALYSIS_STAGE_LABELS.get(stage, stage)
-                        ),
-                    )
-                except Exception as exc:  # analyze_one 只上抛瞬时/意外失败
-                    if _classify_batch_failure(exc) == "abort":
-                        logger.warning("批量分析中止（确定性失败）: %s", str(exc)[:200])
-                        progress(
-                            status="failed", error=str(exc)[:300],
-                            abort_reason=f"遇到无法继续的错误：{str(exc)[:150]}",
-                            current_symbol=None, current_market=None, current_stage=None,
-                            completed=len(done), results=results[-RESULTS_KEPT:],
-                            completed_keys=sorted(done), **counters,
-                        )
-                        return
-                    outcome = {
-                        **target, "status": "failed", "analysis_id": None,
-                        "error": str(exc)[:200], "degraded": [],
-                    }
+                return
 
-                # 致命错误主要走 **outcome** 而非异常：analyze_one 把 LLM 4xx 与
-                # 数据源 token/权限失效都转成 status=failed 返回。只看异常路径的话
-                # 401 会一直请求到连续 3 只才停，Tushare 致命错误则永远不中止。
-                if outcome.get("error_kind") in FATAL_ANALYSIS_ERROR_KINDS:
-                    counters["failed_count"] += 1
-                    results.append({
-                        **target, "status": "failed", "error": outcome.get("error"),
-                    })
-                    progress(
-                        status="failed", error=outcome.get("error"),
-                        abort_reason=f"遇到无法继续的错误：{str(outcome.get('error'))[:150]}",
-                        current_symbol=None, current_market=None, current_stage=None,
-                        completed=len(done), results=results[-RESULTS_KEPT:],
-                        completed_keys=sorted(done), **counters,
-                    )
-                    return
-
+            if key in fresh:
+                counters["skipped_count"] += 1
                 done.add(key)
-                elapsed = round(time.monotonic() - started, 1)
-                if outcome["status"] == "succeeded":
-                    counters["success_count"] += 1
-                    consecutive = 0
-                    results.append({
-                        **target, "status": "succeeded",
-                        "analysis_id": outcome.get("analysis_id"),
-                        "degraded": outcome.get("degraded") or [],
-                        "elapsed_seconds": elapsed,
-                    })
-                else:
-                    counters["failed_count"] += 1
-                    consecutive += 1
-                    results.append({
-                        **target, "status": "failed",
-                        "error": outcome.get("error"), "elapsed_seconds": elapsed,
-                    })
-
+                results.append({**target, "status": "skipped", "reason": "近期已分析"})
                 progress(
                     completed=len(done), results=results[-RESULTS_KEPT:],
                     completed_keys=sorted(done), **counters,
                 )
-
-                if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                    progress(
-                        status="failed",
-                        error=f"连续 {consecutive} 只标的分析失败，已停止批量分析。",
-                        abort_reason=f"连续 {consecutive} 只失败，停止以免继续消耗配额。",
-                        current_symbol=None, current_market=None, current_stage=None,
-                        **counters,
-                    )
-                    return
-
-                if pause > 0 and index < len(targets):
-                    time.sleep(pause)
+                continue
 
             progress(
-                status="succeeded", completed=len(done),
-                current_symbol=None, current_market=None, current_stage=None,
-                results=results[-RESULTS_KEPT:], completed_keys=sorted(done), **counters,
+                current_symbol=target["symbol"], current_market=target["market"],
+                current_stage=None, completed=len(done), **counters,
             )
-    finally:
-        db.close()
+            started = time.monotonic()
+            try:
+                outcome = analyze_one(
+                    db, target["symbol"], target["market"],
+                    digest_max_new=digest_max_new,
+                    on_stage=lambda stage, extra: progress(
+                        current_stage=ANALYSIS_STAGE_LABELS.get(stage, stage)
+                    ),
+                )
+            except JobOwnershipLostError:
+                # 必须先于下面的兜底 except：否则失权异常会被
+                # _classify_batch_failure 判成 "symbol"（本标的失败）而
+                # 继续跑完整批。异常来自 analyze_one 内部的 on_stage 回调
+                # ——analyze_one 的 stage() 包装器专门对本异常类型放行
+                # （其余回调异常仍被它吞掉，不拖垮分析）。
+                raise
+            except Exception as exc:  # analyze_one 只上抛瞬时/意外失败
+                if _classify_batch_failure(exc) == "abort":
+                    logger.warning("批量分析中止（确定性失败）: %s", str(exc)[:200])
+                    progress(
+                        status="failed", error=str(exc)[:300],
+                        abort_reason=f"遇到无法继续的错误：{str(exc)[:150]}",
+                        current_symbol=None, current_market=None, current_stage=None,
+                        completed=len(done), results=results[-RESULTS_KEPT:],
+                        completed_keys=sorted(done), **counters,
+                    )
+                    return
+                outcome = {
+                    **target, "status": "failed", "analysis_id": None,
+                    "error": str(exc)[:200], "degraded": [],
+                }
+
+            # 致命错误主要走 **outcome** 而非异常：analyze_one 把 LLM 4xx 与
+            # 数据源 token/权限失效都转成 status=failed 返回。只看异常路径的话
+            # 401 会一直请求到连续 3 只才停，Tushare 致命错误则永远不中止。
+            if outcome.get("error_kind") in FATAL_ANALYSIS_ERROR_KINDS:
+                counters["failed_count"] += 1
+                results.append({
+                    **target, "status": "failed", "error": outcome.get("error"),
+                })
+                progress(
+                    status="failed", error=outcome.get("error"),
+                    abort_reason=f"遇到无法继续的错误：{str(outcome.get('error'))[:150]}",
+                    current_symbol=None, current_market=None, current_stage=None,
+                    completed=len(done), results=results[-RESULTS_KEPT:],
+                    completed_keys=sorted(done), **counters,
+                )
+                return
+
+            done.add(key)
+            elapsed = round(time.monotonic() - started, 1)
+            if outcome["status"] == "succeeded":
+                counters["success_count"] += 1
+                consecutive = 0
+                results.append({
+                    **target, "status": "succeeded",
+                    "analysis_id": outcome.get("analysis_id"),
+                    "degraded": outcome.get("degraded") or [],
+                    "elapsed_seconds": elapsed,
+                })
+            else:
+                counters["failed_count"] += 1
+                consecutive += 1
+                results.append({
+                    **target, "status": "failed",
+                    "error": outcome.get("error"), "elapsed_seconds": elapsed,
+                })
+
+            progress(
+                completed=len(done), results=results[-RESULTS_KEPT:],
+                completed_keys=sorted(done), **counters,
+            )
+
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                progress(
+                    status="failed",
+                    error=f"连续 {consecutive} 只标的分析失败，已停止批量分析。",
+                    abort_reason=f"连续 {consecutive} 只失败，停止以免继续消耗配额。",
+                    current_symbol=None, current_market=None, current_stage=None,
+                    **counters,
+                )
+                return
+
+            if pause > 0 and index < len(targets):
+                time.sleep(pause)
+
+        progress(
+            status="succeeded", completed=len(done),
+            current_symbol=None, current_market=None, current_stage=None,
+            results=results[-RESULTS_KEPT:], completed_keys=sorted(done), **counters,
+        )
 
 
 def run_batch_analysis_job(job_id: str) -> None:
-    """Inline fast path：按 id 认领并执行；意外错误走重试/退避路径。"""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("Batch analysis job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_batch_analysis_job(claimed)
-    except Exception as exc:
-        logger.exception("Batch analysis job %s failed", job_id)
-        handle_job_failure(job_id, JOB_TYPE, str(exc))
-
+    run_job_inline(job_id, JOB_TYPE, execute_batch_analysis_job, label="Batch analysis", logger=logger)
 
 def get_batch_analysis_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

@@ -14,7 +14,7 @@ from app.models.reconciliation_snapshot import ReconciliationSnapshot
 from app.models.transaction import Transaction
 from app.services.holding_service import recalculate_holdings
 from app.services.reconciliation_service import run_and_store_compare
-from app.services.statistics_service import build_portfolio_snapshot
+from app.services.statistics import build_portfolio_snapshot
 from tests.helpers import make_account, reset_tables
 
 
@@ -114,7 +114,7 @@ def _buy(db, account_id, *, symbol="600000", market="A股", quantity="100"):
 
 def test_price_and_timestamp_selected_atomically_regardless_of_row_order():
     """多账户行价格/时间不一致时：取更新最晚的 (价格, 时间) 对，与插入顺序无关。"""
-    from app.services.statistics_service import resolve_server_prices
+    from app.services.statistics import resolve_server_prices
 
     for reverse in (False, True):
         db = SessionLocal()

@@ -22,7 +22,7 @@ from app.database import SessionLocal
 from app.models.holding import Holding
 from app.models.security_price import SecurityPrice
 from app.models.user import User
-from app.services.statistics_service import resolve_server_prices
+from app.services.statistics import resolve_server_prices
 
 STALE_HOLDING_DAYS = 7  # holding.current_price 超过该天数未更新视为过期
 STALE_HISTORY_DAYS = 14  # 最新历史收盘价超过该天数视为过期

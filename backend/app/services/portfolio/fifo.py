@@ -9,7 +9,7 @@ from collections import deque
 from decimal import Decimal
 from typing import Any, Dict, List, Sequence, Tuple
 
-from .semantics import bonus_share_factor, parse_ratio, split_share_factor
+from .semantics import action_has_ratio, bonus_share_factor, split_share_factor
 
 FIFO_ACTION_TYPES = [
     'STOCK_DIVIDEND',
@@ -22,6 +22,11 @@ FIFO_ACTION_TYPES = [
 # 与 core.logging.get_app_logger 的命名约定一致（去掉 app. 前缀），
 # 但直接用标准库以保持内核零应用依赖。
 logger = logging.getLogger("investment_tracker.services.portfolio.fifo")
+
+
+def _as_decimal(value: Any) -> Decimal:
+    """兼容 Decimal 与 float 入参；float 经 str 中转以免引入二进制表示误差。"""
+    return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
 def empty_fifo_result(symbol: str, market: str) -> Dict[str, Any]:
@@ -50,9 +55,13 @@ def calculate_fifo_pnl(
         events.append({
             'type': txn.transaction_type,
             'date': txn.transaction_date,
-            'price': float(txn.price),
-            'quantity': float(txn.quantity),
-            'fee': float(txn.fee or 0),
+            # 直接存 Decimal：此前是 float(...) 再 Decimal(str(...)) 转回，
+            # 多一次 float 往返；而多账户路径（replay_fifo_multi_account）
+            # 一直是直接从 ORM 取 Decimal——同一证券在"单账户无转仓"与
+            # "多账户"两个分支间切换时，数字会在小数位上漂移。
+            'price': Decimal(str(txn.price)),
+            'quantity': Decimal(str(txn.quantity)),
+            'fee': Decimal(str(txn.fee or 0)),
             'priority': priority,
             'id': txn.id
         })
@@ -78,18 +87,18 @@ def calculate_fifo_pnl(
         event_type = event['type']
 
         if event_type == 'BUY':
-            total_cost = Decimal(str(event['price'])) * Decimal(str(event['quantity'])) + Decimal(str(event['fee']))
-            cost_per_share = total_cost / Decimal(str(event['quantity']))
+            total_cost = event['price'] * event['quantity'] + event['fee']
+            cost_per_share = total_cost / event['quantity']
 
             buy_queue.append({
                 'price': cost_per_share,
-                'quantity': Decimal(str(event['quantity'])),
+                'quantity': event['quantity'],
                 'total_cost': total_cost,
                 'date': event['date']
             })
 
         elif event_type == 'SELL':
-            sell_qty = Decimal(str(event['quantity']))
+            sell_qty = event['quantity']
             available_qty = sum(record['quantity'] for record in buy_queue)
             if sell_qty > available_qty:
                 invalid_event = {
@@ -112,7 +121,7 @@ def calculate_fifo_pnl(
                 )
                 continue
             original_sell_qty = sell_qty
-            sell_proceeds = Decimal(str(event['price'])) * sell_qty - Decimal(str(event['fee']))
+            sell_proceeds = event['price'] * sell_qty - event['fee']
             matched_cost = Decimal(0)
             earliest_buy_date = None
 
@@ -354,13 +363,6 @@ def replay_fifo_multi_account(
             f"cannot be attributed to a single account for {symbol} ({market})"
         )
 
-    def action_has_ratio(action):
-        if action.action_type in ("STOCK_DIVIDEND", "BONUS_ISSUE"):
-            return parse_ratio(getattr(action, "distribution_ratio", None)) is not None
-        if action.action_type in ("STOCK_SPLIT", "REVERSE_SPLIT"):
-            return parse_ratio(getattr(action, "split_ratio", None)) is not None
-        return False
-
     for event in events:
         data = event['data']
         if event['kind'] == 'txn':
@@ -396,14 +398,15 @@ def replay_fifo_multi_account(
                 holding_days = (
                     (data.transaction_date - earliest).days if earliest is not None else None
                 )
+                # 保持 Decimal：float 化统一在 merge_account_fifo_results 出口
                 closed_trades[account_id].append({
                     'symbol': symbol,
                     'market': market,
                     'date': data.transaction_date.isoformat(),
-                    'quantity': float(sell_qty),
-                    'proceeds': float(proceeds),
-                    'matched_cost': float(matched_cost),
-                    'realized_pnl': float(pnl),
+                    'quantity': sell_qty,
+                    'proceeds': proceeds,
+                    'matched_cost': matched_cost,
+                    'realized_pnl': pnl,
                     'holding_days': holding_days,
                 })
 
@@ -479,23 +482,28 @@ def replay_fifo_multi_account(
             f"ids={sorted(pending_transfers)}"
         )
 
+    # 账户级结果**保持 Decimal**：它们只是 merge_account_fifo_results 的中间量，
+    # 在这里转 float 会让精度在聚合之前就丢掉，之后再 Decimal(str(...)) 也补不回来
+    # ——NUMERIC(18,8) 量级下单账户与多账户两条分支会得出不同的 sold_cost
+    # （实测 8931992295.31575055 + 1641890924.22944734 差 1.9e-06）。
+    # float 化统一发生在用户级出口（merge_account_fifo_results）。
     results: Dict[Any, Dict[str, Any]] = {}
     for account_id, queue in queues.items():
         results[account_id] = {
             'symbol': symbol,
             'market': market,
             'broker_account_id': account_id,
-            'realized_pnl': float(realized[account_id]),
-            'sold_cost': float(sold_cost[account_id]),
-            'current_holdings_cost': float(
-                sum((lot['total_cost'] for lot in queue), Decimal("0"))
+            'realized_pnl': realized[account_id],
+            'sold_cost': sold_cost[account_id],
+            'current_holdings_cost': sum(
+                (lot['total_cost'] for lot in queue), Decimal("0")
             ),
             'closed_trades': closed_trades[account_id],
             'buy_queue': [
                 {
-                    'price': float(lot['price']),
-                    'quantity': float(lot['quantity']),
-                    'total_cost': float(lot['total_cost']),
+                    'price': lot['price'],
+                    'quantity': lot['quantity'],
+                    'total_cost': lot['total_cost'],
                     'date': str(lot['date']),
                 }
                 for lot in queue
@@ -510,16 +518,42 @@ def merge_account_fifo_results(
     market: str,
     account_results: Dict[Any, Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """把账户级 FIFO 结果聚合为用户级证券结果（现有消费方的输入形状）。"""
+    """把账户级 FIFO 结果聚合为用户级证券结果（现有消费方的输入形状）。
+
+    这里是 Decimal→float 的**唯一出口**：replay_fifo_multi_account 交出来的
+    账户级结果全程保持 Decimal，聚合完再一次性转 float。此前账户级就先转了
+    float，精度在聚合之前已丢，导致单账户与多账户两条分支对同一份数据得出
+    不同的 sold_cost。
+    """
     merged = empty_fifo_result(symbol, market)
     closed = []
     lots = []
+    totals = {
+        'realized_pnl': Decimal("0"),
+        'sold_cost': Decimal("0"),
+        'current_holdings_cost': Decimal("0"),
+    }
     for result in account_results.values():
-        merged['realized_pnl'] += result['realized_pnl']
-        merged['sold_cost'] += result['sold_cost']
-        merged['current_holdings_cost'] += result['current_holdings_cost']
+        for field in totals:
+            totals[field] += _as_decimal(result[field])
         closed.extend(result['closed_trades'])
         lots.extend(result['buy_queue'])
-    merged['closed_trades'] = sorted(closed, key=lambda t: t['date'])
-    merged['buy_queue'] = sorted(lots, key=lambda lot: lot['date'])
+    for field, value in totals.items():
+        merged[field] = float(value)
+    merged['closed_trades'] = [
+        {**trade, **{
+            key: float(_as_decimal(trade[key]))
+            for key in ('proceeds', 'matched_cost', 'realized_pnl', 'quantity')
+            if key in trade
+        }}
+        for trade in sorted(closed, key=lambda t: t['date'])
+    ]
+    merged['buy_queue'] = [
+        {**lot, **{
+            key: float(_as_decimal(lot[key]))
+            for key in ('price', 'quantity', 'total_cost')
+            if key in lot
+        }}
+        for lot in sorted(lots, key=lambda lot: lot['date'])
+    ]
     return merged

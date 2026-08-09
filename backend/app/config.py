@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
@@ -10,7 +11,9 @@ class Settings(BaseSettings):
 
     # Security settings
     secret_key: str
-    access_token_expire_minutes: int = 30
+    # 同样 gt=0：0 分钟的令牌寿命同样会让 create_access_token 的 falsy 分支
+    # 悄悄退回默认值，与配置意图相反。
+    access_token_expire_minutes: int = Field(default=30, gt=0)
 
     # Initial user passwords (only used during fresh deployments)
     admin_initial_password: str
@@ -46,6 +49,11 @@ class Settings(BaseSettings):
     dividend_sync_match_window_days: int = 30
     dividend_sync_periodic_enabled: bool = False
 
+    # 业务时区：把 DB 里的 UTC 时间戳落成"哪一天"、以及"今天"是哪天，
+    # 都以此为准（core/timeutil）。不能依赖进程系统时区——生产容器是 UTC，
+    # 无参数 astimezone() 在那里是空转，东八区跨日转换不会发生。
+    display_timezone: str = "Asia/Shanghai"
+
     # LLM report (DeepSeek / OpenAI-compatible; empty key disables the feature)
     llm_report_api_key: str = ""
     llm_report_base_url: str = "https://api.deepseek.com"
@@ -56,8 +64,30 @@ class Settings(BaseSettings):
     llm_report_max_output_tokens: int = 16384
 
     # Security settings
-    enable_docs: bool = True  # Set to False in production to disable API documentation
-    require_https: bool = False  # Set to True in production to reject plaintext auth requests
+    #
+    # 默认 fail-closed：忘记配 env 的那次部署才是最需要保护的一次。compose 里
+    # 本来就写着 false/true，反转默认只是把"靠 compose 记得写"变成"靠代码保证"。
+    # 开发与 E2E 显式放宽（DEVELOPMENT.md、playwright.config.ts 均已写明）。
+    enable_docs: bool = False  # 开发环境用 ENABLE_DOCS=true 打开 /docs
+    require_https: bool = True  # 开发环境用 REQUIRE_HTTPS=false 允许明文登录
+    # 是否采信反代请求头（X-Forwarded-Proto 判 HTTPS、X-Forwarded-For 取审计
+    # 用的客户端 IP）。二者都是客户端可任意伪造的头，只有在反代确实会覆写/
+    # 追加它们、且后端端口不直接暴露时才可信；compose 的拓扑满足这一点，故
+    # 那里显式置 true。默认不信任：万一哪天 8000 被直接暴露，require_https
+    # 不会被一个请求头绕过。
+    #
+    # 前提是 uvicorn 自己**不**处理这些头（启动命令带 --no-proxy-headers）：
+    # 它默认开着且信任 127.0.0.1，会先把 scope.scheme 改成 https，那样这个
+    # 开关就成了摆设。tests/test_proxy_header_trust.py 用真实 uvicorn 守着。
+    trust_proxy_headers: bool = False
+    # 会话自首次登录起的绝对上限（小时）。滑动续期共享同一个 jti、每次都把
+    # expires_at 往后推，没有这个上限的话被窃 cookie 可以无限续命。
+    #
+    # gt=0 是必需的，不是防呆：配成 0 时登录仍返回 200，但会话行签发即过期；
+    # 而零 timedelta 在 create_access_token 里是 falsy，会退回默认的 30 分钟，
+    # 于是客户端拿到一张"看着有效"的 token，下一次 /me 立刻 401——最难查的
+    # 那种坏法。让它在启动时直接失败。
+    session_absolute_max_hours: int = Field(default=168, gt=0)  # 7 天
     price_refresh_max_workers: int = 4
     # 主动刷新股价的新鲜度窗口：窗口内重复请求跳过（防连点浪费配额）
     price_refresh_freshness_seconds: int = 600

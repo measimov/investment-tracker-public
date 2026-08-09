@@ -7,7 +7,7 @@ from ..database import get_db
 from ..models.user import User
 from ..core.deps import get_current_active_user
 from ..services import benchmark_service
-from ..services.statistics_service import (
+from ..services.statistics import (
     build_portfolio_snapshot,
     get_summary_statistics,
     get_statistics_by_market,

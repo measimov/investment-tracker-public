@@ -10,6 +10,24 @@ from sqlalchemy.orm import Session
 from ..models.broker_account import BrokerAccount
 from ..models.import_batch import ImportBatch
 
+# 批次结算契约：complete_import_batch 按键**直取**的键集合。生产方是
+# broker_import_common.base_import_result（少给的券商在骨架里落显式默认 0），
+# tests/test_broker_import_contract.py 钉住三家结果都覆盖这组键——此前三家
+# 键集合各不相同，这里只能靠 .get 默认值逐键调和三种方言。
+BATCH_SETTLEMENT_KEYS = frozenset(
+    {
+        "total_rows",
+        "duplicate_rows",
+        "errors",
+        "excluded_unbooked_rows",
+        "expected_archived_rows",
+        "skipped_invalid_rows",
+        "skipped_unsupported_rows",
+        "skipped_conflict_rows",
+        "skipped_non_trade_rows",
+    }
+)
+
 
 def _safe_filename(filename: Optional[str]) -> Optional[str]:
     if not filename:
@@ -157,32 +175,38 @@ def complete_import_batch(
     imported_count: int,
     archived_count: int = 0,
 ) -> ImportBatch:
-    """Finalize counts and status without changing the importer's result fields."""
+    """Finalize counts and status without changing the importer's result fields.
+
+    `result` 必须覆盖 `BATCH_SETTLEMENT_KEYS`（由 base_import_result 骨架保证，
+    契约测试看住），这里按键直取；此前三家键集合各不相同，只能靠 .get 默认值
+    逐键调和三种方言。留下来的 min/max 各自防一个真实的口径差，逐个注明。
+    """
     batch = db.get(ImportBatch, batch_id)
     if batch is None:
         raise ValueError("Import batch not found while finalizing import")
 
-    row_count = max(0, int(result.get("total_rows", batch.row_count or 0)))
-    archived_count = max(0, int(archived_count))
-    duplicate_rows = min(row_count, max(0, int(result.get("duplicate_rows", 0))))
-    imported_count = min(
-        max(0, row_count - duplicate_rows),
-        max(0, int(imported_count)),
-    )
-    errors = [str(error) for error in result.get("errors", []) if str(error).strip()]
+    row_count = int(result["total_rows"])
+    archived_count = int(archived_count)
+    duplicate_rows = int(result["duplicate_rows"])
+    # imported_count 是**入账对象数**（交易+公司行动+税+现金事件），与"来源行"
+    # 不是一个单位：一条分红行会同时建 CA 和现金事件。批次的 imported_count
+    # 语义是"已入账的来源行"，所以要用非重复来源行的容量封顶。
+    imported_count = min(max(0, row_count - duplicate_rows), int(imported_count))
+    errors = [str(error) for error in result["errors"] if str(error).strip()]
     booked_source_rows = imported_count + duplicate_rows
     # 命中排除清单的行是"预期跳过"（归档不入账是配置使然，不是数据问题），
     # 不应把批次拖成 PARTIAL。只抵扣本批新增、非重复的排除行
     # （excluded_unbooked_rows），不用可能含重复行的审计总数
-    # （skipped_excluded_rows）——否则会掩盖真实的 unsupported/invalid 行。
+    # （skipped_excluded_rows）——否则会掩盖真实的 unsupported/invalid 行；
+    # 且抵扣不得超过未入账余量，防止把真实未入账行一并抵没。
     excluded_unbooked_rows = min(
-        max(0, int(result.get("excluded_unbooked_rows", 0))),
+        int(result["excluded_unbooked_rows"]),
         max(0, row_count - booked_source_rows),
     )
     # 设计上有意只归档的行（如 IBKR "调整" 纸面损益）同属预期跳过，
-    # 与排除清单行一样不把批次拖成 PARTIAL
+    # 与排除清单行一样不把批次拖成 PARTIAL；同样以剩余未入账余量封顶。
     expected_archived_rows = min(
-        max(0, int(result.get("expected_archived_rows", 0))),
+        int(result["expected_archived_rows"]),
         max(0, row_count - booked_source_rows - excluded_unbooked_rows),
     )
     unbooked_source_rows = max(
@@ -190,12 +214,11 @@ def complete_import_batch(
         row_count - booked_source_rows - excluded_unbooked_rows - expected_archived_rows,
     )
     unresolved_count = max(
-        0,
         unbooked_source_rows,
-        int(result.get("skipped_invalid_rows", 0)),
-        int(result.get("skipped_unsupported_rows", 0)),
-        int(result.get("skipped_conflict_rows", 0)),
-        int(result.get("skipped_non_trade_rows", 0)),
+        int(result["skipped_invalid_rows"]),
+        int(result["skipped_unsupported_rows"]),
+        int(result["skipped_conflict_rows"]),
+        int(result["skipped_non_trade_rows"]),
     )
     error_count = max(
         unresolved_count,

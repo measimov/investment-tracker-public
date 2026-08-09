@@ -22,6 +22,16 @@ from app.services import performance_history_jobs, price_refresh_jobs
 
 @pytest.fixture
 def job_type():
+    # setup 先清空整张表（易失状态表，别的文件的 fixture 只清理各自的 job_type）：
+    # 本文件有对 interrupt_stale_jobs / cleanup_expired_jobs 的**全局计数**断言，
+    # 任何前序测试残留一行 heartbeat 过期的 background_jobs 都会让计数 +1——
+    # 全量跑偶发红、单跑必绿的经典形态（#105，本地长期复用 test 库时更易触发）。
+    db = SessionLocal()
+    try:
+        db.query(BackgroundJob).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
     value = f"test_{uuid4().hex[:12]}"
     yield value
     db = SessionLocal()

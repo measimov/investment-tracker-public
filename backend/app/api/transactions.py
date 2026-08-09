@@ -5,9 +5,7 @@ from types import SimpleNamespace
 from decimal import Decimal
 from ..database import get_db
 from ..models.transaction import Transaction
-from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.broker_account import BrokerAccount
-from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.user import User
 from ..schemas.transaction import (
     TransactionCreate,
@@ -24,50 +22,24 @@ from ..services.holding_service import (
     validate_no_oversell,
 )
 from ..core.deps import get_current_active_user
-from ._ownership import get_owned_record
+from ._ownership import ensure_record_is_mutable, get_owned_record, validate_owned_references
 
 router = APIRouter()
 
 
-def _validate_owned_references(db: Session, user_id: int, data: dict) -> None:
-    reference_models = {
-        "broker_account_id": (BrokerAccount, "Broker account not found"),
-    }
-    for field, (model, detail) in reference_models.items():
-        record_id = data.get(field)
-        if record_id is not None:
-            get_owned_record(db, model, record_id, user_id, detail)
+IMMUTABLE_IMPORTED_TRANSACTION_DETAIL = (
+    "Imported transactions cannot be modified or deleted; correct the source import instead."
+)
 
 
-def _ensure_transaction_is_mutable(
-    db: Session,
-    user_id: int,
-    transaction: Transaction,
-) -> None:
-    if transaction.import_batch_id is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Imported transactions cannot be modified or deleted; "
-                "correct the source import instead."
-            ),
-        )
-    broker_source = db.query(BrokerFundFlow.id).filter(
-        BrokerFundFlow.user_id == user_id,
-        BrokerFundFlow.transaction_id == transaction.id,
-    ).first()
-    ibkr_source = db.query(IbkrActivityFlow.id).filter(
-        IbkrActivityFlow.user_id == user_id,
-        IbkrActivityFlow.transaction_id == transaction.id,
-    ).first()
-    if broker_source or ibkr_source:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Imported transactions cannot be modified or deleted; "
-                "correct the source import instead."
-            ),
-        )
+def _ensure_transaction_is_mutable(db: Session, user_id: int, transaction: Transaction) -> None:
+    ensure_record_is_mutable(
+        db,
+        user_id,
+        transaction,
+        source_link_field="transaction_id",
+        detail=IMMUTABLE_IMPORTED_TRANSACTION_DETAIL,
+    )
 
 
 def _transaction_candidate(**data):
@@ -142,7 +114,7 @@ def create_transaction(
         lock_security_timeline(
             db, current_user.id, transaction_data["symbol"], transaction_data["market"]
         )
-        _validate_owned_references(db, current_user.id, transaction_data)
+        validate_owned_references(db, current_user.id, transaction_data)
         candidate = _transaction_candidate(**transaction_data)
         _validate_transaction_sequence(db, current_user.id, candidate)
 
@@ -361,7 +333,7 @@ def update_transaction(
         old_symbol = db_transaction.symbol
         old_market = db_transaction.market
 
-        _validate_owned_references(db, current_user.id, update_data)
+        validate_owned_references(db, current_user.id, update_data)
         candidate_data = {
             "broker_account_id": db_transaction.broker_account_id,
             "import_batch_id": db_transaction.import_batch_id,

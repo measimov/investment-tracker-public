@@ -31,7 +31,7 @@ class IbkrActivityFlow(Base):
         index=True,
     )
 
-    broker = Column(String(50), nullable=False, default="IBKR", index=True)
+    broker = Column(String(50), nullable=False, default="IBKR", server_default="IBKR", index=True)
     row_hash = Column(String(64), nullable=False, index=True)
     source_filename = Column(String(255), nullable=True)
     source_row_number = Column(Integer, nullable=False)
@@ -48,7 +48,7 @@ class IbkrActivityFlow(Base):
     quantity = Column(Numeric(18, 8), nullable=True)
     price = Column(Numeric(18, 8), nullable=True)
     price_currency = Column(String(10), nullable=True)
-    base_currency = Column(String(10), nullable=False, default="USD")
+    base_currency = Column(String(10), nullable=False, default="USD", server_default="USD")
     gross_amount = Column(Numeric(24, 10), nullable=True)
     commission = Column(Numeric(24, 10), nullable=True)
     net_amount = Column(Numeric(24, 10), nullable=True)

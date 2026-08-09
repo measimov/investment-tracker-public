@@ -1,5 +1,6 @@
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models.user import User
@@ -107,6 +108,55 @@ def get_user(
         )
     return UserSchema.model_validate(user)
 
+# 所有"会缩小活跃管理员集合"的路径共用的事务级顾问锁。任意常量即可，只要
+# 全仓唯一；取 users 表名的稳定哈希，避免和别处的 advisory lock 撞号。
+_ADMIN_GUARD_LOCK_KEY = 0x7553_6572_4164_6D6E  # b"UserAdmn"
+
+
+def _guard_last_active_admin(
+    db: Session, *, target: User, current_user: User, removing: bool = False
+) -> None:
+    """挡住会让系统失去管理入口的改动（在 commit 之前调用）。
+
+    两人小系统里一次误操作就能全员失去管理入口，之后只能进库改——所以拦在
+    这里而不是靠使用者小心。两条独立的守卫：
+
+    1. 管理员把**自己**降权或停用：停用还会顺带 revoke 掉自己的会话，
+       当场把自己锁在门外；
+    2. 改完之后系统里一个活跃管理员都不剩。
+
+    **必须串行化**：光数一遍是不够的。两个活跃管理员并发互相降权时，每个
+    事务都把对方排除在自己的目标之外、于是各自都看到"还剩一个活跃管理员"，
+    两笔更新落在不同的行、都能提交，最终活跃管理员归零。update/delete 交叉
+    同样触发。这里先取一把事务级顾问锁再计数：锁随事务结束自动释放，后来者
+    必须等前者提交后重新计数，看到的就是更新后的真实剩余量。
+
+    removing=True 用于删除路径（目标行整条消失，没有"新值"可言）。
+
+    调用点在字段赋值之后、commit 之前：此时 target 已带上待写入的值，抛出即
+    整笔回滚，不必手工还原字段。剩余数量排除 target 自己，它的新值用内存里
+    的值算——还没进库，而且删除路径下它根本不该被计入。
+    """
+    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ADMIN_GUARD_LOCK_KEY})
+
+    target_stays_admin = (not removing) and target.is_admin and target.is_active
+    if target.id == current_user.id and not target_stays_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="不能撤销自己的管理员权限或停用自己的账号",
+        )
+    remaining = (
+        db.query(User)
+        .filter(User.is_admin.is_(True), User.is_active.is_(True), User.id != target.id)
+        .count()
+    )
+    if remaining == 0 and not target_stays_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="系统必须保留至少一个活跃的管理员账号",
+        )
+
+
 @router.put("/{user_id}", response_model=UserSchema)
 def update_user(
     user_id: int,
@@ -165,6 +215,8 @@ def update_user(
     if user_data.is_admin is not None:
         user.is_admin = user_data.is_admin
 
+    _guard_last_active_admin(db, target=user, current_user=current_user)
+
     db.commit()
     db.refresh(user)
 
@@ -208,6 +260,10 @@ def delete_user(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account"
         )
+
+    # 删除同样会缩小活跃管理员集合，必须和 update 走同一把锁重新计数：
+    # A 删 B 与 B 降权 A 并发时，各自都以为对方还在。
+    _guard_last_active_admin(db, target=user, current_user=current_user, removing=True)
 
     # 所有用户级表的 user_id 外键均为 ON DELETE CASCADE，删除交由数据库完成。
     db.delete(user)

@@ -2,13 +2,18 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Dict, Tuple
 from ..core.logging import get_app_logger
 from ..models.transaction import Transaction
 from ..models.holding import Holding
 from ..models.corporate_action import CorporateAction
-from ..models.broker_fund_flow import BrokerFundFlow
-from ..models.ibkr_activity_flow import IbkrActivityFlow
-from .portfolio.semantics import bonus_share_factor, parse_ratio, split_share_factor
+from .portfolio.semantics import (
+    QUANTITY_ACTION_TYPES,
+    action_has_ratio,
+    apply_action_quantity,
+    bonus_share_factor,
+    split_share_factor,
+)
 
 logger = get_app_logger(__name__)
 
@@ -107,26 +112,11 @@ def replay_account_buckets(db: Session, user_id: int, symbol: str, market: str):
     return replay_transactions_per_account(transactions, corporate_actions, symbol, market)
 
 
-def _numeric_sort_value(value):
-    if value is None:
-        return (1, 0, "")
-    text = str(value).strip()
-    if not text:
-        return (1, 0, "")
-    try:
-        return (0, 0, int(text))
-    except ValueError:
-        return (0, 1, text)
-
-
-# 同日顺序：先买入，再转仓，最后卖出。
-_TYPE_SORT_ORDER = {"BUY": 0, "TRANSFER_OUT": 1, "TRANSFER_IN": 1, "SELL": 2}
-
-_BIG_ID = 10**18
-
-
-def _transaction_type_sort_value(transaction_type):
-    return _TYPE_SORT_ORDER.get(transaction_type, 2)
+# 尚未落库的事件在同日排序里的 id 替身：必须**大于**任何持久化 id，
+# 这样"本批最新"排在既有交易之后——与 flush 拿到真 id 后的次序一致。
+# 券商导入预览的替身交易共用它（broker_import_common），用 0 会让预览与
+# 正式导入指向不同的首笔超卖。
+UNPERSISTED_SORT_ID = 10**18
 
 
 def _txn_replay_order(txn):
@@ -137,7 +127,7 @@ def _txn_replay_order(txn):
     而不是所有 OUT 挤在所有 IN 之前。BUY 在全部转仓之前、SELL 在之后。
     """
     txn_type = txn.transaction_type
-    txn_id = txn.id if txn.id is not None else _BIG_ID
+    txn_id = txn.id if txn.id is not None else UNPERSISTED_SORT_ID
     if txn_type == "BUY":
         return (0, txn_id, 0)
     if txn_type == "TRANSFER_OUT":
@@ -146,59 +136,6 @@ def _txn_replay_order(txn):
         pair_id = getattr(txn, "linked_transaction_id", None)
         return (1, pair_id if pair_id is not None else txn_id, 1)
     return (2, txn_id, 0)  # SELL 与未知类型
-
-
-def _source_text(value):
-    return str(value).strip() if value is not None else ""
-
-
-def _transaction_source_selection_key(flow):
-    serial_number = _source_text(getattr(flow, "serial_number", None))
-    contract_number = _source_text(getattr(flow, "contract_number", None))
-    return (
-        0 if serial_number else 1,
-        0 if contract_number else 1,
-        _numeric_sort_value(serial_number),
-        _numeric_sort_value(contract_number),
-        _numeric_sort_value(getattr(flow, "source_row_number", None)),
-        _source_text(getattr(flow, "broker", None)),
-        _source_text(getattr(flow, "source_filename", None)),
-        _source_text(getattr(flow, "row_hash", None)),
-        type(flow).__name__,
-        _numeric_sort_value(getattr(flow, "id", None)),
-    )
-
-
-def _select_transaction_sources(flows):
-    selected = {}
-    for flow in flows:
-        transaction_id = getattr(flow, "transaction_id", None)
-        if transaction_id is None:
-            continue
-        existing = selected.get(transaction_id)
-        if (
-            existing is None
-            or _transaction_source_selection_key(flow)
-            < _transaction_source_selection_key(existing)
-        ):
-            selected[transaction_id] = flow
-    return selected
-
-
-def _transaction_sort_key(txn, broker_flow_by_transaction_id):
-    flow = broker_flow_by_transaction_id.get(txn.id)
-    if flow:
-        source_row = getattr(flow, 'source_row_number', None)
-        return (
-            txn.transaction_date,
-            0,
-            _numeric_sort_value(getattr(flow, 'serial_number', None)),
-            _numeric_sort_value(getattr(flow, 'contract_number', None)),
-            _numeric_sort_value(source_row),
-            _transaction_type_sort_value(txn.transaction_type),
-            txn.id,
-        )
-    return (txn.transaction_date, 1, None, None, None, _transaction_type_sort_value(txn.transaction_type), txn.id)
 
 
 def _event_sort_key(event):
@@ -231,6 +168,83 @@ def validate_no_oversell(transactions):
             quantity -= txn_quantity
 
 
+def replay_account_quantities(events, *, on_oversell=None):
+    """单账户桶的数量重放——券商导入器账户预检的唯一实现（第四处重放）。
+
+    events：调用方**已排好序**的 Transaction / CorporateAction 混合序列。
+    同日 tie-break 因券商而异（招商按流水号/合同号/行号，东财买前卖后），
+    刻意留在调用方；本函数只负责数量语义。
+
+    on_oversell(event, available, needed)：减仓超出可用数量时回调。抛出券商
+    各自的中文错误 = 严格模式；不抛 = 宽松模式（东财对账口径依赖这一分支，
+    数量继续减、可为负）。
+
+    转仓在单账户桶视角就是数量的增减（口径同 validate_no_oversell）：
+    TRANSFER_IN 等同买入、TRANSFER_OUT 等同卖出。按 broker_account 过滤后，
+    转入腿往往是本账户获得该数量的唯一记录，忽略它会凭空少一整笔。
+    """
+    quantities: Dict[Tuple[str, str], Decimal] = {}
+    for event in events:
+        key = (event.symbol, event.market)
+        quantity = quantities.get(key, Decimal("0"))
+        txn_type = getattr(event, "transaction_type", None)
+        if txn_type is None:  # CorporateAction
+            quantity = apply_action_quantity(event, quantity)
+        elif txn_type in ("BUY", "TRANSFER_IN"):
+            quantity += abs(Decimal(str(event.quantity)))
+        elif txn_type in ("SELL", "TRANSFER_OUT"):
+            needed = abs(Decimal(str(event.quantity)))
+            if needed > quantity and on_oversell is not None:
+                on_oversell(event, quantity, needed)
+            quantity -= needed
+        # 其他交易类型不改变数量
+        quantities[key] = quantity
+    return quantities
+
+
+def load_account_quantity_actions(
+    db: Session,
+    *,
+    user_id: int,
+    broker_account_id: int,
+    keys,
+    through_date=None,
+):
+    """单账户预检可见的数量类公司行动。
+
+    可见性规则对齐真实重放（_replay_events + _resolve_action_bucket）：
+
+    - 比例类（distribution_ratio / split_ratio）按每股生效、作用于**所有**
+      持仓桶，因此不按账户过滤。分红同步接受送转建议时刻意写
+      broker_account_id=None（送转是比例行动，每公告仅一条账户无关建议），
+      按账户过滤会让这条最常见的路径在预检里凭空消失。
+    - 绝对数量类（shares_received / new_shares / 配股）自带账户的只认本账户；
+      **NULL 账户的同样计入**——内核 _resolve_action_bucket 会把它归到唯一
+      持仓桶，预检跳过就会少算而误拒整批导入。
+    - 明确归属于**其他**账户的绝对数量行动跳过。
+
+    单账户视角只可能多算不可能少算：多个账户同时持有该证券时内核会抛
+    AccountReplayError 降级，而预检宁可放行（漏报）也不误拒（错杀整批导入）。
+    """
+    if not keys:
+        return []
+    query = db.query(CorporateAction).filter(
+        CorporateAction.user_id == user_id,
+        CorporateAction.action_type.in_(QUANTITY_ACTION_TYPES),
+        CorporateAction.symbol.in_({symbol for symbol, _ in keys}),
+    )
+    if through_date is not None:
+        query = query.filter(CorporateAction.ex_date <= through_date)
+    return [
+        action for action in query.all()
+        if (action.symbol, action.market) in keys
+        and (
+            action_has_ratio(action)
+            or action.broker_account_id in (broker_account_id, None)
+        )
+    ]
+
+
 def recalculate_holdings(
     db: Session,
     user_id: int,
@@ -255,28 +269,22 @@ def recalculate_holdings(
     """
     # 兜底重入锁：API 入口应已提前取锁；importer 等批处理路径在此获得串行化。
     lock_security_timeline(db, user_id, symbol, market)
-    # 获取所有交易记录。券商导入的同日多笔交易需要按券商流水号排序，
-    # 因为导出文件行序不一定等于实际成交顺序。
+    # 交易不在这里预排序：下面构建的 events 会经 _event_sort_key 重排，而它是
+    # 全序（txn.id 唯一），任何预排序都会被完全覆盖。
+    #
+    # 此前这里按券商流水号排过一次（并为此多打两次 BrokerFundFlow /
+    # IbkrActivityFlow 查询），注释写着"导出文件行序不一定等于实际成交顺序"
+    # ——但那份结果从未生效，同日次序一直由 _event_sort_key 的
+    # BUY→转仓→SELL 决定。两处注释表达的是互相冲突的意图。
+    #
+    # 保留 BUY-first 而不是恢复流水序，是因为它才是有正确性价值的那个：
+    # FIFO 从队首弹出最老批次，所以同日"先卖后买"在 BUY-first 下成本基础
+    # 依然正确；而 BUY-first 还能避免同日回转被误判成超卖。
     transactions = db.query(Transaction).filter(
         Transaction.user_id == user_id,
         Transaction.symbol == symbol,
         Transaction.market == market
     ).all()
-    transaction_ids = [txn.id for txn in transactions]
-    broker_flow_by_transaction_id = {}
-    if transaction_ids:
-        broker_flows = db.query(BrokerFundFlow).filter(
-            BrokerFundFlow.user_id == user_id,
-            BrokerFundFlow.transaction_id.in_(transaction_ids),
-        ).all()
-        ibkr_flows = db.query(IbkrActivityFlow).filter(
-            IbkrActivityFlow.user_id == user_id,
-            IbkrActivityFlow.transaction_id.in_(transaction_ids),
-        ).all()
-        broker_flow_by_transaction_id = _select_transaction_sources(
-            [*broker_flows, *ibkr_flows]
-        )
-    transactions.sort(key=lambda txn: _transaction_sort_key(txn, broker_flow_by_transaction_id))
 
     # 获取所有公司行动，按除权除息日排序
     corporate_actions = db.query(CorporateAction).filter(
@@ -403,12 +411,8 @@ def _new_bucket_state():
     }
 
 
-def _action_has_ratio(action) -> bool:
-    if action.action_type in ("STOCK_DIVIDEND", "BONUS_ISSUE"):
-        return parse_ratio(getattr(action, "distribution_ratio", None)) is not None
-    if action.action_type in ("STOCK_SPLIT", "REVERSE_SPLIT"):
-        return parse_ratio(getattr(action, "split_ratio", None)) is not None
-    return False
+# 语义已上提到内核 semantics（原先 holding_service 与 fifo 各有一份拷贝）
+_action_has_ratio = action_has_ratio
 
 
 def _resolve_action_bucket(action, buckets, per_account):
@@ -506,9 +510,12 @@ def _replay_events(events, symbol, market, *, per_account):
             elif txn.transaction_type == "SELL":
                 sell_quantity = Decimal(str(txn.quantity))
                 if sell_quantity > state['quantity']:
+                    # 走到合并桶仍超卖，说明账本本身缺记录（不是账户归属问题）：
+                    # 文案要能直接指向排查方向，与东财导入器的中文提示同风格。
                     message = (
-                        f"Sell quantity {sell_quantity} exceeds available quantity "
-                        f"{state['quantity']} for {symbol} ({market}) on {txn.transaction_date}"
+                        f"{symbol}（{market}）在 {txn.transaction_date} "
+                        f"卖出 {sell_quantity}，超过可用数量 {state['quantity']}；"
+                        "请检查是否缺少期初持仓或买入记录"
                     )
                     if per_account:
                         raise _AccountReplayFallback(message)

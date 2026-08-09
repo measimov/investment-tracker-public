@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from jose import JWTError, jwt
 import bcrypt
@@ -44,20 +44,32 @@ def get_password_hash(password: str) -> str:
     return hashed.decode("utf-8")
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+    *,
+    expires_at: Optional[datetime] = None,
+) -> str:
     """
     Create a JWT access token.
 
     Args:
         data: The data to encode in the token (typically {"sub": username})
         expires_delta: Optional custom expiration time
+        expires_at: 绝对到期时刻（tz-aware）。优先于 expires_delta——调用方已按
+            会话的绝对截止点算好时，不能让 helper 在更晚的时刻重新加一遍 delta。
 
     Returns:
         The encoded JWT token string
     """
     to_encode = data.copy()
 
-    if expires_delta:
+    if expires_at is not None:
+        # 绝对时刻优先：调用方按会话的绝对截止点钳过位时，必须原样落到 exp 上。
+        # 走 delta 的话，helper 在**更晚**的 t1 上重新取 utcnow()，exp 会变成
+        # deadline + (t1 − t0)，钳位白做（慢 commit 时偏移尤其明显）。
+        expire = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+    elif expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
         expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)

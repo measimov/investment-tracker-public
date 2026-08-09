@@ -19,7 +19,10 @@ from app.models.import_batch import ImportBatch
 from app.models.transaction import Transaction
 from app.services import cmb_fund_flow_importer as importer
 from app.services.cmb_fund_flow_importer import ParsedFlow, import_cmb_fund_flow
-from tests.helpers import reset_tables
+from tests.helpers import load_migration, reset_tables, run_migration
+
+# skip_reason 列 + 历史孤儿回填。测试直接跑这个脚本本体，不复制它的 SQL。
+MIGRATION_SKIP_REASON = "20260806_0011"
 
 
 RESET_MODELS = (
@@ -1500,7 +1503,7 @@ def test_cmb_parser_version_tracks_booking_semantics():
 
     若本断言失败，说明你改了 parser 行为——请升级 PARSER_VERSION 并更新此处。
     """
-    assert importer.PARSER_VERSION == "10"
+    assert importer.PARSER_VERSION == "11"
 
 
 def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
@@ -1622,6 +1625,542 @@ def test_cmb_excluded_rows_do_not_mask_genuinely_invalid_rows(monkeypatch):
         assert result["batch_status"] == "PARTIAL"
         batch = db.get(ImportBatch, result["import_batch_id"])
         assert batch.error_count >= 1
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def _cmb_account(db, name="招商账户"):
+    account = BrokerAccount(
+        user_id=1, broker="招商证券", account_name=name,
+        base_currency="CNY", account_number_masked="****A123",
+    )
+    db.add(account)
+    db.commit()
+    return account
+
+
+def test_cmb_precheck_accepts_sell_covered_by_ratio_only_bonus(monkeypatch):
+    """ratio-only 送股必须计入预检，否则整批被误拒。
+
+    分红同步接受送转建议时刻意写 broker_account_id=None（送转是比例行动，
+    作用于所有账户桶），而预检原来既按账户过滤、又裸读 shares_received——
+    这条最常见的路径在预检里贡献 0 股，后续卖出必然误报「缺少期初持仓」。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db)
+        db.add(Transaction(
+            user_id=1, symbol="600000", name="浦发银行", market="A股",
+            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
+            fee=Decimal("0"), transaction_date=date(2026, 1, 1), currency="CNY",
+            broker_account_id=account.id,
+        ))
+        db.add(CorporateAction(
+            user_id=1, symbol="600000", name="浦发银行", market="A股",
+            action_type="STOCK_DIVIDEND", distribution_ratio="10:3",
+            ex_date=date(2026, 1, 5), currency="CNY", broker_account_id=None,
+        ))
+        db.commit()
+
+        sell_flow = parsed_flow(
+            row_number=2, row_hash="b" * 64, business_name="证券卖出",
+            trade_date=date(2026, 1, 6), quantity="-130", price="10", amount="1300",
+        )
+        monkeypatch.setattr(
+            importer, "parse_rows",
+            lambda contents, filename, **kwargs: ([sell_flow], {"证券卖出": 1}, 1, []),
+        )
+
+        # 修复前：预检只看到 100 股 → ValueError("持仓预检失败")，整批拒绝
+        result = import_cmb_fund_flow(
+            db, 1, b"%PDF-ratio-bonus", "cmb.pdf", broker_account_id=account.id,
+        )
+        batch = db.get(ImportBatch, result["import_batch_id"])
+        assert batch.status == "COMPLETED", batch.error_message
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_cmb_precheck_counts_transfer_in_instead_of_crashing(monkeypatch):
+    """转入腿必须计入，且不得再触发 AttributeError。
+
+    预检原来的分支链是 if BUY / elif SELL / elif event.action_type ——
+    TRANSFER_* 会落进第三支，而 Transaction 没有 action_type 列，
+    只要该账户有过一次转仓，整个导入直接崩溃。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        source = _cmb_account(db, "转出账户")
+        target = _cmb_account(db, "转入账户")
+        db.add(Transaction(
+            user_id=1, symbol="600000", name="浦发银行", market="A股",
+            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
+            fee=Decimal("0"), transaction_date=date(2026, 1, 1), currency="CNY",
+            broker_account_id=source.id,
+        ))
+        out_leg = Transaction(
+            user_id=1, symbol="600000", name="浦发银行", market="A股",
+            transaction_type="TRANSFER_OUT", quantity=Decimal("100"), price=Decimal("10"),
+            fee=Decimal("0"), transaction_date=date(2026, 1, 2), currency="CNY",
+            broker_account_id=source.id,
+        )
+        in_leg = Transaction(
+            user_id=1, symbol="600000", name="浦发银行", market="A股",
+            transaction_type="TRANSFER_IN", quantity=Decimal("100"), price=Decimal("10"),
+            fee=Decimal("0"), transaction_date=date(2026, 1, 2), currency="CNY",
+            broker_account_id=target.id,
+        )
+        db.add_all([out_leg, in_leg])
+        db.flush()
+        out_leg.linked_transaction_id = in_leg.id
+        in_leg.linked_transaction_id = out_leg.id
+        db.commit()
+
+        sell_flow = parsed_flow(
+            row_number=2, row_hash="c" * 64, business_name="证券卖出",
+            trade_date=date(2026, 1, 3), quantity="-100", price="10", amount="1000",
+        )
+        monkeypatch.setattr(
+            importer, "parse_rows",
+            lambda contents, filename, **kwargs: ([sell_flow], {"证券卖出": 1}, 1, []),
+        )
+
+        # 修复前：AttributeError('Transaction' object has no attribute 'action_type')
+        result = import_cmb_fund_flow(
+            db, 1, b"%PDF-transfer-in", "cmb.pdf", broker_account_id=target.id,
+        )
+        batch = db.get(ImportBatch, result["import_batch_id"])
+        assert batch.status == "COMPLETED", batch.error_message
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# issue #132 子项 B：未归属红利税行的重导恢复（对齐 IBKR 既有机制）
+#
+# 此前招商把找不到唯一股息的税行无链接归档、并把 row_hash 记入判重：
+# 之后即使补齐股息、重导同一对账单也会被跳过，tax_withheld 永远缺失。
+# ---------------------------------------------------------------------------
+
+
+def _cmb_account(db, name="招商税行恢复账户"):
+    account = BrokerAccount(
+        user_id=1, broker="招商证券", account_name=name,
+        base_currency="CNY", account_number_masked="****A123",
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+def _tax_only_flows():
+    return [
+        parsed_flow(
+            row_number=1, row_hash="d1" * 32, business_name="股息红利税补缴",
+            trade_date=date(2026, 5, 3), quantity="0", price="0", amount="-10",
+        )
+    ]
+
+
+def _dividend_and_tax_flows():
+    return [
+        parsed_flow(
+            row_number=1, row_hash="e2" * 32, business_name="股息入账",
+            trade_date=date(2026, 5, 2), quantity="100", price="1", amount="100",
+        ),
+        parsed_flow(
+            row_number=2, row_hash="d1" * 32, business_name="股息红利税补缴",
+            trade_date=date(2026, 5, 3), quantity="0", price="0", amount="-10",
+        ),
+    ]
+
+
+def _patch_parse(monkeypatch, flows, counts):
+    monkeypatch.setattr(
+        importer, "parse_rows",
+        lambda contents, filename, **kwargs: (flows, counts, len(flows), []),
+    )
+
+
+def test_cmb_unattributed_tax_is_recovered_on_reimport(monkeypatch):
+    """税行先到、股息后到：重导必须就地转正，而不是被 hash 判重跳过。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db)
+
+        _patch_parse(monkeypatch, _tax_only_flows(), {"股息红利税补缴": 1})
+        first = import_cmb_fund_flow(db, 1, b"%PDF-1", "cmb.pdf", broker_account_id=account.id)
+
+        assert first["imported_tax_adjustments"] == 0
+        orphan = db.query(BrokerFundFlow).one()
+        orphan_id = orphan.id
+        assert orphan.skip_reason == "unattributed_tax"
+        assert orphan.corporate_action_id is None
+        assert db.query(CorporateAction).count() == 0
+
+        _patch_parse(
+            monkeypatch, _dividend_and_tax_flows(), {"股息入账": 1, "股息红利税补缴": 1}
+        )
+        second = import_cmb_fund_flow(db, 1, b"%PDF-2", "cmb.pdf", broker_account_id=account.id)
+
+        assert second["imported_tax_adjustments"] == 1
+        action = db.query(CorporateAction).one()
+        assert action.tax_withheld == Decimal("10.00000000")
+        assert action.net_dividend == Decimal("90.00000000")
+
+        recovered = db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).one()
+        assert recovered.id == orphan_id, "必须就地转正，不得插新行"
+        assert recovered.skip_reason is None
+        assert recovered.corporate_action_id == action.id
+        assert "attributed during account-scoped re-import" in (recovered.notes or "")
+    finally:
+        db.close()
+
+
+def test_cmb_recovered_tax_is_not_applied_twice(monkeypatch):
+    """转正后再导同一文件：税额不得二次叠加。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商幂等账户")
+
+        _patch_parse(monkeypatch, _tax_only_flows(), {"股息红利税补缴": 1})
+        import_cmb_fund_flow(db, 1, b"%PDF-1", "cmb.pdf", broker_account_id=account.id)
+        _patch_parse(
+            monkeypatch, _dividend_and_tax_flows(), {"股息入账": 1, "股息红利税补缴": 1}
+        )
+        import_cmb_fund_flow(db, 1, b"%PDF-2", "cmb.pdf", broker_account_id=account.id)
+
+        action = db.query(CorporateAction).one()
+        assert action.tax_withheld == Decimal("10.00000000")
+
+        third = import_cmb_fund_flow(db, 1, b"%PDF-3", "cmb.pdf", broker_account_id=account.id)
+
+        db.refresh(action)
+        assert action.tax_withheld == Decimal("10.00000000"), "重导不得叠加税额"
+        assert third["imported_tax_adjustments"] == 0
+        assert db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).count() == 1
+    finally:
+        db.close()
+
+
+def test_cmb_unattributed_tax_is_not_duplicated_when_still_unmatched(monkeypatch):
+    """仍找不到股息时重导：保持未归属、不重复建行。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商仍未归属账户")
+
+        _patch_parse(monkeypatch, _tax_only_flows(), {"股息红利税补缴": 1})
+        import_cmb_fund_flow(db, 1, b"%PDF-1", "cmb.pdf", broker_account_id=account.id)
+        import_cmb_fund_flow(db, 1, b"%PDF-2", "cmb.pdf", broker_account_id=account.id)
+
+        rows = db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).all()
+        assert len(rows) == 1, "未归属税行不得重复建行"
+        assert rows[0].skip_reason == "unattributed_tax"
+    finally:
+        db.close()
+
+
+def test_cmb_pre_migration_orphan_is_recoverable_after_backfill(monkeypatch):
+    """迁移前就存在的孤儿税行（skip_reason=NULL）升级后必须能被重导转正。
+
+    这是复审点名的核心场景：只加列不回填的话，历史孤儿仍是 NULL →
+    get_existing_hashes 继续当它已入账 → 重导跳过 → 永久失联。
+    这里构造"迁移前形态"的行（先 downgrade 掉该列），再跑**真实**迁移脚本，
+    验证它变成可恢复状态并真的被转正。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商存量孤儿账户")
+        legacy_flow = _tax_only_flows()[0]
+
+        # 迁移前形态：无链接归档、skip_reason 为 NULL
+        db.add(
+            importer.create_broker_fund_flow(
+                user_id=1,
+                broker_account_id=account.id,
+                filename="legacy.pdf",
+                flow=legacy_flow,
+                import_batch_id=None,
+            )
+        )
+        db.commit()
+        orphan = db.query(BrokerFundFlow).one()
+        orphan_id = orphan.id
+        assert orphan.skip_reason is None, "构造的是迁移前形态"
+
+        # 真实迁移：先退回迁移前（列不存在），再重跑 upgrade 完成回填
+        run_migration(db, MIGRATION_SKIP_REASON, "downgrade")
+        run_migration(db, MIGRATION_SKIP_REASON, "upgrade")
+        db.commit()
+        db.expire_all()
+        orphan = db.query(BrokerFundFlow).one()
+        assert orphan.skip_reason == "unattributed_tax", "回填未生效"
+
+        # 补齐股息后重导：必须就地转正，而不是被判重跳过
+        _patch_parse(
+            monkeypatch, _dividend_and_tax_flows(), {"股息入账": 1, "股息红利税补缴": 1}
+        )
+        result = import_cmb_fund_flow(
+            db, 1, b"%PDF-after-migration", "cmb.pdf", broker_account_id=account.id
+        )
+
+        assert result["imported_tax_adjustments"] == 1, "存量孤儿未被恢复"
+        action = db.query(CorporateAction).one()
+        assert action.tax_withheld == Decimal("10.00000000")
+        recovered = db.query(BrokerFundFlow).filter_by(row_hash=legacy_flow.row_hash).one()
+        assert recovered.id == orphan_id
+        assert recovered.corporate_action_id == action.id
+        assert recovered.skip_reason is None
+    finally:
+        db.close()
+
+
+def test_migration_backfill_does_not_touch_non_tax_rows():
+    """回填必须精确到税业务行：其余无链接行（如申购配号）不得被误标。
+
+    误标会让它们在重导时被当成"未入账"而反复处理。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商非税行账户")
+        other = parsed_flow(
+            row_number=1, row_hash="f9" * 32, business_name="申购配号",
+            trade_date=date(2026, 5, 3), quantity="0", price="0", amount="0",
+        )
+        db.add(
+            importer.create_broker_fund_flow(
+                user_id=1, broker_account_id=account.id,
+                filename="legacy.pdf", flow=other, import_batch_id=None,
+            )
+        )
+        db.commit()
+
+        run_migration(db, MIGRATION_SKIP_REASON, "downgrade")
+        run_migration(db, MIGRATION_SKIP_REASON, "upgrade")
+        db.commit()
+        db.expire_all()
+
+        row = db.query(BrokerFundFlow).one()
+        assert row.skip_reason is None, "非税业务行不得被回填标记"
+    finally:
+        db.close()
+
+
+def test_migration_backfill_note_is_appended_once_across_downgrade_cycles():
+    """反复 downgrade → upgrade 后，审计备注只能有一份。
+
+    downgrade 是**删列**，skip_reason 随之全部归 NULL，而 notes 里的痕迹留着——
+    只用 `skip_reason IS NULL` 做幂等守卫的话，每轮 upgrade 都会把同一句备注
+    再追加一遍。此前的测试复制迁移 SQL 且只跑一次 UPDATE，看不见这个循环。
+    """
+    migration = load_migration(MIGRATION_SKIP_REASON)
+    note = migration.BACKFILL_NOTE
+
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商备注幂等账户")
+        db.add(
+            importer.create_broker_fund_flow(
+                user_id=1,
+                broker_account_id=account.id,
+                filename="legacy.pdf",
+                flow=_tax_only_flows()[0],
+                import_batch_id=None,
+            )
+        )
+        db.commit()
+
+        for _ in range(3):
+            run_migration(db, MIGRATION_SKIP_REASON, "downgrade")
+            run_migration(db, MIGRATION_SKIP_REASON, "upgrade")
+        db.commit()
+        db.expire_all()
+
+        row = db.query(BrokerFundFlow).one()
+        assert row.skip_reason == "unattributed_tax", "回填标记应在每轮 upgrade 后恢复"
+        assert row.notes.count(note) == 1, f"审计备注被重复追加：{row.notes!r}"
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# issue #132 子项 C：预览/导入对称
+#
+# 整批一票否决的持仓预检此前只在 commit 通道跑，preview 无对应物：用户拿到
+# 干净预览、正式导入却被整批拒绝，"先看 /preview" 的契约在这类失败上失效。
+# ---------------------------------------------------------------------------
+
+
+def _oversell_flow():
+    return parsed_flow(
+        row_number=1, row_hash="c7" * 32, business_name="证券卖出",
+        trade_date=date(2026, 3, 2), quantity="-130", price="10", amount="1300",
+    )
+
+
+def _seed_holding_transaction(db, account, quantity="100"):
+    db.add(Transaction(
+        user_id=1, symbol="600000", name="浦发银行", market="A股",
+        transaction_type="BUY", quantity=Decimal(quantity), price=Decimal("10"),
+        fee=Decimal("0"), transaction_date=date(2026, 1, 1), currency="CNY",
+        broker_account_id=account.id,
+    ))
+    db.commit()
+
+
+def test_cmb_preview_reports_the_position_precheck_that_import_would_fail_on(monkeypatch):
+    """预览必须预报整批拒绝，且理由与导入通道逐字一致。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商预览预检账户")
+        _seed_holding_transaction(db, account)
+        _patch_parse(monkeypatch, [_oversell_flow()], {"证券卖出": 1})
+
+        preview = importer.preview_cmb_fund_flow(
+            db, 1, b"%PDF-preview-oversell", "cmb.pdf", broker_account_id=account.id,
+        )
+        blocking = [error for error in preview["errors"] if "持仓预检失败" in error]
+        assert blocking, f"预览没有预报整批拒绝：{preview['errors']}"
+
+        # 对称性：导入通道给出的必须是同一条理由
+        with pytest.raises(ValueError, match="持仓预检失败") as excinfo:
+            import_cmb_fund_flow(
+                db, 1, b"%PDF-preview-oversell", "cmb.pdf", broker_account_id=account.id,
+            )
+        assert blocking[0] == str(excinfo.value)
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_cmb_preview_stays_clean_when_a_ratio_only_bonus_covers_the_sell(monkeypatch):
+    """预检在预览里同样要看见 ratio-only 送股，否则变成整批误报。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商预览送股账户")
+        _seed_holding_transaction(db, account)
+        db.add(CorporateAction(
+            user_id=1, symbol="600000", name="浦发银行", market="A股",
+            action_type="STOCK_DIVIDEND", distribution_ratio="10:3",
+            ex_date=date(2026, 1, 5), currency="CNY", broker_account_id=None,
+        ))
+        db.commit()
+        _patch_parse(monkeypatch, [_oversell_flow()], {"证券卖出": 1})
+
+        preview = importer.preview_cmb_fund_flow(
+            db, 1, b"%PDF-preview-bonus", "cmb.pdf", broker_account_id=account.id,
+        )
+        assert not [error for error in preview["errors"] if "持仓预检失败" in error]
+
+        result = import_cmb_fund_flow(
+            db, 1, b"%PDF-preview-bonus", "cmb.pdf", broker_account_id=account.id,
+        )
+        assert db.get(ImportBatch, result["import_batch_id"]).status == "COMPLETED"
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_cmb_prospective_transactions_match_what_import_actually_books(monkeypatch):
+    """防漂移：预览构造的"待入账交易"条数必须等于导入真正建的交易数。
+
+    两边共用 flow.becomes_transaction，这条断言钉住的是"共用"本身——
+    哪天有人在导入循环里加了新分支却没同步谓词，这里直接红。
+    """
+    flows = [
+        parsed_flow(row_number=1, row_hash="a1" * 32, business_name="证券买入",
+                    trade_date=date(2026, 3, 1), quantity="100", price="10", amount="-1000"),
+        parsed_flow(row_number=2, row_hash="a2" * 32, business_name="股息入账",
+                    trade_date=date(2026, 3, 2), quantity="0", price="0", amount="50"),
+        parsed_flow(row_number=3, row_hash="a3" * 32, business_name="股息红利税补缴",
+                    trade_date=date(2026, 3, 3), quantity="0", price="0", amount="-5"),
+        # 价格为 0 的买卖行：只归档，不入账
+        parsed_flow(row_number=4, row_hash="a4" * 32, business_name="证券买入",
+                    trade_date=date(2026, 3, 4), quantity="10", price="0", amount="0"),
+    ]
+    counts = {"证券买入": 2, "股息入账": 1, "股息红利税补缴": 1}
+
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商谓词一致账户")
+        _patch_parse(monkeypatch, flows, counts)
+
+        expected = importer.prospective_transactions(flows, set())
+        result = import_cmb_fund_flow(
+            db, 1, b"%PDF-predicate", "cmb.pdf", broker_account_id=account.id,
+        )
+        assert len(expected) == result["imported_transactions"] == 1
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_cmb_prospective_transaction_sorts_after_persisted_ones(monkeypatch):
+    """排序键整键碰撞时，替身必须排在既有交易之后。
+
+    招商 PDF 常常没有流水号与合同编号，行号又按每份对账单从头计数，因此
+    "同日 + 空流水 + 空合同 + 同行号"的整键碰撞是现实的（手工录入的交易
+    没有关联流水行，同样落在空值那一档）。碰撞时 id 位决定次序：用 0 会把
+    替身排到既有交易之前，而正式导入 flush 拿到的真 id 排在之后——两边会
+    指向不同的首笔超卖并报出不同余量。
+    """
+    from dataclasses import replace
+
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商排序碰撞账户")
+        for txn_type, quantity in (("BUY", "100"), ("SELL", "30")):
+            db.add(Transaction(
+                user_id=1, symbol="600000", name="浦发银行", market="A股",
+                transaction_type=txn_type, quantity=Decimal(quantity),
+                price=Decimal("10"), fee=Decimal("0"),
+                transaction_date=date(2026, 2, 1), currency="CNY",
+                broker_account_id=account.id,
+            ))
+        db.commit()
+
+        # 本批：同日再卖 90，且流水号/合同号/行号与既有交易的空值档完全撞上。
+        #   替身排在后（正确）：100 −30 → 卖 90 撞 70
+        #   替身排在前（用 0）：100 −90 → 既有的卖 30 撞 10
+        collided = replace(
+            parsed_flow(
+                row_number=0, row_hash="cc" * 32, business_name="证券卖出",
+                trade_date=date(2026, 2, 1), quantity="-90", price="10", amount="900",
+            ),
+            serial_number=None,
+            contract_number=None,
+        )
+        _patch_parse(monkeypatch, [collided], {"证券卖出": 1})
+
+        preview = importer.preview_cmb_fund_flow(
+            db, 1, b"%PDF-collision", "cmb.pdf", broker_account_id=account.id,
+        )
+        oversell = [error for error in preview["errors"] if "持仓预检失败" in error]
+        assert oversell, preview["errors"]
+        assert "卖出 90" in oversell[0], oversell[0]
+        assert "可用数量仅 70" in oversell[0], oversell[0]
+
+        with pytest.raises(ValueError, match="持仓预检失败") as excinfo:
+            import_cmb_fund_flow(
+                db, 1, b"%PDF-collision", "cmb.pdf", broker_account_id=account.id,
+            )
+        assert oversell[0] == str(excinfo.value), "预览与导入必须报同一条理由"
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()

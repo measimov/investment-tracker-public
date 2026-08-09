@@ -1,7 +1,6 @@
 """标的档案：数据集同步/归一/封顶、LLM 分析 job（JSON mode）、API。"""
 
 import threading
-from datetime import date
 from decimal import Decimal
 
 import httpx
@@ -338,8 +337,11 @@ def test_analysis_job_creates_row(db, monkeypatch):
     assert "财务质量趋势" in analysis.content
     assert analysis.total_tokens == 300
     # [评审回归] 字段是"抓取日"而非"数据截止日"：旧报告期（20251231）数据
-    # 今天抓取 → data_fetched_at 为今天，数据时效由档案 latest_periods 承载
-    assert analysis.data_fetched_at == date.today()
+    # 今天抓取 → data_fetched_at 为今天。"今天"必须按业务时区取（#150）：
+    # 用 date.today() 的话，UTC 容器/CI 在东八区 0-8 点会差一天。
+    from app.core.timeutil import local_today
+
+    assert analysis.data_fetched_at == local_today()
     profile = svc.load_symbol_profile(db, "600036", "A股")
     assert profile["latest_periods"]["fina_indicator"] == "20251231"
     assert job.data["analysis_id"] == analysis.id

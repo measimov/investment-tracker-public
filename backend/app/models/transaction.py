@@ -38,9 +38,10 @@ class Transaction(Base):
     )
     quantity = Column(Numeric(18, 8), nullable=False)
     price = Column(Numeric(18, 8), nullable=False)
-    fee = Column(Numeric(18, 8), default=0)
+    # 服务层早已保证有值（真实账本零 NULL 存量），DB 侧同步收紧
+    fee = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
     transaction_date = Column(Date, nullable=False, index=True)
-    currency = Column(String(10), default="CNY")
+    currency = Column(String(10), nullable=False, default="CNY", server_default="CNY")
     notes = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

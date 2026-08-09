@@ -8,14 +8,13 @@ from typing import Any, Dict, Optional
 
 from ..core.logging import get_app_logger
 from .background_job_store import (
-    claim_job,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
     job_heartbeat,
     update_job,
 )
 from ..database import SessionLocal
+from .job_runtime import run_job_inline
 from .job_worker import register_runner
 from .report_digest_service import ensure_report_digests
 from .security_analysis_jobs import AnalysisBusyError
@@ -56,7 +55,7 @@ def execute_report_backfill_job(claimed: Dict[str, Any]) -> None:
             update_job(
                 job_id, JOB_TYPE, status="failed",
                 error=f"{market} 暂不支持财报摘要（支持：{'/'.join(REPORT_MARKETS)}）",
-                required_status="running",
+                required_status="running", required_attempt_count=attempt,
             )
             return
         # 单次最多 4 份年报（PDF 下载 + 解析 + LLM），远超 5 分钟租约：
@@ -73,20 +72,7 @@ def execute_report_backfill_job(claimed: Dict[str, Any]) -> None:
 
 
 def run_report_backfill_job(job_id: str) -> None:
-    """Inline fast path：按 id 认领并执行；意外错误走重试/退避路径。"""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("Report backfill job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_report_backfill_job(claimed)
-    except Exception as exc:
-        logger.exception("Report backfill job %s failed", job_id)
-        handle_job_failure(
-            job_id, JOB_TYPE, str(exc),
-            required_attempt_count=claimed.get("attempt_count"),
-        )
-
+    run_job_inline(job_id, JOB_TYPE, execute_report_backfill_job, label="Report backfill", logger=logger)
 
 def get_report_backfill_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

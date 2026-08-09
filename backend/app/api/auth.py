@@ -37,12 +37,38 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 
 def is_secure_request(request: Request) -> bool:
-    forwarded_proto = request.headers.get("x-forwarded-proto", "")
-    return request.url.scheme == "https" or forwarded_proto.lower() == "https"
+    """本次请求是否走在 HTTPS 上。
+
+    这里**不再自己读 X-Forwarded-Proto**：反代头由最外层的
+    core.proxy_headers.ProxyHeadersMiddleware 在路由之前按 trust_proxy_headers
+    统一改写 scope，本函数只读改写后的结果。
+
+    单点解析不只是整洁问题——路由之前发生的事（Starlette 的 slash redirect）
+    也依赖 scheme，只在端点里判断修不了那条降级重定向。同理 uvicorn 自带的
+    那层必须关掉（所有启动命令带 --no-proxy-headers），否则它按自己的信任规则
+    抢先改写，应用层的开关就成了摆设。
+    """
+    return request.url.scheme == "https"
+
+
+def audit_client_ip(request: Request) -> str:
+    """审计日志用的客户端 IP（同样只读中间件改写后的 scope）。"""
+    return request.client.host if request.client else "unknown"
 
 
 def _require_secure_auth(request: Request) -> None:
     if settings.require_https and not is_secure_request(request):
+        # 客户端只看得到 "Login requires HTTPS"，看不出是自己没走 HTTPS、还是
+        # 后端在反代后面却没开 trust_proxy_headers。把两种可能连同补救办法写进
+        # 服务端日志——否则每个撞上它的人都要从头查一遍配置。
+        logger.warning(
+            "Rejected plaintext auth request: scheme=%s, trust_proxy_headers=%s, "
+            "x-forwarded-proto=%r. 开发环境请设 REQUIRE_HTTPS=false；"
+            "反代后面请设 TRUST_PROXY_HEADERS=true 并确认反代覆写了 X-Forwarded-Proto。",
+            request.url.scheme,
+            settings.trust_proxy_headers,
+            request.headers.get("x-forwarded-proto"),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Login requires HTTPS",
@@ -51,7 +77,7 @@ def _require_secure_auth(request: Request) -> None:
 
 def _authenticate_user(request: Request, login_data: LoginRequest, db: Session) -> User:
     _require_secure_auth(request)
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = audit_client_ip(request)
     user_agent = request.headers.get("user-agent", "Unknown")
     user = db.query(User).filter(User.username == login_data.username).first()
 

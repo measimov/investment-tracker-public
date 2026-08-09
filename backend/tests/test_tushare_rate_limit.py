@@ -143,7 +143,7 @@ def test_refresh_history_uses_incremental_fetch(monkeypatch):
     from app.models.holding import Holding
     from app.models.security_price import SecurityPrice
     from app.models.transaction import Transaction
-    from app.services import statistics_service
+    from app.services.statistics import analytics
 
     db = SessionLocal()
     for model in (SecurityPrice, Holding, Transaction, ExchangeRate):
@@ -165,11 +165,11 @@ def test_refresh_history_uses_incremental_fetch(monkeypatch):
                     "success": True, "rows": 0, "skipped": True}
 
         monkeypatch.setattr(
-            statistics_service,
+            analytics,
             "fetch_and_store_security_price_history_incremental",
             fake_incremental,
         )
-        result = statistics_service.calculate_performance_analytics(
+        result = analytics.calculate_performance_analytics(
             db, 1, {"600000": 10}, refresh_history=True,
         )
         assert calls == ["600000"]

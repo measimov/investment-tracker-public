@@ -479,15 +479,16 @@
     },
     "metrics": {
       "annualization_basis": "calendar_days",
-      "annualized_return_rate": 37.233394,
-      "annualized_volatility": 31.718502,
-      "calmar_ratio": 3.081664,
+      "annualization_days_basis": 365.25,
+      "annualized_return_rate": 37.263148,
+      "annualized_volatility": 31.729362,
+      "calmar_ratio": 3.084127,
       "max_drawdown_rate": -12.082237,
       "observation_span_days": 355,
       "risk_free_rate": 0.0,
       "risk_sample_count": 18,
-      "sharpe_ratio": 1.151476,
-      "sortino_ratio": 2.224698,
+      "sharpe_ratio": 1.15187,
+      "sortino_ratio": 2.225459,
       "total_return_rate": 36.048508
     },
     "range_summary": {
@@ -558,6 +559,7 @@
       "data_quality": {
         "invalid_sell_event_count": 0,
         "invalid_sell_events": [],
+        "missing_rate_currencies": [],
         "unpriced_position_count": 0,
         "unpriced_positions": [],
         "warnings": []
@@ -609,6 +611,7 @@
           "unrealized_pnl_rate": 192.942743
         }
       ],
+      "missing_rate_currencies": [],
       "unpriced_positions": [],
       "unrealized_pnl": 23640.563333,
       "unrealized_pnl_cny": 23640.563333,
@@ -676,8 +679,10 @@
       "data_quality": {
         "invalid_sell_event_count": 0,
         "invalid_sell_events": [],
+        "missing_rate_currencies": [],
         "warnings": []
       },
+      "missing_rate_currencies": [],
       "realized_pnl": 7485.636667,
       "realized_pnl_cny": 7485.636667,
       "realized_pnl_rate": 81.944901,
@@ -727,6 +732,7 @@
     {
       "holdings_count": 1,
       "market": "A股",
+      "missing_rate_currencies": [],
       "total_cost": 8752.92,
       "total_cost_by_currency": {
         "CNY": 8752.92
@@ -737,6 +743,7 @@
     {
       "holdings_count": 1,
       "market": "港股",
+      "missing_rate_currencies": [],
       "total_cost": 58509.0,
       "total_cost_by_currency": {
         "HKD": 65010.0
@@ -747,6 +754,7 @@
     {
       "holdings_count": 1,
       "market": "美股",
+      "missing_rate_currencies": [],
       "total_cost": 8458.56,
       "total_cost_by_currency": {
         "USD": 1174.8
@@ -829,6 +837,7 @@
       "USD": 7.2
     },
     "markets_count": 3,
+    "missing_rate_currencies": [],
     "total_holdings": 3,
     "total_invested": 75720.48,
     "total_invested_by_currency": {

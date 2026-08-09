@@ -531,11 +531,16 @@
           <el-input v-model="accountForm.account_name" placeholder="例如：IBKR 主账户" />
         </el-form-item>
         <el-form-item label="券商" prop="broker">
+          <!-- 浮层向上展开：默认向下会盖住尚未填写的「账户尾号」，快速录入/
+               自动化对下一个字段的点击会落进浮层（选错项或输入丢失）。录入
+               顺序自上而下，向上只盖住已填过的「账户名称」，无害。(#87) -->
           <el-select
             v-model="accountForm.broker"
             filterable
             allow-create
             default-first-option
+            placement="top-start"
+            :fallback-placements="['top-start', 'bottom-start']"
             placeholder="选择或输入券商"
           >
             <el-option

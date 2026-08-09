@@ -35,7 +35,7 @@ export default defineConfig({
         '&&',
         'cd ..',
         '&&',
-        `PYTHONPATH=${backendSourcePath} uvicorn app.main:app --host 127.0.0.1 --port ${backendPort}`
+        `PYTHONPATH=${backendSourcePath} uvicorn app.main:app --host 127.0.0.1 --port ${backendPort} --no-proxy-headers`
       ].join(' '),
       cwd: '..',
       url: `http://127.0.0.1:${backendPort}/`,

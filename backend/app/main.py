@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .config import settings
+from .core.proxy_headers import ProxyHeadersMiddleware
 from .database import get_db
 from .api import (
     transactions,
@@ -71,6 +72,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# 必须**最后**添加 = 栈的最外层（add_middleware 是 insert(0)）：scheme 要在
+# 路由之前定下来，否则 Starlette 的 slash redirect 会用 http 生成绝对 Location，
+# 把 HTTPS 客户端的 POST body 引到明文端口上。详见 core/proxy_headers.py。
+app.add_middleware(ProxyHeadersMiddleware, settings=settings)
 
 # Include routers
 app.include_router(auth.router)

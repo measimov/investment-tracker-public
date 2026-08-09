@@ -19,7 +19,7 @@ from app.services.background_job_store import (
     job_heartbeat,
     set_job_progress,
     update_job,
-)
+)  # noqa: F401 - create_or_get_active_job 供参数化的内联路径用例使用
 
 JOB_TYPE = "security_analysis"
 
@@ -227,21 +227,103 @@ def test_worker_passes_claimed_attempt_to_failure_path(db, monkeypatch):
     assert captured["attempt"] == claimed["attempt_count"]
 
 
-def test_inline_run_paths_pass_attempt(db, monkeypatch):
-    """六个内联 run_* 路径的同一契约（抽查分析 job）。"""
-    from app.services import security_analysis_jobs as jobs
+# 全部内联 run_* 路径：(模块名, run 函数名, execute 函数名, job_type)
+#
+# 曾经这里只抽查 security_analysis 一条，docstring 还写着"六个"——而实际有八条，
+# 于是 security_analysis_batch 与 report_digest_batch 两条漏传 attempt 的路径
+# 一直没被发现。恰恰是这两条最长寿（2-4h）、最容易被接管，危害最大。
+# 参数化到全部八条，并由下面的 test_every_inline_run_path_is_covered 保证
+# 新增 job 家族时这份清单不会漏。
+INLINE_RUN_PATHS = [
+    ("price_refresh_jobs", "run_price_refresh_job", "execute_price_refresh_job"),
+    ("dividend_sync_jobs", "run_dividend_sync_job", "execute_dividend_sync_job"),
+    ("llm_report_jobs", "run_llm_report_job", "execute_llm_report_job"),
+    (
+        "performance_history_jobs",
+        "run_performance_history_sync_job",
+        "execute_performance_history_sync_job",
+    ),
+    ("security_analysis_jobs", "run_security_analysis_job", "execute_security_analysis_job"),
+    ("report_digest_jobs", "run_report_backfill_job", "execute_report_backfill_job"),
+    (
+        "security_analysis_batch_jobs",
+        "run_batch_analysis_job",
+        "execute_batch_analysis_job",
+    ),
+    ("report_digest_batch_jobs", "run_digest_batch_job", "execute_digest_batch_job"),
+]
+
+
+@pytest.mark.parametrize("module_name,run_name,execute_name", INLINE_RUN_PATHS)
+def test_inline_run_paths_pass_attempt(db, monkeypatch, module_name, run_name, execute_name):
+    """八个内联 run_* 路径的同一契约：失败路径必须带 claimed attempt。
+
+    不带守卫时，僵尸线程的异常会把**接管者正在跑的那一次**重新排队或标失败。
+    """
+    import importlib
+
+    jobs = importlib.import_module(f"app.services.{module_name}")
+    job_type = jobs.JOB_TYPE
 
     captured: dict = {}
+    # 打桩目标是 job_runtime——八条内联路径的失败处置收敛到那里之后（#134），
+    # 各 job 模块不再 import handle_job_failure。断言的契约没变（失败必须带
+    # claimed attempt），只是换成盯着真正实现它的那一处；模块里若哪天又冒出
+    # 一份自己的失败处置，这里会因为拦不到而立刻红。
+    from app.services import job_runtime
+
     monkeypatch.setattr(
-        jobs, "handle_job_failure",
-        lambda job_id, job_type, error, *, required_attempt_count=None: captured.update(
+        job_runtime, "handle_job_failure",
+        lambda job_id, jt, error, *, required_attempt_count=None: captured.update(
             attempt=required_attempt_count
         ),
     )
     monkeypatch.setattr(
-        jobs, "execute_security_analysis_job",
+        jobs, execute_name,
         lambda claimed: (_ for _ in ()).throw(RuntimeError("boom")),
     )
-    job = jobs.start_security_analysis_job(1, "600036", "A股")
-    jobs.run_security_analysis_job(job["id"])
-    assert captured["attempt"] == 1
+
+    session = SessionLocal()
+    try:
+        session.query(BackgroundJob).filter(BackgroundJob.job_type == job_type).delete()
+        session.commit()
+    finally:
+        session.close()
+
+    job = create_or_get_active_job(job_type, 1, {"symbol": "600036", "market": "A股"})
+    try:
+        getattr(jobs, run_name)(job["id"])
+        assert captured.get("attempt") == 1, (
+            f"{module_name}.{run_name} 未把 claimed attempt 传进 handle_job_failure"
+        )
+    finally:
+        session = SessionLocal()
+        try:
+            session.query(BackgroundJob).filter(BackgroundJob.job_type == job_type).delete()
+            session.commit()
+        finally:
+            session.close()
+
+
+def test_every_inline_run_path_is_covered():
+    """新增 job 家族却忘了加进 INLINE_RUN_PATHS 时，这条会红。"""
+    import importlib
+    import pkgutil
+
+    import app.services as services_pkg
+
+    discovered = set()
+    for module_info in pkgutil.iter_modules(services_pkg.__path__):
+        if not module_info.name.endswith("_jobs"):
+            continue
+        module = importlib.import_module(f"app.services.{module_info.name}")
+        for attr in dir(module):
+            if attr.startswith("run_") and attr.endswith("_job") and callable(
+                getattr(module, attr)
+            ):
+                discovered.add((module_info.name, attr))
+
+    covered = {(m, r) for m, r, _ in INLINE_RUN_PATHS}
+    assert discovered == covered, (
+        f"内联 run_* 路径清单与实际不一致：缺 {discovered - covered}，多 {covered - discovered}"
+    )

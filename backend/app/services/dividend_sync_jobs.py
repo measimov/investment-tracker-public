@@ -11,13 +11,12 @@ from ..config import settings
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from .background_job_store import (
-    claim_job,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
     update_job,
 )
 from .dividend_sync_service import SUPPORTED_MARKETS, sync_dividends_for_user
+from .job_runtime import run_job_inline
 from .job_worker import register_periodic_task, register_runner
 
 logger = get_app_logger(__name__)
@@ -41,26 +40,15 @@ def execute_dividend_sync_job(claimed: Dict[str, Any]) -> None:
             status="succeeded",
             data_updates={"result": result},
             required_status="running",
+            # 接管者的状态同样是 running，只校验 status 挡不住僵尸线程改写终态
+            required_attempt_count=claimed.get("attempt_count"),
         )
     finally:
         db.close()
 
 
 def run_dividend_sync_job(job_id: str) -> None:
-    """Inline fast path：按 id 认领并执行；意外错误走重试/退避路径。"""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("Dividend sync job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_dividend_sync_job(claimed)
-    except Exception as exc:
-        logger.exception("Dividend sync job %s failed", job_id)
-        handle_job_failure(
-            job_id, JOB_TYPE, str(exc),
-            required_attempt_count=claimed.get("attempt_count"),
-        )
-
+    run_job_inline(job_id, JOB_TYPE, execute_dividend_sync_job, label="Dividend sync", logger=logger)
 
 def get_dividend_sync_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

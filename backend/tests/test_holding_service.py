@@ -1,7 +1,5 @@
 from datetime import date
 from decimal import Decimal
-from itertools import permutations
-from types import SimpleNamespace
 
 import pytest
 
@@ -12,81 +10,18 @@ from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.transaction import Transaction
 from app.services.holding_service import (
-    _select_transaction_sources,
     recalculate_holdings,
     validate_no_oversell,
 )
-from app.services.statistics_service import (
-    _get_fifo_results_for_user,
+from app.services.statistics import (
     calculate_performance_summary,
     calculate_realized_pnl_fifo,
 )
+from app.services.statistics.fifo_results import fifo_results_for_user
 from tests.helpers import add_transaction, reset_tables
 
 
 RESET_MODELS = (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction)
-
-
-def test_transaction_source_selection_prefers_rich_identifiers_deterministically():
-    blank_source = SimpleNamespace(
-        id=1,
-        transaction_id=7,
-        serial_number=None,
-        contract_number=None,
-        source_row_number=1,
-        broker="招商证券",
-        source_filename="statement.pdf",
-        row_hash="blank",
-    )
-    contract_source = SimpleNamespace(
-        id=2,
-        transaction_id=7,
-        serial_number=None,
-        contract_number="10",
-        source_row_number=2,
-        broker="招商证券",
-        source_filename="legacy.xls",
-        row_hash="contract",
-    )
-    serial_source = SimpleNamespace(
-        id=3,
-        transaction_id=7,
-        serial_number="20",
-        contract_number=None,
-        source_row_number=3,
-        broker="招商证券",
-        source_filename="legacy.xls",
-        row_hash="serial",
-    )
-
-    for sources in permutations([blank_source, contract_source, serial_source]):
-        assert _select_transaction_sources(sources)[7] is serial_source
-
-    for sources in permutations([blank_source, contract_source]):
-        assert _select_transaction_sources(sources)[7] is contract_source
-
-    later_row = SimpleNamespace(
-        id=4,
-        transaction_id=8,
-        serial_number="30",
-        contract_number="40",
-        source_row_number=9,
-        broker="招商证券",
-        source_filename="same.xls",
-        row_hash="later",
-    )
-    earlier_row = SimpleNamespace(
-        id=5,
-        transaction_id=8,
-        serial_number="30",
-        contract_number="40",
-        source_row_number=8,
-        broker="招商证券",
-        source_filename="same.xls",
-        row_hash="earlier",
-    )
-    for sources in permutations([later_row, earlier_row]):
-        assert _select_transaction_sources(sources)[8] is earlier_row
 
 
 def test_validate_no_oversell_rejects_excess_sell():
@@ -157,7 +92,7 @@ def test_realized_pnl_ignores_oversell_rows_defensively():
         )
         db.commit()
 
-        fifo_result = _get_fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
+        fifo_result = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
         realized_result = calculate_realized_pnl_fifo(db, 1)
 
         assert fifo_result["realized_pnl"] == 500.0

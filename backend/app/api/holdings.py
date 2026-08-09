@@ -6,7 +6,12 @@ from decimal import Decimal
 from ..database import get_db
 from ..models.holding import Holding
 from ..models.user import User
-from ..schemas.holding import HoldingResponse, HoldingPriceUpdate, PriceBatchUpdate
+from ..schemas.holding import (
+    AdminHoldingResponse,
+    HoldingResponse,
+    HoldingPriceUpdate,
+    PriceBatchUpdate,
+)
 from ..services.price_refresh_jobs import (
     get_price_refresh_job,
     run_price_refresh_job,
@@ -206,8 +211,15 @@ def get_refresh_job_status(
     return job
 
 
+def _admin_holding_response(holding: Holding, username: str | None) -> AdminHoldingResponse:
+    """显式组装 admin 响应，不再给 ORM 实例挂动态属性（issue #137）。"""
+    payload = AdminHoldingResponse.model_validate(holding)
+    payload.username = username
+    return payload
+
+
 # Admin endpoints
-@router.get("/admin/all", response_model=List[HoldingResponse])
+@router.get("/admin/all", response_model=List[AdminHoldingResponse])
 def get_all_holdings_admin(
     current_user: User = Depends(get_current_admin_user), db: Session = Depends(get_db)
 ):
@@ -215,25 +227,28 @@ def get_all_holdings_admin(
     holdings = db.query(Holding).order_by(Holding.user_id, Holding.total_cost.desc()).all()
     users = db.query(User.id, User.username).all()
     username_by_id = {user.id: user.username for user in users}
-    for holding in holdings:
-        holding.username = username_by_id.get(holding.user_id)
-    return holdings
+    return [
+        _admin_holding_response(holding, username_by_id.get(holding.user_id))
+        for holding in holdings
+    ]
 
 
-@router.get("/admin/users/{user_id}", response_model=List[HoldingResponse])
+@router.get("/admin/users/{user_id}", response_model=List[AdminHoldingResponse])
 def get_user_holdings_admin(
     user_id: int,
     current_user: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db),
 ):
     """Get holdings for a specific user (admin only)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        # 与 GET /api/users/{user_id} 同口径：不存在的用户是 404，
+        # 不是空列表（后者与"该用户没有持仓"混为一谈）。
+        raise HTTPException(status_code=404, detail="User not found")
     holdings = (
         db.query(Holding)
         .filter(Holding.user_id == user_id)
         .order_by(Holding.total_cost.desc())
         .all()
     )
-    user = db.query(User).filter(User.id == user_id).first()
-    for holding in holdings:
-        holding.username = user.username if user else None
-    return holdings
+    return [_admin_holding_response(holding, user.username) for holding in holdings]

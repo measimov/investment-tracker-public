@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .fx import ExchangeRateLookup, convert_on_date
-from .semantics import bonus_share_factor, split_share_factor
+from .semantics import bonus_share_factor, cash_dividend_amounts, split_share_factor
 
 
 def get_current_price(current_prices: Dict[str, float], symbol: str, market: str) -> Optional[Decimal]:
@@ -307,9 +307,7 @@ def build_return_curve(
 
         for action in corporate_actions_by_date.get(current_date, []):
             if action.action_type == "CASH_DIVIDEND":
-                gross = Decimal(str(action.total_dividend or 0))
-                tax = Decimal(str(action.tax_withheld or 0))
-                net = Decimal(str(action.net_dividend if action.net_dividend is not None else gross - tax))
+                _, _, net = cash_dividend_amounts(action)
                 dividend_cny = convert_on_date(
                     net,
                     action.currency or "CNY",

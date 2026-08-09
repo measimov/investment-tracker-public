@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class BrokerImportSample(BaseModel):
@@ -68,3 +68,10 @@ class BrokerImportResult(BaseModel):
     import_samples: List[BrokerImportSample] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
+    # 两个列表都截断到 50 条，前端再截到 8 条。没有真实条数的话，"看到 8 条"
+    # 和"一共 8 条"在界面上完全无法区分——排查会建立在错误的前提上。
+    warnings_total: int = 0
+    errors_total: int = 0
+    # 脱敏诊断报告（目前仅招商预览产出）。形态会随排查演进，故不逐字段建模：
+    # 钉死 schema 只会给每次加一个诊断字段增加改动摩擦，而它不是对外契约。
+    diagnostics: Optional[Dict[str, Any]] = None

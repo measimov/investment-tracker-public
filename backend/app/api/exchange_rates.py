@@ -1,21 +1,32 @@
 """
 汇率管理API
+
+汇率是全局数据（不分用户），但它是所有用户金额折算的唯一数据源：登录即可读写，
+匿名一律拒绝。口径与 security_profiles 一致（全局表、逐端点挂依赖）。
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import date
 
+from ..core.deps import get_current_active_user
+from ..core.logging import get_app_logger
 from ..database import get_db
 from ..models.exchange_rate import ExchangeRate
+from ..models.user import User
 from ..schemas import exchange_rate as schemas
 from ..services import exchange_rate_service
+
+logger = get_app_logger(__name__)
 
 router = APIRouter(prefix="/exchange-rates", tags=["exchange-rates"])
 
 
 @router.get("/latest", response_model=schemas.ExchangeRateLatest)
-def get_latest_rates(db: Session = Depends(get_db)):
+def get_latest_rates(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
     """获取最新汇率（相对于基准货币CNY）"""
     rates = exchange_rate_service.get_all_latest_rates(db, "CNY")
 
@@ -41,7 +52,8 @@ def list_exchange_rates(
     to_currency: str = None,
     skip: int = 0,
     limit: int = 100,
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
     """获取汇率列表"""
     query = db.query(ExchangeRate)
@@ -64,7 +76,8 @@ def list_exchange_rates(
 def get_exchange_rate(
     from_currency: str,
     to_currency: str,
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
     """获取特定货币对的最新汇率"""
     rate = db.query(ExchangeRate).filter(
@@ -85,7 +98,8 @@ def get_exchange_rate(
 @router.post("/", response_model=schemas.ExchangeRate)
 def create_or_update_exchange_rate(
     rate_data: schemas.ExchangeRateCreate,
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
     """创建或更新汇率"""
     rate = exchange_rate_service.update_or_create_rate(
@@ -103,7 +117,8 @@ def create_or_update_exchange_rate(
 def update_exchange_rate(
     rate_id: int,
     rate_update: schemas.ExchangeRateUpdate,
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
     """更新汇率"""
     rate = db.query(ExchangeRate).filter(ExchangeRate.id == rate_id).first()
@@ -125,7 +140,11 @@ def update_exchange_rate(
 
 
 @router.delete("/{rate_id}")
-def delete_exchange_rate(rate_id: int, db: Session = Depends(get_db)):
+def delete_exchange_rate(
+    rate_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
     """删除汇率"""
     rate = db.query(ExchangeRate).filter(ExchangeRate.id == rate_id).first()
 
@@ -141,7 +160,8 @@ def delete_exchange_rate(rate_id: int, db: Session = Depends(get_db)):
 @router.post("/convert", response_model=schemas.CurrencyConvertResponse)
 def convert_currency(
     request: schemas.CurrencyConvertRequest,
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
 ):
     """转换货币"""
     try:
@@ -177,21 +197,24 @@ def convert_currency(
 
 
 @router.post("/refresh-from-api")
-def refresh_rates_from_api(db: Session = Depends(get_db)):
+def refresh_rates_from_api(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
     """从API刷新汇率"""
     try:
         updated_rates = exchange_rate_service.fetch_latest_rates_from_api(db)
+    except Exception:
+        # 原来是裸 except + detail=str(e)：既把内部错误文本（含上游 URL/异常类型）
+        # 回显给客户端，又会把下面自己抛的 HTTPException 一并吞掉再包一层。
+        logger.exception("刷新汇率失败")
+        raise HTTPException(status_code=502, detail="汇率数据源刷新失败，请稍后重试")
 
-        if not updated_rates:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to fetch rates from API"
-            )
+    if not updated_rates:
+        raise HTTPException(status_code=502, detail="汇率数据源未返回任何汇率")
 
-        return {
-            "message": "Rates updated successfully",
-            "updated_rates": {k: float(v) for k, v in updated_rates.items()},
-            "count": len(updated_rates)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "message": "Rates updated successfully",
+        "updated_rates": {k: float(v) for k, v in updated_rates.items()},
+        "count": len(updated_rates)
+    }

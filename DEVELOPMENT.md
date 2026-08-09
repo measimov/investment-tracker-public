@@ -33,6 +33,9 @@ REQUIRE_HTTPS=false
 PRICE_REFRESH_MAX_WORKERS=4
 ```
 
+这两行是**显式放宽**：代码默认是 `ENABLE_DOCS=false` / `REQUIRE_HTTPS=true`
+（生产 fail-closed）。不写的话本地明文登录会被拒、`/docs` 也打不开。
+
 完整变量清单（后台任务、Tushare 限速、价格新鲜度窗口、`LLM_REPORT_*` 等）
 见 `.env.example`，各变量与 `backend/app/config.py` 一一对应。
 
@@ -46,7 +49,7 @@ python manage.py seed
 启动后端：
 
 ```bash
-ENABLE_DOCS=true uvicorn app.main:app --reload --port 8000
+ENABLE_DOCS=true uvicorn app.main:app --reload --port 8000 --no-proxy-headers
 ```
 
 访问：
@@ -56,6 +59,7 @@ ENABLE_DOCS=true uvicorn app.main:app --reload --port 8000
 - ReDoc: `http://localhost:8000/redoc`
 
 应用启动不会自动创建表或补齐初始用户。需要初始账号时运行 `python manage.py seed`。
+
 `TUSHARE_TOKEN` 可留空，但主动行情刷新、分红公告与基本面档案同步会受限；
 `LLM_REPORT_API_KEY` 留空时 AI 复盘和标的分析功能禁用。
 

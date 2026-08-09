@@ -936,7 +936,7 @@ def test_eastmoney_parser_version_tracks_booking_semantics():
     """
     from app.services.eastmoney_statement_importer import PARSER_VERSION
 
-    assert PARSER_VERSION == "7"
+    assert PARSER_VERSION == "8"
 
 
 def test_excluded_security_archives_rows_and_passes_snapshot_gate(monkeypatch):
@@ -997,3 +997,398 @@ def test_excluded_security_archives_rows_and_passes_snapshot_gate(monkeypatch):
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# issue #132 子项 B：未归属红利税行的重导恢复（对齐 IBKR 既有机制）
+# ---------------------------------------------------------------------------
+
+
+def test_eastmoney_unattributed_tax_is_recovered_on_reimport(monkeypatch):
+    """税行先到、股息后到：重导必须就地转正，而不是被 hash 判重跳过。
+
+    此前东财把失配税行无链接归档并把 row_hash 记入判重，补齐股息后重导
+    同一对账单也会被跳过，tax_withheld 永远缺失。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        rows = sample_rows()
+        tax_row = [rows[4]]
+        dividend_and_tax = [rows[3], rows[4]]
+
+        # 第一次：只有税行，库里没有任何股息
+        patch_statement(monkeypatch, tax_row, statement_context(positions=[]))
+        first = import_eastmoney_statement(
+            db, 1, b"%PDF-1", "eastmoney.pdf", broker_account_id=account.id
+        )
+
+        assert first["imported_tax_adjustments"] == 0
+        orphan = db.query(BrokerFundFlow).one()
+        orphan_id = orphan.id
+        assert orphan.skip_reason == "unattributed_tax"
+        assert orphan.corporate_action_id is None
+
+        # 第二次：补上同标的股息
+        patch_statement(monkeypatch, dividend_and_tax, statement_context(positions=[]))
+        second = import_eastmoney_statement(
+            db, 1, b"%PDF-2", "eastmoney.pdf", broker_account_id=account.id
+        )
+
+        assert second["imported_tax_adjustments"] == 1
+        action = db.query(CorporateAction).one()
+        assert action.tax_withheld == Decimal("10.00000000")
+        assert action.net_dividend == Decimal("90.00000000")
+
+        recovered = db.query(BrokerFundFlow).filter_by(
+            row_hash=orphan.row_hash
+        ).one()
+        assert recovered.id == orphan_id, "必须就地转正，不得插新行"
+        assert recovered.skip_reason is None
+        assert recovered.corporate_action_id == action.id
+    finally:
+        db.close()
+
+
+def test_eastmoney_recovered_tax_is_not_applied_twice(monkeypatch):
+    """转正后再导同一文件：税额不得二次叠加。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        rows = sample_rows()
+
+        patch_statement(monkeypatch, [rows[4]], statement_context(positions=[]))
+        import_eastmoney_statement(
+            db, 1, b"%PDF-1", "eastmoney.pdf", broker_account_id=account.id
+        )
+        patch_statement(monkeypatch, [rows[3], rows[4]], statement_context(positions=[]))
+        import_eastmoney_statement(
+            db, 1, b"%PDF-2", "eastmoney.pdf", broker_account_id=account.id
+        )
+
+        action = db.query(CorporateAction).one()
+        assert action.tax_withheld == Decimal("10.00000000")
+
+        third = import_eastmoney_statement(
+            db, 1, b"%PDF-3", "eastmoney.pdf", broker_account_id=account.id
+        )
+
+        db.refresh(action)
+        assert action.tax_withheld == Decimal("10.00000000"), "重导不得叠加税额"
+        assert third["imported_tax_adjustments"] == 0
+    finally:
+        db.close()
+
+
+def test_eastmoney_legacy_hash_orphan_is_recovered_in_place(monkeypatch):
+    """历史孤儿以 legacy_row_hash 存档时，也必须原行转正（复审 P1）。
+
+    判重同时查 current/legacy 两种 hash，但恢复加载若只按 current hash 找，
+    就会「判重放行 → loader 找不到原行 → 新建一条 current hash 来源」，
+    旧孤儿永久保留且经济来源变成两条。
+    """
+    from sqlalchemy import text as sa_text
+
+    from app.services import eastmoney_statement_importer as importer
+
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        rows = sample_rows()
+
+        # 先只导税行，拿到它的 current/legacy 两种 hash
+        patch_statement(monkeypatch, [rows[4]], statement_context(positions=[]))
+        import_eastmoney_statement(
+            db, 1, b"%PDF-probe", "eastmoney.pdf", broker_account_id=account.id
+        )
+        probe = db.query(BrokerFundFlow).one()
+        current_hash = probe.row_hash
+        legacy_hash = hashlib.sha256(b"legacy-form-of-this-tax-row").hexdigest()
+
+        # 造"历史孤儿"：归档行以 legacy hash 存档，且已被迁移回填标记
+        db.execute(sa_text(
+            "UPDATE broker_fund_flows SET row_hash = :legacy, "
+            "skip_reason = 'unattributed_tax', corporate_action_id = NULL "
+            "WHERE row_hash = :current"
+        ), {"legacy": legacy_hash, "current": current_hash})
+        db.commit()
+        orphan_id = db.query(BrokerFundFlow).one().id
+
+        # 让本次解析产出的税行带上这个 legacy hash
+        original_parse = importer.parse_rows
+
+        def parse_with_legacy(*args, **kwargs):
+            parsed_rows, counts, total, errors = original_parse(*args, **kwargs)
+            for flow in parsed_rows:
+                if flow.is_dividend_tax:
+                    flow.legacy_row_hash = legacy_hash
+            return parsed_rows, counts, total, errors
+
+        monkeypatch.setattr(importer, "parse_rows", parse_with_legacy)
+        patch_statement(monkeypatch, [rows[3], rows[4]], statement_context(positions=[]))
+
+        result = import_eastmoney_statement(
+            db, 1, b"%PDF-after", "eastmoney.pdf", broker_account_id=account.id
+        )
+
+        assert result["imported_tax_adjustments"] == 1
+        action = db.query(CorporateAction).one()
+        assert action.tax_withheld == Decimal("10.00000000")
+
+        tax_sources = db.query(BrokerFundFlow).filter(
+            BrokerFundFlow.row_hash.in_([legacy_hash, current_hash])
+        ).all()
+        assert len(tax_sources) == 1, (
+            f"两种 hash 合计只应有一条税来源，实际 {len(tax_sources)} 条（旧孤儿未被复用）"
+        )
+        assert tax_sources[0].id == orphan_id, "必须在原行转正"
+        assert tax_sources[0].corporate_action_id == action.id
+        assert tax_sources[0].skip_reason is None
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# issue #132 子项 C：预览/导入对称
+#
+# 东财有两道整批一票否决的门（持仓历史校验、对账快照必须 MATCHED），此前
+# 都只在 commit 通道跑：用户拿到干净预览、正式导入却被整批拒绝并回滚。
+# ---------------------------------------------------------------------------
+
+
+def test_eastmoney_preview_reports_the_missing_opening_position(monkeypatch):
+    """第一道门：持仓历史校验的失败必须在预览里就说出来。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        context = statement_context(
+            positions=[
+                EastmoneyStatementPosition(
+                    symbol="600001", name="合成股票甲", market="A股",
+                    quantity=Decimal("200"),
+                ),
+                EastmoneyStatementPosition(
+                    symbol="510001", name="合成ETF", market="A股",
+                    quantity=Decimal("1000"),
+                ),
+            ]
+        )
+        patch_statement(monkeypatch, sample_rows(), context)
+
+        preview = preview_eastmoney_statement(
+            db, 1, b"%PDF-missing-opening", "eastmoney-missing-opening.pdf",
+            broker_account_id=account.id,
+        )
+        assert [error for error in preview["errors"] if "缺少期初持仓" in error]
+        # 预览必须仍是只读的
+        assert db.query(ImportBatch).count() == 0
+        assert db.query(Transaction).count() == 0
+        assert db.query(ReconciliationSnapshot).count() == 0
+
+        with pytest.raises(ValueError, match="缺少期初持仓"):
+            import_eastmoney_statement(
+                db, 1, b"%PDF-missing-opening", "eastmoney-missing-opening.pdf",
+                broker_account_id=account.id,
+            )
+    finally:
+        db.close()
+
+
+def test_eastmoney_preview_predicts_the_reconciliation_gate(monkeypatch):
+    """第二道门：对账快照 MISMATCHED 会整批回滚，预览必须提前预报。
+
+    导入的最终 status 来自 reconciliation_service（它覆盖快照上初设的那个），
+    所以预览走的必须是同一个比对器——本地另算一套就是换个方式说谎。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        context = statement_context(
+            positions=[
+                EastmoneyStatementPosition(
+                    symbol="600001", name="合成股票甲", market="A股",
+                    quantity=Decimal("100"),
+                )
+            ]
+        )
+        patch_statement(monkeypatch, [sample_rows()[0]], context)
+
+        preview = preview_eastmoney_statement(
+            db, 1, b"%PDF-mismatch", "eastmoney-mismatch.pdf",
+            broker_account_id=account.id,
+        )
+        assert preview["reconciliation_status"] == "MISMATCHED"
+        assert [error for error in preview["errors"] if "持仓与账户交易记录不一致" in error]
+        assert db.query(ReconciliationSnapshot).count() == 0, "预览不得落快照"
+
+        with pytest.raises(ValueError, match="持仓与账户交易记录不一致"):
+            import_eastmoney_statement(
+                db, 1, b"%PDF-mismatch", "eastmoney-mismatch.pdf",
+                broker_account_id=account.id,
+            )
+    finally:
+        db.close()
+
+
+def test_eastmoney_preview_is_clean_when_the_statement_reconciles(monkeypatch):
+    """防误报：口径对得上时预览必须判 MATCHED 且无阻断错误。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        context = statement_context(
+            positions=[
+                EastmoneyStatementPosition(
+                    symbol="600001", name="合成股票甲", market="A股",
+                    quantity=Decimal("200"),
+                )
+            ]
+        )
+        patch_statement(monkeypatch, [sample_rows()[0]], context)
+
+        preview = preview_eastmoney_statement(
+            db, 1, b"%PDF-clean", "eastmoney-clean.pdf", broker_account_id=account.id,
+        )
+        assert preview["reconciliation_status"] == "MATCHED"
+        assert not preview["errors"], preview["errors"]
+
+        result = import_eastmoney_statement(
+            db, 1, b"%PDF-clean", "eastmoney-clean.pdf", broker_account_id=account.id,
+        )
+        assert result["reconciliation_status"] == "MATCHED"
+    finally:
+        db.close()
+
+
+def test_eastmoney_preview_predicts_gate_for_a_dividend_only_batch(monkeypatch):
+    """只有现金红利的一批也必须注入行动替身，否则预览与导入判定相反。
+
+    对账比对的 relevant_keys 按"本账户拥有任意 CorporateAction"激活证券
+    时间线。本批只有 X 的现金红利、期末不持有 X，而 X 在**另一个**账户上
+    存在分账户重放矛盾（悬空转出腿）：
+      - 不注入行动 → 预览看不到 X → 判 MATCHED；
+      - 正式导入先落红利 → 激活 X → replay_inconsistent → MISMATCHED 整批回滚。
+    现金红利不改数量，正是这一点让"注入它没意义"的直觉出错。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        other = create_eastmoney_account(db, "另一个账户")
+
+        # X 在另一个账户上留下悬空转出腿 → 该证券的分账户重放必然矛盾
+        db.add(Transaction(
+            user_id=1, symbol="600001", name="合成股票甲", market="A股",
+            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
+            fee=Decimal("0"), transaction_date=date(2026, 1, 1), currency="CNY",
+            broker_account_id=other.id,
+        ))
+        db.add(Transaction(
+            user_id=1, symbol="600001", name="合成股票甲", market="A股",
+            transaction_type="TRANSFER_OUT", quantity=Decimal("100"), price=Decimal("10"),
+            fee=Decimal("0"), transaction_date=date(2026, 1, 2), currency="CNY",
+            broker_account_id=other.id, linked_transaction_id=None,
+        ))
+        db.commit()
+
+        dividend_only = [(
+            1,
+            flow_row("20260210", "红利入账", "600001", "合成股票甲",
+                     "0", "0.0000", "50.00"),
+        )]
+        patch_statement(monkeypatch, dividend_only, statement_context(positions=[]))
+
+        preview = preview_eastmoney_statement(
+            db, 1, b"%PDF-dividend-only", "eastmoney-dividend-only.pdf",
+            broker_account_id=account.id,
+        )
+
+        with pytest.raises(ValueError, match="持仓与账户交易记录不一致"):
+            import_eastmoney_statement(
+                db, 1, b"%PDF-dividend-only", "eastmoney-dividend-only.pdf",
+                broker_account_id=account.id,
+            )
+        assert preview["reconciliation_status"] == "MISMATCHED", (
+            "预览漏注入本批现金红利，会先说 MATCHED 再让导入整批回滚"
+        )
+        assert [error for error in preview["errors"] if "持仓与账户交易记录不一致" in error]
+    finally:
+        db.close()
+
+
+def test_eastmoney_prospective_transaction_sorts_after_persisted_ones(monkeypatch):
+    """排序键整键碰撞时，替身必须排在既有交易之后（与 flush 后拿到真 id 一致）。
+
+    否则同日多笔卖出时，预览与正式导入会指向不同的首笔超卖、报出不同余量，
+    "理由逐字一致"就是空话。
+    """
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = create_eastmoney_account(db)
+        # 已有：买 100，同日卖 30
+        db.add(Transaction(
+            user_id=1, symbol="600001", name="合成股票甲", market="A股",
+            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
+            fee=Decimal("0"), transaction_date=date(2026, 2, 1), currency="CNY",
+            broker_account_id=account.id,
+        ))
+        db.add(Transaction(
+            user_id=1, symbol="600001", name="合成股票甲", market="A股",
+            transaction_type="SELL", quantity=Decimal("30"), price=Decimal("11"),
+            fee=Decimal("0"), transaction_date=date(2026, 2, 1), currency="CNY",
+            broker_account_id=account.id,
+        ))
+        db.commit()
+
+        # 本批：同日再卖 90。两种次序给出的是**不同的**首笔超卖与余量：
+        #   替身排在后（正确，与 flush 后的真 id 一致）：100 −30 → 卖 90 撞 70
+        #   替身排在前（用 0 的话）：            100 −90 → 既有的卖 30 撞 10
+        # 二者的 needed/available 都不同，不是格式差异。
+        rows = [(
+            1,
+            flow_row("20260201", "证券卖出", "600001", "合成股票甲",
+                     "90", "12.0000", "1080.00"),
+        )]
+        patch_statement(monkeypatch, rows, statement_context(positions=[]))
+
+        preview = preview_eastmoney_statement(
+            db, 1, b"%PDF-collision", "eastmoney-collision.pdf",
+            broker_account_id=account.id,
+        )
+        oversell = [error for error in preview["errors"] if "缺少期初持仓" in error]
+        assert oversell, preview["errors"]
+        assert "卖出 90" in oversell[0], oversell[0]
+        assert "当时账户内仅有 70" in oversell[0], oversell[0]
+
+        with pytest.raises(ValueError, match="缺少期初持仓") as excinfo:
+            import_eastmoney_statement(
+                db, 1, b"%PDF-collision", "eastmoney-collision.pdf",
+                broker_account_id=account.id,
+            )
+        assert oversell[0] == str(excinfo.value), "预览与导入必须报同一条理由"
+    finally:
+        db.close()
+
+
+def test_eastmoney_identical_rows_get_distinct_hashes_on_both_schemes():
+    """同一份对账单里两条**逐字段相同**的流水必须拿到不同的 row_hash。
+
+    真实存在的等值成交（同价同量同日拆单）不是重复行，靠"本批第几次出现"消歧。
+    东财是唯一有**两套** hash 的导入器（当前 + legacy），两套都必须各自消歧——
+    只消歧一套的话，legacy 判重会把第二条当成第一条的重复而永久跳过。
+    招商与 IBKR 早有同型覆盖，东财此前没有。
+    """
+    row = flow_row("20260110", "证券买入", "600001", "合成股票甲",
+                   "200", "10.0000", "-2005.10", "5.00", "0.00", "0.10", "50000.00")
+    parsed, _, _, errors = parse_table_rows([(1, row), (2, dict(row))])
+
+    assert not errors, errors
+    assert len(parsed) == 2
+    assert parsed[0].row_hash != parsed[1].row_hash, "当前 hash 未消歧"
+    assert parsed[0].legacy_row_hash != parsed[1].legacy_row_hash, "legacy hash 未消歧"

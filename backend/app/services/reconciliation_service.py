@@ -20,7 +20,7 @@
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,7 @@ from .cmb_fund_flow_importer import BROKER_NAME as CMB_BROKER_NAME
 from .eastmoney_statement_importer import BROKER_NAME as EASTMONEY_BROKER_NAME
 from .security_rule_service import get_excluded_keys
 from .holding_service import AccountReplayError, replay_transactions_per_account
+from .portfolio.semantics import cash_dividend_amounts
 
 logger = get_app_logger(__name__)
 
@@ -67,16 +68,38 @@ def replay_account_positions_asof(
     user_id: int,
     account_id: Optional[int],
     as_of: date,
+    extra_transactions: Sequence[Any] = (),
+    extra_corporate_actions: Sequence[Any] = (),
 ) -> Tuple[Dict[Tuple[str, str], Decimal], List[Dict[str, Any]]]:
-    """重放到 as_of（含当日）的账户持仓数量；归属矛盾的证券单独报告。"""
+    """重放到 as_of（含当日）的账户持仓数量；归属矛盾的证券单独报告。
+
+    extra_*：尚未落库的待入账交易/公司行动。券商导入的预览通道用它们预报
+    "正式导入会不会被对账门整批拒绝"——预测必须与真实门走同一个比对器，
+    另算一套只会换个方式说谎（#132 子项 C）。
+
+    公司行动同样要注入，哪怕本批只有不改数量的现金红利：下面的 relevant_keys
+    按"本账户拥有任意 CorporateAction"激活证券时间线，漏注入会让 preview 少
+    激活一个证券，从而错过它在别的账户上的重放矛盾（判 MATCHED），而正式
+    导入先落红利就会激活并判 MISMATCHED 整批回滚。
+    """
     transactions = db.query(Transaction).filter(
         Transaction.user_id == user_id,
         Transaction.transaction_date <= as_of,
     ).all()
+    transactions += [
+        prospective
+        for prospective in extra_transactions
+        if prospective.transaction_date <= as_of
+    ]
     corporate_actions = db.query(CorporateAction).filter(
         CorporateAction.user_id == user_id,
         CorporateAction.ex_date <= as_of,
     ).all()
+    corporate_actions += [
+        prospective
+        for prospective in extra_corporate_actions
+        if prospective.ex_date <= as_of
+    ]
 
     txns_by_key = defaultdict(list)
     for txn in transactions:
@@ -217,24 +240,35 @@ def derive_account_cash_asof(
         pay_date = dividend.payment_date or dividend.ex_date
         if pay_date is None or pay_date > as_of:
             continue
-        gross = Decimal(str(dividend.total_dividend or 0))
-        tax = Decimal(str(dividend.tax_withheld or 0))
-        net = Decimal(str(
-            dividend.net_dividend if dividend.net_dividend is not None else gross - tax
-        ))
+        _, _, net = cash_dividend_amounts(dividend)
         balances[dividend.currency or "CNY"] += net
 
     return {currency: amount for currency, amount in balances.items() if amount != 0}
 
 
-def compare_snapshot(db: Session, snapshot) -> Tuple[str, Dict[str, Any]]:
-    """比对单个快照，返回 (status, diff_detail)；不修改快照对象。"""
+def compare_snapshot(
+    db: Session,
+    snapshot,
+    *,
+    extra_transactions: Sequence[Any] = (),
+    extra_corporate_actions: Sequence[Any] = (),
+) -> Tuple[str, Dict[str, Any]]:
+    """比对单个快照，返回 (status, diff_detail)；不修改快照对象。
+
+    extra_* 只由导入预览传入（尚未落库的待入账交易与公司行动）；已落库的
+    快照走空列表，行为与原来完全一致。
+    """
     as_of = snapshot.snapshot_date
     account_id = snapshot.broker_account_id
     scope_markets = SCOPE_MARKETS.get(getattr(snapshot, "statement_scope", None))
 
     system_positions, inconsistent = replay_account_positions_asof(
-        db, snapshot.user_id, account_id, as_of
+        db,
+        snapshot.user_id,
+        account_id,
+        as_of,
+        extra_transactions=extra_transactions,
+        extra_corporate_actions=extra_corporate_actions,
     )
     if scope_markets is not None:
         # 分范围快照：系统侧只保留该范围内市场，另一市场的持仓不算"快照缺记录"。

@@ -12,7 +12,7 @@ class SecurityPrice(Base):
     market = Column(String(20), nullable=False, index=True)
     ts_code = Column(String(50), nullable=True, index=True)
     price_date = Column(Date, nullable=False, index=True)
-    currency = Column(String(10), nullable=False, default="CNY")
+    currency = Column(String(10), nullable=False, default="CNY", server_default="CNY")
     open_price = Column(Numeric(18, 8), nullable=True)
     high_price = Column(Numeric(18, 8), nullable=True)
     low_price = Column(Numeric(18, 8), nullable=True)
@@ -20,7 +20,7 @@ class SecurityPrice(Base):
     pre_close_price = Column(Numeric(18, 8), nullable=True)
     adj_factor = Column(Numeric(18, 8), nullable=True)
     adj_close_price = Column(Numeric(18, 8), nullable=True)
-    source = Column(String(50), nullable=False, default="tushare")
+    source = Column(String(50), nullable=False, default="tushare", server_default="tushare")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

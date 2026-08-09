@@ -7,12 +7,11 @@ from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from ..models.llm_report import LlmReport
 from .background_job_store import (
-    claim_job,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
     update_job,
 )
+from .job_runtime import run_job_inline
 from .job_worker import register_periodic_task, register_runner
 from .llm_client import LLMClientError, LLMNotConfiguredError, chat_completion
 from .llm_report_input import build_llm_report_input
@@ -36,6 +35,7 @@ def execute_llm_report_job(claimed: Dict[str, Any]) -> None:
     确定性失败（未配置 key、LLM 4xx）直接置 failed 不烧重试；
     5xx/超时/意外异常向上抛，由调用方走有界重试路径。
     """
+    attempt = claimed.get("attempt_count")
     db = SessionLocal()
     try:
         input_payload = build_llm_report_input(db, claimed["user_id"])
@@ -46,7 +46,7 @@ def execute_llm_report_job(claimed: Dict[str, Any]) -> None:
                 claimed["id"], JOB_TYPE,
                 status="failed",
                 error=str(exc),
-                required_status="running",
+                required_status="running", required_attempt_count=attempt,
             )
             return
         except LLMClientError as exc:
@@ -55,10 +55,23 @@ def execute_llm_report_job(claimed: Dict[str, Any]) -> None:
                     claimed["id"], JOB_TYPE,
                     status="failed",
                     error=str(exc),
-                    required_status="running",
+                    required_status="running", required_attempt_count=attempt,
                 )
                 return
             raise
+
+        # 落库前确认本执行仍持有该 job：LLM 调用动辄数分钟而租约仅 300s，
+        # 期间很可能已被接管。只给下面的 update_job 加 attempt 守卫挡不住这里——
+        # 报告行是先 commit 的，僵尸线程会让用户收到第二份复盘报告。
+        if update_job(
+            claimed["id"], JOB_TYPE,
+            required_status="running", required_attempt_count=attempt,
+        ) is None:
+            logger.warning(
+                "LLM report job %s: 本次执行已被接管或已终态，丢弃本次生成结果",
+                claimed["id"],
+            )
+            return
 
         usage = completion.get("usage") or {}
         report = LlmReport(
@@ -79,27 +92,14 @@ def execute_llm_report_job(claimed: Dict[str, Any]) -> None:
             claimed["id"], JOB_TYPE,
             status="succeeded",
             data_updates={"report_id": report.id},
-            required_status="running",
+            required_status="running", required_attempt_count=attempt,
         )
     finally:
         db.close()
 
 
 def run_llm_report_job(job_id: str) -> None:
-    """Inline fast path: claim by id and execute; retries on unexpected errors."""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("LLM report job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_llm_report_job(claimed)
-    except Exception as exc:
-        logger.exception("LLM report job %s failed", job_id)
-        handle_job_failure(
-            job_id, JOB_TYPE, str(exc),
-            required_attempt_count=claimed.get("attempt_count"),
-        )
-
+    run_job_inline(job_id, JOB_TYPE, execute_llm_report_job, label="LLM report", logger=logger)
 
 def get_llm_report_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

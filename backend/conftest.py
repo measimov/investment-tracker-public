@@ -19,6 +19,10 @@ os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "test-admin-password")
 os.environ.setdefault("DEMO_INITIAL_PASSWORD", "test-user-password")
 # Tests drive job execution explicitly; the polling worker would race them.
 os.environ.setdefault("BACKGROUND_WORKER_ENABLED", "false")
+# 生产默认是 fail-closed（require_https=True），而 TestClient 走的是明文 http：
+# 不显式放宽的话每一个登录测试都会拿到 400。与 DEVELOPMENT.md / playwright
+# 的开发口径一致。默认值本身由 test_auth_security 里专门的用例覆盖。
+os.environ.setdefault("REQUIRE_HTTPS", "false")
 
 BACKEND_DIR = Path(__file__).parent
 sys.path.insert(0, str(BACKEND_DIR))

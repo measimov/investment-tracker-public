@@ -16,13 +16,13 @@ from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from ..models.security_profile import SecurityAnalysis
 from .background_job_store import (
-    claim_job,
+    JobOwnershipLostError,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
     job_heartbeat,
     set_job_progress,
 )
+from .job_runtime import run_job_inline
 from .job_worker import register_runner
 from .llm_client import LLMClientError, LLMNotConfiguredError, chat_completion
 from .security_analysis_prompts import build_analysis_messages, parse_analysis_output
@@ -265,6 +265,11 @@ def analyze_one(
             return
         try:
             on_stage(name, extra)
+        except JobOwnershipLostError:
+            # 失权不是"进度回写失败"而是"立刻停手"信号，必须穿透这层兜底：
+            # 被吞掉的话，僵尸线程会跑完剩余阶段并 commit 第二份 SecurityAnalysis，
+            # 与接管者重复调用 Tushare/EDGAR/LLM。
+            raise
         except Exception as exc:  # 进度回写失败不能拖垮分析
             logger.warning("分析进度回写失败 %s/%s: %s", symbol, market, str(exc)[:150])
 
@@ -385,11 +390,13 @@ def execute_security_analysis_job(claimed: Dict[str, Any]) -> None:
     market = claimed["data"]["market"]
 
     def report(stage_name: str, extra: Dict[str, Any]) -> None:
-        set_job_progress(
+        """阶段进度回写；失权即中断本次分析（analyze_one 的 stage 包装会放行）。"""
+        if set_job_progress(
             job_id, JOB_TYPE, required_attempt_count=attempt,
             stage=stage_name, stage_label=ANALYSIS_STAGE_LABELS.get(stage_name, stage_name),
             total=STAGE_TOTAL, **extra,
-        )
+        ) is None:
+            raise JobOwnershipLostError(job_id)
 
     db = SessionLocal()
     try:
@@ -408,25 +415,17 @@ def execute_security_analysis_job(claimed: Dict[str, Any]) -> None:
             completed=STAGE_TOTAL, total=STAGE_TOTAL,
             analysis_id=outcome["analysis_id"], degraded=outcome["degraded"],
         )
+    except JobOwnershipLostError:
+        # 安静退出：接管者正在跑同一个 job，这不是失败。
+        logger.warning(
+            "标的分析 job %s 已被接管或进入终态，本次执行停止", job_id,
+        )
     finally:
         db.close()
 
 
 def run_security_analysis_job(job_id: str) -> None:
-    """Inline fast path：按 id 认领并执行；意外错误走重试/退避路径。"""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("Security analysis job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_security_analysis_job(claimed)
-    except Exception as exc:
-        logger.exception("Security analysis job %s failed", job_id)
-        handle_job_failure(
-            job_id, JOB_TYPE, str(exc),
-            required_attempt_count=claimed.get("attempt_count"),
-        )
-
+    run_job_inline(job_id, JOB_TYPE, execute_security_analysis_job, label="Security analysis", logger=logger)
 
 def get_security_analysis_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

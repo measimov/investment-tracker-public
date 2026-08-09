@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import pdfplumber
 from pdfminer.pdfdocument import PDFPasswordIncorrect
@@ -20,15 +20,31 @@ from ..models.reconciliation_snapshot import ReconciliationSnapshot
 from ..models.transaction import Transaction
 from ..services import broker_import_common
 from ..services.broker_import_common import (
-    HASH_DUPLICATE_OCCURRENCE_FIELD,
+    RESULT_SAMPLE_LIMIT,
+    archived_row_count,
+    base_import_result,
+    disambiguated_row_hash,
+    iso_date_range,
+    ProspectiveCorporateAction,
+    ProspectiveTransaction,
+    attribute_tax_source,
     find_dividend_for_tax,
+    load_unattributed_tax_sources,
+    mark_unattributed_tax,
     normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间
     parse_strict_decimal,
     source_error_rows,
+    split_new_and_duplicate_rows,
     strip_text,
 )
 from ..services.security_rule_service import get_excluded_symbols
-from ..services.holding_service import recalculate_holdings
+from ..services.holding_service import (
+    UNPERSISTED_SORT_ID,
+    load_account_quantity_actions,
+    recalculate_holdings,
+    replay_account_quantities,
+)
+from ..services.portfolio.semantics import QUANTITY_ACTION_TYPES
 from ..services.import_batch_service import (
     complete_import_batch,
     fail_import_batch,
@@ -46,8 +62,11 @@ SOURCE_TYPE_BY_SCOPE = {
 }
 PARSER_NAME = "eastmoney_statement"
 # 行为变化必须升版（ImportBatch 按 parser/version 审计入账口径）：
-# v6 = 开放基金申购 生成规范 BUY（此前仅归档）
-PARSER_VERSION = "7"
+#   v6 = 开放基金申购 生成规范 BUY（此前仅归档）
+#   v7 = 账户作用域判重与对账快照门
+#   v8 = 未归属红利税行改为可恢复（skip_reason=unattributed_tax）：不再计入
+#        判重的"已入账"，补齐股息后重导会在原归档行上就地转正（#132 子项 B）
+PARSER_VERSION = "8"
 STOCK_FLOW_HEADER = [
     "发生日期",
     "买卖类别",
@@ -649,12 +668,7 @@ def parse_table_rows(
             "settlement_rate": settlement_rate,
             "cash_balance": cash_balance,
         }
-        base_row_hash = calculate_row_hash(hash_values)
-        hash_occurrences[base_row_hash] = hash_occurrences.get(base_row_hash, 0) + 1
-        row_hash = base_row_hash
-        if hash_occurrences[base_row_hash] > 1:
-            hash_values[HASH_DUPLICATE_OCCURRENCE_FIELD] = hash_occurrences[base_row_hash]
-            row_hash = calculate_row_hash(hash_values)
+        row_hash = disambiguated_row_hash(hash_values, hash_occurrences, calculate_row_hash)
 
         legacy_hash_values = {
             "broker": BROKER_NAME,
@@ -670,16 +684,11 @@ def parse_table_rows(
             "transfer_fee": transfer_fee,
             "cash_balance": cash_balance,
         }
-        legacy_base_hash = calculate_row_hash(legacy_hash_values, fields=LEGACY_HASH_FIELDS)
-        legacy_hash_occurrences[legacy_base_hash] = (
-            legacy_hash_occurrences.get(legacy_base_hash, 0) + 1
+        legacy_row_hash = disambiguated_row_hash(
+            legacy_hash_values,
+            legacy_hash_occurrences,
+            lambda values: calculate_row_hash(values, fields=LEGACY_HASH_FIELDS),
         )
-        legacy_row_hash = legacy_base_hash
-        if legacy_hash_occurrences[legacy_base_hash] > 1:
-            legacy_hash_values[HASH_DUPLICATE_OCCURRENCE_FIELD] = legacy_hash_occurrences[
-                legacy_base_hash
-            ]
-            legacy_row_hash = calculate_row_hash(legacy_hash_values, fields=LEGACY_HASH_FIELDS)
 
         parsed_rows.append(
             ParsedEastmoneyFlow(
@@ -767,6 +776,9 @@ def get_existing_hashes(
     query = db.query(BrokerFundFlow.row_hash).filter(
         BrokerFundFlow.user_id == user_id,
         BrokerFundFlow.row_hash.in_(hash_list),
+        # 未归属税行已归档但**不算已入账**：当成重复行跳过的话，补齐股息后
+        # 重导同一对账单也补不回 tax_withheld（永久失联）。
+        BrokerFundFlow.skip_reason.is_(None),
     )
     if broker_account_id is not None:
         query = query.filter(BrokerFundFlow.broker_account_id == broker_account_id)
@@ -831,82 +843,10 @@ def _cash_event_matches_flow(
     )
 
 
-def _validate_corporate_action_source_aggregate(
-    db: Session,
-    *,
-    user_id: int,
-    broker_account_id: int,
-    action: CorporateAction,
-    selected_sources: Iterable[BrokerFundFlow],
-) -> None:
-    selected = {source.id: source for source in selected_sources}
-    action_notes = action.notes or ""
-    candidate_sources = (
-        db.query(BrokerFundFlow)
-        .filter(
-            BrokerFundFlow.user_id == user_id,
-            BrokerFundFlow.broker == BROKER_NAME,
-            BrokerFundFlow.business_name.in_([DIVIDEND_BUSINESS_NAME, DIVIDEND_TAX_BUSINESS_NAME]),
-        )
-        .all()
-    )
-    note_hashes = ROW_HASH_NOTE_PATTERN.findall(action_notes)
-    if len(note_hashes) != len(set(note_hashes)):
-        raise ValueError("东方财富旧公司行动 notes 含重复 row_hash 引用；本次未导入")
-    sources_by_hash: Dict[str, List[BrokerFundFlow]] = {}
-    for source in candidate_sources:
-        sources_by_hash.setdefault(source.row_hash, []).append(source)
-    for row_hash in note_hashes:
-        if len(sources_by_hash.get(row_hash, [])) != 1:
-            raise ValueError(
-                "东方财富旧公司行动 notes 引用的 row_hash 来源缺失或不唯一；本次未导入"
-            )
-
-    action_sources = {
-        source.id: source
-        for source in candidate_sources
-        if source.corporate_action_id == action.id
-        or source.id in selected
-        or source.row_hash in action_notes
-    }
-
-    dividend_total = Decimal("0")
-    tax_total = Decimal("0")
-    dividend_count = 0
-    for source in action_sources.values():
-        if source.broker_account_id not in (None, broker_account_id):
-            raise ValueError("东方财富旧公司行动来源横跨不同账户；本次未导入")
-        if (
-            source.security_code != action.symbol
-            or infer_market(source.security_code or "") != action.market
-            or source.currency != action.currency
-        ):
-            raise ValueError("东方财富旧公司行动来源与公司行动标的或币种不一致；本次未导入")
-        amount = _decimal_value(source.amount)
-        if source.business_name == DIVIDEND_BUSINESS_NAME:
-            if amount <= 0:
-                raise ValueError("东方财富旧股息来源金额无效；本次未导入")
-            if source.trade_date != action.ex_date:
-                raise ValueError("东方财富旧股息来源日期与公司行动除息日不一致；本次未导入")
-            dividend_total += amount
-            dividend_count += 1
-        elif source.business_name == DIVIDEND_TAX_BUSINESS_NAME:
-            if amount >= 0:
-                raise ValueError("东方财富旧红利税来源金额无效；本次未导入")
-            if source.trade_date < action.ex_date:
-                raise ValueError("东方财富旧红利税来源日期早于公司行动除息日；本次未导入")
-            tax_total += abs(amount)
-
-    expected_net = dividend_total - tax_total
-    if (
-        dividend_count != 1
-        or _decimal_value(action.total_dividend) != dividend_total
-        or _decimal_value(action.tax_withheld) != tax_total
-        or _decimal_value(action.net_dividend) != expected_net
-    ):
-        raise ValueError(
-            "东方财富旧公司行动与全部股息/红利税来源聚合不一致；为避免重复记账，本次未导入"
-        )
+# 已删除 _validate_corporate_action_source_aggregate（76 行）：全仓无任何调用方。
+# 它是旧公司行动聚合校验的遗留，逻辑复杂（notes 里的 row_hash 反查、跨账户/
+# 币种/日期六种拒绝分支）却从不执行，留着会误导维护者以为它在生效。
+# 语义若需要，应并入判重路径并配测试，而不是悬空。
 
 
 def build_import_result(
@@ -931,20 +871,9 @@ def build_import_result(
     cash_rows = [flow for flow in rows if flow.is_cash_fee]
 
     eligible_row_hashes = {flow.row_hash for flow in rows}
-    seen_hashes: set[str] = set()
-    duplicate_rows: List[ParsedEastmoneyFlow] = []
-    import_rows: List[ParsedEastmoneyFlow] = []
-    new_source_rows: List[ParsedEastmoneyFlow] = []
-    for flow in parsed_rows:
-        if flow.row_hash in existing_hashes or flow.row_hash in seen_hashes:
-            duplicate_rows.append(flow)
-        else:
-            new_source_rows.append(flow)
-            if flow.row_hash in eligible_row_hashes:
-                import_rows.append(flow)
-            seen_hashes.add(flow.row_hash)
+    new_source_rows, duplicate_rows = split_new_and_duplicate_rows(parsed_rows, existing_hashes)
+    import_rows = [flow for flow in new_source_rows if flow.row_hash in eligible_row_hashes]
 
-    dates = [flow.trade_date for flow in parsed_rows]
     parsed_source_rows = {flow.source_row_number for flow in parsed_rows}
     error_rows = source_error_rows(errors, parsed_source_rows)
     skip_counts = {
@@ -966,40 +895,48 @@ def build_import_result(
         ]
     )
 
-    return {
-        "broker": BROKER_NAME,
-        "filename": filename,
-        "total_rows": total_rows,
-        "eligible_trade_rows": len(trade_rows),
-        "eligible_dividend_rows": len(dividend_rows),
-        "eligible_tax_rows": len(tax_rows),
-        "eligible_cash_rows": len(cash_rows),
-        "imported_transactions": imported_transactions,
-        "imported_corporate_actions": imported_corporate_actions,
-        "imported_tax_adjustments": imported_tax_adjustments,
-        "imported_cash_events": imported_cash_events,
-        "duplicate_rows": len(duplicate_rows),
-        "skipped_non_trade_rows": skipped_non_trade_rows,
-        "skipped_invalid_rows": skip_counts["invalid"] + len(error_rows),
-        "skipped_option_rows": 0,
-        "skipped_fx_rows": 0,
-        "skipped_cash_rows": 0,
-        "skipped_unsupported_rows": skip_counts["unsupported"],
-        "skipped_conflict_rows": skip_counts["conflict"],
-        "skipped_excluded_rows": skip_counts["excluded"],
-        "excluded_unbooked_rows": skip_counts["excluded"],
-        "affected_symbols": affected_symbols,
-        "date_start": context.period_start.isoformat(),
-        "date_end": context.period_end.isoformat(),
-        "event_date_start": min(dates).isoformat() if dates else None,
-        "event_date_end": max(dates).isoformat() if dates else None,
-        "statement_scope": context.statement_type,
-        "reported_position_count": len(scoped_statement_positions(context)),
-        "business_counts": business_counts,
-        "duplicate_samples": [flow_to_sample(flow, True) for flow in duplicate_rows[:10]],
-        "import_samples": [flow_to_sample(flow, False) for flow in import_rows[:10]],
-        "errors": errors[:50],
-    }
+    event_date_start, event_date_end = iso_date_range([flow.trade_date for flow in parsed_rows])
+    result = base_import_result(
+        broker=BROKER_NAME,
+        filename=filename,
+        total_rows=total_rows,
+        eligible_trade_rows=len(trade_rows),
+        eligible_dividend_rows=len(dividend_rows),
+        eligible_tax_rows=len(tax_rows),
+        eligible_cash_rows=len(cash_rows),
+        imported_transactions=imported_transactions,
+        imported_corporate_actions=imported_corporate_actions,
+        imported_tax_adjustments=imported_tax_adjustments,
+        imported_cash_events=imported_cash_events,
+        duplicate_rows=len(duplicate_rows),
+        skipped_non_trade_rows=skipped_non_trade_rows,
+        skipped_invalid_rows=skip_counts["invalid"] + len(error_rows),
+        skipped_unsupported_rows=skip_counts["unsupported"],
+        skipped_conflict_rows=skip_counts["conflict"],
+        skipped_excluded_rows=skip_counts["excluded"],
+        excluded_unbooked_rows=skip_counts["excluded"],
+        affected_symbols=affected_symbols,
+        # date_* 是单据抬头的账期；流水实际发生范围分列 event_date_*
+        date_start=context.period_start.isoformat(),
+        date_end=context.period_end.isoformat(),
+        business_counts=business_counts,
+        duplicate_samples=[
+            flow_to_sample(flow, True) for flow in duplicate_rows[:RESULT_SAMPLE_LIMIT]
+        ],
+        import_samples=[
+            flow_to_sample(flow, False) for flow in import_rows[:RESULT_SAMPLE_LIMIT]
+        ],
+        errors=errors,
+    )
+    result.update(
+        {
+            "event_date_start": event_date_start,
+            "event_date_end": event_date_end,
+            "statement_scope": context.statement_type,
+            "reported_position_count": len(scoped_statement_positions(context)),
+        }
+    )
+    return result
 
 
 def apply_exclusions(parsed_rows: List[ParsedEastmoneyFlow], excluded_symbols) -> None:
@@ -1020,29 +957,7 @@ def apply_exclusions(parsed_rows: List[ParsedEastmoneyFlow], excluded_symbols) -
 
 
 def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
-    """领养路径已退役：NULL 账户历史来源必须显式拒绝，绝不静默双记。
-
-    账户级判重按 (user, broker_account, row_hash) 进行，看不见 NULL 桶的
-    旧来源；库约束又允许同一 hash 在 NULL 桶与已分配账户各存一份——若放行，
-    重新导入会给同一笔流水再建一份 canonical 记录。重建后的正常数据不存在
-    这类行；从旧备份恢复的库必须先人工迁移（含旧 Excel 等异构 hash 来源，
-    故按存在性整体拒绝，不做逐 hash 匹配）。
-    """
-    unassigned = (
-        db.query(BrokerFundFlow.id)
-        .filter(
-            BrokerFundFlow.user_id == user_id,
-            BrokerFundFlow.broker == BROKER_NAME,
-            BrokerFundFlow.broker_account_id.is_(None),
-        )
-        .count()
-    )
-    if unassigned:
-        raise ValueError(
-            f"存在 {unassigned} 条未分配账户的{BROKER_NAME}历史来源（领养路径已退役）。"
-            "请先人工迁移或清理这些 NULL 账户流水后再导入，否则会重复入账"
-        )
-
+    broker_import_common.reject_unassigned_legacy_sources(db, user_id, BROKER_NAME)
 
 def preview_eastmoney_statement(
     db: Session,
@@ -1078,7 +993,7 @@ def preview_eastmoney_statement(
         parsed_rows,
         broker_account_id=broker_account_id,
     )
-    return build_import_result(
+    result = build_import_result(
         filename=filename,
         total_rows=total_rows,
         parsed_rows=parsed_rows,
@@ -1092,6 +1007,53 @@ def preview_eastmoney_statement(
         affected_symbols=0,
         errors=errors,
     )
+    # 两道整批一票否决的门在预览里也要跑（#132 子项 C）：持仓历史校验，
+    # 以及对账快照必须 MATCHED。都是只读重放，把本批还没落库的交易补进去即可。
+    extra = prospective_transactions(
+        parsed_rows, existing_hashes, broker_account_id=broker_account_id
+    )
+    blocking: List[str] = []
+    try:
+        validate_account_position_history(
+            db,
+            user_id=user_id,
+            broker_account_id=broker_account_id,
+            through_date=context.period_end,
+            extra_transactions=extra,
+        )
+    except ValueError as exc:
+        blocking.append(str(exc))
+    else:
+        # 第二道门：导入的最终 status 来自 reconciliation_service（它会覆盖
+        # 快照上初设的那个），所以预测必须走同一个比对器。另算一套本地 diff
+        # 只会换个方式说谎——预览说绿、导入照样整批拒。
+        from .reconciliation_service import compare_snapshot
+
+        snapshot = build_reconciliation_snapshot(
+            db,
+            user_id=user_id,
+            broker_account_id=broker_account_id,
+            import_batch_id=None,
+            filename=filename,
+            context=context,
+            extra_transactions=extra,
+        )
+        status, _detail = compare_snapshot(
+            db,
+            snapshot,
+            extra_transactions=extra,
+            extra_corporate_actions=prospective_corporate_actions(
+                parsed_rows, existing_hashes, broker_account_id=broker_account_id
+            ),
+        )
+        result["reconciliation_status"] = status
+        if status != "MATCHED":
+            blocking.append(
+                f"东方财富对账单持仓与账户交易记录不一致；整批未导入。 {snapshot.notes}"
+            )
+    if blocking:
+        result["errors"] = [*result.get("errors", []), *blocking]
+    return result
 
 
 def create_broker_fund_flow(
@@ -1156,6 +1118,75 @@ def scoped_statement_positions(
     return [position for position in context.positions if position.market == market]
 
 
+def prospective_transactions(
+    parsed_rows: List[ParsedEastmoneyFlow],
+    existing_hashes: set[str],
+    *,
+    broker_account_id: Optional[int] = None,
+) -> List[ProspectiveTransaction]:
+    """本批**还没落库**、正式导入会入账成交易的行（预览专用）。
+
+    入账判据与导入循环逐字一致：`flow.is_trade` 且 symbol 能解析出市场；
+    金额字段也走同一批 normalized_* 属性，好让内核重放算出的成本口径一致。
+    """
+    candidates = []
+    for flow in parsed_rows:
+        if flow.row_hash in existing_hashes or not flow.is_trade:
+            continue
+        market = infer_market(flow.security_code)
+        if not market:
+            continue
+        candidates.append(
+            ProspectiveTransaction(
+                symbol=flow.security_code,
+                market=market,
+                transaction_type=flow.transaction_type,
+                quantity=abs(flow.trade_quantity),
+                transaction_date=flow.trade_date,
+                price=flow.normalized_transaction_price,
+                fee=flow.normalized_transaction_fee,
+                currency=flow.normalized_transaction_currency,
+                name=flow.security_name,
+                broker_account_id=broker_account_id,
+                source_row_number=flow.source_row_number or 0,
+            )
+        )
+    return candidates
+
+
+def prospective_corporate_actions(
+    parsed_rows: List[ParsedEastmoneyFlow],
+    existing_hashes: set[str],
+    *,
+    broker_account_id: Optional[int] = None,
+) -> List[ProspectiveCorporateAction]:
+    """本批**还没落库**、正式导入会建的公司行动（预览专用）。
+
+    判据与导入循环的红利分支逐字一致：`flow.is_cash_dividend` 且能解析出市场。
+    现金红利不改数量，注入它是为了让对账比对的 relevant_keys 与导入后一致
+    ——见 ProspectiveCorporateAction 的说明。
+    """
+    candidates = []
+    for flow in parsed_rows:
+        if flow.row_hash in existing_hashes or not flow.is_cash_dividend:
+            continue
+        market = infer_market(flow.security_code)
+        if not market:
+            continue
+        candidates.append(
+            ProspectiveCorporateAction(
+                symbol=flow.security_code,
+                market=market,
+                action_type="CASH_DIVIDEND",
+                ex_date=flow.trade_date,
+                broker_account_id=broker_account_id,
+                name=flow.security_name,
+                currency=flow.currency,
+            )
+        )
+    return candidates
+
+
 def calculate_account_position_quantities(
     db: Session,
     *,
@@ -1163,8 +1194,14 @@ def calculate_account_position_quantities(
     broker_account_id: int,
     snapshot_date: date,
     raise_on_oversell: bool = False,
+    extra_transactions: Sequence[Any] = (),
 ) -> Dict[tuple[str, str], Decimal]:
-    events: List[tuple[date, int, int, int, str, str, Any]] = []
+    """extra_transactions：尚未落库的待入账交易（预览通道用）。
+
+    导入通道在 flush 之后调用，交易已在 DB 查询范围内，故为空；预览不写库，
+    用替身补上，这样整批一票否决的两道门在预览里也能预报（#132 子项 C）。
+    """
+    events: List[tuple[date, int, int, int, Any]] = []
     transactions = (
         db.query(Transaction)
         .filter(
@@ -1174,78 +1211,74 @@ def calculate_account_position_quantities(
         )
         .all()
     )
+    # 同日次序对齐内核 _TYPE_SORT_ORDER：先买入、再转仓、最后卖出。
+    # 原来是 `0 if BUY else 1`，转仓与卖出同档，同日「转入后立刻卖出」会误报。
+    type_rank = {"BUY": 0, "TRANSFER_IN": 1, "TRANSFER_OUT": 1}
     for transaction in transactions:
         events.append(
             (
                 transaction.transaction_date,
                 1,
-                0 if transaction.transaction_type == "BUY" else 1,
+                type_rank.get(transaction.transaction_type, 2),
                 transaction.id or 0,
-                transaction.symbol,
-                transaction.market,
                 transaction,
             )
         )
+    # 期后的待入账交易不参与该快照日的持仓（与 DB 侧的 <= snapshot_date 同口径）
+    scoped_extra = [
+        prospective
+        for prospective in extra_transactions
+        if prospective.transaction_date <= snapshot_date
+    ]
+    for prospective in scoped_extra:
+        events.append(
+            (
+                prospective.transaction_date,
+                1,
+                type_rank.get(prospective.transaction_type, 2),
+                # 排在持久化 id 之后：用 0 会让替身排到同日既有交易之前，与
+                # 正式导入 flush 拿到真 id 后的次序相反（见 broker_import_common）
+                UNPERSISTED_SORT_ID,
+                prospective,
+            )
+        )
 
-    quantity_actions = (
+    keys = {(txn.symbol, txn.market) for txn in transactions}
+    keys |= {(txn.symbol, txn.market) for txn in scoped_extra}
+    owned_actions = (
         db.query(CorporateAction)
         .filter(
             CorporateAction.user_id == user_id,
             CorporateAction.broker_account_id == broker_account_id,
             CorporateAction.ex_date <= snapshot_date,
-            CorporateAction.action_type.in_(
-                [
-                    "STOCK_DIVIDEND",
-                    "BONUS_ISSUE",
-                    "RIGHTS_ISSUE",
-                    "STOCK_SPLIT",
-                    "REVERSE_SPLIT",
-                ]
-            ),
+            CorporateAction.action_type.in_(QUANTITY_ACTION_TYPES),
         )
         .all()
     )
+    keys |= {(action.symbol, action.market) for action in owned_actions}
+    quantity_actions = load_account_quantity_actions(
+        db, user_id=user_id, broker_account_id=broker_account_id,
+        keys=keys, through_date=snapshot_date,
+    )
     for action in quantity_actions:
-        events.append(
-            (
-                action.ex_date,
-                0,
-                0,
-                action.id or 0,
-                action.symbol,
-                action.market,
-                action,
-            )
+        events.append((action.ex_date, 0, 0, action.id or 0, action))
+
+    def _reject(event, available: Decimal, needed: Decimal) -> None:
+        verb = "转出" if event.transaction_type == "TRANSFER_OUT" else "卖出"
+        raise ValueError(
+            "东方财富账户缺少期初持仓："
+            f"{event.symbol} ({event.market}) 在 {event.transaction_date} "
+            f"{verb} {needed}，当时账户内仅有 {available}"
         )
 
-    quantities: Dict[tuple[str, str], Decimal] = {}
-    for _, event_priority, _, _, symbol, market, event in sorted(events):
-        key = (symbol, market)
-        quantity = quantities.get(key, Decimal("0"))
-        if event_priority == 1:
-            event_quantity = Decimal(str(event.quantity))
-            if event.transaction_type == "BUY":
-                quantity += event_quantity
-            elif event.transaction_type == "SELL":
-                if raise_on_oversell and event_quantity > quantity:
-                    raise ValueError(
-                        "东方财富账户缺少期初持仓："
-                        f"{event.symbol} ({event.market}) 在 {event.transaction_date} "
-                        f"卖出 {event_quantity}，当时账户内仅有 {quantity}"
-                    )
-                quantity -= event_quantity
-        elif event.action_type in {"STOCK_DIVIDEND", "BONUS_ISSUE"}:
-            quantity += Decimal(str(event.shares_received or 0))
-        elif event.action_type == "RIGHTS_ISSUE":
-            quantity += Decimal(str(event.subscription_quantity or 0))
-        elif event.action_type in {"STOCK_SPLIT", "REVERSE_SPLIT"} and event.split_ratio:
-            try:
-                old_shares, new_shares = event.split_ratio.split(":")
-                quantity *= Decimal(new_shares) / Decimal(old_shares)
-            except (InvalidOperation, ValueError, ZeroDivisionError):
-                pass
-        quantities[key] = quantity
-    return quantities
+    # 数量语义统一走 holding_service（内部经 portfolio/semantics），不再本地手写：
+    # 原实现裸读 shares_received（ratio-only 送股加 0 股）、拆股只认 split_ratio
+    # 且解析失败静默吞掉，转仓则被完全忽略——computed 少算会让对账快照误判
+    # MISMATCHED，进而整批回滚。
+    return replay_account_quantities(
+        [event[-1] for event in sorted(events, key=lambda item: item[:-1])],
+        on_oversell=_reject if raise_on_oversell else None,
+    )
 
 
 def validate_account_position_history(
@@ -1254,6 +1287,7 @@ def validate_account_position_history(
     user_id: int,
     broker_account_id: int,
     through_date: date,
+    extra_transactions: Sequence[Any] = (),
 ) -> None:
     calculate_account_position_quantities(
         db,
@@ -1261,23 +1295,31 @@ def validate_account_position_history(
         broker_account_id=broker_account_id,
         snapshot_date=through_date,
         raise_on_oversell=True,
+        extra_transactions=extra_transactions,
     )
 
 
-def create_reconciliation_snapshot(
+def build_reconciliation_snapshot(
     db: Session,
     *,
     user_id: int,
     broker_account_id: int,
-    import_batch_id: int,
+    import_batch_id: Optional[int],
     filename: str,
     context: EastmoneyStatementContext,
+    extra_transactions: Sequence[Any] = (),
 ) -> ReconciliationSnapshot:
+    """构造快照对象但**不落库**。
+
+    预览与导入共用它，预览额外传入本批还没落库的交易。分两份构造就会让预览
+    预测的对账口径与真实门漂移——那正是 #132 子项 C 要消除的东西。
+    """
     computed = calculate_account_position_quantities(
         db,
         user_id=user_id,
         broker_account_id=broker_account_id,
         snapshot_date=context.period_end,
+        extra_transactions=extra_transactions,
     )
     scope_market = statement_market(context.statement_type)
     scoped_positions = scoped_statement_positions(context)
@@ -1314,13 +1356,14 @@ def create_reconciliation_snapshot(
     }
 
     notes = (
-        f"batch_id={import_batch_id}; scope={context.statement_type}; "
+        f"batch_id={import_batch_id if import_batch_id is not None else 'preview'}; "
+        f"scope={context.statement_type}; "
         "position quantities reconciled against account-scoped transactions; "
         "cash balance is a broker assertion only."
     )
     if differences:
         notes += f" Quantity differences: {differences[:20]}"
-    snapshot = ReconciliationSnapshot(
+    return ReconciliationSnapshot(
         user_id=user_id,
         broker_account_id=broker_account_id,
         import_batch_id=import_batch_id,
@@ -1331,6 +1374,25 @@ def create_reconciliation_snapshot(
         cash_balances=cash_balances,
         positions=positions,
         notes=notes,
+    )
+
+
+def create_reconciliation_snapshot(
+    db: Session,
+    *,
+    user_id: int,
+    broker_account_id: int,
+    import_batch_id: int,
+    filename: str,
+    context: EastmoneyStatementContext,
+) -> ReconciliationSnapshot:
+    snapshot = build_reconciliation_snapshot(
+        db,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        import_batch_id=import_batch_id,
+        filename=filename,
+        context=context,
     )
     db.add(snapshot)
     db.flush()
@@ -1399,6 +1461,25 @@ def import_eastmoney_statement(
         transaction_ids: Dict[str, int] = {}
         corporate_action_ids: Dict[str, int] = {}
         cash_event_ids: Dict[str, int] = {}
+        # 未归属税行：本批补齐股息则在原归档行上转正（recovered），
+        # 仍找不到则把新行标记为未归属（unmatched），留待下次重导
+        unattributed_tax_sources = load_unattributed_tax_sources(
+            db,
+            BrokerFundFlow,
+            user_id=user_id,
+            hashes=[flow.row_hash for flow in parsed_rows],
+            # 判重口径是 row_hash OR legacy_row_hash（老算法存档的行仍在库里），
+            # 恢复加载必须同样认这两种，否则旧 hash 的孤儿会被漏掉、
+            # 转而新建一条当前 hash 来源（旧行永久保留）
+            hash_aliases={
+                flow.legacy_row_hash: flow.row_hash
+                for flow in parsed_rows
+                if flow.legacy_row_hash and flow.legacy_row_hash != flow.row_hash
+            },
+            broker_account_id=broker_account_id,
+        )
+        recovered_tax_hashes: set[str] = set()
+        unmatched_tax_hashes: set[str] = set()
         new_rows = [flow for flow in parsed_rows if flow.row_hash not in existing_hashes]
 
         for flow in new_rows:
@@ -1507,25 +1588,40 @@ def import_eastmoney_statement(
                 ).strip("; ")
                 corporate_action_ids[flow.row_hash] = action.id
                 imported_tax_adjustments += 1
+                preserved = unattributed_tax_sources.pop(flow.row_hash, None)
+                if preserved is not None:
+                    # 上次未归属的那一行就地转正，不再作为 new_rows 建新行
+                    db.add(attribute_tax_source(preserved, action.id))
+                    recovered_tax_hashes.add(flow.row_hash)
             else:
                 errors.append(
                     f"row {flow.source_row_number}: no account-scoped dividend "
                     f"found for tax on {flow.security_code}"
                 )
+                unmatched_tax_hashes.add(flow.row_hash)
 
         for flow in new_rows:
-            db.add(
-                create_broker_fund_flow(
-                    user_id=user_id,
-                    broker_account_id=broker_account_id,
-                    filename=filename,
-                    flow=flow,
-                    import_batch_id=batch_id,
-                    transaction_id=transaction_ids.get(flow.row_hash),
-                    corporate_action_id=corporate_action_ids.get(flow.row_hash),
-                    cash_event_id=cash_event_ids.get(flow.row_hash),
-                )
+            if flow.row_hash in recovered_tax_hashes:
+                continue  # 已在既有归档行上转正
+            source = create_broker_fund_flow(
+                user_id=user_id,
+                broker_account_id=broker_account_id,
+                filename=filename,
+                flow=flow,
+                import_batch_id=batch_id,
+                transaction_id=transaction_ids.get(flow.row_hash),
+                corporate_action_id=corporate_action_ids.get(flow.row_hash),
+                cash_event_id=cash_event_ids.get(flow.row_hash),
             )
+            if flow.row_hash in unmatched_tax_hashes:
+                # 标记为未归属：补齐股息后重导会被放行并在此转正，
+                # 而不是因 hash 判重永久失联
+                mark_unattributed_tax(
+                    source,
+                    "preserved without canonical action: "
+                    "no account-scoped dividend found for tax",
+                )
+            db.add(source)
 
         db.flush()
         validate_account_position_history(
@@ -1602,14 +1698,7 @@ def import_eastmoney_statement(
     except Exception as exc:
         if records_committed:
             db.rollback()
-            try:
-                imported_source_rows = (
-                    db.query(BrokerFundFlow)
-                    .filter(BrokerFundFlow.import_batch_id == batch_id)
-                    .count()
-                )
-            except Exception:
-                imported_source_rows = 0
+            imported_source_rows = archived_row_count(db, BrokerFundFlow, batch_id)
         canonical_imported_count = (
             imported_transactions
             + imported_corporate_actions

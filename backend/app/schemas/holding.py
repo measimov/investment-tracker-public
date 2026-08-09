@@ -9,7 +9,6 @@ class HoldingResponse(BaseModel):
 
     id: int
     user_id: int
-    username: Optional[str] = None
     broker_account_id: Optional[int] = Field(
         None, description="Owning broker account; null = 未指定账户桶"
     )
@@ -23,6 +22,16 @@ class HoldingResponse(BaseModel):
     current_price: Optional[Decimal] = Field(None, description="Current stock price")
     price_updated_at: Optional[datetime] = Field(None, description="Price update timestamp")
     updated_at: datetime
+
+
+class AdminHoldingResponse(HoldingResponse):
+    """admin 视图专用：附归属用户名（issue #137）。
+
+    此前是给 ORM 实例挂动态属性 `holding.username` 喂 HoldingResponse 的
+    可选字段——该字段在所有非 admin 端点恒为 null，纯属 schema 污染。
+    """
+
+    username: Optional[str] = None
 
 
 class HoldingPriceUpdate(BaseModel):

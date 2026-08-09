@@ -11,7 +11,7 @@ from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.transaction import Transaction
 from app.services.holding_service import recalculate_holdings
-from app.services.statistics_service import (
+from app.services.statistics import (
     calculate_current_holdings_performance,
     get_statistics_by_market,
     get_summary_statistics,

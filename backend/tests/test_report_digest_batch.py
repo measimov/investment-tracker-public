@@ -103,7 +103,7 @@ def test_preview_counts_are_db_only(db, monkeypatch):
     _hold(db, "600036", "A股")
     _hold(db, "00700", "港股")
     upsert_profile_row(db, "600036", "A股", "report_digest", "20251231|annual",
-                       {"status": "ok"})
+                       _current_digest_payload())
     db.commit()
 
     preview = batch.preview_digest_backfill(db, 1)
@@ -111,6 +111,44 @@ def test_preview_counts_are_db_only(db, monkeypatch):
     assert preview["targets_without_digest"] == 1  # 00700 一份都没有
     assert preview["digests_existing"] == 1
     assert preview["per_symbol_budget"] == batch.DIGEST_BATCH_PER_SYMBOL
+
+
+def _current_digest_payload(**overrides):
+    from app.services.report_digest_prompts import DIGEST_PROMPT_VERSION
+    from app.services.report_sections import SECTION_EXTRACTOR_VERSION
+
+    payload = {
+        "status": "ok",
+        "extractor_version": SECTION_EXTRACTOR_VERSION,
+        "prompt_version": DIGEST_PROMPT_VERSION,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_preview_counts_only_rows_the_readers_would_use(db):
+    """预览口径必须与读取路径一致：failed 行与版本过期行不算"已有摘要"。
+
+    此前只按 dataset 数行：封顶失败行（attempts 用尽）、版本 bump 后的过期行
+    都被计入——版本一升，预览显示"已有上百份"，而回填与分析实际一份都用不上。
+    """
+    _hold(db, "600036", "A股")
+    # 1 份当前有效 + 1 份封顶失败 + 1 份版本过期：只有第一份算数
+    upsert_profile_row(db, "600036", "A股", "report_digest", "20251231|annual",
+                       _current_digest_payload())
+    upsert_profile_row(db, "600036", "A股", "report_digest", "20241231|annual",
+                       _current_digest_payload(status="failed"))
+    upsert_profile_row(db, "600036", "A股", "report_digest", "20231231|annual",
+                       {"status": "ok"})  # 缺版本字段 = 历史 v1 行
+    _hold(db, "00700", "港股")
+    # 00700 只有一份过期行：等价于"一份摘要都没有"
+    upsert_profile_row(db, "00700", "港股", "report_digest", "20251231|annual",
+                       _current_digest_payload(extractor_version=1))
+    db.commit()
+
+    preview = batch.preview_digest_backfill(db, 1)
+    assert preview["digests_existing"] == 1, "失败/过期行被算进了已有摘要"
+    assert preview["targets_without_digest"] == 1, "只剩过期行的标的应视同没有摘要"
 
 
 def test_start_without_targets_raises(db):
@@ -607,3 +645,47 @@ async def test_digest_backfill_api_flow(db, monkeypatch):
         )).json()
         assert polled["status"] == "succeeded"
         assert polled["digests_generated"] == 4
+
+
+def test_losing_ownership_mid_loop_stops_the_batch_immediately(db, monkeypatch):
+    """[回归锁] 失权（被接管）后必须立刻停手，不得继续回填剩余标的。
+
+    本模块的 progress() 调用点在 try **之外**（与批量分析相反），#134 把
+    progress 收敛到 job_runtime 时两边的调用位置都必须原样保住——统一成同一
+    个位置就是行为变更。僵尸不停手 = 对剩余标的重复下载年报 PDF 并烧 LLM token。
+    """
+    from app.services import job_runtime
+
+    for suffix in range(3):
+        _hold(db, f"60000{suffix}", "A股")
+
+    # 瞬时失权：只让第一只之后的那次回写返回 None，之后恢复。这样"停手"只能
+    # 由哨兵造成，而不是因为后续每次回写都失败。
+    state = {"armed": False, "tripped": False}
+    original = job_runtime.set_job_progress
+
+    def spy(job_id, job_type, **kwargs):
+        if state["armed"] and not state["tripped"]:
+            state["tripped"] = True
+            return None
+        return original(job_id, job_type, **kwargs)
+
+    monkeypatch.setattr(job_runtime, "set_job_progress", spy)
+
+    calls: list = []
+
+    def fake_ensure(db_, symbol, market, *, max_new):
+        calls.append(symbol)
+        state["armed"] = True  # 本只跑完后的那次回写即失权
+        return _ok(symbol)
+
+    monkeypatch.setattr(batch, "ensure_report_digests", fake_ensure)
+    monkeypatch.setattr(batch.settings, "security_analysis_batch_pause_seconds", 0)
+
+    job = batch.start_digest_batch_job(db, 1)
+    batch.run_digest_batch_job(job["id"])  # 安静退出，不得抛出
+
+    assert len(calls) == 1, f"失权后仍继续回填了剩余标的：{calls}"
+    stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+    db.refresh(stored)
+    assert stored.status != "failed", "失权不是失败，僵尸不得把 job 标成 failed"

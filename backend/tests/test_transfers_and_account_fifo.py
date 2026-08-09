@@ -18,12 +18,12 @@ from app.models.transaction import Transaction
 from app.models.user import User
 from app.schemas.transaction import TransferCreate
 from app.services.holding_service import recalculate_holdings
-from app.services.statistics_service import (
-    _get_fifo_results_for_user,
+from app.services.statistics import (
     calculate_performance_summary,
     get_statistics_by_time,
     get_summary_statistics,
 )
+from app.services.statistics.fifo_results import fifo_results_for_user
 from tests.helpers import add_transaction, get_rows, get_user, make_account, reset_tables
 
 
@@ -109,7 +109,7 @@ def test_fifo_lots_keep_original_dates_and_costs_after_transfer():
                 txn_date=date(2026, 3, 1))
         db.commit()
 
-        fifo = _get_fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
+        fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
         assert fifo['realized_pnl'] == pytest.approx(1600.0)
         assert fifo['sold_cost'] == pytest.approx(1400.0)
         # 剩余批次：IBKR 30@20 + CMB 50@20 = 1600
@@ -135,7 +135,7 @@ def test_account_scoped_fifo_matches_only_own_lots():
                 txn_date=date(2026, 2, 1))
         db.commit()
 
-        fifo = _get_fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
+        fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
         # 账户级：IBKR 卖出只匹配自己 20 元的批次 → pnl = 1250-1000 = 250
         # （旧的用户级合并 FIFO 会错误匹配 CMB 的 10 元批次得到 750）
         assert fifo['realized_pnl'] == pytest.approx(250.0)
@@ -158,7 +158,7 @@ def test_cross_account_oversell_falls_back_to_merged_fifo():
                 txn_date=date(2026, 2, 1))
         db.commit()
 
-        fifo = _get_fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
+        fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
         # 合并 FIFO：100@10 + 50@20 = 2000 成本，收入 3750 → pnl 1750
         assert fifo['realized_pnl'] == pytest.approx(1750.0)
         assert fifo['sold_cost'] == pytest.approx(2000.0)
@@ -364,7 +364,7 @@ def test_same_day_chained_transfers_replay_in_pair_order():
         assert rows[0].total_cost == Decimal("1000")
 
         # FIFO 同样成立：批次最终在 C 账户，原始日期保留
-        fifo = _get_fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
+        fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
         assert fifo['current_holdings_cost'] == pytest.approx(1000.0)
         assert fifo['buy_queue'][0]['date'] == "2026-01-01"
     finally:

@@ -14,4 +14,4 @@ frontend-build:
 	cd frontend && npm run build
 
 frontend-format-check:
-	cd frontend && prettier --check "src/**/*.{js,vue}"
+	cd frontend && npx prettier --check src e2e

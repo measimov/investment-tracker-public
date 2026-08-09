@@ -4,13 +4,47 @@ reset_tables 的模型列表由各测试文件自持（RESET_MODELS 常量）：
 外键敏感，且每个文件的清空范围各不相同——不要在这里统一列表。
 """
 
+import importlib.util
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
+
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 
 from app.models.broker_account import BrokerAccount
 from app.models.holding import Holding
 from app.models.transaction import Transaction
 from app.models.user import User
+
+
+_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+
+
+def load_migration(revision: str):
+    """按 revision 号加载迁移脚本模块（文件名以数字开头，不能普通 import）。"""
+    matches = sorted(_MIGRATIONS_DIR.glob(f"{revision}_*.py"))
+    assert len(matches) == 1, f"revision {revision} 应恰好对应一个迁移文件，实得 {matches}"
+    spec = importlib.util.spec_from_file_location(f"_migration_{revision}", matches[0])
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_migration(db, revision: str, direction: str = "upgrade"):
+    """在当前会话的连接/事务里跑**真实**迁移脚本的 upgrade/downgrade。
+
+    刻意不复制迁移里的 SQL：复制版永远为真，迁移改了也照样绿，正是这种
+    "迁移漂移"让重复追加审计备注的缺陷躲过了整套测试。走 alembic 的
+    Operations 代理即可让脚本里的 `op.*` 落到本连接上，调用方 rollback
+    就能还原（PostgreSQL 的 DDL 是事务性的），不污染共享测试库。
+    """
+    module = load_migration(revision)
+    connection = db.connection()
+    context = MigrationContext.configure(connection)
+    with Operations.context(context):
+        getattr(module, direction)()
+    return module
 
 
 def reset_tables(db, models):

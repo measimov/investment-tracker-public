@@ -815,6 +815,7 @@ import { pollJobUntilDone, type BackgroundJob } from '../utils/polling'
 interface MarketStat {
   market: string
   total_cost: number
+  missing_rate_currencies?: string[]
   [key: string]: unknown
 }
 
@@ -833,6 +834,7 @@ interface ProfitLossItem {
 
 interface SummaryStats {
   total_invested_cny?: number
+  missing_rate_currencies?: string[]
   [key: string]: unknown
 }
 
@@ -842,6 +844,7 @@ interface CurrentPerformance {
   unrealized_pnl_rate: number
   current_market_value: number
   holdings_detail: Array<Record<string, unknown>>
+  missing_rate_currencies?: string[]
   [key: string]: unknown
 }
 
@@ -1159,7 +1162,38 @@ watch(selectedBenchmarks, (codes) => {
   }
   loadPerformanceAnalytics()
 })
-const summaryWarnings = computed(() => realizedPnL.value.data_quality?.warnings || [])
+// 缺汇率的币种：后端在这些块里各自剔除了无法折算的金额（不再按原值当 CNY 混入），
+// 但只有 realized 一块带 data_quality.warnings。其余三块只给 missing_rate_currencies，
+// 不在这里合成提示的话，用户只会看到「累计投入变成 0」而不知道原因。
+const missingRateCurrencies = computed(() => {
+  const collected = new Set<string>()
+  const sources = [
+    summaryStats.value?.missing_rate_currencies,
+    dividendSummary.value?.missing_rate_currencies,
+    currentPerformance.value?.missing_rate_currencies,
+    ...(marketStats.value || []).map((row) => row?.missing_rate_currencies)
+  ]
+  for (const list of sources) {
+    for (const currency of list || []) collected.add(currency)
+  }
+  return Array.from(collected).sort()
+})
+
+const summaryWarnings = computed(() => {
+  const warnings = [...(realizedPnL.value.data_quality?.warnings || [])]
+  const currencies = missingRateCurrencies.value
+  // realized 那条已含币种名，避免同一批币种重复提示两遍
+  const alreadyMentioned = warnings.some((text) =>
+    currencies.every((currency) => text.includes(currency))
+  )
+  if (currencies.length && !alreadyMentioned) {
+    warnings.push(
+      `缺少 ${currencies.join('/')} 对 CNY 的汇率，这些币种的金额未计入 CNY 汇总（不会按原值混入）。` +
+        '请在「汇率管理」补录后重新查看。'
+    )
+  }
+  return warnings
+})
 const analyticsWarnings = computed(() => performanceAnalytics.value.data_quality?.warnings || [])
 const historySyncPercent = computed(() => {
   return Math.max(0, Math.min(100, Math.round(Number(historySyncJob.value?.progress_percent || 0))))

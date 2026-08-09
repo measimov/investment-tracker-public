@@ -678,3 +678,61 @@ async def test_batch_targets_preview_matches_job_total(db, api_user, monkeypatch
         started = await client.post("/api/securities/analysis-batch-jobs", headers=auth)
         # 预览数与真实 job.total 必须一致，否则确认框会骗人
         assert started.json()["total"] == body["total"]
+
+
+def test_losing_ownership_mid_loop_stops_the_batch_immediately(db, monkeypatch):
+    """[回归锁] 失权（被接管）后必须立刻停手，不得继续处理剩余标的。
+
+    本模块的 progress() 在 analyze_one 的 try **内部**经 on_stage 被调用，
+    所以哨兵异常要显式 re-raise 才不被兜底 except 吞成"本标的失败、继续下一只"
+    ——#127 修的正是那个坑，#134 把 progress 收敛到 job_runtime 时必须原样保住。
+    僵尸不停手 = 对剩余标的双倍调用 Tushare/EDGAR/LLM，产物两边各写一遍。
+    """
+    from app.services import job_runtime
+
+    for suffix in range(3):
+        _hold(db, f"60000{suffix}", "A股")
+
+    # **瞬时**失权（只让 on_stage 那一次回写返回 None，之后恢复）：这是唯一能
+    # 区分两条路径的构造。永久失权时后续每次 progress 都会再抛，循环两种写法
+    # 都会停——测不出差别。瞬时失权下：
+    #   有 re-raise：哨兵直接逃出循环 → 只处理了第一只；
+    #   无 re-raise：被兜底 except 判成"本标的失败"，后续 progress 又能写了
+    #                → 若无其事跑完全部三只（这正是要防的僵尸行为）。
+    state = {"armed": False, "tripped": False}
+    original = job_runtime.set_job_progress
+
+    def spy(job_id, job_type, **kwargs):
+        if state["armed"] and not state["tripped"]:
+            state["tripped"] = True
+            return None  # 模拟这一刻 attempt 已变（被 worker 接管）
+        return original(job_id, job_type, **kwargs)
+
+    monkeypatch.setattr(job_runtime, "set_job_progress", spy)
+
+    calls: list = []
+
+    def fake_analyze(db_, symbol, market, *, digest_max_new=2, on_stage=None):
+        calls.append(symbol)
+        state["armed"] = True
+        try:
+            if on_stage:
+                on_stage("llm_analysis", {})  # 这一下触发哨兵（try 内部）
+        finally:
+            state["armed"] = False
+        return {
+            "symbol": symbol, "market": market, "status": "succeeded",
+            "analysis_id": 1, "error": None, "error_kind": None,
+            "degraded": [], "digest_gaps": [],
+        }
+
+    monkeypatch.setattr(batch, "analyze_one", fake_analyze)
+    monkeypatch.setattr(batch.settings, "security_analysis_batch_pause_seconds", 0)
+
+    job = batch.start_batch_analysis_job(db, 1)
+    batch.run_batch_analysis_job(job["id"])  # 安静退出，不得抛出
+
+    assert len(calls) == 1, f"失权后仍继续分析了剩余标的：{calls}"
+    stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+    db.refresh(stored)
+    assert stored.status != "failed", "失权不是失败，僵尸不得把 job 标成 failed"

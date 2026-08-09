@@ -5,6 +5,7 @@ import pytest
 from app.database import SessionLocal
 from app.models.broker_account import BrokerAccount
 from app.models.import_batch import ImportBatch
+from app.services.broker_import_common import base_import_result
 from app.services.import_batch_service import (
     complete_import_batch,
     start_import_batch,
@@ -118,22 +119,36 @@ def test_import_batch_separates_source_archival_from_canonical_booking():
             parser_version="1",
         )
 
+        # 结算契约要求键齐全（complete_import_batch 按键直取），所以用生产方
+        # 同一个骨架构造输入，而不是手拼部分 dict。
         completed = complete_import_batch(
             db,
             batch.id,
-            result={
-                "total_rows": 5,
-                "eligible_trade_rows": 2,
-                "eligible_dividend_rows": 0,
-                "eligible_tax_rows": 0,
-                "eligible_cash_rows": 1,
-                "duplicate_rows": 0,
-                "skipped_non_trade_rows": 2,
-                "skipped_invalid_rows": 0,
-                "skipped_unsupported_rows": 0,
-                "skipped_conflict_rows": 0,
-                "errors": [],
-            },
+            result=base_import_result(
+                broker=tag,
+                filename="counts.pdf",
+                total_rows=5,
+                eligible_trade_rows=2,
+                eligible_dividend_rows=0,
+                eligible_tax_rows=0,
+                eligible_cash_rows=1,
+                imported_transactions=2,
+                imported_corporate_actions=0,
+                imported_tax_adjustments=0,
+                imported_cash_events=1,
+                duplicate_rows=0,
+                skipped_non_trade_rows=2,
+                skipped_invalid_rows=0,
+                skipped_excluded_rows=0,
+                excluded_unbooked_rows=0,
+                affected_symbols=1,
+                date_start=None,
+                date_end=None,
+                business_counts={},
+                duplicate_samples=[],
+                import_samples=[],
+                errors=[],
+            ),
             imported_count=3,
             archived_count=5,
         )

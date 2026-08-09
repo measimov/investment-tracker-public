@@ -52,18 +52,20 @@ class BrokerFundFlow(Base):
         nullable=True,
         index=True,
     )
-    broker = Column(String(50), nullable=False, default="招商证券", index=True)
+    broker = Column(
+        String(50), nullable=False, default="招商证券", server_default="招商证券", index=True
+    )
     row_hash = Column(String(64), nullable=False, index=True)
     source_filename = Column(String(255), nullable=True)
     source_row_number = Column(Integer, nullable=True)
 
     security_code = Column(String(20), nullable=True, index=True)
     security_name = Column(String(100), nullable=True)
-    currency = Column(String(10), nullable=False, default="CNY")
+    currency = Column(String(10), nullable=False, default="CNY", server_default="CNY")
     trade_date = Column(Date, nullable=False, index=True)
-    trade_price = Column(Numeric(18, 8), nullable=False, default=0)
-    trade_quantity = Column(Numeric(18, 8), nullable=False, default=0)
-    amount = Column(Numeric(18, 8), nullable=False, default=0)
+    trade_price = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    trade_quantity = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    amount = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
     cash_balance = Column(Numeric(18, 8), nullable=True)
     remaining_quantity = Column(Numeric(18, 8), nullable=True)
     settlement_rate = Column(Numeric(18, 8), nullable=True)
@@ -72,15 +74,19 @@ class BrokerFundFlow(Base):
     serial_number = Column(String(50), nullable=True, index=True)
     business_name = Column(String(50), nullable=False, index=True)
 
-    stamp_tax = Column(Numeric(18, 8), nullable=False, default=0)
-    commission = Column(Numeric(18, 8), nullable=False, default=0)
-    handling_fee = Column(Numeric(18, 8), nullable=False, default=0)
-    management_fee = Column(Numeric(18, 8), nullable=False, default=0)
-    settlement_fee = Column(Numeric(18, 8), nullable=False, default=0)
-    transfer_fee = Column(Numeric(18, 8), nullable=False, default=0)
-    other_fee = Column(Numeric(18, 8), nullable=False, default=0)
+    stamp_tax = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    commission = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    handling_fee = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    management_fee = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    settlement_fee = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    transfer_fee = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
+    other_fee = Column(Numeric(18, 8), nullable=False, default=0, server_default="0")
     shareholder_code = Column(String(50), nullable=True)
     notes = Column(Text, nullable=True)
+    # 与 IbkrActivityFlow.skip_reason 同语义：行已归档但未入账的原因。
+    # 目前唯一取值 UNATTRIBUTED_TAX——找不到唯一股息的红利税行先保留、
+    # 待补齐股息后重导再归属（此前招商/东财会因 hash 判重永久失联）。
+    skip_reason = Column(String(100), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -97,5 +103,12 @@ class BrokerFundFlow(Base):
             "row_hash",
             unique=True,
             postgresql_where=text("broker_account_id IS NULL"),
+        ),
+        # 迁移 20260806_0011 建的部分索引：模型必须同步声明，否则 autogenerate
+        # 会认为它是库里多出来的东西并生成 drop_index（#144 落地时实际发生过）。
+        Index(
+            "ix_broker_fund_flows_skip_reason",
+            "skip_reason",
+            postgresql_where=text("skip_reason IS NOT NULL"),
         ),
     )

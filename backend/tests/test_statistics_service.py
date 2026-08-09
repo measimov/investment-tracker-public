@@ -17,14 +17,14 @@ from app.services.performance_history_jobs import get_history_sync_targets
 from app.services.portfolio.metrics import (
     calculate_risk_metrics as _calculate_risk_metrics,
 )
-from app.services.statistics_service import (
-    _ExchangeRateLookup,
-    _get_fifo_results_for_user,
+from app.services.statistics import (
     calculate_current_holdings_performance,
     calculate_performance_analytics,
     calculate_performance_summary,
     get_statistics_by_time,
 )
+from app.services.statistics.fifo_results import fifo_results_for_user
+from app.services.statistics.fx import DbExchangeRateLookup
 from tests.helpers import add_transaction, reset_tables
 
 
@@ -40,7 +40,7 @@ RESET_MODELS = (
 
 
 def test_exchange_rate_lookup_matches_historical_fallback_behavior():
-    lookup = _ExchangeRateLookup([
+    lookup = DbExchangeRateLookup([
         ExchangeRate(
             from_currency="USD",
             to_currency="CNY",
@@ -91,7 +91,7 @@ def test_fifo_pnl_tracks_partial_lot_cost_and_remaining_cost():
         )
         db.commit()
 
-        result = _get_fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
+        result = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
 
         assert result["sold_cost"] == 1241.0
         assert result["realized_pnl"] == 557.0
@@ -471,10 +471,10 @@ def test_account_xirr_uses_transaction_date_fx():
 
 def test_trade_skill_metrics_are_per_closing_trade():
     """Issue #43: win rate counts closing trades, not per-symbol net results."""
-    from app.services.statistics_service import (
-        calculate_realized_pnl_fifo,
+    from app.services.portfolio.metrics import (
         calculate_trade_skill_metrics as _calculate_trade_skill_metrics,
     )
+    from app.services.statistics import calculate_realized_pnl_fifo
 
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
@@ -536,7 +536,7 @@ def test_build_price_maps_uses_constant_query_count():
     from sqlalchemy import event
 
     from app.database import engine
-    from app.services.statistics_service import _build_price_maps
+    from app.services.statistics.analytics import build_price_maps
 
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
@@ -561,7 +561,7 @@ def test_build_price_maps_uses_constant_query_count():
 
         event.listen(engine, "before_cursor_execute", _track)
         try:
-            price_maps, counts = _build_price_maps(
+            price_maps, counts = build_price_maps(
                 db, symbols, date(2026, 1, 1), date(2026, 1, 31)
             )
         finally:
@@ -577,7 +577,7 @@ def test_build_price_maps_uses_constant_query_count():
 
 def test_resolve_server_prices_prefers_holding_then_history():
     """Issue #46: valuation prices come from server authority, market-qualified."""
-    from app.services.statistics_service import resolve_server_prices
+    from app.services.statistics import resolve_server_prices
 
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
@@ -699,7 +699,9 @@ def test_risk_metrics_annualize_by_calendar_time_not_sample_count():
     assert metrics["annualization_basis"] == "calendar_days"
     assert metrics["observation_span_days"] == 365
     # 10% earned over one calendar year annualizes to ~10%, not a sample-count blowup.
-    assert round(metrics["annualized_return_rate"], 2) == 10.0
+    # 年化基准是 365.25（含闰年补偿，与 XIRR 统一，见 issue #138），故 365 天
+    # 跨度的结果是 10.007% 而非恰好 10%——这里断言的是量级而非第三位小数。
+    assert metrics["annualized_return_rate"] == pytest.approx(10.0, abs=0.02)
 
 
 def test_risk_metrics_event_level_omits_annualized_figures():
@@ -917,6 +919,13 @@ def test_performance_analytics_applies_reverse_split_to_curve_positions():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
+        # 必须显式给 USD 汇率：本用例测的是拆股因子，不是缺汇率兜底。
+        # 此前没有这一行也能过，靠的正是"缺汇率就按 1:1 当成 CNY"的静默兜底
+        # ——该兜底已按 issue #129 改为剔除并记录。
+        db.add(ExchangeRate(
+            from_currency="USD", to_currency="CNY", rate=Decimal("1"),
+            effective_date=date(2024, 1, 1), source="test", is_active=True,
+        ))
         add_transaction(
             db,
             symbol="FFIE",

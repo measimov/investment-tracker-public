@@ -2,6 +2,10 @@ from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+# 口令下限。6 位对暴露公网的部署过弱（在线爆破的可行域太小），提到 10。
+# 只约束 API 侧新设/改设的口令；seed 用的初始口令来自 env，不经这层校验。
+MIN_PASSWORD_LENGTH = 10
+
 
 class UserBase(BaseModel):
     """Base user schema with common fields"""
@@ -12,14 +16,10 @@ class UserBase(BaseModel):
     is_admin: bool = False
 
 
-class UserCreate(BaseModel):
-    """Schema for creating a new user"""
+class UserCreate(UserBase):
+    """Schema for creating a new user（继承 UserBase，约束只维护一份，issue #137）"""
 
-    username: str = Field(..., min_length=3, max_length=50)
-    email: Optional[EmailStr] = None
-    password: str = Field(..., min_length=6)
-    is_active: bool = True
-    is_admin: bool = False
+    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH)
 
 
 class UserUpdate(BaseModel):
@@ -35,13 +35,13 @@ class UserPasswordUpdate(BaseModel):
     """Schema for updating user password"""
 
     old_password: str
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH)
 
 
 class UserPasswordReset(BaseModel):
     """Schema for admin resetting user password"""
 
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH)
 
 
 class User(UserBase):

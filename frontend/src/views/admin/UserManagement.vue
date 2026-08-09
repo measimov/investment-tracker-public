@@ -167,11 +167,15 @@ const resetPasswordForm = reactive({
   confirm_password: ''
 })
 
+// 必须与后端 schemas/user.py 的 MIN_PASSWORD_LENGTH 一致：前端卡得比后端松
+// 的话，用户过了这层校验再吃一个 422，错在哪只能猜。
+const MIN_PASSWORD_LENGTH = 10
+
 const validatePassword = (rule: unknown, value: string, callback: ValidatorCallback) => {
   if (!value) {
     callback(new Error('请输入密码'))
-  } else if (value.length < 6) {
-    callback(new Error('密码长度至少6位'))
+  } else if (value.length < MIN_PASSWORD_LENGTH) {
+    callback(new Error(`密码长度至少${MIN_PASSWORD_LENGTH}位`))
   } else {
     callback()
   }

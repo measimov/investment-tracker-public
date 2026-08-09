@@ -3,12 +3,11 @@ from typing import Any, Dict, Optional
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from .background_job_store import (
-    claim_job,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
     update_job,
 )
+from .job_runtime import run_job_inline
 from .job_worker import register_runner
 from .stock_price_service import update_all_holdings_prices
 
@@ -39,26 +38,15 @@ def execute_price_refresh_job(claimed: Dict[str, Any]) -> None:
             status="succeeded" if result.get("success") else "failed",
             data_updates={"result": result},
             required_status="running",
+            # 接管者的状态同样是 running，只校验 status 挡不住僵尸线程改写终态
+            required_attempt_count=claimed.get("attempt_count"),
         )
     finally:
         db.close()
 
 
 def run_price_refresh_job(job_id: str) -> None:
-    """Inline fast path: claim by id and execute; retries on unexpected errors."""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("Price refresh job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_price_refresh_job(claimed)
-    except Exception as exc:
-        logger.exception("Price refresh job %s failed", job_id)
-        handle_job_failure(
-            job_id, JOB_TYPE, str(exc),
-            required_attempt_count=claimed.get("attempt_count"),
-        )
-
+    run_job_inline(job_id, JOB_TYPE, execute_price_refresh_job, label="Price refresh", logger=logger)
 
 def get_price_refresh_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

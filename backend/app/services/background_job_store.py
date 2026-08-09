@@ -21,6 +21,15 @@ TERMINAL_STATUSES = {"succeeded", "failed", "interrupted"}
 MAX_RETRY_DELAY_SECONDS = 900
 
 
+class JobOwnershipLostError(RuntimeError):
+    """本次执行已不再持有该 job：被接管、或 job 已进终态。
+
+    长循环（批量分析/批量回填）必须在回写返回 None 时立刻停手：僵尸线程继续
+    跑下去会对同一批标的双倍调用外部 API 与 LLM，产物照样落全局表——租约体系
+    只挡住了 DB 状态回写，挡不住副作用。
+    """
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 

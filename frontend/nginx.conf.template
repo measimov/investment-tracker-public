@@ -75,6 +75,13 @@ server {
     location /api/ {
         limit_req zone=api_limit burst=40 nodelay;
 
+        # 略大于后端的 MAX_UPLOAD_BYTES(20MB)：client_max_body_size 统计的是整个
+        # multipart 请求体（含 boundary、文件名、其余表单字段），若这里也卡 20m，
+        # 一个恰好 20MB 的合法文件会连同 multipart 开销超限、被代理先拒掉，
+        # 用户看到的是 nginx 的 413 而非后端的中文提示。留 1m 余量，
+        # 真正的判定交给后端那一层。
+        client_max_body_size 21m;
+
         proxy_pass http://backend:8000/api/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

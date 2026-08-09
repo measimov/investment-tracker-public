@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
-from .statistics_service import (
+from .statistics import (
     build_portfolio_snapshot,
     calculate_performance_analytics,
     get_statistics_by_time,

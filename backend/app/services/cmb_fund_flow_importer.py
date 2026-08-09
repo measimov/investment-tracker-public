@@ -5,8 +5,8 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Iterable, List, Optional
+from decimal import Decimal
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import pandas as pd
 import pdfplumber
@@ -15,6 +15,7 @@ from pypdf import PdfReader
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..models.broker_account import BrokerAccount
 from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.cash_event import CashEvent
@@ -22,8 +23,16 @@ from ..models.corporate_action import CorporateAction
 from ..models.transaction import Transaction
 from ..services import broker_import_common
 from ..services.broker_import_common import (
-    HASH_DUPLICATE_OCCURRENCE_FIELD,
+    RESULT_SAMPLE_LIMIT,
+    archived_row_count,
+    base_import_result,
+    disambiguated_row_hash,
+    iso_date_range,
+    ProspectiveTransaction,
+    attribute_tax_source,
     find_dividend_for_tax,
+    load_unattributed_tax_sources,
+    mark_unattributed_tax,
     source_error_rows,
 )
 from ..services.security_rule_service import (
@@ -31,7 +40,13 @@ from ..services.security_rule_service import (
     get_cmb_cash_business_map,
     get_excluded_symbols,
 )
-from ..services.holding_service import recalculate_holdings
+from ..services.holding_service import (
+    UNPERSISTED_SORT_ID,
+    load_account_quantity_actions,
+    recalculate_holdings,
+    replay_account_quantities,
+)
+from ..services.portfolio.semantics import QUANTITY_ACTION_TYPES
 from ..services.import_batch_service import (
     complete_import_batch,
     fail_import_batch,
@@ -45,9 +60,15 @@ from ..services.import_batch_service import (
 BROKER_NAME = "招商证券"
 SOURCE_TYPE = "cmb_statement_pdf"
 PARSER_NAME = "cmb_statement"
-# 行为变化必须升版（ImportBatch 按 parser/version 审计入账口径）：
-# v7 = 开放基金申购/新股入账 生成规范 BUY（此前仅归档）
-PARSER_VERSION = "10"
+# 行为变化必须升版（ImportBatch 按 parser/version 审计入账口径）。
+# 变更清单必须与版本号同步维护——半截历史比没有更误导：
+#   v7  = 开放基金申购/新股入账 生成规范 BUY（此前仅归档）
+#   v8  = 账本特例规则改为表驱动（security_rules），排除标的等不再硬编码（2a27883）
+#   v9  = 现金管理标的排除清单接入（ebe4d48）
+#   v10 = 现金业务行入账为 CashEvent 并回填归档历史（cc5f7b9）
+#   v11 = 未归属红利税行改为可恢复（skip_reason=unattributed_tax）：不再计入
+#         判重的"已入账"，补齐股息后重导会在原归档行上就地转正（#132 子项 B）
+PARSER_VERSION = "11"
 TRADE_BUSINESS_MAP = {
     "证券买入": "BUY",
     "证券卖出": "SELL",
@@ -230,6 +251,25 @@ class ParsedFlow:
         )
 
     @property
+    def becomes_transaction(self) -> bool:
+        """本行是否会入账成一笔 Transaction（其余形态各自归档或建现金/行动记录）。
+
+        导入循环的分支链与预览的"待入账交易"构造共用这一个判据。**不要**在预览
+        里另写一份：#132 的主题正是"同一问题不同答案"，两份映射一旦漂移，预览
+        就会重新变成不可信的——而这恰恰是它要修的毛病。
+        """
+        return (
+            not self.is_cash_interest
+            and not self.is_cash_business
+            and not self.is_cash_dividend
+            and not self.is_dividend_tax
+            and bool(self.transaction_type)
+            and bool(self.security_code)
+            and self.trade_quantity != 0
+            and self.trade_price > 0
+        )
+
+    @property
     def total_fee(self) -> Decimal:
         return (
             self.stamp_tax
@@ -381,7 +421,16 @@ def _find_pdf_column_boundaries(
     )
 
 
-def _extract_pdf_flow_rows(contents: bytes) -> List[Dict[str, str]]:
+def _extract_pdf_flow_rows(
+    contents: bytes, *, provenance: Optional[List[Dict[str, Any]]] = None
+) -> List[Dict[str, str]]:
+    """提取流水明细行。
+
+    provenance 是**只增不改**的诊断出参：传入一个列表就会收到与返回值逐下标
+    对齐的行来源（页码、y 坐标、是否走了无节标题回退）。返回值、DataFrame 与
+    row_hash 完全不受影响——出错行在 parse_rows 里 `continue` 后零留痕，
+    没有这个出参就无法回答"那一行到底来自哪一页、哪个章节"。
+    """
     ensure_pdf_is_readable(contents)
     extracted_rows: List[Dict[str, str]] = []
 
@@ -410,7 +459,7 @@ def _extract_pdf_flow_rows(contents: bytes) -> List[Dict[str, str]]:
                 for word in words
             )
             in_flow_section = not has_section_titles
-            for words in page_words:
+            for page_index, words in enumerate(page_words):
                 events = (
                     sorted(
                         (
@@ -463,6 +512,16 @@ def _extract_pdf_flow_rows(contents: bytes) -> List[Dict[str, str]]:
                             row[column] = f"{row.get(column, '')}{text}"
                     if row.get("发生日期"):
                         extracted_rows.append(row)
+                        if provenance is not None:
+                            provenance.append(
+                                {
+                                    "page_index": page_index,
+                                    "top": round(float(anchor["top"]), 1),
+                                    "word_count": len(row_words),
+                                    "columns_filled": len(row),
+                                    "section_fallback": not has_section_titles,
+                                }
+                            )
     except PDFPasswordIncorrect as exc:
         raise ValueError("PDF is encrypted. Please decrypt it with qpdf before importing.") from exc
 
@@ -471,8 +530,10 @@ def _extract_pdf_flow_rows(contents: bytes) -> List[Dict[str, str]]:
     return extracted_rows
 
 
-def read_cmb_statement_pdf(contents: bytes) -> pd.DataFrame:
-    rows = _extract_pdf_flow_rows(contents)
+def read_cmb_statement_pdf(
+    contents: bytes, *, provenance: Optional[List[Dict[str, Any]]] = None
+) -> pd.DataFrame:
+    rows = _extract_pdf_flow_rows(contents, provenance=provenance)
     normalized_rows = [
         {
             "市场": row.get("市场", ""),
@@ -714,12 +775,9 @@ def parse_rows(
             "shareholder_code": shareholder_code,
         }
 
-        base_row_hash = calculate_row_hash(hash_values)
-        row_hash = base_row_hash
-        pdf_hash_occurrences[base_row_hash] = pdf_hash_occurrences.get(base_row_hash, 0) + 1
-        if pdf_hash_occurrences[base_row_hash] > 1:
-            hash_values[HASH_DUPLICATE_OCCURRENCE_FIELD] = pdf_hash_occurrences[base_row_hash]
-            row_hash = calculate_row_hash(hash_values)
+        row_hash = disambiguated_row_hash(
+            hash_values, pdf_hash_occurrences, calculate_row_hash
+        )
 
         parsed_rows.append(
             ParsedFlow(
@@ -828,6 +886,9 @@ def get_existing_hashes(
     query = db.query(BrokerFundFlow.row_hash).filter(
         BrokerFundFlow.user_id == user_id,
         BrokerFundFlow.row_hash.in_(hash_list),
+        # 未归属税行虽已归档，但**不算已入账**：把它当重复行跳过的话，
+        # 补齐股息后重导同一对账单也补不回 tax_withheld（永久失联）。
+        BrokerFundFlow.skip_reason.is_(None),
     )
     if broker_account_id is not None:
         query = query.filter(BrokerFundFlow.broker_account_id == broker_account_id)
@@ -861,9 +922,10 @@ def build_import_result(
         for flow in trade_rows
         if flow.security_code and flow.trade_quantity != 0 and flow.trade_price > 0
     ]
+    # 招商现状没有同批判重：duplicate 只对库内 hash 判定（勿改用
+    # split_new_and_duplicate_rows"顺手统一"，那是行为变更）。
     duplicate_rows = [flow for flow in parsed_rows if flow.row_hash in existing_hashes]
     import_rows = [flow for flow in parsed_rows if flow.row_hash not in existing_hashes]
-    dates = [flow.trade_date for flow in parsed_rows]
     parsed_source_rows = {flow.source_row_number for flow in parsed_rows}
     error_rows = source_error_rows(errors, parsed_source_rows)
     excluded_rows = [flow for flow in parsed_rows if flow.excluded]
@@ -884,32 +946,339 @@ def build_import_result(
         - len(excluded_rows),
     )
 
+    date_start, date_end = iso_date_range([flow.trade_date for flow in parsed_rows])
+    result = base_import_result(
+        broker=BROKER_NAME,
+        filename=filename,
+        total_rows=total_rows,
+        eligible_trade_rows=len(eligible_trade_rows),
+        eligible_dividend_rows=len(dividend_rows),
+        eligible_tax_rows=len(tax_rows),
+        eligible_cash_rows=len(cash_rows),
+        imported_transactions=imported_transactions,
+        imported_corporate_actions=imported_corporate_actions,
+        imported_tax_adjustments=imported_tax_adjustments,
+        imported_cash_events=imported_cash_events,
+        duplicate_rows=len(duplicate_rows),
+        skipped_non_trade_rows=skipped_non_trade_rows,
+        skipped_invalid_rows=skipped_invalid_rows,
+        skipped_excluded_rows=len(excluded_rows),
+        excluded_unbooked_rows=len(excluded_unbooked_rows),
+        affected_symbols=affected_symbols,
+        date_start=date_start,
+        date_end=date_end,
+        business_counts=business_counts,
+        duplicate_samples=[
+            flow_to_sample(flow, True) for flow in duplicate_rows[:RESULT_SAMPLE_LIMIT]
+        ],
+        import_samples=[
+            flow_to_sample(flow, False) for flow in import_rows[:RESULT_SAMPLE_LIMIT]
+        ],
+        errors=errors,
+        warnings=warnings,
+    )
+    result["source_account_masks"] = source_account_masks(parsed_rows)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 脱敏诊断报告
+#
+# 为什么需要：出错行在 parse_rows 里 `continue`，既不产出 ParsedFlow 也不落
+# broker_fund_flows，报错消息又只带行号——除了拿到那份 PDF 重跑，没有任何归因
+# 手段。而报障者不可能把对账单发出来（里面是全部持仓与金额）。
+#
+# 本函数是**纯只读的第二遍分析**：重新解析一次，不参与入账、不改任何解析口径，
+# 因此不动 PARSER_VERSION、不碰 row_hash。
+# ---------------------------------------------------------------------------
+
+DIAGNOSTIC_PATTERN_COLUMNS = [
+    "成交价格",
+    "成交数量",
+    "PDF成交金额",
+    "发生金额",
+    "佣金",
+    "印花税",
+    "其他费用",
+    "资金余额",
+    "剩余数量",
+]
+DIAGNOSTIC_PATTERN_TOP_N = 5
+#: 费用三列——`fees_all_zero` 的判定必须以它们**全部**解析成功为前提
+DIAGNOSTIC_FEE_COLUMNS = ("佣金", "印花税", "其他费用")
+
+
+#: 标签列一旦发生列错位，挤进来的就是这些列的值——它们不能原样回传。
+#: 用规范化后的列名（PDF 的「证券账号」在 read_cmb_statement_pdf 里落成「股东代码」）
+DIAGNOSTIC_SENSITIVE_COLUMNS = ("证券名称", "证券代码", "股东代码")
+
+
+def _diagnostic_decimal(value: Any) -> Optional[Decimal]:
+    return parse_strict_pdf_decimal(value)
+
+
+def _diagnostic_label(value: Any, record: Dict[str, Any]) -> str:
+    """标签列（市场/币种/业务名称）的回传形式。
+
+    正常情况下这些是券商词表，原样透出正是排查所需。但**列错位恰恰是本次要
+    排查的假设之一**——边界一偏，证券名称或证券账号就会落进"市场"列，再被
+    词表原样抄进报告。
+
+    所以：值若与本行某个敏感列相同，只报「哪一列溢出来了」。这比抄出值本身
+    更有诊断价值（直接点名错位方向），且不泄露持仓与账号。其余一律过
+    `digit_class`，让账号形状（`Addddddddd`）可见而数字不可见。
+    """
+    text = strip_bom(value)
+    if not text:
+        return ""
+    for column in DIAGNOSTIC_SENSITIVE_COLUMNS:
+        if text == strip_bom(record.get(column)):
+            return f"<spilled:{column}>"
+    return broker_import_common.digit_class(text, strip=strip_bom)
+
+
+def _diagnostic_error_row(
+    *,
+    row_number: int,
+    message: str,
+    row: Optional[Dict[str, Any]],
+    provenance: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    record: Dict[str, Any] = {
+        "row_number": row_number,
+        "message": message,
+        "row_found": row is not None,
+    }
+    if provenance:
+        record.update(
+            {
+                "page_index": provenance.get("page_index"),
+                "top": provenance.get("top"),
+                "word_count": provenance.get("word_count"),
+                "columns_filled": provenance.get("columns_filled"),
+                "section_fallback": provenance.get("section_fallback"),
+            }
+        )
+    if row is None:
+        return record
+
+    market_text = strip_bom(row.get("市场"))
+    security_code = strip_bom(row.get("证券代码"))
+    record.update(
+        {
+            # 标签类保留词表可读性，但列错位挤进来的敏感值只报"哪一列溢出"
+            "market": _diagnostic_label(row.get("市场"), row),
+            "currency": _diagnostic_label(row.get("币种"), row),
+            "business": _diagnostic_label(row.get("业务名称"), row),
+            "shareholder_code_masked": broker_import_common.mask_code(
+                strip_bom(row.get("股东代码")), keep=2
+            ),
+            "security_code_masked": broker_import_common.mask_code(security_code, keep=2),
+            "security_code_length": len(security_code),
+            "security_name_length": len(strip_bom(row.get("证券名称"))),
+            "raw_patterns": {
+                column: broker_import_common.digit_class(row.get(column), strip=strip_bom)
+                for column in DIAGNOSTIC_PATTERN_COLUMNS
+            },
+            # main 上的现行判据——用来直接证实/证伪"港股通写法没认出来"这一假设
+            "is_hk_connect_by_current_rule": market_text in HK_CONNECT_MARKET_NAMES,
+        }
+    )
+
+    price = _diagnostic_decimal(row.get("成交价格"))
+    quantity = _diagnostic_decimal(row.get("成交数量"))
+    trade_amount = _diagnostic_decimal(row.get("PDF成交金额"))
+    amount = _diagnostic_decimal(row.get("发生金额"))
+    fees = [_diagnostic_decimal(row.get(column)) for column in DIAGNOSTIC_FEE_COLUMNS]
+    unparsed_fee_columns = [
+        column for column, fee in zip(DIAGNOSTIC_FEE_COLUMNS, fees) if fee is None
+    ]
+    price_text = strip_bom(row.get("成交价格"))
+    decimal_places = len(price_text.rsplit(".", 1)[1]) if "." in price_text else 0
+
+    gross = abs(quantity) * price if (quantity is not None and price is not None) else None
+    tolerance = (
+        abs(quantity) * Decimal("0.5").scaleb(-decimal_places) + PDF_AMOUNT_TOLERANCE
+        if quantity is not None
+        else None
+    )
+    deviation = (
+        abs(trade_amount - gross) if (trade_amount is not None and gross is not None) else None
+    )
+    record.update(
+        {
+            "price_decimal_places": decimal_places,
+            "quantity_sign": None if quantity is None else int(quantity.compare(Decimal(0))),
+            "quantity_magnitude": broker_import_common.magnitude(
+                None if quantity is None else abs(quantity)
+            ),
+            "trade_amount_magnitude": broker_import_common.magnitude(trade_amount),
+            "amount_magnitude": broker_import_common.magnitude(amount),
+            # 三态，不能塌缩成布尔："费用未知"与"费用全为零"是两个完全不同的
+            # 结论。生成诊断的典型场景之一恰恰是数值列解析失败（那一行正是因此
+            # 才进的 errors），此时把 None 过滤掉会让三项全失败变成 all([])==True，
+            # 一项失败、其余为 0 也报 True——维护者据此正好排除掉"费用列错位/
+            # 格式异常"这条线索，而那可能就是根因。
+            "fees_all_zero": None if unparsed_fee_columns else all(fee == 0 for fee in fees),
+            "unparsed_fee_columns": unparsed_fee_columns,
+            # 这一个比值就能分流根因：≈0.9 是港股通结算汇率、略大于 1 是债券
+            # 应计利息、数量级离谱是逆回购/列错位、None 是价格或数量为 0
+            "trade_amount_over_gross": broker_import_common.safe_ratio(trade_amount, gross),
+            "deviation_over_tolerance": broker_import_common.safe_ratio(deviation, tolerance),
+        }
+    )
+    return record
+
+
+def build_cmb_diagnostics(
+    contents: bytes,
+    filename: str,
+    *,
+    errors: List[str],
+    warnings: Optional[List[str]] = None,
+    parsed_rows: Optional[List[ParsedFlow]] = None,
+) -> Dict[str, Any]:
+    """脱敏诊断报告：足以定位版式/口径问题，且不含金额、数量、价格与证券名称。"""
+    provenance: List[Dict[str, Any]] = []
+    df = read_cmb_statement_pdf(contents, provenance=provenance)
+    records = df.to_dict("records")
+    warnings = warnings or []
+
+    reader = PdfReader(io.BytesIO(contents))
+    metadata = reader.metadata or {}
+    with pdfplumber.open(io.BytesIO(contents)) as pdf:
+        page_words = [
+            page.extract_words(x_tolerance=1, y_tolerance=2, keep_blank_chars=False)
+            for page in pdf.pages
+        ]
+
+    header_page: Optional[int] = None
+    header_columns: List[str] = []
+    for page_index, words in enumerate(page_words):
+        found = sorted(
+            {
+                strip_bom(word.get("text"))
+                for word in words
+                if strip_bom(word.get("text")) in PDF_REQUIRED_HEADER_COLUMNS
+            }
+        )
+        if len(found) > len(header_columns):
+            header_page, header_columns = page_index, found
+
+    section_titles: Dict[str, int] = {}
+    for words in page_words:
+        for word in words:
+            text = strip_bom(word.get("text"))
+            if text == PDF_FLOW_SECTION_TITLE or text in PDF_FLOW_TERMINATOR_TITLES:
+                section_titles[text] = section_titles.get(text, 0) + 1
+
+    try:
+        boundaries = [round(value, 1) for value in _find_pdf_column_boundaries(page_words)]
+    except ValueError:
+        boundaries = []
+
+    parsed_source_rows = {flow.source_row_number for flow in parsed_rows or []}
+    error_row_numbers = source_error_rows(errors, parsed_source_rows)
+    trade_rows = [flow for flow in parsed_rows or [] if flow.transaction_type]
+    eligible_trade_rows = [
+        flow
+        for flow in trade_rows
+        if flow.security_code and flow.trade_quantity != 0 and flow.trade_price > 0
+    ]
+
+    error_rows: List[Dict[str, Any]] = []
+    for message in errors:
+        match = broker_import_common.SOURCE_ROW_ERROR_PATTERN.match(message)
+        if not match:
+            continue
+        row_number = int(match.group(1))
+        index = row_number - 2  # parse_rows 的 row_number = dataframe 下标 + 2
+        error_rows.append(
+            _diagnostic_error_row(
+                row_number=row_number,
+                message=message,
+                row=records[index] if 0 <= index < len(records) else None,
+                provenance=provenance[index] if 0 <= index < len(provenance) else None,
+            )
+        )
+
+    labels = ["市场", "币种", "业务名称"]
     return {
-        "broker": BROKER_NAME,
-        "filename": filename,
-        "total_rows": total_rows,
-        "eligible_trade_rows": len(eligible_trade_rows),
-        "eligible_dividend_rows": len(dividend_rows),
-        "eligible_tax_rows": len(tax_rows),
-        "eligible_cash_rows": len(cash_rows),
-        "imported_transactions": imported_transactions,
-        "imported_corporate_actions": imported_corporate_actions,
-        "imported_tax_adjustments": imported_tax_adjustments,
-        "imported_cash_events": imported_cash_events,
-        "duplicate_rows": len(duplicate_rows),
-        "skipped_non_trade_rows": skipped_non_trade_rows,
-        "skipped_invalid_rows": skipped_invalid_rows,
-        "skipped_excluded_rows": len(excluded_rows),
-        "excluded_unbooked_rows": len(excluded_unbooked_rows),
-        "affected_symbols": affected_symbols,
-        "date_start": min(dates).isoformat() if dates else None,
-        "date_end": max(dates).isoformat() if dates else None,
-        "business_counts": business_counts,
-        "source_account_masks": source_account_masks(parsed_rows),
-        "duplicate_samples": [flow_to_sample(flow, True) for flow in duplicate_rows[:10]],
-        "import_samples": [flow_to_sample(flow, False) for flow in import_rows[:10]],
-        "warnings": (warnings or [])[:50],
-        "errors": errors[:50],
+        "file_fingerprint": {
+            "parser_name": PARSER_NAME,
+            "parser_version": PARSER_VERSION,
+            "app_version": settings.app_version,
+            "build_sha": settings.build_sha,
+            # 文件名与 PDF 元数据只回传结构与分类，绝不回传原文：文件名可能含
+            # 真实姓名或账户备注，`/Creator` 常形如「Microsoft Word - 张三.docx」
+            # 或带本机用户名。指纹是不可逆摘要，用于同一来源在多份报告间对照。
+            "filename_extension": broker_import_common.safe_extension(
+                filename, allowed=(".pdf",)
+            ),
+            "filename_digit_shape": broker_import_common.digit_run_shape(filename),
+            "filename_fingerprint": broker_import_common.text_fingerprint(filename),
+            "page_count": len(page_words),
+            "pdf_producer_class": broker_import_common.classify_generator(
+                metadata.get("/Producer")
+            ),
+            "pdf_producer_fingerprint": broker_import_common.text_fingerprint(
+                metadata.get("/Producer")
+            ),
+            "pdf_creator_class": broker_import_common.classify_generator(
+                metadata.get("/Creator")
+            ),
+            "pdf_creator_fingerprint": broker_import_common.text_fingerprint(
+                metadata.get("/Creator")
+            ),
+            "header_found_page": header_page,
+            "header_columns_found": header_columns,
+            "header_columns_missing": sorted(PDF_REQUIRED_HEADER_COLUMNS - set(header_columns)),
+            "column_boundaries": boundaries,
+            # False = 走了"全文档无节标题"的回退分支，未回业务流水/配号信息
+            # 的行会被当成正常流水收进来
+            "has_section_titles": bool(section_titles.get(PDF_FLOW_SECTION_TITLE)),
+            "section_titles_seen": section_titles,
+            "extracted_rows": len(records),
+            "provenance_rows": len(provenance),
+        },
+        "vocabulary": {
+            "known_hk_connect_names": sorted(HK_CONNECT_MARKET_NAMES),
+            "known_trade_businesses": sorted(TRADE_BUSINESS_MAP),
+            "market_currency_business": broker_import_common.label_histogram(
+                [
+                    {column: _diagnostic_label(record.get(column), record) for column in labels}
+                    for record in records
+                ],
+                labels,
+                strip=strip_bom,
+            ),
+            "column_patterns": {
+                column: broker_import_common.label_histogram(
+                    [
+                        {
+                            column: broker_import_common.digit_class(
+                                record.get(column), strip=strip_bom
+                            )
+                        }
+                        for record in records
+                    ],
+                    [column],
+                    strip=strip_bom,
+                )[:DIAGNOSTIC_PATTERN_TOP_N]
+                for column in DIAGNOSTIC_PATTERN_COLUMNS
+            },
+        },
+        "error_rows": error_rows,
+        "counts": {
+            "errors_total": len(errors),
+            "warnings_total": len(warnings),
+            "error_source_rows": len(error_row_numbers),
+            # 「无效跳过」的两个分量——报障者界面上那个数字到底怎么来的
+            "ineligible_trade_rows": len(trade_rows) - len(eligible_trade_rows),
+            "skipped_invalid_rows": len(trade_rows)
+            - len(eligible_trade_rows)
+            + len(error_row_numbers),
+        },
     }
 
 
@@ -923,29 +1292,7 @@ def apply_exclusions(parsed_rows: List[ParsedFlow], excluded_symbols) -> None:
 
 
 def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
-    """领养路径已退役：NULL 账户历史来源必须显式拒绝，绝不静默双记。
-
-    账户级判重按 (user, broker_account, row_hash) 进行，看不见 NULL 桶的
-    旧来源；库约束又允许同一 hash 在 NULL 桶与已分配账户各存一份——若放行，
-    重新导入会给同一笔流水再建一份 canonical 记录。重建后的正常数据不存在
-    这类行；从旧备份恢复的库必须先人工迁移（含旧 Excel 等异构 hash 来源，
-    故按存在性整体拒绝，不做逐 hash 匹配）。
-    """
-    unassigned = (
-        db.query(BrokerFundFlow.id)
-        .filter(
-            BrokerFundFlow.user_id == user_id,
-            BrokerFundFlow.broker == BROKER_NAME,
-            BrokerFundFlow.broker_account_id.is_(None),
-        )
-        .count()
-    )
-    if unassigned:
-        raise ValueError(
-            f"存在 {unassigned} 条未分配账户的{BROKER_NAME}历史来源（领养路径已退役）。"
-            "请先人工迁移或清理这些 NULL 账户流水后再导入，否则会重复入账"
-        )
-
+    broker_import_common.reject_unassigned_legacy_sources(db, user_id, BROKER_NAME)
 
 def preview_cmb_fund_flow(
     db: Session,
@@ -987,7 +1334,7 @@ def preview_cmb_fund_flow(
         broker_account_id=broker_account_id,
     )
 
-    return build_import_result(
+    result = build_import_result(
         filename=filename,
         total_rows=total_rows,
         parsed_rows=parsed_rows,
@@ -1001,6 +1348,40 @@ def preview_cmb_fund_flow(
         errors=errors,
         warnings=warnings,
     )
+    # 整批一票否决的持仓预检必须在预览里也跑一遍（#132）：否则用户拿到干净
+    # 预览、正式导入却被整批拒绝。校验是纯内存重放，把本批还没落库的交易用
+    # 替身补进去即可，预览仍是只读端点。失败写进 errors——前端据此禁用导入
+    # 按钮并红条展示，与它对解析错误的处置一致。
+    try:
+        validate_account_positions_before_commit(
+            db,
+            user_id=user_id,
+            broker_account_id=broker_account_id,
+            extra_transactions=prospective_transactions(
+                parsed_rows, duplicate_hashes, broker_account_id=broker_account_id
+            ),
+        )
+    except ValueError as exc:
+        # 持仓预检失败不是行级解析错误（没有 `row N:` 前缀），但它同样阻塞导入，
+        # 必须并进 errors 全集——否则诊断报告里的 counts 会和界面上的条数打架。
+        errors = [*errors, str(exc)]
+        result["errors"] = [*result.get("errors", []), str(exc)]
+        result["errors_total"] = result.get("errors_total", 0) + 1
+
+    # 有问题才产出诊断（正常导入零开销）。诊断是排查辅助，绝不能把预览本身
+    # 弄挂——任何异常都降级成一行说明，用户该拿到的预览结果照常返回。
+    if result.get("errors") or result.get("warnings"):
+        try:
+            result["diagnostics"] = build_cmb_diagnostics(
+                contents,
+                filename,
+                errors=errors,
+                warnings=warnings,
+                parsed_rows=parsed_rows,
+            )
+        except Exception as exc:  # noqa: BLE001 - 诊断失败不得影响预览
+            result["diagnostics"] = {"diagnostics_error": type(exc).__name__}
+    return result
 
 
 def create_broker_fund_flow(
@@ -1061,13 +1442,49 @@ def _source_sequence_value(value: Any) -> tuple[int, Any]:
         return (1, text)
 
 
+def prospective_transactions(
+    parsed_rows: List[ParsedFlow],
+    duplicate_hashes: set[str],
+    *,
+    broker_account_id: Optional[int] = None,
+) -> List[ProspectiveTransaction]:
+    """本批**还没落库**、正式导入会入账成交易的行（预览专用）。
+
+    入账判据走 `flow.becomes_transaction`——与导入循环同一个谓词，不另写映射。
+    """
+    return [
+        ProspectiveTransaction(
+            symbol=flow.security_code,
+            market=infer_market(flow.security_code, flow.currency, flow.shareholder_code),
+            transaction_type=flow.transaction_type,
+            quantity=abs(flow.trade_quantity),
+            transaction_date=flow.trade_date,
+            price=flow.trade_price,
+            fee=flow.effective_fee,
+            currency=flow.effective_currency,
+            name=flow.security_name,
+            broker_account_id=broker_account_id,
+            serial_number=flow.serial_number,
+            contract_number=flow.contract_number,
+            source_row_number=flow.source_row_number or 0,
+        )
+        for flow in parsed_rows
+        if flow.row_hash not in duplicate_hashes and flow.becomes_transaction
+    ]
+
+
 def validate_account_positions_before_commit(
     db: Session,
     *,
     user_id: int,
     broker_account_id: int,
+    extra_transactions: Sequence[Any] = (),
 ) -> None:
-    """Reject an account ledger that requires an unrecorded opening position."""
+    """Reject an account ledger that requires an unrecorded opening position.
+
+    extra_transactions：尚未落库的待入账交易（预览通道用）。导入通道在 flush
+    之后调用，此时交易已在 DB 查询范围内，故为空；预览不写库，用替身补上。
+    """
     transactions = (
         db.query(Transaction)
         .filter(
@@ -1091,23 +1508,25 @@ def validate_account_positions_before_commit(
         for source in sources:
             sources_by_transaction_id.setdefault(source.transaction_id, source)
 
-    quantity_actions = (
+    keys = {(txn.symbol, txn.market) for txn in transactions}
+    keys |= {(txn.symbol, txn.market) for txn in extra_transactions}
+    owned_actions = (
         db.query(CorporateAction)
         .filter(
             CorporateAction.user_id == user_id,
             CorporateAction.broker_account_id == broker_account_id,
-            CorporateAction.action_type.in_(
-                [
-                    "STOCK_DIVIDEND",
-                    "BONUS_ISSUE",
-                    "RIGHTS_ISSUE",
-                    "STOCK_SPLIT",
-                    "REVERSE_SPLIT",
-                ]
-            ),
+            CorporateAction.action_type.in_(QUANTITY_ACTION_TYPES),
         )
         .all()
     )
+    keys |= {(action.symbol, action.market) for action in owned_actions}
+    quantity_actions = load_account_quantity_actions(
+        db, user_id=user_id, broker_account_id=broker_account_id, keys=keys,
+    )
+
+    # 同日次序对齐内核 _TYPE_SORT_ORDER：先买入、再转仓、最后卖出。
+    # 原来是 `1 if BUY else 2`，转仓被并进卖出档，同日「转入后立刻卖出」会误报。
+    type_rank = {"BUY": 1, "TRANSFER_IN": 2, "TRANSFER_OUT": 2}
 
     events: List[tuple[Any, ...]] = []
     for action in quantity_actions:
@@ -1119,7 +1538,6 @@ def validate_account_positions_before_commit(
                 (0, 0),
                 0,
                 action.id or 0,
-                "ACTION",
                 action,
             )
         )
@@ -1128,44 +1546,50 @@ def validate_account_positions_before_commit(
         events.append(
             (
                 transaction.transaction_date,
-                1 if transaction.transaction_type == "BUY" else 2,
+                type_rank.get(transaction.transaction_type, 3),
                 _source_sequence_value(source.serial_number if source else None),
                 _source_sequence_value(source.contract_number if source else None),
                 source.source_row_number if source and source.source_row_number else 0,
                 transaction.id or 0,
-                transaction.transaction_type,
                 transaction,
             )
         )
+    # 待入账交易走同一套排序键（流水号/合同号/行号本就来自对账单原行）。
+    # id 位必须是排在持久化 id **之后**的哨兵：招商 PDF 常常没有流水号与合同
+    # 编号，行号又按每份对账单从头计数，跨文件同日同行号的整键碰撞并非不可能；
+    # 一旦碰撞，用 0 会把替身排到既有交易之前，而正式导入拿到真 id 后排在之后
+    # ——同日多笔卖出时预览与导入会指向不同的首笔超卖、报出不同余量。
+    for prospective in extra_transactions:
+        events.append(
+            (
+                prospective.transaction_date,
+                type_rank.get(prospective.transaction_type, 3),
+                _source_sequence_value(prospective.serial_number),
+                _source_sequence_value(prospective.contract_number),
+                prospective.source_row_number or 0,
+                UNPERSISTED_SORT_ID,
+                prospective,
+            )
+        )
 
-    positions: Dict[tuple[str, str], Decimal] = {}
-    for _, _, _, _, _, _, event_type, event in sorted(events):
-        key = (event.symbol, event.market)
-        quantity = positions.get(key, Decimal("0"))
-        if event_type == "BUY":
-            quantity += abs(_normalized_decimal(event.quantity))
-        elif event_type == "SELL":
-            sell_quantity = abs(_normalized_decimal(event.quantity))
-            if sell_quantity > quantity:
-                raise ValueError(
-                    "招商证券账户持仓预检失败："
-                    f"{event.symbol} {event.market} 在 {event.transaction_date} "
-                    f"卖出 {format(sell_quantity, 'f')}，"
-                    f"但账户内可用数量仅 {format(quantity, 'f')}；"
-                    "缺少期初持仓或证券转入记录，整批未导入"
-                )
-            quantity -= sell_quantity
-        elif event.action_type in {"STOCK_DIVIDEND", "BONUS_ISSUE"}:
-            quantity += _normalized_decimal(event.shares_received)
-        elif event.action_type == "RIGHTS_ISSUE":
-            quantity += _normalized_decimal(event.subscription_quantity)
-        elif event.action_type in {"STOCK_SPLIT", "REVERSE_SPLIT"} and event.split_ratio:
-            try:
-                old_shares, new_shares = event.split_ratio.split(":")
-                quantity *= Decimal(new_shares) / Decimal(old_shares)
-            except (InvalidOperation, ValueError, ZeroDivisionError):
-                pass
-        positions[key] = quantity
+    def _reject(event, available: Decimal, needed: Decimal) -> None:
+        verb = "转出" if event.transaction_type == "TRANSFER_OUT" else "卖出"
+        raise ValueError(
+            "招商证券账户持仓预检失败："
+            f"{event.symbol} {event.market} 在 {event.transaction_date} "
+            f"{verb} {format(needed, 'f')}，"
+            f"但账户内可用数量仅 {format(available, 'f')}；"
+            "缺少期初持仓或证券转入记录，整批未导入"
+        )
+
+    # 数量语义统一走 holding_service（内部经 portfolio/semantics），不再本地手写：
+    # 原实现裸读 shares_received（ratio-only 送股加 0 股）、拆股只认 split_ratio
+    # 且解析失败静默吞掉，且对 TRANSFER_* 会落到 `event.action_type` 分支
+    # ——Transaction 无该列，直接 AttributeError 崩掉整个导入。
+    replay_account_quantities(
+        [event[-1] for event in sorted(events, key=lambda item: item[:-1])],
+        on_oversell=_reject,
+    )
 
 
 def import_cmb_fund_flow(
@@ -1231,6 +1655,14 @@ def import_cmb_fund_flow(
             broker_account_id=broker_account_id,
         )
         duplicate_hashes = set(existing_hashes)
+        # 上次未归属的税行：本批若补齐了股息就在原行上转正（不建新行）
+        unattributed_tax_sources = load_unattributed_tax_sources(
+            db,
+            BrokerFundFlow,
+            user_id=user_id,
+            hashes=[flow.row_hash for flow in parsed_rows],
+            broker_account_id=broker_account_id,
+        )
 
         imported_cash_events = 0
         affected_symbols: set[tuple[str, str]] = set()
@@ -1350,16 +1782,22 @@ def import_cmb_fund_flow(
                         f"row {flow.source_row_number}: expected exactly one account-scoped "
                         f"dividend for tax on {flow.security_code}; source preserved unlinked"
                     )
-                    db.add(
-                        create_broker_fund_flow(
-                            user_id=user_id,
-                            broker_account_id=broker_account_id,
-                            filename=filename,
-                            flow=flow,
-                            import_batch_id=batch_id,
+                    # 已保留过就不重复建行（row_hash 唯一约束）；标记为未归属，
+                    # 补齐股息后重导会被 get_existing_hashes 放行并在此转正。
+                    if flow.row_hash not in unattributed_tax_sources:
+                        db.add(
+                            mark_unattributed_tax(
+                                create_broker_fund_flow(
+                                    user_id=user_id,
+                                    broker_account_id=broker_account_id,
+                                    filename=filename,
+                                    flow=flow,
+                                    import_batch_id=batch_id,
+                                ),
+                                "preserved without canonical action: "
+                                "expected exactly one account-scoped dividend",
+                            )
                         )
-                    )
-                    existing_hashes.add(flow.row_hash)
                     continue
                 tax_amount = abs(flow.amount)
                 action.tax_withheld = (action.tax_withheld or Decimal("0")) + tax_amount
@@ -1371,26 +1809,28 @@ def import_cmb_fund_flow(
                     f"{action.notes or ''}; {BROKER_NAME}红利税补缴 "
                     f"流水号={flow.serial_number or ''}; row_hash={flow.row_hash}"
                 ).strip("; ")
-                db.add(
-                    create_broker_fund_flow(
-                        user_id=user_id,
-                        broker_account_id=broker_account_id,
-                        filename=filename,
-                        flow=flow,
-                        import_batch_id=batch_id,
-                        corporate_action_id=action.id,
+                preserved = unattributed_tax_sources.pop(flow.row_hash, None)
+                if preserved is not None:
+                    # 上次未归属的那一行就地转正，不插新行
+                    db.add(attribute_tax_source(preserved, action.id))
+                else:
+                    db.add(
+                        create_broker_fund_flow(
+                            user_id=user_id,
+                            broker_account_id=broker_account_id,
+                            filename=filename,
+                            flow=flow,
+                            import_batch_id=batch_id,
+                            corporate_action_id=action.id,
+                        )
                     )
-                )
                 existing_hashes.add(flow.row_hash)
                 imported_tax_adjustments += 1
                 continue
 
-            if (
-                not flow.transaction_type
-                or not flow.security_code
-                or flow.trade_quantity == 0
-                or flow.trade_price <= 0
-            ):
+            # 走到这里前面四个 is_* 分支都已 continue，故这里等价于原来那四个
+            # 字段条件；用同一个谓词是为了让预览的"待入账交易"不可能与导入分叉。
+            if not flow.becomes_transaction:
                 db.add(
                     create_broker_fund_flow(
                         user_id=user_id,
@@ -1452,19 +1892,18 @@ def import_cmb_fund_flow(
             broker_account_id=broker_account_id,
         )
 
+        # 持仓重算在同一事务内完成再 commit（与东财同口径）：先 commit 再重算的话，
+        # 重算失败会留下"交易已落库、holdings 停在旧值"的半套数据，而批次只标 PARTIAL。
+        recalculated_symbols = 0
+        for symbol, market in affected_symbols:
+            recalculate_holdings(db, user_id, symbol, market, commit=False)
+            recalculated_symbols += 1
+
         try:
             db.commit()
         except IntegrityError as exc:
             raise ValueError("Duplicate broker fund flow detected during import") from exc
         records_committed = True
-
-        recalculated_symbols = 0
-        for symbol, market in affected_symbols:
-            try:
-                recalculate_holdings(db, user_id, symbol, market)
-                recalculated_symbols += 1
-            except ValueError as exc:
-                errors.append(f"{symbol} {market}: {exc}")
 
         result = build_import_result(
             filename=filename,
@@ -1507,14 +1946,7 @@ def import_cmb_fund_flow(
     except Exception as exc:
         if records_committed:
             db.rollback()
-            try:
-                imported_source_rows = (
-                    db.query(BrokerFundFlow)
-                    .filter(BrokerFundFlow.import_batch_id == batch_id)
-                    .count()
-                )
-            except Exception:
-                imported_source_rows = 0
+            imported_source_rows = archived_row_count(db, BrokerFundFlow, batch_id)
         fail_import_batch(
             db,
             batch_id,

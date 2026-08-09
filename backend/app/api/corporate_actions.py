@@ -1,6 +1,7 @@
 import os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from datetime import date, timedelta
@@ -9,9 +10,7 @@ from ..database import get_db
 from ..models.corporate_action import CorporateAction
 from ..models.corporate_action_suggestion import CorporateActionSuggestion
 from ..models.broker_account import BrokerAccount
-from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.holding import Holding
-from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.security_event import SecurityEvent
 from ..models.user import User
 from ..schemas.corporate_action import (
@@ -26,8 +25,7 @@ from ..schemas.corporate_action_suggestion import (
     SuggestionAccept,
     SuggestionResponse,
 )
-from ..services import exchange_rate_service
-from ..services.statistics_service import cash_dividend_amounts
+from ..services.corporate_action_service import summarize_cash_dividends
 from ..services.dividend_sync_jobs import (
     get_dividend_sync_job,
     run_dividend_sync_job,
@@ -41,7 +39,7 @@ from ..services.dividend_sync_service import (
 )
 from ..services.holding_service import lock_record, lock_security_timeline, recalculate_holdings
 from ..core.deps import get_current_active_user
-from ._ownership import get_owned_record
+from ._ownership import ensure_record_is_mutable, get_owned_record, validate_owned_references
 
 router = APIRouter()
 
@@ -54,45 +52,19 @@ def _require_tushare_configured() -> None:
         )
 
 
-def _validate_owned_references(db: Session, user_id: int, data: dict) -> None:
-    references = {
-        "broker_account_id": (BrokerAccount, "Broker account not found"),
-    }
-    for field, (model, detail) in references.items():
-        record_id = data.get(field)
-        if record_id is not None:
-            get_owned_record(db, model, record_id, user_id, detail)
+IMMUTABLE_IMPORTED_ACTION_DETAIL = (
+    "Imported corporate actions cannot be modified or deleted; correct the source import instead."
+)
 
 
-def _ensure_corporate_action_is_mutable(
-    db: Session,
-    user_id: int,
-    action: CorporateAction,
-) -> None:
-    if action.import_batch_id is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Imported corporate actions cannot be modified or deleted; "
-                "correct the source import instead."
-            ),
-        )
-    broker_source = db.query(BrokerFundFlow.id).filter(
-        BrokerFundFlow.user_id == user_id,
-        BrokerFundFlow.corporate_action_id == action.id,
-    ).first()
-    ibkr_source = db.query(IbkrActivityFlow.id).filter(
-        IbkrActivityFlow.user_id == user_id,
-        IbkrActivityFlow.corporate_action_id == action.id,
-    ).first()
-    if broker_source or ibkr_source:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Imported corporate actions cannot be modified or deleted; "
-                "correct the source import instead."
-            ),
-        )
+def _ensure_corporate_action_is_mutable(db: Session, user_id: int, action: CorporateAction) -> None:
+    ensure_record_is_mutable(
+        db,
+        user_id,
+        action,
+        source_link_field="corporate_action_id",
+        detail=IMMUTABLE_IMPORTED_ACTION_DETAIL,
+    )
 
 
 def _build_corporate_action_query(
@@ -149,7 +121,7 @@ def create_corporate_action(
     try:
         # 与交易/转仓写入口共用时间线锁；写入与重算同事务提交。
         lock_security_timeline(db, current_user.id, action.symbol, action.market)
-        _validate_owned_references(db, current_user.id, action_data)
+        validate_owned_references(db, current_user.id, action_data)
         db_action = CorporateAction(**action_data, user_id=current_user.id)
         db.add(db_action)
         db.flush()
@@ -275,10 +247,9 @@ def get_corporate_actions_summary(
     """
     获取公司行动统计摘要
 
-    包括总股息收入、税费等
+    包括总股息收入、税费等（聚合口径在 corporate_action_service，
+    与统计页 get_dividend_summary 同口径）
     """
-    from decimal import Decimal
-
     query = _build_corporate_action_query(
         db,
         current_user.id,
@@ -289,79 +260,7 @@ def get_corporate_actions_summary(
         broker_account_id=broker_account_id,
         unassigned_account=unassigned_account,
     )
-
-    # 按类型统计
-    actions = query.all()
-
-    summary = {
-        "total_count": len(actions),
-        "by_type": {},
-        "cash_dividends": {
-            "count": 0,
-            "total_dividend": Decimal("0"),
-            "total_tax": Decimal("0"),
-            "net_dividend": Decimal("0"),
-            # 股息金额跨 CNY/HKD/USD 多币种：汇总必须按最新汇率折算成 CNY
-            # （与统计分析页 get_dividend_summary 同口径），原币明细单独给出。
-            "base_currency": "CNY",
-            "by_currency": {},
-            "missing_rate_currencies": [],
-        }
-    }
-    by_currency: dict = {}
-    missing_rate_currencies: set = set()
-
-    for action in actions:
-        # 按类型统计
-        if action.action_type not in summary["by_type"]:
-            summary["by_type"][action.action_type] = 0
-        summary["by_type"][action.action_type] += 1
-
-        # 现金股息统计
-        if action.action_type == "CASH_DIVIDEND":
-            summary["cash_dividends"]["count"] += 1
-            currency = action.currency or "CNY"
-            # 与统计页共用金额归一 helper（显式 net=0 保留 0，NULL 走 gross−tax 兜底）
-            gross, tax, net = cash_dividend_amounts(action)
-            # 缺汇率时不得把外币原值混进 CNY 总额；剔除并记录币种，
-            # 原币金额仍完整保留在 by_currency 明细里。
-            try:
-                gross_cny = exchange_rate_service.convert_to_cny(db, gross, currency)
-                tax_cny = exchange_rate_service.convert_to_cny(db, tax, currency)
-                net_cny = exchange_rate_service.convert_to_cny(db, net, currency)
-            except ValueError:
-                missing_rate_currencies.add(currency)
-                gross_cny = tax_cny = net_cny = Decimal("0")
-            summary["cash_dividends"]["total_dividend"] += gross_cny
-            summary["cash_dividends"]["total_tax"] += tax_cny
-            summary["cash_dividends"]["net_dividend"] += net_cny
-            bucket = by_currency.setdefault(currency, {
-                "count": 0,
-                "total_dividend": Decimal("0"),
-                "total_tax": Decimal("0"),
-                "net_dividend": Decimal("0"),
-            })
-            bucket["count"] += 1
-            bucket["total_dividend"] += gross
-            bucket["total_tax"] += tax
-            bucket["net_dividend"] += net
-
-    # 转换Decimal为float以便JSON序列化
-    summary["cash_dividends"]["total_dividend"] = float(summary["cash_dividends"]["total_dividend"])
-    summary["cash_dividends"]["total_tax"] = float(summary["cash_dividends"]["total_tax"])
-    summary["cash_dividends"]["net_dividend"] = float(summary["cash_dividends"]["net_dividend"])
-    summary["cash_dividends"]["missing_rate_currencies"] = sorted(missing_rate_currencies)
-    summary["cash_dividends"]["by_currency"] = {
-        currency: {
-            "count": bucket["count"],
-            "total_dividend": float(bucket["total_dividend"]),
-            "total_tax": float(bucket["total_tax"]),
-            "net_dividend": float(bucket["net_dividend"]),
-        }
-        for currency, bucket in sorted(by_currency.items())
-    }
-
-    return summary
+    return summarize_cash_dividends(db, query.all())
 
 
 @router.get("/{action_id:int}", response_model=CorporateActionResponse)
@@ -416,7 +315,7 @@ def update_corporate_action(
         # 锁旧、新两条时间线（排序取锁避免死锁）
         for lock_symbol, lock_market in sorted({(old_symbol, old_market), (new_symbol, new_market)}):
             lock_security_timeline(db, current_user.id, lock_symbol, lock_market)
-        _validate_owned_references(db, current_user.id, update_data)
+        validate_owned_references(db, current_user.id, update_data)
         for field, value in update_data.items():
             setattr(db_action, field, value)
         db.flush()
@@ -647,7 +546,13 @@ def list_security_events(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """当前用户持仓标的的事件（全局数据按持仓过滤；供持仓页事件角标）。"""
+    """当前用户持仓标的的事件（供持仓页事件角标）。
+
+    全局表读取口径（issue #137，与 security_profiles 的口径一致并显式声明）：
+    标的事件是全局数据（不分用户），登录即可读；**列表缺省按当前持仓收敛**
+    （组合视角），显式传 symbol 时按请求标的返回（单标的视角，允许查未持仓
+    标的——与 /{market}/{symbol}/profile 同口径）。
+    """
     today = date.today()
     query = db.query(SecurityEvent).filter(
         SecurityEvent.event_date >= today - timedelta(days=days_back),
@@ -658,12 +563,18 @@ def list_security_events(
         if market:
             query = query.filter(SecurityEvent.market == market)
     else:
-        held = db.query(Holding.symbol, Holding.market).filter(
-            Holding.user_id == current_user.id, Holding.quantity > 0
-        ).distinct().all()
+        held = (
+            db.query(Holding.symbol, Holding.market)
+            .filter(Holding.user_id == current_user.id, Holding.quantity > 0)
+            .distinct()
+            .all()
+        )
         if not held:
             return []
-        keys = {(s, m) for s, m in held}
-        candidates = query.order_by(SecurityEvent.event_date.asc()).all()
-        return [e for e in candidates if (e.symbol, e.market) in keys]
+        # 持仓键下推为 SQL IN：此前把窗口内全部事件 load 进 Python 再过滤
+        query = query.filter(
+            tuple_(SecurityEvent.symbol, SecurityEvent.market).in_(
+                [(s, m) for s, m in held]
+            )
+        )
     return query.order_by(SecurityEvent.event_date.asc()).all()

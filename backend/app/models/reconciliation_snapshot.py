@@ -10,7 +10,7 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 from ..database import Base
 
@@ -43,8 +43,8 @@ class ReconciliationSnapshot(Base):
     )
     source_filename = Column(String(255), nullable=True)
     statement_scope = Column(String(30), nullable=True)
-    cash_balances = Column(JSON, nullable=False, default=dict)
-    positions = Column(JSON, nullable=False, default=list)
+    cash_balances = Column(JSON, nullable=False, default=dict, server_default=text("'{}'"))
+    positions = Column(JSON, nullable=False, default=list, server_default=text("'[]'"))
     # 自动比对结果：diff 明细与比对时间（status 由比对写入 MATCHED/MISMATCHED）
     diff_detail = Column(JSON, nullable=True)
     compared_at = Column(DateTime(timezone=True), nullable=True)

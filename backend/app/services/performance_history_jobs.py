@@ -14,12 +14,12 @@ from .market_data_service import (
     infer_price_currency,
 )
 from .background_job_store import (
-    claim_job,
+    JobOwnershipLostError,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
     set_job_progress,
 )
+from .job_runtime import run_job_inline
 from .job_worker import register_runner
 
 
@@ -37,10 +37,25 @@ def _is_quota_error(error) -> bool:
 JOB_TYPE = "performance_history_sync"
 
 
-def _set_job_progress(job_id: str, **updates) -> None:
-    """本地薄封装（保留 finished_at 兼容剔除）；实现见 background_job_store。"""
+def _set_job_progress_with_attempt(
+    job_id: str, *, attempt: Optional[int] = None, **updates
+) -> None:
+    """本地薄封装（保留 finished_at 兼容剔除）；实现见 background_job_store。
+
+    attempt 必传（execute 路径用闭包注入）：接管者的状态同样是 running，
+    只校验 required_status 挡不住僵尸线程续接管者的租约、或用自己的终态
+    覆盖接管者的结果。
+
+    回写返回 None 即本次执行已失权（行不存在／已非 running／attempt 已变=
+    被接管），抛 JobOwnershipLostError 中断整个同步循环——只把写入拦掉是
+    不够的：僵尸线程会接着对剩余标的调 Tushare 并写 security_prices，
+    与接管者重复请求、重复入库。
+    """
     updates.pop("finished_at", None)
-    set_job_progress(job_id, JOB_TYPE, **updates)
+    if set_job_progress(
+        job_id, JOB_TYPE, required_attempt_count=attempt, **updates
+    ) is None:
+        raise JobOwnershipLostError(job_id)
 
 
 def _default_history_sync_end_date() -> date:
@@ -189,6 +204,12 @@ def execute_performance_history_sync_job(claimed: Dict[str, Any]) -> None:
     job_id = claimed["id"]
     job_data = claimed["data"]
     user_id = claimed["user_id"]
+    attempt = claimed.get("attempt_count")
+
+    # 闭包注入 attempt：7 个调用点保持原样，避免逐处传参漏改
+    def _set_job_progress(job_id: str, **updates) -> None:
+        _set_job_progress_with_attempt(job_id, attempt=attempt, **updates)
+
     requested_start = (
         date.fromisoformat(job_data["start_date"]) if job_data.get("start_date") else None
     )
@@ -287,25 +308,19 @@ def execute_performance_history_sync_job(claimed: Dict[str, Any]) -> None:
             current_symbol=None,
             current_market=None,
         )
+    except JobOwnershipLostError:
+        # 安静退出：接管者正在跑同一个 job，这不是失败。逐标的抓取是增量的
+        # （已入库的行会跳过），接管者会把剩余标的跑完。
+        logger.warning(
+            "历史行情同步 job %s 已被接管或进入终态，本次执行停止（剩余标的交由接管者）",
+            job_id,
+        )
     finally:
         db.close()
 
 
 def run_performance_history_sync_job(job_id: str) -> None:
-    """Inline fast path: claim by id and execute; retries on unexpected errors."""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("Performance history job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_performance_history_sync_job(claimed)
-    except Exception as exc:
-        logger.exception("Performance history job %s failed", job_id)
-        handle_job_failure(
-            job_id, JOB_TYPE, str(exc),
-            required_attempt_count=claimed.get("attempt_count"),
-        )
-
+    run_job_inline(job_id, JOB_TYPE, execute_performance_history_sync_job, label="Performance history", logger=logger)
 
 def get_performance_history_sync_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

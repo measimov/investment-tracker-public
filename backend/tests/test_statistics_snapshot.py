@@ -24,7 +24,7 @@ from app.models.holding import Holding
 from app.models.security_price import SecurityPrice
 from app.models.transaction import Transaction
 from app.services.holding_service import recalculate_holdings
-from app.services.statistics_service import (
+from app.services.statistics import (
     calculate_performance_analytics,
     calculate_performance_summary,
     get_holdings_cost_breakdown,

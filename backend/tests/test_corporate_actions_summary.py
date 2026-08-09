@@ -16,7 +16,7 @@ from app.main import app
 from app.models.corporate_action import CorporateAction
 from app.models.exchange_rate import ExchangeRate
 from app.models.user import User
-from app.services.statistics_service import get_dividend_summary
+from app.services.statistics import get_dividend_summary
 
 
 
@@ -117,7 +117,7 @@ def test_cash_dividend_amounts_distinguishes_zero_from_null():
     """聚焦单测：显式 0 与 NULL 的区分是共享 helper 的核心契约。"""
     from types import SimpleNamespace
 
-    from app.services.statistics_service import cash_dividend_amounts
+    from app.services.portfolio.semantics import cash_dividend_amounts
 
     explicit_zero = SimpleNamespace(
         total_dividend=Decimal("50"), tax_withheld=Decimal("10"), net_dividend=Decimal("0")

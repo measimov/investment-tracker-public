@@ -21,18 +21,24 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..core.logging import get_app_logger
-from ..database import SessionLocal
 from ..models.security_profile import SecurityProfileData
 from .background_job_store import (
-    claim_job,
     create_or_get_active_job,
     get_job,
-    handle_job_failure,
-    job_heartbeat,
-    set_job_progress,
+)
+from .job_runtime import (
+    batch_execution,
+    is_cancel_requested,
+    make_batch_progress,
+    request_job_cancel,
+    run_job_inline,
 )
 from .job_worker import register_runner
-from .report_digest_service import REPORT_MARKETS, ensure_report_digests
+from .report_digest_service import (
+    REPORT_MARKETS,
+    digest_versions_current,
+    ensure_report_digests,
+)
 from .security_analysis_batch_jobs import (
     MAX_CONSECUTIVE_FAILURES,
     RESULTS_KEPT,
@@ -74,11 +80,19 @@ def preview_digest_backfill(db: Session, user_id: int) -> Dict[str, Any]:
     """
     targets = get_digest_backfill_targets(db, user_id)
     counts: Dict[tuple, int] = {}
+    # 计数口径必须与读取路径（load_report_digests / digest_progress）一致：
+    # status == "ok" 且双版本为当前。只按 dataset 数行的话，封顶失败行
+    # （attempts 用尽的 status=failed）与版本过期行都被算成"已有摘要"——
+    # 版本 bump 后几乎全部行过期，预览却显示"已有上百份"，而回填与分析
+    # 实际一份都用不上（#133）。
     for row in (
-        db.query(SecurityProfileData.symbol, SecurityProfileData.market)
+        db.query(SecurityProfileData.symbol, SecurityProfileData.market, SecurityProfileData.payload)
         .filter(SecurityProfileData.dataset == "report_digest")
         .all()
     ):
+        payload = row.payload or {}
+        if payload.get("status") != "ok" or not digest_versions_current(payload):
+            continue
         counts[(row.symbol, row.market)] = counts.get((row.symbol, row.market), 0) + 1
     existing = 0
     without = 0
@@ -131,20 +145,11 @@ def start_digest_batch_job(db: Session, user_id: int) -> Dict[str, Any]:
 
 
 def request_digest_batch_cancel(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
-    """置中止标志；执行循环在每只标的开始前检查，当前标的跑完即收尾。"""
-    job = get_job(job_id, JOB_TYPE, user_id)
-    if not job:
-        return None
-    if job.get("status") not in ("queued", "running"):
-        return job
-    from .background_job_store import update_job
-
-    return update_job(job_id, JOB_TYPE, data_updates={"cancel_requested": True}) or job
+    return request_job_cancel(job_id, JOB_TYPE, user_id)
 
 
 def _is_cancel_requested(job_id: str, user_id: int) -> bool:
-    job = get_job(job_id, JOB_TYPE, user_id)
-    return bool(job and job.get("cancel_requested"))
+    return is_cancel_requested(job_id, JOB_TYPE, user_id)
 
 
 def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
@@ -156,212 +161,197 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
     done = set(data.get("completed_keys") or [])
     pause = settings.security_analysis_batch_pause_seconds
 
-    def progress(**updates: Any) -> None:
-        set_job_progress(job_id, JOB_TYPE, required_attempt_count=attempt, **updates)
+    progress = make_batch_progress(job_id, JOB_TYPE, attempt)
+    with batch_execution(
+        job_id, JOB_TYPE, attempt=attempt,
+        max_seconds=settings.security_analysis_batch_max_seconds,
+        logger=logger, label="批量回填",
+    ) as db:
+        counters = {
+            "success_count": int(data.get("success_count") or 0),
+            "failed_count": int(data.get("failed_count") or 0),
+            "digests_generated": int(data.get("digests_generated") or 0),
+            "digests_blocked": int(data.get("digests_blocked") or 0),
+            "symbols_with_remaining": int(data.get("symbols_with_remaining") or 0),
+        }
+        results: List[Dict[str, Any]] = list(data.get("results") or [])
+        consecutive = 0
 
-    db = SessionLocal()
-    try:
-        with job_heartbeat(
-            job_id, JOB_TYPE, attempt_count=attempt,
-            max_seconds=settings.security_analysis_batch_max_seconds,
-        ):
-            counters = {
-                "success_count": int(data.get("success_count") or 0),
-                "failed_count": int(data.get("failed_count") or 0),
-                "digests_generated": int(data.get("digests_generated") or 0),
-                "digests_blocked": int(data.get("digests_blocked") or 0),
-                "symbols_with_remaining": int(data.get("symbols_with_remaining") or 0),
-            }
-            results: List[Dict[str, Any]] = list(data.get("results") or [])
-            consecutive = 0
+        for index, target in enumerate(targets, start=1):
+            key = f"{target['market']}|{target['symbol']}"
+            if key in done:
+                continue  # 续跑：上次已处理
 
-            for index, target in enumerate(targets, start=1):
-                key = f"{target['market']}|{target['symbol']}"
-                if key in done:
-                    continue  # 续跑：上次已处理
-
-                if _is_cancel_requested(job_id, user_id):
-                    progress(
-                        status="interrupted", cancelled=True,
-                        current_symbol=None, current_market=None,
-                        abort_reason="用户终止；已生成的摘要已保留，可再次触发续跑。",
-                        **counters,
-                    )
-                    return
-
+            if _is_cancel_requested(job_id, user_id):
                 progress(
-                    current_symbol=target["symbol"], current_market=target["market"],
-                    completed=len(done), **counters,
+                    status="interrupted", cancelled=True,
+                    current_symbol=None, current_market=None,
+                    abort_reason="用户终止；已生成的摘要已保留，可再次触发续跑。",
+                    **counters,
                 )
-                started = time.monotonic()
-                try:
-                    outcome = ensure_report_digests(
-                        db, target["symbol"], target["market"],
-                        max_new=DIGEST_BATCH_PER_SYMBOL,
-                    )
-                except Exception as exc:
-                    # ensure_report_digests 把下载/抽取/LLM 失败都消化成 gaps，
-                    # 走到这里的是意外错误——记本标的失败，继续下一只
-                    logger.warning(
-                        "批量回填 %s/%s 意外失败: %s",
-                        target["market"], target["symbol"], str(exc)[:200],
-                    )
-                    outcome = None
-
-                elapsed = round(time.monotonic() - started, 1)
-                if outcome is None:
-                    counters["failed_count"] += 1
-                    consecutive += 1
-                    done.add(key)
-                    results.append({
-                        **target, "status": "failed", "elapsed_seconds": elapsed,
-                    })
-                else:
-                    gaps = outcome.get("gaps") or []
-                    generated = int(outcome.get("generated") or 0)
-                    failed_count = int(outcome.get("failed") or 0)
-                    completed_count = int(outcome.get("completed") or 0)
-                    blocked = int(outcome.get("permanently_failed") or 0)
-                    plan_incomplete = bool(outcome.get("plan_incomplete"))
-                    fatal = outcome.get("fatal") or None
-                    if fatal and fatal.get("kind") in FATAL_DIGEST_ERROR_KINDS:
-                        # 无效 Key / 欠费 / 限流：换个标的照样失败，继续跑只是
-                        # 把整批拖成"看起来在跑"的空转，最后还谎报成功。
-                        # ensure 是逐报告循环——fatal 之前可能已生成若干份、
-                        # 跳过若干封顶行，这些**已落库的工作**必须先入账，
-                        # 否则总数与结果行把它们记成 0
-                        message = str(fatal.get("message") or fatal.get("kind"))
-                        counters["failed_count"] += 1
-                        counters["digests_generated"] += generated
-                        counters["digests_blocked"] += blocked
-                        results.append({
-                            **target, "status": "failed", "error": message[:200],
-                            "generated": generated, "blocked": blocked,
-                            "elapsed_seconds": elapsed,
-                        })
-                        done.add(key)
-                        progress(
-                            status="failed", error=message[:300],
-                            abort_reason=f"遇到无法继续的错误：{message[:150]}",
-                            current_symbol=None, current_market=None,
-                            completed=len(done), results=results[-RESULTS_KEPT:],
-                            completed_keys=sorted(done), **counters,
-                        )
-                        return
-                    done.add(key)
-                    # 标的级判定（成本维度与结果维度分开）：
-                    # - 本轮有尝试且全失败（failed>0 且 generated=0）→ 失败
-                    # - 零尝试、零成品、但存在封顶失败（blocked>0）→ 同样是失败：
-                    #   这只标的所有可回填报告都已**永久**失败，记成功会让前端
-                    #   弹绿色"新生成 0 份"，用户看不到任何异常
-                    # - 零尝试且有 completed（缓存命中）→ 成功（即便同时有 blocked，
-                    #   部分年份封顶属于"有缺口的成功"，靠 blocked 计数外显）
-                    if plan_incomplete:
-                        # 清单检索失败/不完整："该标的这轮补齐了什么"这个结论
-                        # 本身不可信——annual 检索失败而 semi 成功时会生成 1 份
-                        # 半年报，产出非零，但十年年报缺口被完全隐藏。**有产出
-                        # 也不能记成功**（绿色完成 = 静默缺口）；已生成的照常
-                        # 入账保留。计连败：源站故障时连续三只即早停。
-                        counters["failed_count"] += 1
-                        counters["digests_generated"] += generated
-                        counters["digests_blocked"] += blocked
-                        consecutive += 1
-                        results.append({
-                            **target, "status": "failed",
-                            "error": (
-                                "年报清单检索失败或不完整（数据源故障）"
-                                + (f"；本轮已生成 {generated} 份仍保留" if generated else "")
-                            ),
-                            "generated": generated, "blocked": blocked,
-                            "gap_count": len(gaps), "elapsed_seconds": elapsed,
-                        })
-                    elif generated == 0 and failed_count > 0:
-                        counters["failed_count"] += 1
-                        # blocked 在**每个**分支都要累计：ensure 先跳过封顶报告
-                        # 再处理后续，failed>0 与 permanently_failed>0 完全可能
-                        # 同时出现——本分支漏加的话前端就少报已知的永久失败
-                        counters["digests_blocked"] += blocked
-                        consecutive += 1
-                        results.append({
-                            **target, "status": "failed",
-                            "error": f"本轮 {failed_count} 份摘要全部生成失败",
-                            "blocked": blocked,
-                            "gap_count": len(gaps), "elapsed_seconds": elapsed,
-                        })
-                    elif (
-                        generated == 0 and completed_count == 0 and blocked > 0
-                    ):
-                        counters["failed_count"] += 1
-                        counters["digests_blocked"] += blocked
-                        # **不计入连败早停**：封顶是零成本的历史结果，说明不了
-                        # 本轮环境的健康度——前三只恰好全封顶就终止整批，会跳过
-                        # 后面所有仍可正常回填的持仓。早停只看本轮真实尝试的
-                        # 失败；consecutive 保持原值（也不清零：它没提供任何
-                        # "环境恢复了"的证据）
-                        results.append({
-                            **target, "status": "failed",
-                            "error": f"{blocked} 份报告均已永久失败（下载/抽取或摘要封顶）",
-                            "blocked": blocked,
-                            "gap_count": len(gaps), "elapsed_seconds": elapsed,
-                        })
-                    else:
-                        counters["success_count"] += 1
-                        counters["digests_generated"] += generated
-                        counters["digests_blocked"] += blocked
-                        if int(outcome.get("remaining") or 0) > 0:
-                            counters["symbols_with_remaining"] += 1
-                        consecutive = 0
-                        results.append({
-                            **target, "status": "ok",
-                            "total": outcome.get("total"),
-                            "completed": completed_count,
-                            "generated": generated,
-                            "failed": failed_count,
-                            "blocked": blocked,
-                            "remaining": outcome.get("remaining"),
-                            "gap_count": len(gaps),
-                            "elapsed_seconds": elapsed,
-                        })
-
-                progress(
-                    completed=len(done), results=results[-RESULTS_KEPT:],
-                    completed_keys=sorted(done), **counters,
-                )
-
-                if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                    progress(
-                        status="failed",
-                        error=f"连续 {consecutive} 只标的回填失败，已停止。",
-                        abort_reason=f"连续 {consecutive} 只失败，停止以免继续消耗配额。",
-                        current_symbol=None, current_market=None,
-                        **counters,
-                    )
-                    return
-
-                if pause > 0 and index < len(targets):
-                    time.sleep(pause)
+                return
 
             progress(
-                status="succeeded", completed=len(done),
-                current_symbol=None, current_market=None,
-                results=results[-RESULTS_KEPT:], completed_keys=sorted(done), **counters,
+                current_symbol=target["symbol"], current_market=target["market"],
+                completed=len(done), **counters,
             )
-    finally:
-        db.close()
+            started = time.monotonic()
+            try:
+                outcome = ensure_report_digests(
+                    db, target["symbol"], target["market"],
+                    max_new=DIGEST_BATCH_PER_SYMBOL,
+                )
+            except Exception as exc:
+                # ensure_report_digests 把下载/抽取/LLM 失败都消化成 gaps，
+                # 走到这里的是意外错误——记本标的失败，继续下一只
+                logger.warning(
+                    "批量回填 %s/%s 意外失败: %s",
+                    target["market"], target["symbol"], str(exc)[:200],
+                )
+                outcome = None
+
+            elapsed = round(time.monotonic() - started, 1)
+            if outcome is None:
+                counters["failed_count"] += 1
+                consecutive += 1
+                done.add(key)
+                results.append({
+                    **target, "status": "failed", "elapsed_seconds": elapsed,
+                })
+            else:
+                gaps = outcome.get("gaps") or []
+                generated = int(outcome.get("generated") or 0)
+                failed_count = int(outcome.get("failed") or 0)
+                completed_count = int(outcome.get("completed") or 0)
+                blocked = int(outcome.get("permanently_failed") or 0)
+                plan_incomplete = bool(outcome.get("plan_incomplete"))
+                fatal = outcome.get("fatal") or None
+                if fatal and fatal.get("kind") in FATAL_DIGEST_ERROR_KINDS:
+                    # 无效 Key / 欠费 / 限流：换个标的照样失败，继续跑只是
+                    # 把整批拖成"看起来在跑"的空转，最后还谎报成功。
+                    # ensure 是逐报告循环——fatal 之前可能已生成若干份、
+                    # 跳过若干封顶行，这些**已落库的工作**必须先入账，
+                    # 否则总数与结果行把它们记成 0
+                    message = str(fatal.get("message") or fatal.get("kind"))
+                    counters["failed_count"] += 1
+                    counters["digests_generated"] += generated
+                    counters["digests_blocked"] += blocked
+                    results.append({
+                        **target, "status": "failed", "error": message[:200],
+                        "generated": generated, "blocked": blocked,
+                        "elapsed_seconds": elapsed,
+                    })
+                    done.add(key)
+                    progress(
+                        status="failed", error=message[:300],
+                        abort_reason=f"遇到无法继续的错误：{message[:150]}",
+                        current_symbol=None, current_market=None,
+                        completed=len(done), results=results[-RESULTS_KEPT:],
+                        completed_keys=sorted(done), **counters,
+                    )
+                    return
+                done.add(key)
+                # 标的级判定（成本维度与结果维度分开）：
+                # - 本轮有尝试且全失败（failed>0 且 generated=0）→ 失败
+                # - 零尝试、零成品、但存在封顶失败（blocked>0）→ 同样是失败：
+                #   这只标的所有可回填报告都已**永久**失败，记成功会让前端
+                #   弹绿色"新生成 0 份"，用户看不到任何异常
+                # - 零尝试且有 completed（缓存命中）→ 成功（即便同时有 blocked，
+                #   部分年份封顶属于"有缺口的成功"，靠 blocked 计数外显）
+                if plan_incomplete:
+                    # 清单检索失败/不完整："该标的这轮补齐了什么"这个结论
+                    # 本身不可信——annual 检索失败而 semi 成功时会生成 1 份
+                    # 半年报，产出非零，但十年年报缺口被完全隐藏。**有产出
+                    # 也不能记成功**（绿色完成 = 静默缺口）；已生成的照常
+                    # 入账保留。计连败：源站故障时连续三只即早停。
+                    counters["failed_count"] += 1
+                    counters["digests_generated"] += generated
+                    counters["digests_blocked"] += blocked
+                    consecutive += 1
+                    results.append({
+                        **target, "status": "failed",
+                        "error": (
+                            "年报清单检索失败或不完整（数据源故障）"
+                            + (f"；本轮已生成 {generated} 份仍保留" if generated else "")
+                        ),
+                        "generated": generated, "blocked": blocked,
+                        "gap_count": len(gaps), "elapsed_seconds": elapsed,
+                    })
+                elif generated == 0 and failed_count > 0:
+                    counters["failed_count"] += 1
+                    # blocked 在**每个**分支都要累计：ensure 先跳过封顶报告
+                    # 再处理后续，failed>0 与 permanently_failed>0 完全可能
+                    # 同时出现——本分支漏加的话前端就少报已知的永久失败
+                    counters["digests_blocked"] += blocked
+                    consecutive += 1
+                    results.append({
+                        **target, "status": "failed",
+                        "error": f"本轮 {failed_count} 份摘要全部生成失败",
+                        "blocked": blocked,
+                        "gap_count": len(gaps), "elapsed_seconds": elapsed,
+                    })
+                elif (
+                    generated == 0 and completed_count == 0 and blocked > 0
+                ):
+                    counters["failed_count"] += 1
+                    counters["digests_blocked"] += blocked
+                    # **不计入连败早停**：封顶是零成本的历史结果，说明不了
+                    # 本轮环境的健康度——前三只恰好全封顶就终止整批，会跳过
+                    # 后面所有仍可正常回填的持仓。早停只看本轮真实尝试的
+                    # 失败；consecutive 保持原值（也不清零：它没提供任何
+                    # "环境恢复了"的证据）
+                    results.append({
+                        **target, "status": "failed",
+                        "error": f"{blocked} 份报告均已永久失败（下载/抽取或摘要封顶）",
+                        "blocked": blocked,
+                        "gap_count": len(gaps), "elapsed_seconds": elapsed,
+                    })
+                else:
+                    counters["success_count"] += 1
+                    counters["digests_generated"] += generated
+                    counters["digests_blocked"] += blocked
+                    if int(outcome.get("remaining") or 0) > 0:
+                        counters["symbols_with_remaining"] += 1
+                    consecutive = 0
+                    results.append({
+                        **target, "status": "ok",
+                        "total": outcome.get("total"),
+                        "completed": completed_count,
+                        "generated": generated,
+                        "failed": failed_count,
+                        "blocked": blocked,
+                        "remaining": outcome.get("remaining"),
+                        "gap_count": len(gaps),
+                        "elapsed_seconds": elapsed,
+                    })
+
+            progress(
+                completed=len(done), results=results[-RESULTS_KEPT:],
+                completed_keys=sorted(done), **counters,
+            )
+
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                progress(
+                    status="failed",
+                    error=f"连续 {consecutive} 只标的回填失败，已停止。",
+                    abort_reason=f"连续 {consecutive} 只失败，停止以免继续消耗配额。",
+                    current_symbol=None, current_market=None,
+                    **counters,
+                )
+                return
+
+            if pause > 0 and index < len(targets):
+                time.sleep(pause)
+
+        progress(
+            status="succeeded", completed=len(done),
+            current_symbol=None, current_market=None,
+            results=results[-RESULTS_KEPT:], completed_keys=sorted(done), **counters,
+        )
 
 
 def run_digest_batch_job(job_id: str) -> None:
-    """Inline fast path：按 id 认领并执行；意外错误走重试/退避路径。"""
-    claimed = claim_job(job_id, JOB_TYPE)
-    if not claimed:
-        logger.info("Digest batch job %s was already claimed or no longer queued", job_id)
-        return
-    try:
-        execute_digest_batch_job(claimed)
-    except Exception as exc:
-        logger.exception("Digest batch job %s failed", job_id)
-        handle_job_failure(job_id, JOB_TYPE, str(exc))
-
+    run_job_inline(job_id, JOB_TYPE, execute_digest_batch_job, label="Digest batch", logger=logger)
 
 def get_digest_batch_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

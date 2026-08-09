@@ -366,7 +366,7 @@ def test_cash_and_stock_in_one_announcement_split_into_two(db, monkeypatch):
 def test_accept_amounts_align_with_cash_dividend_amounts(db, monkeypatch):
     """接受后 gross/tax/net 与统计层 cash_dividend_amounts 口径闭合。"""
     from app.models.user import User
-    from app.services.statistics_service import cash_dividend_amounts
+    from app.services.portfolio.semantics import cash_dividend_amounts
 
     _seed_holding(db)
     add_transaction(db, symbol="600036", market="A股", currency="CNY",

@@ -5,6 +5,13 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
+# 年化天数基准：同一响应里会同时出现 TTWR 年化（metrics）与 XIRR 年化
+# （range_summary），此前两者分别用 365 与 365.25，长区间下有可感知的系统性
+# 差异且无任何字段说明。统一到 365.25（含闰年补偿，与 XIRR 的行业惯例一致），
+# 并经 annualization_days_basis 字段自述。
+DAYS_PER_YEAR = Decimal("365.25")
+DAYS_PER_YEAR_FLOAT = float(DAYS_PER_YEAR)
+
 
 def xirr(cash_flows: List[Tuple[date, Decimal]]) -> Optional[Decimal]:
     """Calculate annualized money-weighted return from dated cash flows.
@@ -27,7 +34,7 @@ def xirr(cash_flows: List[Tuple[date, Decimal]]) -> Optional[Decimal]:
         (
             math.log(abs(float(amount))),
             1.0 if amount > 0 else -1.0,
-            (flow_date - start_date).days / 365.25,
+            (flow_date - start_date).days / DAYS_PER_YEAR_FLOAT,
         )
         for flow_date, amount in flows
     ]
@@ -178,6 +185,8 @@ def calculate_risk_metrics(
         "risk_free_rate": float(risk_free_rate),
         "risk_sample_count": len(returns),
         "annualization_basis": "calendar_days",
+        # 与 range_summary 的 XIRR 同基准；此前两者 365 vs 365.25 不一致且无说明
+        "annualization_days_basis": DAYS_PER_YEAR_FLOAT,
         "observation_span_days": span_days,
     }
 
@@ -195,14 +204,14 @@ def calculate_risk_metrics(
     # by a fixed 252-period assumption tied to the sample count (issue #40).
     total_growth = Decimal("1") + final_return_rate / Decimal("100")
     if total_growth > 0:
-        annualized = total_growth ** (Decimal("365") / Decimal(span_days)) - Decimal("1")
+        annualized = total_growth ** (DAYS_PER_YEAR / Decimal(span_days)) - Decimal("1")
         metrics["annualized_return_rate"] = float(annualized * Decimal("100"))
     else:
         annualized = None
 
     # Scale volatility by the true observation frequency (average calendar gap
     # between observations) instead of a fixed sqrt(252) (issue #40).
-    periods_per_year = Decimal("365") * Decimal(len(returns)) / Decimal(span_days)
+    periods_per_year = DAYS_PER_YEAR * Decimal(len(returns)) / Decimal(span_days)
     annual_factor = periods_per_year.sqrt()
 
     average_return = sum(returns, Decimal("0")) / Decimal(len(returns))
