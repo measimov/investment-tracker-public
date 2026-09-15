@@ -14,6 +14,7 @@ get_existing_hashes、IBKR 的股息-税匹配）不在此层。`build_import_re
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -288,16 +289,78 @@ def digit_class(value: Any, *, strip: Callable[[Any], str] = strip_text) -> str:
     )
 
 
+#: 数值单元格里允许原样透出的非数字字符（都是数字格式的一部分，不承载内容）
+VALUE_CLASS_PASSTHROUGH = ".,-+"
+
+
+def value_class(value: Any, *, strip: Callable[[Any], str] = strip_text) -> str:
+    """**不可信数值单元格**的字符类模式：数字与数字标点保留形状，其余按长度类别化。
+
+    `"1,234.56"→"d,ddd.dd"`、`"73.04南银转债"→"dd.dd<X:4>"`、
+    `"A123456789"→"<X:1>ddddddddd"`。
+
+    与 `digit_class` 的分工：标签列（市场/币种/业务名称）是券商词表、本身要
+    原样读，用 `digit_class`；而数值列一旦发生列错位，挤进来的就是证券名称或
+    账号——`digit_class` 会把中文和字母原样抄进报告。类别化后仍看得见"有个
+    4 字的非数字内容黏进了价格列"这一诊断信号，但内容不出来。
+    """
+    text = strip(value)
+    out: List[str] = []
+    run = 0
+    for char in text:
+        if "0" <= char <= "9":
+            kind = "d"
+        elif char.isdigit():
+            kind = "D"
+        elif char in VALUE_CLASS_PASSTHROUGH:
+            kind = char
+        else:
+            run += 1
+            continue
+        if run:
+            out.append(f"<X:{run}>")
+            run = 0
+        out.append(kind)
+    if run:
+        out.append(f"<X:{run}>")
+    return "".join(out)
+
+
 def mask_code(value: Any, *, keep: int = 2, strip: Callable[[Any], str] = strip_text) -> str:
-    """证券代码只留前几位：`"113050"→"11****"`、`"00700"→"00***"`。
+    """证券代码只留前几位：`"113050"→"11****"`、`"00700"→"00***"`、`"F"→"*"`。
 
     前缀足以区分债券/股票/港股五位码/场外基金——排查要的正是这个粒度；
     完整代码等于报障者的持仓清单，不该出现在报告里。
+
+    **任何非空代码至少遮掉一个字符**：美股 ticker 有 `F`/`T`/`V` 这类一两位的，
+    朴素的 `text[:keep]` 会把它们原样透出，直接违背"绝不输出完整代码"。
     """
     text = strip(value)
     if not text:
         return ""
-    return text[:keep] + "*" * max(0, len(text) - keep)
+    kept = max(0, min(keep, len(text) - 1))
+    return text[:kept] + "*" * (len(text) - kept)
+
+
+def stable_key(
+    value: Any,
+    *,
+    secret: str,
+    label: str,
+    length: int = 12,
+    strip: Callable[[Any], str] = strip_text,
+) -> str:
+    """同一部署内跨报告稳定、且外人无法枚举的标识。
+
+    证券代码只有六位、空间极小，截断 sha256 可被离线枚举反推，所以必须带密钥：
+    这里用服务端 secret 派生 HMAC。同一部署的两份报告能把同一标的对上，
+    而拿到报告的人没有 secret，反推不出代码。
+    """
+    text = strip(value)
+    if not text:
+        return ""
+    message = f"{label}\x00{text}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()[:length]
 
 
 # 已知的 PDF 生成器族。分类而非回传原文：`/Producer` 尚且规矩，`/Creator`

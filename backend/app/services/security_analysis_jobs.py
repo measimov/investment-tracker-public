@@ -60,8 +60,16 @@ FATAL_ANALYSIS_ERROR_KINDS = frozenset(
 
 
 def resolve_public_security_name(symbol: str, market: str) -> str | None:
-    """公共证券元数据名称（A股=Tushare stock_basic；美股=EDGAR 注册名）；
-    失败/缺失留空。"""
+    """公共证券元数据名称：先查标的全集（零外呼），未命中再走
+    A股=Tushare stock_basic / 美股=EDGAR 注册名；失败/缺失留空。"""
+    try:
+        from .security_catalog_service import lookup_catalog_name
+
+        cataloged = lookup_catalog_name(symbol, market)
+        if cataloged:
+            return cataloged
+    except Exception as exc:  # 目录只是快路径
+        logger.warning("查询标的全集名称失败 %s/%s: %s", symbol, market, str(exc)[:120])
     try:
         if market == "美股":
             from .report_fetchers import edgar_lookup
@@ -107,6 +115,16 @@ STATEMENT_LLM_FIELDS: Dict[str, tuple] = {
         "end_date", "n_cashflow_act", "n_cashflow_inv_act", "n_cash_flows_fnc_act",
         "free_cashflow", "c_pay_acq_const_fiolta",
     ),
+    # 港股 PDF 抽取行：只送科目与期别，源 URL/页码/指纹等溯源元数据留在库里
+    "report_statements": (
+        "end_date", "fp", "currency", "is_comparative",
+        "total_revenue", "cost_of_revenue", "gross_profit", "operating_income",
+        "n_income_attr_p", "total_profit", "income_tax", "sga_exp", "int_exp",
+        "basic_eps", "diluted_eps", "total_assets", "total_cur_assets", "total_cur_liab",
+        "accounts_receiv", "inventories", "fix_assets", "money_cap", "total_liab",
+        "total_hldr_eqy_exc_min_int", "total_debt", "n_cashflow_act", "capex",
+        "free_cashflow", "depr_fa_coga_dpba",
+    ),
 }
 
 
@@ -129,6 +147,13 @@ def _compact_profile(datasets: Dict[str, list]) -> Dict[str, list]:
 
 # 缺口清单进 LLM 输入的条数上限（超出部分以计数如实告知）
 MAX_DIGEST_GAPS = 6
+# 二级收缩的封顶：一级（档案减半 + 摘要压缩）仍超预算时才动 events/peers
+EVENTS_SHRUNK_CAP = 8
+PEERS_SHRUNK_CAP = 8
+
+
+def _payload_chars(payload: Dict[str, Any]) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, default=str))
 
 
 def build_analysis_input(
@@ -136,10 +161,16 @@ def build_analysis_input(
     digest_gaps: list | None = None, data_gaps: list | None = None,
 ) -> Dict[str, Any]:
     """压缩输入：档案数据（逐集封顶+报表科目白名单）+ 事件 + 财报摘要
-    + 商业画像/同业 + 利润质量指标；超预算逐级收缩。"""
+    + 商业画像/同业 + 利润质量指标。
+
+    超预算两级收缩、级间复测（issue #145：此前只收缩一次且不复检）：
+    一级 = 档案封顶减半 + 全部摘要压为核心字段；仍超预算时二级 = 截
+    events/peers。两级后仍超预算按现状送出并记 warning（极端标的如实上报，
+    胜过静默截断让模型把缺口读成"没有问题"）。"""
     from .business_profile_service import load_business_profile
     from .earnings_quality import compute_earnings_quality, market_statements
     from .report_digest_service import load_report_digests, serialize_digest_for_analysis
+    from .security_profile_service import compute_graham_for
 
     profile = load_symbol_profile(db, symbol, market)
     events = load_security_events_for(db, symbol, market)
@@ -152,12 +183,17 @@ def build_analysis_input(
         statements["cashflow"],
         statements["fina_indicator"],
     )
+    # 准则取数走年度行专取口径（caps 窗口的季报会把年度行挤到 2-3 个，
+    # 十年准则失灵、分红记录截断成错误 fail——真实账本冒烟实锤）
+    graham = compute_graham_for(db, symbol, market) or {"status": "no_data"}
     common_semantics = (
         "report_digests=财报关键章节的 AI 摘要(按报告期倒序，旧年份为压缩版；"
         "属公司自述口径，可引用)；business_profile=商业画像(商业模式/分部/上下游/"
         "估值因子)；peers=同行业名单(仅供提及可比公司，禁止对同业展开分析——"
         "同业数据不在输入中)；earnings_quality=预计算利润质量指标"
-        "(红旗阈值见 metric_semantics)"
+        "(红旗阈值见 metric_semantics)；graham_screen=预计算格雷厄姆防御型"
+        "准则与脆弱性信号(逐项 verdict 与依据见 criteria_semantics/"
+        "fragility_semantics，禁止自行心算比率)"
     )
     market_semantics = {
         "A股": (
@@ -198,6 +234,7 @@ def build_analysis_input(
             ],
         },
         "earnings_quality": earnings_quality,
+        "graham_screen": graham,
     }
     if digest_gaps:
         # 截断本身也要可见：只留 6 条而不说"还有几条"，模型会把这 6 条当成
@@ -211,12 +248,23 @@ def build_analysis_input(
         # 数据集本次未取到（接口冷却/同步失败）。必须显式告知模型，否则"没数据"
         # 会被当成"没有质押/无风险信号"——把限流伪装成利好，比整体失败更危险。
         payload["profile_data_gaps"] = data_gaps[:8]
-    if len(json.dumps(payload, ensure_ascii=False, default=str)) > CHAR_BUDGET:
+    if _payload_chars(payload) > CHAR_BUDGET:
+        # 一级收缩：档案封顶减半；摘要全部压为核心四字段
         profile = load_symbol_profile(db, symbol, market, caps=SHRUNK_CAPS)
         payload["profile"] = _compact_profile(profile["datasets"])
-        # 摘要侧二级收缩：全部压为核心四字段
         payload["report_digests"] = serialize_digest_for_analysis(
             load_report_digests(db, symbol, market), compact_older_than_years=0
+        )
+    if _payload_chars(payload) > CHAR_BUDGET:
+        # 二级收缩：events/peers 此前完全不参与收缩，现在才轮到它们——
+        # 它们只是辅助语境，截断代价远低于档案与摘要
+        payload["events"] = (payload.get("events") or [])[:EVENTS_SHRUNK_CAP]
+        payload["peers"]["list"] = (payload["peers"].get("list") or [])[:PEERS_SHRUNK_CAP]
+    final_chars = _payload_chars(payload)
+    if final_chars > CHAR_BUDGET:
+        logger.warning(
+            "分析输入两级收缩后仍超预算 %s/%s: %d > %d，按现状送出",
+            symbol, market, final_chars, CHAR_BUDGET,
         )
     return payload
 
@@ -316,6 +364,23 @@ def analyze_one(
         except Exception as exc:
             logger.warning("报告摘要保底失败 %s/%s: %s", symbol, market, str(exc)[:150])
             digest_gaps = ["报告摘要管线异常，本次分析未包含财报摘要"]
+        # 港股结构化科目保底：年报/中报 PDF 三张表抽取（同一成本护栏；缺口一并进输入）。
+        # 先再报一次进度续租：摘要 + 报表最多 4 次 LLM 调用（各约 30-60s）加下载，
+        # 单个阶段可能逼近 300s 租约，不续租会被 worker 当成僵尸接管重跑
+        try:
+            from .report_statement_service import STATEMENT_MARKETS, ensure_report_statements
+
+            if market in STATEMENT_MARKETS:
+                stage("report_digests", completed=1)
+                statement_result = ensure_report_statements(
+                    db, symbol, market, max_new=digest_max_new
+                )
+                digest_gaps = digest_gaps + [
+                    f"[报表抽取] {gap}" for gap in statement_result.get("gaps", [])
+                ]
+        except Exception as exc:
+            logger.warning("报表抽取保底失败 %s/%s: %s", symbol, market, str(exc)[:150])
+            digest_gaps = digest_gaps + ["[报表抽取] 管线异常，本次分析未包含 PDF 报表科目"]
 
     # 3/6 商业画像与同业名单顺带刷新（内部吞错，失败降级为缓存/空）
     stage("business_profile", completed=2)
@@ -340,7 +405,11 @@ def analyze_one(
             build_analysis_messages(input_payload),
             response_format={"type": "json_object"},
         )
-        parsed = parse_analysis_output(completion["content"], market=market)
+        parsed = parse_analysis_output(
+            completion["content"],
+            market=market,
+            graham_screen=input_payload.get("graham_screen"),
+        )
     except LLMNotConfiguredError as exc:
         return failure(str(exc), "llm_not_configured")
     except ValueError as exc:  # 输出解析失败：确定性失败不烧重试

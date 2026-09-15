@@ -133,34 +133,20 @@ import { getApiErrorMessage } from '@/utils/apiErrors'
 import { formatDateTime } from '@/utils/helpers'
 import { renderMarkdown } from '@/utils/markdown'
 import { pollJobUntilDone } from '@/utils/polling'
+import { useAliveGuard } from '@/composables/useAliveGuard'
+import type { LlmReportDetail, LlmReportListItem, LlmReportMessage } from '@/types'
 
-interface ReportListItem {
-  id: number
-  title: string
-  trigger_source?: string
-  created_at?: string
-  [key: string]: unknown
-}
-
-interface ReportMessage {
-  id: number
-  role: string
-  content: string
-  [key: string]: unknown
-}
-
-interface ReportDetail extends ReportListItem {
-  model?: string
-  total_tokens?: number | null
-  content: string
-  messages: ReportMessage[]
-}
+// 后端 LLM 报告 schema 为准（生成类型，PR #172 复审）
+type ReportListItem = LlmReportListItem
+type ReportMessage = LlmReportMessage
+type ReportDetail = LlmReportDetail
 
 const reports = ref<ReportListItem[]>([])
 const detail = ref<ReportDetail | null>(null)
 const selectedId = ref<number | null>(null)
 const loadingList = ref(false)
 const loadingDetail = ref(false)
+const { isUnmounted } = useAliveGuard()
 const generating = ref(false)
 const asking = ref(false)
 const question = ref('')
@@ -213,6 +199,7 @@ async function generateReport() {
     const job = await pollJobUntilDone(() => api.getLlmReportJob(response.data.id), {
       intervalMs: 3000,
       maxAttempts: 120,
+      isCancelled: isUnmounted,
       timeoutMessage: '报告仍在生成中，请稍后刷新列表查看',
       failureMessage: '报告生成失败'
     })
@@ -224,9 +211,9 @@ async function generateReport() {
       await selectReport(reportId)
     }
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '报告生成失败'))
+    if (!isUnmounted()) ElMessage.error(getApiErrorMessage(error, '报告生成失败'))
   } finally {
-    generating.value = false
+    if (!isUnmounted()) generating.value = false
   }
 }
 

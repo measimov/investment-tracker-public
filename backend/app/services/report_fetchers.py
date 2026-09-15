@@ -33,8 +33,19 @@ _CNINFO_HEADERS = {
 
 # 保守限速：cninfo 每次请求间隔 ≥1s（全模块共享，含 PDF 下载）
 _CNINFO_MIN_INTERVAL_SECONDS = 1.0
-_rate_lock = threading.Lock()
+# 分源限速（issue #145）：每个源一把锁，等待发生在**同源锁内**、按实际
+# monotonic 校验并更新——cninfo 的 1s 等待不再把并发的 EDGAR(0.15s) 调用
+# 挡在外面（旧实现持锁 sleep 且四源共用一把锁，跨源 head-of-line blocking）。
+# 刻意不用"锁外按预约时隙 sleep"：sleep 醒来的时刻不受控（线程拥塞/机器
+# 唤醒），不复验实际间隔就放行，会出现同源突发与顺序反转（PR #170 复审）。
+# 持同源锁 sleep 正是想要的语义：后来者排在锁上，放行时从**实际**上一次
+# 请求时刻重新度量，间隔恒 ≥ min_interval。
+_throttle_state_lock = threading.Lock()  # 只保护下面两张表的创建与取用
+_source_locks: Dict[str, threading.Lock] = {}
 _last_request_at: Dict[str, float] = {}
+
+# sleep 可注入：延迟唤醒场景的回归测试要模拟"第一个 waiter 醒晚了"
+_sleep = time.sleep
 
 PDF_DOWNLOAD_TIMEOUT_SECONDS = 60
 PDF_MAX_BYTES = 50 * 1024 * 1024
@@ -51,10 +62,12 @@ _org_id_cache_loaded = False
 
 
 def _throttle(source: str, min_interval: float) -> None:
-    with _rate_lock:
+    with _throttle_state_lock:
+        source_lock = _source_locks.setdefault(source, threading.Lock())
+    with source_lock:
         elapsed = time.monotonic() - _last_request_at.get(source, 0.0)
         if elapsed < min_interval:
-            time.sleep(min_interval - elapsed)
+            _sleep(min_interval - elapsed)
         _last_request_at[source] = time.monotonic()
 
 
@@ -338,9 +351,11 @@ _HKEX_HEADERS = {
     ),
     "Referer": f"{_HKEX_BASE}/search/titlesearch.xhtml?lang=zh",
 }
-# 文件类别：t1code=40000 财务报表/环境社会及管治资料，t2code=40100 年报
+# 文件类别：t1code=40000 财务报表/环境社会及管治资料；t2code 40100 年报、40200 中期报告
+# （2026-09 实测：腾讯 12 份中期报告回到 2015）
 _HKEX_ANNUAL_T1 = 40000
 _HKEX_ANNUAL_T2 = 40100
+_HKEX_T2_BY_REPORT_TYPE = {"annual": 40100, "interim": 40200}
 
 _hkex_stock_id_cache: Dict[str, Optional[str]] = {}
 
@@ -377,6 +392,17 @@ def hkex_annual_reports(symbol: str, *, limit: int = 12) -> List[Dict[str, Any]]
     2026-08-04 实测：腾讯 12 份、小盘股 6-11 份，PDF 3-13MB 且**纯文本零空白
     页**（比 A股 招行那份 32MB 轻得多）。
     """
+    return hkex_reports(symbol, report_type="annual", limit=limit)
+
+
+def hkex_reports(
+    symbol: str, *, report_type: str = "annual", limit: int = 12
+) -> List[Dict[str, Any]]:
+    """披露易报告清单：report_type=annual（年报）| interim（中期报告），公告日倒序，
+    返回 [{title, ann_date, url}]。"""
+    t2code = _HKEX_T2_BY_REPORT_TYPE.get(report_type)
+    if t2code is None:
+        raise ValueError(f"未知的披露易报告类别: {report_type}")
     stock_id = hkex_stock_id(symbol)
     if not stock_id:
         logger.warning("披露易未找到港股 %s 的 stockId", symbol)
@@ -389,7 +415,7 @@ def hkex_annual_reports(symbol: str, *, limit: int = 12) -> List[Dict[str, Any]]
             "stockId": stock_id, "documentType": -1,
             "fromDate": "20150101", "toDate": "20991231", "title": "",
             "searchType": 1, "t1code": _HKEX_ANNUAL_T1, "t2Gcode": -2,
-            "t2code": _HKEX_ANNUAL_T2, "rowRange": max(limit * 2, 20), "lang": "ZH",
+            "t2code": t2code, "rowRange": max(limit * 2, 20), "lang": "ZH",
         },
         headers=_HKEX_HEADERS,
         timeout=45,

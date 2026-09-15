@@ -152,6 +152,8 @@ EXPECTED_SLOW = {
     "security_analysis_batch",
     "report_digest_backfill",
     "report_digest_batch",
+    "opinion_summary",
+    "opinion_summary_batch",
 }
 EXPECTED_FAST = {
     "price_refresh",

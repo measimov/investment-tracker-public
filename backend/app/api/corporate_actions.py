@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from datetime import date, timedelta
 from ..config import settings
+from ..services.symbol_normalization import normalize_manual_symbol
 from ..database import get_db
 from ..models.corporate_action import CorporateAction
 from ..models.corporate_action_suggestion import CorporateActionSuggestion
@@ -309,6 +310,15 @@ def update_corporate_action(
         old_symbol = db_action.symbol
         old_market = db_action.market
         old_action_type = db_action.action_type
+
+        # 归一化与创建入口同口径：按合并后的有效 (symbol, market) 计算——
+        # 只改 market（如误录美股修正为港股）同样要触发补零，否则更新路径
+        # 会重新写出同券双键（评审 P1）
+        if "symbol" in update_data or "market" in update_data:
+            update_data["symbol"] = normalize_manual_symbol(
+                update_data.get("symbol", old_symbol),
+                update_data.get("market", old_market),
+            )
 
         new_symbol = update_data.get("symbol", old_symbol)
         new_market = update_data.get("market", old_market)

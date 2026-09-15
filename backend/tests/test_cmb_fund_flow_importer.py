@@ -1503,7 +1503,7 @@ def test_cmb_parser_version_tracks_booking_semantics():
 
     若本断言失败，说明你改了 parser 行为——请升级 PARSER_VERSION 并更新此处。
     """
-    assert importer.PARSER_VERSION == "11"
+    assert importer.PARSER_VERSION == "12"
 
 
 def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
@@ -1869,6 +1869,49 @@ def test_cmb_unattributed_tax_is_not_duplicated_when_still_unmatched(monkeypatch
         db.close()
 
 
+def test_cmb_codeless_tax_reimport_is_duplicate_not_crash(monkeypatch):
+    """缺代码税行（is_dividend_tax=False）重导重叠对账单：按重复处理，不撞库。
+
+    生产实锤（2026-09-02）：0011 把历史缺代码税行回填成 unattributed_tax，
+    get_existing_hashes 刻意放行未归属行，但这类行没有代码、永远进不了
+    is_dividend_tax 的转正/复用分支——通用归档路径插第二条同 hash 行触发
+    UniqueViolation，整批导入 FAILED。
+    """
+    from dataclasses import replace
+
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商缺代码税行账户")
+        codeless = [replace(
+            _tax_only_flows()[0], security_code="", security_name=None,
+        )]
+        assert codeless[0].is_dividend_tax is False
+
+        _patch_parse(monkeypatch, codeless, {"股息红利税补缴": 1})
+        import_cmb_fund_flow(db, 1, b"%PDF-1", "cmb.pdf", broker_account_id=account.id)
+        rows = db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).all()
+        assert len(rows) == 1
+        # 归档即带未归属标记（与 0011 回填口径一致）
+        assert rows[0].skip_reason == "unattributed_tax"
+
+        # 重导同一对账单：此前在这里 UniqueViolation 整批崩掉
+        second = import_cmb_fund_flow(db, 1, b"%PDF-2", "cmb.pdf", broker_account_id=account.id)
+        rows = db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).all()
+        assert len(rows) == 1, "已保留的缺代码税行不得重复建行"
+        assert second["duplicate_rows"] == 1
+        assert second["errors_total"] == 0
+
+        # 预览与导入同口径：已保留行计入重复
+        _patch_parse(monkeypatch, codeless, {"股息红利税补缴": 1})
+        preview = importer.preview_cmb_fund_flow(
+            db, 1, b"%PDF-3", "cmb.pdf", broker_account_id=account.id
+        )
+        assert preview["duplicate_rows"] == 1
+    finally:
+        db.close()
+
+
 def test_cmb_pre_migration_orphan_is_recoverable_after_backfill(monkeypatch):
     """迁移前就存在的孤儿税行（skip_reason=NULL）升级后必须能被重导转正。
 
@@ -2164,3 +2207,197 @@ def test_cmb_prospective_transaction_sorts_after_persisted_ones(monkeypatch):
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# 沪市可转债：对账单数量列以「手」记账（1 手 = 10 张）
+#
+# 判据来自两份真实对账单，不是推测：
+#   深市 123266 博士转债 卖出 数量 10 × 价格 143.30 = 金额 1433.00 → 比值 1.0
+#   沪市 11xxxx 13 笔        金额 ÷ (数量 × 价格)          → 比值 10.000
+# 「每百元面值报价」是全国统一惯例（可转债单张面值 100 元，故该价即每张价），
+# 若这 10 倍出在价格列，深市必然同样偏离；它没有。所以差异在数量列的记账单位。
+# ---------------------------------------------------------------------------
+
+
+def _bond_frame(*, market, code, quantity, price, gross, amount, business="证券买入"):
+    return pd.DataFrame(
+        [
+            {
+                "市场": market,
+                "证券代码": code,
+                "证券名称": "某转债",
+                "币种": "人民币",
+                "成交日期": "20250612",
+                "成交价格": price,
+                "成交数量": quantity,
+                "PDF成交金额": gross,
+                "发生金额": amount,
+                "流水号": "",
+                "业务名称": business,
+                "资金余额": "0.00",
+                "剩余数量": "0.00",
+                "佣金": "0.00",
+                "印花税": "0.00",
+                "其他费用": "0.00",
+                "股东代码": "A123456789",
+            }
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "market, code, expected",
+    [
+        ("上海", "113534", Decimal("10")),  # 沪市可转债 → 手
+        ("上海", "110059", Decimal("10")),
+        ("深圳", "123266", Decimal("1")),  # 深市可转债 → 张（实测博士转债）
+        ("深圳", "128123", Decimal("1")),
+        ("上海", "600000", Decimal("1")),  # 沪市股票不受影响
+        ("上海", "510300", Decimal("1")),  # 沪市 ETF 不受影响
+        ("沪港通", "00700", Decimal("1")),  # 港股通走结算汇率分支
+        ("", "", Decimal("1")),
+    ],
+)
+def test_cmb_lot_share_multiplier_only_lifts_shanghai_convertibles(market, code, expected):
+    assert importer.lot_share_multiplier(market, code) == expected
+
+
+def test_cmb_shanghai_convertible_bond_books_ten_times_the_lot_quantity(monkeypatch):
+    """23 手 × 10 张 × 85.90 = 19757 —— 报障对账单里那 13 行的真实形态。
+
+    红→绿：去掉乘数，这一行必然报 "PDF trade value does not reconcile"。
+    """
+    frame = _bond_frame(
+        market="上海",
+        code="113534",
+        quantity="23.00",
+        price="85.90",
+        gross="19757.00",
+        amount="-19757.00",
+    )
+    monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: frame)
+
+    rows, _counts, _total, errors = importer.parse_rows(b"%PDF-fake", "cmb.pdf")
+
+    assert errors == []
+    assert len(rows) == 1
+    flow = rows[0]
+    # PDF 原文数量保持不变——row_hash 依赖它
+    assert flow.trade_quantity == Decimal("23.00")
+    assert flow.share_multiplier == Decimal("10")
+    # 入账数量是真实张数
+    assert flow.booked_quantity == Decimal("230.00")
+    # 价格不动：85.90 就是每张净价（面值 100 元）
+    assert flow.trade_price == Decimal("85.90")
+
+
+def test_cmb_shenzhen_convertible_bond_is_not_scaled(monkeypatch):
+    """深市可转债按张记账，数量×价格=金额，不得被误乘。
+
+    数字取自本仓真实对账单：123266 博士转债 卖出 10 张 × 143.30 = 1433.00。
+    """
+    frame = _bond_frame(
+        market="深圳",
+        code="123266",
+        quantity="-10.00",
+        price="143.30",
+        gross="1433.00",
+        amount="1433.00",
+        business="证券卖出",
+    )
+    monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: frame)
+
+    rows, _counts, _total, errors = importer.parse_rows(b"%PDF-fake", "cmb.pdf")
+
+    assert errors == []
+    assert rows[0].share_multiplier == Decimal("1")
+    assert rows[0].booked_quantity == Decimal("10.00")
+
+
+def test_cmb_shanghai_stock_is_not_scaled(monkeypatch):
+    """沪市股票走原口径，乘数改动不得误伤主流水。"""
+    frame = _bond_frame(
+        market="上海",
+        code="600000",
+        quantity="100.00",
+        price="10.00",
+        gross="1000.00",
+        amount="-1000.00",
+    )
+    monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: frame)
+
+    rows, _counts, _total, errors = importer.parse_rows(b"%PDF-fake", "cmb.pdf")
+
+    assert errors == []
+    assert rows[0].booked_quantity == Decimal("100.00")
+
+
+def test_cmb_lot_multiplier_does_not_shift_row_hash(monkeypatch):
+    """HASH-CRITICAL：判重键必须继续钉在 PDF 原文数量上。
+
+    换算若渗进 row_hash，历史已导入流水的去重键整体漂移，重导即重复入账。
+    这里用同一份数据分别在 沪市可转债 / 深市可转债 代码下解析：乘数不同，
+    但只要 PDF 原文字段相同，hash 必须相同。
+    """
+    common = dict(quantity="23.00", price="85.90", gross="19757.00", amount="-19757.00")
+    hashes = {}
+    for market, code in (("上海", "113534"), ("深圳", "113534")):
+        frame = _bond_frame(market=market, code=code, **common)
+        monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: frame)
+        rows, _c, _t, _e = importer.parse_rows(b"%PDF-fake", "cmb.pdf")
+        hashes[market] = rows[0].row_hash if rows else None
+
+    assert hashes["上海"] is not None
+    # 深市那份会因对不上而被拒（正是预期：它没有 ×10），所以只断言沪市侧
+    # 的 hash 与"把乘数按掉"时一致——用 HASH_FIELDS 直接复算。
+    frame = _bond_frame(market="上海", code="113534", **common)
+    monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: frame)
+    rows, _c, _t, _e = importer.parse_rows(b"%PDF-fake", "cmb.pdf")
+    flow = rows[0]
+    recomputed = importer.calculate_row_hash(
+        {
+            "broker": importer.BROKER_NAME,
+            "trade_date": flow.trade_date,
+            "serial_number": flow.serial_number,
+            "business_name": flow.business_name,
+            "security_code": flow.security_code,
+            "currency": flow.currency,
+            "trade_price": flow.trade_price,
+            "trade_quantity": flow.trade_quantity,  # 原文 23，不是 230
+            "amount": flow.amount,
+            "stamp_tax": flow.stamp_tax,
+            "commission": flow.commission,
+            "other_fee": flow.other_fee,
+            "contract_number": flow.contract_number,
+            "shareholder_code": flow.shareholder_code,
+        }
+    )
+    assert flow.row_hash == recomputed
+
+
+def test_cmb_lot_multiplier_does_not_touch_zero_cash_businesses(monkeypatch):
+    """×10 只作用于买卖行——零现金分支没有毛额对账能证伪其数量单位。
+
+    沪市可转债中签（上海 + 11xxxx + 新股入账）若数量本就按张披露，
+    无条件放大会静默建出十倍仓位，而且跳过了毛额对账、没有任何东西会拦住它。
+    本仓深市样本 `123266 新股入账 数量=10.00` 正是按张披露的。
+    """
+    frame = _bond_frame(
+        market="上海",
+        code="113534",
+        quantity="10.00",
+        price="100.00",
+        gross="0.00",
+        amount="0.00",
+        business="新股入账",
+    )
+    monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: frame)
+
+    rows, _counts, _total, errors = importer.parse_rows(b"%PDF-fake", "cmb.pdf")
+
+    assert errors == []
+    flow = rows[0]
+    assert flow.transaction_type == "BUY"  # 中签仍然建仓
+    assert flow.share_multiplier == Decimal("1")
+    assert flow.booked_quantity == Decimal("10.00")  # 不是 100

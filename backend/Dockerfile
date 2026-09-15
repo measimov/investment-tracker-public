@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -17,6 +18,11 @@ COPY manage.py .
 COPY alembic.ini .
 COPY alembic ./alembic
 COPY scripts ./scripts
+# 归一化权限：容器以非 root（uid 10001）运行，宿主检出若有 600 权限的源码
+# 文件（历史 umask 遗留），COPY 原样带进镜像会让应用 import 时直接
+# PermissionError（2026-08-11 生产升级实锤）。构建期修正比部署手册提醒可靠；
+# u+rwX/go+rX 保留文件与目录的可执行位区分。
+RUN chmod -R u+rwX,go+rX /app
 
 # 非 root 运行（#143）：固定 uid 便于宿主对挂载的日志目录授权
 # （compose 挂 ${BACKEND_LOG_DIR}:/app/logs，宿主目录须可被 10001 写入，

@@ -1,7 +1,35 @@
 import axios, { type AxiosError, type AxiosRequestConfig } from 'axios'
+import type { SecurityResolveResponse, SecuritySearchResponse } from '@/types'
+import type {
+  AdminHolding,
+  BrokerAccount,
+  BrokerImportResult,
+  CashEvent,
+  CorporateAction,
+  DividendSuggestion,
+  ExchangeRate,
+  ExchangeRateLatest,
+  ExcludedSecurity,
+  HoldingResponse,
+  ImportBatch,
+  LlmReportAskResponse,
+  LlmReportDetail,
+  LlmReportListItem,
+  LlmReportSchedule,
+  LoginResponse,
+  ReconciliationSnapshot,
+  SecurityEvent,
+  SecurityRule,
+  StandardImportResult,
+  Transaction,
+  User,
+  WatchlistItem,
+  WatchlistMembership
+} from '../types'
 import { ElNotification } from 'element-plus'
 import { useAppStatusStore } from '../stores/appStatus'
 import { getApiErrorMessage, normalizeApiError, type NormalizedApiError } from '../utils/apiErrors'
+import { invalidateSecuritySearchCache, isLedgerMutation } from '../utils/securitySearchCache'
 
 const CSRF_COOKIE_NAME = 'investment_csrf'
 const SAFE_METHODS = new Set(['get', 'head', 'options'])
@@ -120,6 +148,11 @@ apiClient.interceptors.response.use(
       statusStore.clear()
     }
     maybeRenewSession(response.config)
+    // 账本写端点（交易/自选/导入/账户/持仓）成功即让标的检索缓存失效：
+    // 集中在这里，不靠各页面零散调用（评审 P2：删自选/编辑名称/删交易/导入都曾漏掉）
+    if (isLedgerMutation(response.config?.method, response.config?.url)) {
+      invalidateSecuritySearchCache()
+    }
     return response
   },
   (error: AxiosError) => {
@@ -131,9 +164,13 @@ apiClient.interceptors.response.use(
       // Clear authentication
       localStorage.removeItem('user')
 
-      // Redirect to login page if not already there
+      // Redirect to login page if not already there；带上当前地址，
+      // 登录成功后由 Login.vue 读取 ?redirect= 回跳（会话过期不再丢页面）
       if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+        const redirect = encodeURIComponent(
+          window.location.pathname + window.location.search + window.location.hash
+        )
+        window.location.href = `/login?redirect=${redirect}`
       }
     }
 
@@ -152,7 +189,11 @@ type QueryParams = Record<string, unknown>
 type RequestData = Record<string, unknown>
 type UploadFields = Record<string, string | number | null | undefined>
 
-function uploadFile(endpoint: string, file: File | Blob, fields: UploadFields = {}) {
+function uploadFile<T = BrokerImportResult>(
+  endpoint: string,
+  file: File | Blob,
+  fields: UploadFields = {}
+) {
   const formData = new FormData()
   formData.append('file', file)
   Object.entries(fields).forEach(([key, value]) => {
@@ -160,7 +201,7 @@ function uploadFile(endpoint: string, file: File | Blob, fields: UploadFields = 
       formData.append(key, String(value))
     }
   })
-  return apiClient.post(endpoint, formData, {
+  return apiClient.post<T>(endpoint, formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
   })
 }
@@ -168,52 +209,45 @@ function uploadFile(endpoint: string, file: File | Blob, fields: UploadFields = 
 const api = {
   // Authentication
   login(username: string, password: string) {
-    return apiClient.post('/auth/login', { username, password })
+    return apiClient.post<LoginResponse>('/auth/login', { username, password })
   },
   logout() {
     return apiClient.post('/auth/logout')
   },
   getUserInfo() {
-    return apiClient.get('/auth/me')
-  },
-  // intentionally unused：后端 PUT /auth/me/password 为真实端点，改密 UI 尚未内建
-  changePassword(oldPassword: string, newPassword: string) {
-    return apiClient.put('/auth/me/password', {
-      old_password: oldPassword,
-      new_password: newPassword
-    })
+    return apiClient.get<User>('/auth/me')
   },
 
   // Transactions
   getTransactions(params?: QueryParams) {
-    return apiClient.get('/transactions', { params })
+    return apiClient.get<Transaction[]>('/transactions', { params })
   },
   getTransactionsCount(params?: QueryParams) {
     return apiClient.get('/transactions/count', { params })
   },
   createTransaction(data: RequestData) {
-    return apiClient.post('/transactions', data)
+    return apiClient.post<Transaction>('/transactions', data)
   },
   updateTransaction(id: number | string, data: RequestData) {
-    return apiClient.put(`/transactions/${id}`, data)
+    return apiClient.put<Transaction>(`/transactions/${id}`, data)
   },
   deleteTransaction(id: number | string) {
     return apiClient.delete(`/transactions/${id}`)
   },
   // 账户间转仓：创建 TRANSFER_OUT/TRANSFER_IN 互指交易对，成本基础跟随迁移
   createTransfer(data: RequestData) {
-    return apiClient.post('/transactions/transfer', data)
+    return apiClient.post<Transaction[]>('/transactions/transfer', data)
   },
 
   // Broker accounts
   getBrokerAccounts(params?: QueryParams) {
-    return apiClient.get('/broker-accounts', { params })
+    return apiClient.get<BrokerAccount[]>('/broker-accounts', { params })
   },
   createBrokerAccount(data: RequestData) {
-    return apiClient.post('/broker-accounts', data)
+    return apiClient.post<BrokerAccount>('/broker-accounts', data)
   },
   updateBrokerAccount(id: number | string, data: RequestData) {
-    return apiClient.put(`/broker-accounts/${id}`, data)
+    return apiClient.put<BrokerAccount>(`/broker-accounts/${id}`, data)
   },
   deleteBrokerAccount(id: number | string) {
     return apiClient.delete(`/broker-accounts/${id}`)
@@ -221,21 +255,21 @@ const api = {
 
   // Import traceability
   getImportBatches(params?: QueryParams) {
-    return apiClient.get('/import-batches', { params })
+    return apiClient.get<ImportBatch[]>('/import-batches', { params })
   },
   getImportBatch(id: number | string) {
-    return apiClient.get(`/import-batches/${id}`)
+    return apiClient.get<ImportBatch>(`/import-batches/${id}`)
   },
 
   // Account cash events
   getCashEvents(params?: QueryParams) {
-    return apiClient.get('/cash-events', { params })
+    return apiClient.get<CashEvent[]>('/cash-events', { params })
   },
   createCashEvent(data: RequestData) {
-    return apiClient.post('/cash-events', data)
+    return apiClient.post<CashEvent>('/cash-events', data)
   },
   updateCashEvent(id: number | string, data: RequestData) {
-    return apiClient.put(`/cash-events/${id}`, data)
+    return apiClient.put<CashEvent>(`/cash-events/${id}`, data)
   },
   deleteCashEvent(id: number | string) {
     return apiClient.delete(`/cash-events/${id}`)
@@ -244,10 +278,10 @@ const api = {
   // 现金管理标的排除清单：导入只归档不入账，对账比对双侧忽略
   // （EXCLUDE 类型特例规则的兼容门面，UI 已迁移到 security-rules）
   getExcludedSecurities() {
-    return apiClient.get('/excluded-securities')
+    return apiClient.get<ExcludedSecurity[]>('/excluded-securities')
   },
   createExcludedSecurity(data: RequestData) {
-    return apiClient.post('/excluded-securities', data)
+    return apiClient.post<ExcludedSecurity>('/excluded-securities', data)
   },
   deleteExcludedSecurity(id: number | string) {
     return apiClient.delete(`/excluded-securities/${id}`)
@@ -255,10 +289,10 @@ const api = {
 
   // 账本特例规则（issue #82）：排除/现金管理/转板映射/名称覆盖/行情缺口豁免/招商现金业务
   getSecurityRules(params?: QueryParams) {
-    return apiClient.get('/security-rules', { params })
+    return apiClient.get<SecurityRule[]>('/security-rules', { params })
   },
   createSecurityRule(data: RequestData) {
-    return apiClient.post('/security-rules', data)
+    return apiClient.post<SecurityRule>('/security-rules', data)
   },
   deleteSecurityRule(id: number | string) {
     return apiClient.delete(`/security-rules/${id}`)
@@ -266,25 +300,25 @@ const api = {
 
   // Month-end reconciliation snapshots
   getReconciliationSnapshots(params?: QueryParams) {
-    return apiClient.get('/reconciliation-snapshots', { params })
+    return apiClient.get<ReconciliationSnapshot[]>('/reconciliation-snapshots', { params })
   },
   createReconciliationSnapshot(data: RequestData) {
-    return apiClient.post('/reconciliation-snapshots', data)
+    return apiClient.post<ReconciliationSnapshot>('/reconciliation-snapshots', data)
   },
   updateReconciliationSnapshot(id: number | string, data: RequestData) {
-    return apiClient.put(`/reconciliation-snapshots/${id}`, data)
+    return apiClient.put<ReconciliationSnapshot>(`/reconciliation-snapshots/${id}`, data)
   },
   deleteReconciliationSnapshot(id: number | string) {
     return apiClient.delete(`/reconciliation-snapshots/${id}`)
   },
   // 手动触发快照自动比对（账本变化后刷新红绿状态与 diff 明细）
   compareReconciliationSnapshot(id: number | string) {
-    return apiClient.post(`/reconciliation-snapshots/${id}/compare`)
+    return apiClient.post<ReconciliationSnapshot>(`/reconciliation-snapshots/${id}/compare`)
   },
 
   // Holdings
   getHoldings(params?: QueryParams) {
-    return apiClient.get('/holdings', { params })
+    return apiClient.get<HoldingResponse[]>('/holdings', { params })
   },
 
   // Statistics
@@ -303,18 +337,22 @@ const api = {
 
   // Import/Export
   importCSV(file: File | Blob, brokerAccountId: number | string | null = null) {
-    return uploadFile('/import/csv', file, { broker_account_id: brokerAccountId })
+    return uploadFile<StandardImportResult>('/import/csv', file, {
+      broker_account_id: brokerAccountId
+    })
   },
   importExcel(file: File | Blob, brokerAccountId: number | string | null = null) {
-    return uploadFile('/import/excel', file, { broker_account_id: brokerAccountId })
+    return uploadFile<StandardImportResult>('/import/excel', file, {
+      broker_account_id: brokerAccountId
+    })
   },
   importCorporateActionsCSV(file: File | Blob, brokerAccountId: number | string | null = null) {
-    return uploadFile('/import/corporate-actions/csv', file, {
+    return uploadFile<StandardImportResult>('/import/corporate-actions/csv', file, {
       broker_account_id: brokerAccountId
     })
   },
   importCorporateActionsExcel(file: File | Blob, brokerAccountId: number | string | null = null) {
-    return uploadFile('/import/corporate-actions/excel', file, {
+    return uploadFile<StandardImportResult>('/import/corporate-actions/excel', file, {
       broker_account_id: brokerAccountId
     })
   },
@@ -348,26 +386,22 @@ const api = {
       broker_account_id: brokerAccountId
     })
   },
-  // intentionally unused：后端 CSV 导出为真实端点，前端当前只用 Excel 导出
-  exportCSV() {
-    return apiClient.get('/export/csv', { responseType: 'blob' })
-  },
   exportExcel() {
     return apiClient.get('/export/excel', { responseType: 'blob' })
   },
 
   // Corporate Actions
   getCorporateActions(params?: QueryParams) {
-    return apiClient.get('/corporate-actions', { params })
+    return apiClient.get<CorporateAction[]>('/corporate-actions', { params })
   },
   getCorporateActionsCount(params?: QueryParams) {
     return apiClient.get('/corporate-actions/count', { params })
   },
   createCorporateAction(data: RequestData) {
-    return apiClient.post('/corporate-actions', data)
+    return apiClient.post<CorporateAction>('/corporate-actions', data)
   },
   updateCorporateAction(id: number | string, data: RequestData) {
-    return apiClient.put(`/corporate-actions/${id}`, data)
+    return apiClient.put<CorporateAction>(`/corporate-actions/${id}`, data)
   },
   deleteCorporateAction(id: number | string) {
     return apiClient.delete(`/corporate-actions/${id}`)
@@ -384,22 +418,42 @@ const api = {
     return apiClient.get(`/corporate-actions/dividend-sync-jobs/${id}`)
   },
   listDividendSuggestions(params?: QueryParams) {
-    return apiClient.get('/corporate-actions/suggestions', { params })
+    return apiClient.get<DividendSuggestion[]>('/corporate-actions/suggestions', { params })
   },
   countDividendSuggestions() {
     return apiClient.get('/corporate-actions/suggestions/count')
   },
   acceptDividendSuggestion(id: number | string, data: RequestData = {}) {
-    return apiClient.post(`/corporate-actions/suggestions/${id}/accept`, data)
+    return apiClient.post<CorporateAction>(`/corporate-actions/suggestions/${id}/accept`, data)
   },
   ignoreDividendSuggestion(id: number | string) {
-    return apiClient.post(`/corporate-actions/suggestions/${id}/ignore`)
+    return apiClient.post<DividendSuggestion>(`/corporate-actions/suggestions/${id}/ignore`)
   },
   restoreDividendSuggestion(id: number | string) {
-    return apiClient.post(`/corporate-actions/suggestions/${id}/restore`)
+    return apiClient.post<DividendSuggestion>(`/corporate-actions/suggestions/${id}/restore`)
   },
   getSecurityEvents(params?: QueryParams) {
-    return apiClient.get('/corporate-actions/security-events', { params })
+    return apiClient.get<SecurityEvent[]>('/corporate-actions/security-events', { params })
+  },
+
+  // 观察清单（未持仓标的的观察区域；正式论点见 security_theses）
+  getWatchlist() {
+    return apiClient.get<WatchlistItem[]>('/watchlist')
+  },
+  // 详情页轻量 membership 查询（不拉整份 enriched 列表）
+  watchlistContains(symbol: string, market: string) {
+    return apiClient.get<WatchlistMembership>('/watchlist/contains', {
+      params: { symbol, market }
+    })
+  },
+  addWatchlistItem(data: RequestData) {
+    return apiClient.post<WatchlistItem>('/watchlist', data)
+  },
+  updateWatchlistItem(id: number, data: RequestData) {
+    return apiClient.put<WatchlistItem>(`/watchlist/${id}`, data)
+  },
+  removeWatchlistItem(id: number) {
+    return apiClient.delete(`/watchlist/${id}`)
   },
 
   // 标的档案（基本面数据 + LLM 分析；A股/美股/港股）
@@ -452,6 +506,51 @@ const api = {
   listActiveAnalysisJobs() {
     return apiClient.get('/securities/active-analysis-jobs')
   },
+  // 标的检索（账本行优先 + 标的全集）与手输代码的按需解析；失败静默——自动补全是锦上添花
+  searchSecurities(params: { q?: string; market?: string; limit?: number }) {
+    return apiClient.get<SecuritySearchResponse>('/securities/search', {
+      params,
+      skipGlobalErrorNotification: true
+    })
+  },
+  resolveSecurity(params: { symbol: string; market: string }) {
+    return apiClient.get<SecurityResolveResponse>('/securities/resolve', {
+      params,
+      skipGlobalErrorNotification: true
+    })
+  },
+  // 雪球观点摘要（数据源 = xueqiu-timeline-archiver 写入同库的关注用户发言）
+  listOpinionSummaries() {
+    return apiClient.get('/securities/opinion-summaries')
+  },
+  getOpinionFeed(params?: QueryParams) {
+    return apiClient.get('/securities/opinion-feed', { params })
+  },
+  getOpinionSummary(market: string, symbol: string) {
+    return apiClient.get(
+      `/securities/${encodeURIComponent(market)}/${encodeURIComponent(symbol)}/opinion-summary`
+    )
+  },
+  startOpinionJob(market: string, symbol: string) {
+    return apiClient.post(
+      `/securities/${encodeURIComponent(market)}/${encodeURIComponent(symbol)}/opinion-jobs`
+    )
+  },
+  getOpinionJob(id: string) {
+    return apiClient.get(`/securities/opinion-jobs/${id}`)
+  },
+  startOpinionBatchJob(params?: QueryParams) {
+    return apiClient.post('/securities/opinion-batch-jobs', null, { params })
+  },
+  getOpinionBatchTargets() {
+    return apiClient.get('/securities/opinion-batch-targets')
+  },
+  getOpinionBatchJob(jobId: string) {
+    return apiClient.get(`/securities/opinion-batch-jobs/${jobId}`)
+  },
+  cancelOpinionBatchJob(jobId: string) {
+    return apiClient.post(`/securities/opinion-batch-jobs/${jobId}/cancel`)
+  },
   getReportBackfillJob(id: string) {
     return apiClient.get(`/securities/report-backfill-jobs/${id}`)
   },
@@ -471,10 +570,10 @@ const api = {
 
   // AI 复盘报告（LLM）
   getLlmReports() {
-    return apiClient.get('/llm-reports')
+    return apiClient.get<LlmReportListItem[]>('/llm-reports')
   },
   getLlmReport(id: number | string) {
-    return apiClient.get(`/llm-reports/${id}`)
+    return apiClient.get<LlmReportDetail>(`/llm-reports/${id}`)
   },
   deleteLlmReport(id: number | string) {
     return apiClient.delete(`/llm-reports/${id}`)
@@ -487,13 +586,19 @@ const api = {
   },
   // 追问为同步 LLM 调用，单独放宽超时
   askLlmReport(id: number | string, content: string) {
-    return apiClient.post(`/llm-reports/${id}/messages`, { content }, { timeout: 180000 })
+    return apiClient.post<LlmReportAskResponse>(
+      `/llm-reports/${id}/messages`,
+      { content },
+      {
+        timeout: 180000
+      }
+    )
   },
   getLlmReportSchedule() {
-    return apiClient.get('/llm-reports/schedule')
+    return apiClient.get<LlmReportSchedule>('/llm-reports/schedule')
   },
   updateLlmReportSchedule(cadence: string) {
-    return apiClient.put('/llm-reports/schedule', { cadence })
+    return apiClient.put<LlmReportSchedule>('/llm-reports/schedule', { cadence })
   },
 
   // Portfolio snapshot：一次调用返回看板全量数据（表现/新鲜度/市场/近期交易/对账状态）
@@ -529,16 +634,16 @@ const api = {
 
   // Exchange Rates
   getLatestRates() {
-    return apiClient.get('/exchange-rates/latest')
+    return apiClient.get<ExchangeRateLatest>('/exchange-rates/latest')
   },
   getExchangeRates(params?: QueryParams) {
-    return apiClient.get('/exchange-rates/', { params })
+    return apiClient.get<ExchangeRate[]>('/exchange-rates/', { params })
   },
   createOrUpdateExchangeRate(data: RequestData) {
-    return apiClient.post('/exchange-rates', data)
+    return apiClient.post<ExchangeRate>('/exchange-rates', data)
   },
   updateExchangeRate(id: number | string, data: RequestData) {
-    return apiClient.put(`/exchange-rates/${id}`, data)
+    return apiClient.put<ExchangeRate>(`/exchange-rates/${id}`, data)
   },
   deleteExchangeRate(id: number | string) {
     return apiClient.delete(`/exchange-rates/${id}`)
@@ -549,7 +654,7 @@ const api = {
 
   // Stock Price Updates
   updateHoldingPrice(holdingId: number | string, price: number | string) {
-    return apiClient.put(`/holdings/${holdingId}/price`, {
+    return apiClient.put<HoldingResponse>(`/holdings/${holdingId}/price`, {
       current_price: price
     })
   },
@@ -566,13 +671,13 @@ const api = {
 
   // User Management (Admin)
   getUsers() {
-    return apiClient.get('/users')
+    return apiClient.get<User[]>('/users')
   },
   createUser(userData: RequestData) {
-    return apiClient.post('/users', userData)
+    return apiClient.post<User>('/users', userData)
   },
   updateUser(userId: number | string, userData: RequestData) {
-    return apiClient.put(`/users/${userId}`, userData)
+    return apiClient.put<User>(`/users/${userId}`, userData)
   },
   deleteUser(userId: number | string) {
     return apiClient.delete(`/users/${userId}`)
@@ -585,10 +690,10 @@ const api = {
 
   // Admin Holdings
   getAllHoldingsAdmin() {
-    return apiClient.get('/holdings/admin/all')
+    return apiClient.get<AdminHolding[]>('/holdings/admin/all')
   },
   getUserHoldingsAdmin(userId: number | string) {
-    return apiClient.get(`/holdings/admin/users/${userId}`)
+    return apiClient.get<AdminHolding[]>(`/holdings/admin/users/${userId}`)
   }
 }
 

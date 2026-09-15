@@ -43,7 +43,9 @@ class SecurityProfileData(Base):
             "'dividend_history', 'fina_audit', 'pledge_stat', 'stk_holdertrade', "
             "'income', 'balancesheet', 'cashflow', "
             "'report_section', 'report_digest', 'business_profile', 'peer_list', "
-            "'edgar_companyfacts', 'yahoo_fundamentals', 'report_target_plan'"
+            "'edgar_companyfacts', 'yahoo_fundamentals', 'report_target_plan', "
+            "'xueqiu_income', 'xueqiu_capital_flow', 'xueqiu_holders', "
+            "'report_statement_extract', 'report_statements'"
             ")",
             name="ck_security_profile_dataset",
         ),

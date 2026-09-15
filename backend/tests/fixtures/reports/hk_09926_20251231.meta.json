@@ -1,0 +1,11 @@
+{
+  "market": "港股",
+  "symbol": "09926",
+  "end_date": "20251231",
+  "report_type": "annual",
+  "title": "2025 年報",
+  "source_url": null,
+  "source_note": "披露易 2026-09 探针下载；pdfplumber extract_text 逐页，\\x0c 分页",
+  "pdf_bytes": 4290884,
+  "chars": 164322
+}

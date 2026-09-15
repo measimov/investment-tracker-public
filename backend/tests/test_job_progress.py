@@ -251,6 +251,8 @@ INLINE_RUN_PATHS = [
         "execute_batch_analysis_job",
     ),
     ("report_digest_batch_jobs", "run_digest_batch_job", "execute_digest_batch_job"),
+    ("opinion_summary_jobs", "run_opinion_summary_job", "execute_opinion_summary_job"),
+    ("opinion_summary_batch_jobs", "run_opinion_batch_job", "execute_opinion_batch_job"),
 ]
 
 

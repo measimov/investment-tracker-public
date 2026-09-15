@@ -70,6 +70,15 @@ class CorporateActionBase(BaseModel):
 
 
 class CorporateActionCreate(CorporateActionBase):
+    @model_validator(mode="after")
+    def _normalize_symbol(self):
+        # 手工入口共享归一化（大写 + 港股补零）；只挂在 Create 上，
+        # Response 序列化不应"显示时修复"库里的历史形态
+        from ..services.symbol_normalization import normalize_manual_symbol
+
+        self.symbol = normalize_manual_symbol(self.symbol, self.market)
+        return self
+
     """创建公司行动"""
     model_config = ConfigDict(extra="forbid")
 

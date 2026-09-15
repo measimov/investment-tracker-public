@@ -49,6 +49,8 @@ SLOW_LANE_JOB_TYPES = frozenset({
     "security_analysis_batch",
     "report_digest_backfill",
     "report_digest_batch",
+    "opinion_summary",
+    "opinion_summary_batch",
 })
 
 _runners: Dict[str, Callable[[Dict[str, Any]], None]] = {}

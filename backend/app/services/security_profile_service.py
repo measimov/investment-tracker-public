@@ -37,9 +37,13 @@ SUPPORTED_MARKETS = ("A股", "美股", "港股")
 MARKET_CAPABILITIES: Dict[str, Dict[str, Any]] = {
     "A股": {"structured": True, "report_digest": True, "risk_signals": True},
     "美股": {"structured": True, "report_digest": True, "risk_signals": "risk_factors"},
-    # 港股：Yahoo 年度科目（非官方端点，仅近 3-5 年）+ 披露易年报全文摘要；
-    # 无审计意见/质押/增减持数据源，风险信号只能来自年报「主要風險」章节
-    "港股": {"structured": True, "report_digest": True, "risk_signals": "risk_factors"},
+    # 港股：年报/中报 PDF 三张表抽取（report_statements，官方一手、可达十年）+ Yahoo 年度
+    # 科目补缺 + 披露易年报全文摘要；无审计意见/质押/增减持数据源，风险信号只能来自
+    # 年报「主要風險」章节
+    "港股": {
+        "structured": True, "report_digest": True, "risk_signals": "risk_factors",
+        "statements": "report_pdf",
+    },
 }
 
 # dataset → (Tushare 接口, 额外参数, 自然键构造)。period_key 必须稳定：
@@ -136,6 +140,12 @@ EDGAR_CONCEPT_CHAINS: Dict[str, tuple] = {
     ),
     "inventories": ("InventoryNet",),
     "total_cur_assets": ("AssetsCurrent",),
+    # 格雷厄姆准则层（graham_screen）新增：流动负债/长期债务/利息支出。
+    # 短期借款概念在各公司间过于分裂，刻意不收——净债务口径按"仅长期"
+    # 标注方向性偏差，胜过用错概念拼出貌似完整的合计。
+    "total_cur_liab": ("LiabilitiesCurrent",),
+    "lt_debt": ("LongTermDebtNoncurrent", "LongTermDebt"),
+    "int_exp": ("InterestExpense", "InterestExpenseDebt"),
     "fix_assets": ("PropertyPlantAndEquipmentNet",),
     "n_cashflow_act": ("NetCashProvidedByUsedInOperatingActivities",),
     "n_cashflow_inv_act": ("NetCashProvidedByUsedInInvestingActivities",),
@@ -300,9 +310,38 @@ def _fetch_yahoo_fundamentals(symbol: str, market: str) -> List[Dict[str, Any]]:
     return yahoo_hk_fundamentals(symbol)
 
 
+def _fetch_xueqiu_income(symbol: str, market: str) -> List[Dict[str, Any]]:
+    from .xueqiu_source import fetch_income_rows
+
+    return fetch_income_rows(symbol, market)
+
+
+def _fetch_xueqiu_capital_flow(symbol: str, market: str) -> List[Dict[str, Any]]:
+    from .xueqiu_source import fetch_capital_flow_rows
+
+    return fetch_capital_flow_rows(symbol, market)
+
+
+def _fetch_xueqiu_holders(symbol: str, market: str) -> List[Dict[str, Any]]:
+    from .xueqiu_source import fetch_holder_rows
+
+    return fetch_holder_rows(symbol, market)
+
+
 # 市场 → 数据集注册表；DATASETS 保留为合并视图（向后兼容测试/键查找）
 MARKET_DATASETS: Dict[str, Dict[str, Dict[str, Any]]] = {
-    "A股": DATASETS,
+    "A股": {
+        **DATASETS,
+        # 雪球（需登录态 Cookie；未配置时逐集失败并如实记入 failed，不影响
+        # Tushare 的十一个数据集）。period_key 由库的 adapter 填好：
+        # 利润表=报告期 end_date，资金流=交易日。
+        "xueqiu_income": {"fetch": _fetch_xueqiu_income, "key": _key_of("period_key")},
+        "xueqiu_capital_flow": {
+            "fetch": _fetch_xueqiu_capital_flow, "key": _key_of("period_key"),
+        },
+        # 十大流通股东：period_key = 报告期|名次（wrapper 构造），每期十行
+        "xueqiu_holders": {"fetch": _fetch_xueqiu_holders, "key": _key_of("period_key")},
+    },
     "美股": {
         "edgar_companyfacts": {
             "fetch": _fetch_edgar_companyfacts,
@@ -321,10 +360,29 @@ MARKET_DATASETS: Dict[str, Dict[str, Dict[str, Any]]] = {
 DAILY_BASIC_KEEP_ROWS = 30
 
 
+# 任务驱动的数据集：不在 sync_symbol_profile 里拉取（由 job 写入），但随档案一起加载。
+# 港股 report_statements = 年报/中报 PDF 抽取的科目行（report_statement_service）
+MARKET_JOB_DATASETS: Dict[str, Dict[str, Dict[str, Any]]] = {
+    "港股": {"report_statements": {"key": _key_of("end_date", "fp"), "current": "statements"}},
+}
+
+
+def _job_dataset_current(dataset: str):
+    """任务驱动数据集的行有效性谓词（旧版本行在重算成功前不参与读取）。"""
+    if dataset == "report_statements":
+        from .report_statement_prompts import statement_row_current
+
+        return statement_row_current
+    return lambda payload: True
+
+
 def _dataset_spec(market: str, dataset: str) -> Dict[str, Any]:
     spec = (MARKET_DATASETS.get(market) or {}).get(dataset)
     if spec:
         return spec
+    job_spec = (MARKET_JOB_DATASETS.get(market) or {}).get(dataset)
+    if job_spec:
+        return job_spec
     # 合并视图兜底（非注册表数据集如 report_* 不经此路径）
     for registry in MARKET_DATASETS.values():
         if dataset in registry:
@@ -487,9 +545,14 @@ def sync_symbol_profile(db: Session, symbol: str, market: str) -> Dict[str, Any]
             db.rollback()
             logger.warning("同步 %s %s/%s 失败: %s", dataset, symbol, market, exc)
             result["failed"].append({"dataset": dataset, "error": str(exc)[:200]})
-            # token 失效/无权限对所有数据集等价：继续逐集重试毫无意义，且会让
-            # 调用方误以为只是"部分数据缺失"而生成一份没有依据的降级分析
-            if classify_tushare_error(exc) == "fatal":
+            # token 失效/无权限对所有 Tushare 数据集等价：继续逐集重试毫无意义，
+            # 且会让调用方误以为只是"部分数据缺失"而生成一份没有依据的降级分析。
+            #
+            # 必须限定 api_name 存在（= 该数据集确实走 Tushare）：分类器是按中文
+            # 子串匹配的（"权限"/"积分不足"/"抱歉，您"），EDGAR/Yahoo/雪球的上游
+            # 报错里出现这几个字完全可能，那会让一个第三方源的失败连带中止整只
+            # 标的的 Tushare 同步。
+            if api_name and classify_tushare_error(exc) == "fatal":
                 result["fatal"] = {"dataset": dataset, "error": str(exc)[:200]}
                 logger.error(
                     "Tushare 致命错误（token/权限），中止 %s/%s 的档案同步: %s",
@@ -514,7 +577,206 @@ PROFILE_CAPS: Dict[str, int] = {
     "cashflow": 8,
     "edgar_companyfacts": EDGAR_ANNUAL_KEEP + EDGAR_QUARTERLY_KEEP,
     "yahoo_fundamentals": 8,
+    # 年报/中报 PDF 抽取行：十年年度 + 近几期中报
+    "report_statements": 16,
+    "xueqiu_income": 8,
+    "xueqiu_capital_flow": 20,
+    # 十行一期，取两期便于看变动
+    "xueqiu_holders": 20,
 }
+
+
+# 格雷厄姆准则的年度行专取窗口。**不能复用 load_symbol_profile 的 caps**：
+# 那套窗口按 period_key 倒序取"最近 N 个报告期"，季报会把年度行挤到只剩
+# 2-3 个——十年盈利稳定恒 indeterminate 还只是失灵，分红记录被截断后算出
+# "连续 2 年"则是**错误 fail**（美的实测连续 20+ 年，真实账本冒烟逮住）。
+GRAHAM_ANNUAL_ROWS = 12
+GRAHAM_DIVIDEND_ROWS = 100  # 每年 1-2 行实施记录 → 覆盖 40+ 年，取全量
+
+
+def _dataset_rows(
+    db: Session, symbol: str, market: str, dataset: str,
+    *, like: Optional[str] = None, limit: int = GRAHAM_ANNUAL_ROWS,
+) -> List[Dict[str, Any]]:
+    query = db.query(SecurityProfileData).filter(
+        SecurityProfileData.symbol == symbol,
+        SecurityProfileData.market == market,
+        SecurityProfileData.dataset == dataset,
+    )
+    if like:
+        query = query.filter(SecurityProfileData.period_key.like(like))
+    query = query.order_by(SecurityProfileData.period_key.desc())
+    if dataset == "report_statements":
+        current = _job_dataset_current(dataset)
+        return [row.payload for row in query.all() if current(row.payload or {})][:limit]
+    rows = query.limit(limit).all()
+    return [row.payload for row in rows]
+
+
+def load_graham_inputs(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
+    """graham_screen 的取数口径：报表只取**年度行**（A股 period_key=末日 1231；
+    美股 EDGAR 键带 |FY 后缀；港股 Yahoo 全为年度）、分红实施记录取全量、
+    估值快照只要最新一行。库内无任何报表数据返回 None。
+
+    全部消费点（详情页 profile / 分析输入 / 观察清单摘要）统一走这里，
+    口径一处定义。
+    """
+    if market == "美股":
+        statements_rows = {
+            "edgar_companyfacts": _dataset_rows(
+                db, symbol, market, "edgar_companyfacts", like="%|FY"
+            )
+        }
+    elif market == "港股":
+        statements_rows = {
+            # PDF 抽取的年度行优先（period_key=末日|FY），Yahoo 补缺——由 market_statements 合并
+            "report_statements": _dataset_rows(
+                db, symbol, market, "report_statements", like="%|FY"
+            ),
+            "yahoo_fundamentals": _dataset_rows(db, symbol, market, "yahoo_fundamentals"),
+        }
+    elif market == "A股":
+        statements_rows = {
+            "income": _dataset_rows(db, symbol, market, "income", like="%1231"),
+            "balancesheet": _dataset_rows(db, symbol, market, "balancesheet", like="%1231"),
+        }
+    else:
+        return None
+    if not any(statements_rows.values()):
+        return None
+    return {
+        "statement_datasets": statements_rows,
+        "daily_basic_rows": _dataset_rows(db, symbol, market, "daily_basic", limit=1),
+        "dividend_rows": _dataset_rows(
+            db, symbol, market, "dividend_history", limit=GRAHAM_DIVIDEND_ROWS
+        ),
+    }
+
+
+def compute_graham_for(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
+    """load_graham_inputs + 纯函数计算；无数据返回 None。"""
+    from .earnings_quality import market_statements
+    from .graham_screen import compute_graham_screen
+
+    inputs = load_graham_inputs(db, symbol, market)
+    if inputs is None:
+        return None
+    result = compute_graham_screen(
+        market,
+        market_statements(market, inputs["statement_datasets"]),
+        daily_basic_rows=inputs["daily_basic_rows"],
+        dividend_rows=inputs["dividend_rows"],
+    )
+    return result if result["status"] == "ok" else None
+
+
+def graham_summaries_for(
+    db: Session, keys: List[tuple],
+) -> Dict[tuple, Optional[Dict[str, Any]]]:
+    """批量版 graham_summary_for：一次查询取全部标的的准则输入，避免列表页
+    每条 3-4 次往返的 N 倍放大（评审 P2）。返回 {(symbol, market): summary|None}。
+
+    仍按 (symbol, market) 逐标的计算纯函数；差别只在取数：一条 IN 查询把
+    所需数据集全部拉回内存后按标的分桶，再按 load_graham_inputs 的同一口径
+    （年度行/分红全量/最新估值）在内存中裁剪。
+    """
+    from .earnings_quality import market_statements
+    from .graham_screen import compute_graham_screen
+
+    if not keys:
+        return {}
+    wanted_datasets = (
+        "income", "balancesheet", "daily_basic", "dividend_history",
+        "edgar_companyfacts", "yahoo_fundamentals", "report_statements",
+    )
+    symbols = sorted({symbol for symbol, _ in keys})
+    rows = (
+        db.query(
+            SecurityProfileData.symbol,
+            SecurityProfileData.market,
+            SecurityProfileData.dataset,
+            SecurityProfileData.period_key,
+            SecurityProfileData.payload,
+        )
+        .filter(
+            SecurityProfileData.symbol.in_(symbols),
+            SecurityProfileData.dataset.in_(wanted_datasets),
+        )
+        .order_by(SecurityProfileData.period_key.desc())
+        .all()
+    )
+    buckets: Dict[tuple, Dict[str, List[tuple]]] = {}
+    for symbol, market, dataset, period_key, payload in rows:
+        buckets.setdefault((symbol, market), {}).setdefault(dataset, []).append(
+            (period_key, payload)
+        )
+
+    def _pick(bucket, dataset, *, like_suffix=None, limit=GRAHAM_ANNUAL_ROWS):
+        items = bucket.get(dataset, [])
+        if like_suffix:
+            items = [(k, v) for k, v in items if str(k).endswith(like_suffix)]
+        if dataset in MARKET_JOB_DATASETS.get("港股", {}):
+            current = _job_dataset_current(dataset)
+            items = [(k, v) for k, v in items if current(v or {})]
+        return [payload for _, payload in items[:limit]]
+
+    result: Dict[tuple, Optional[Dict[str, Any]]] = {}
+    for key in keys:
+        symbol, market = key
+        bucket = buckets.get(key, {})
+        if market == "美股":
+            statement_datasets = {
+                "edgar_companyfacts": _pick(bucket, "edgar_companyfacts", like_suffix="|FY")
+            }
+        elif market == "港股":
+            statement_datasets = {
+                "report_statements": _pick(bucket, "report_statements", like_suffix="|FY"),
+                "yahoo_fundamentals": _pick(bucket, "yahoo_fundamentals"),
+            }
+        elif market == "A股":
+            statement_datasets = {
+                "income": _pick(bucket, "income", like_suffix="1231"),
+                "balancesheet": _pick(bucket, "balancesheet", like_suffix="1231"),
+            }
+        else:
+            result[key] = None
+            continue
+        if not any(statement_datasets.values()):
+            result[key] = None
+            continue
+        screen = compute_graham_screen(
+            market,
+            market_statements(market, statement_datasets),
+            daily_basic_rows=_pick(bucket, "daily_basic", limit=1),
+            dividend_rows=_pick(bucket, "dividend_history", limit=GRAHAM_DIVIDEND_ROWS),
+        )
+        if screen["status"] != "ok":
+            result[key] = None
+            continue
+        result[key] = {
+            "passed": screen["passed"],
+            "failed": screen["failed"],
+            "indeterminate": screen["indeterminate"],
+            "total": len(screen["criteria"]),
+            "as_of_year": screen["as_of_year"],
+        }
+    return result
+
+
+def graham_summary_for(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
+    """观察清单列表列用的准则摘要（计数 + 数据年度）；无档案数据返回 None
+    ——前端显示"未同步档案"而不是 0/7 的误导计数。取数走 compute_graham_for
+    的年度行专取口径（caps 窗口的旧实现会把分红记录截断成错误 fail）。"""
+    result = compute_graham_for(db, symbol, market)
+    if result is None:
+        return None
+    return {
+        "passed": result["passed"],
+        "failed": result["failed"],
+        "indeterminate": result["indeterminate"],
+        "total": len(result["criteria"]),
+        "as_of_year": result["as_of_year"],
+    }
 
 
 def load_symbol_profile(
@@ -524,8 +786,10 @@ def load_symbol_profile(
     caps = caps or PROFILE_CAPS
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     latest_fetch: Optional[datetime] = None
-    for dataset in MARKET_DATASETS.get(market, {}):
-        rows = (
+    job_datasets = MARKET_JOB_DATASETS.get(market, {})
+    datasets = list(MARKET_DATASETS.get(market, {})) + list(job_datasets)
+    for dataset in datasets:
+        query = (
             db.query(SecurityProfileData)
             .filter(
                 SecurityProfileData.symbol == symbol,
@@ -533,9 +797,13 @@ def load_symbol_profile(
                 SecurityProfileData.dataset == dataset,
             )
             .order_by(SecurityProfileData.period_key.desc())
-            .limit(caps.get(dataset, 10))
-            .all()
         )
+        if dataset in job_datasets:
+            # 版本过滤后再截断：旧版本行不占 caps 名额也不进结果
+            current = _job_dataset_current(dataset)
+            rows = [row for row in query.all() if current(row.payload or {})][: caps.get(dataset, 10)]
+        else:
+            rows = query.limit(caps.get(dataset, 10)).all()
         grouped[dataset] = [row.payload for row in rows]
         for row in rows:
             if row.fetched_at and (latest_fetch is None or row.fetched_at > latest_fetch):

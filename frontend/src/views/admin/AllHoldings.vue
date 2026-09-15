@@ -18,7 +18,8 @@
               @change="handleUserChange"
               class="user-select"
             >
-              <el-option label="所有用户 (汇总)" :value="null" />
+              <!-- el-option 的 value 类型不含 null；这里 null 是"汇总"哨兵语义，保持运行时不变 -->
+              <el-option label="所有用户 (汇总)" :value="null as unknown as number" />
               <el-option
                 v-for="user in users"
                 :key="user.id"
@@ -122,21 +123,11 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '../../api'
 import { formatNumber, formatPercent, formatDateTime, toNumber } from '../../utils/helpers'
+import type { AdminHolding, User } from '../../types'
 
-interface AdminUser {
-  id: number
-  username: string
-  is_active?: boolean
-  [key: string]: unknown
-}
-
-interface AdminHoldingRow {
-  quantity?: number | string | null
-  total_cost?: number | string | null
-  avg_cost?: number | string | null
-  current_price?: number | string | null
-  [key: string]: unknown
-}
+// 后端 schema 为准（PR #172 复审：此前手写并对 getUsers() 显式强转）
+type AdminUser = User
+type AdminHoldingRow = AdminHolding
 
 const loading = ref(false)
 const users = ref<AdminUser[]>([])
@@ -184,7 +175,7 @@ function getProfitClass(row: AdminHoldingRow): string {
 async function loadUsers() {
   try {
     const response = await api.getUsers()
-    users.value = (response.data as AdminUser[]).filter((user) => user.is_active)
+    users.value = response.data.filter((user) => user.is_active)
   } catch (error) {
     ElMessage.error('加载用户列表失败')
   }

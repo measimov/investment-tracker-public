@@ -1,0 +1,69 @@
+"""科目→行 id 映射契约：LLM 只能给 id；不存在的 id 剔除并记 unresolved；必需科目缺失判失败。"""
+
+import json
+
+import pytest
+
+from app.services import report_statement_prompts as prompts
+
+ROWS = {"income": ["r1", "r2", "r3"], "balance": ["r1", "r2"], "cashflow": ["r1"]}
+
+
+def test_valid_mapping_resolves_lists_strings_and_nulls():
+    content = json.dumps({
+        "income": {"total_revenue": ["r1"], "sga_exp": ["r2", "r3"], "ebitda": None, "basic_eps": "r3"},
+        "balance": {"total_assets": ["r2"], "total_debt": []},
+        "cashflow": {"n_cashflow_act": ["r1"], "not_a_field": ["r1"]},
+    })
+    mapping, unresolved = prompts.parse_statement_mapping(content, ROWS)
+    assert mapping["income"] == {"total_revenue": ["r1"], "sga_exp": ["r2", "r3"], "basic_eps": ["r3"]}
+    assert mapping["balance"] == {"total_assets": ["r2"]}
+    assert mapping["cashflow"] == {"n_cashflow_act": ["r1"]}
+    assert unresolved == []
+
+
+def test_unknown_ids_are_dropped_and_reported():
+    content = json.dumps({
+        "income": {"total_revenue": ["r1", "r99"], "int_exp": ["r42"], "income_tax": 12},
+        "balance": {"total_assets": ["r1"]},
+    })
+    mapping, unresolved = prompts.parse_statement_mapping(content, ROWS)
+    assert mapping["income"] == {"total_revenue": ["r1"]}
+    assert sorted(unresolved) == ["income.income_tax:type", "income.int_exp:r42", "income.total_revenue:r99"]
+    assert mapping["cashflow"] == {}  # 输出里没有的报表 → 空映射，不是错误
+
+
+@pytest.mark.parametrize("content, message", [
+    ("not json", "不是合法 JSON"),
+    ("[]", "必须是 JSON 对象"),
+    (json.dumps({"income": {"gross_profit": ["r1"]}, "balance": {"total_assets": ["r1"]}}), "income.total_revenue"),
+    (json.dumps({"income": {"total_revenue": ["r1"]}, "balance": {"money_cap": ["r1"]}}), "balance.total_assets"),
+    (json.dumps({"income": {"total_revenue": ["r7"]}, "balance": {"total_assets": ["r1"]}}), "income.total_revenue"),
+    (json.dumps({"income": "r1", "balance": {"total_assets": ["r1"]}}), "映射必须是对象"),
+])
+def test_invalid_outputs_raise(content, message):
+    with pytest.raises(ValueError, match=message):
+        prompts.parse_statement_mapping(content, ROWS)
+
+
+def test_required_fields_only_apply_to_present_statements():
+    content = json.dumps({"income": {"total_revenue": ["r1"]}})
+    mapping, _ = prompts.parse_statement_mapping(content, {"income": ["r1"]})
+    assert mapping == {"income": {"total_revenue": ["r1"]}}
+
+
+def test_messages_carry_rows_targets_and_schema():
+    statements = {
+        "income": {"unit_multiplier": 1000, "currency": "CNY", "columns": ["20251231 FY", "20241231 FY"],
+                   "rows": [{"id": "r1", "label": "收入", "values": ["100", "90"]}]},
+    }
+    messages = prompts.build_statement_messages(
+        symbol="00700", market="港股", report_type="annual", end_date="20251231", statements=statements
+    )
+    assert messages[0]["role"] == "system" and "只输出行 id" in messages[0]["content"]
+    user = messages[1]["content"]
+    assert '"id":"r1"' in user and '"total_revenue"' in user and "output_schema" in user
+    assert "balance" not in json.loads(user.split("```json\n")[1].rsplit("\n```", 1)[0])["targets"]
+    assert prompts.STATEMENT_PROMPT_VERSION >= 1
+    assert set(prompts.STATEMENT_FIELDS) == {"income", "balance", "cashflow"}
+    assert "free_cashflow" not in prompts.STATEMENT_FIELDS["cashflow"]  # 由代码推导，不让模型映射

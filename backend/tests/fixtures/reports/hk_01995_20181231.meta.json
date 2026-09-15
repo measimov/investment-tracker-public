@@ -1,0 +1,11 @@
+{
+  "market": "港股",
+  "symbol": "01995",
+  "end_date": "20181231",
+  "report_type": "annual",
+  "title": "2018年度報告",
+  "source_url": null,
+  "source_note": "披露易 2026-09 探针下载；pdfplumber extract_text 逐页，\\x0c 分页",
+  "pdf_bytes": 6081452,
+  "chars": 101066
+}

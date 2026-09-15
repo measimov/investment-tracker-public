@@ -88,9 +88,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
+      # schema 漂移检查：后端 OpenAPI 变了但没重新生成提交的类型文件就红。
+      # 后端依赖此时已装好（上一步为 E2E 装的），导出脚本直接可用。
+      # 用 status --porcelain 而不是 diff --exit-code：后者对"文件被删后重新
+      # 生成为 untracked"视而不见（PR #172 复审要求 fail-loud 覆盖该情形）。
+      - name: Check generated API types are current
+        working-directory: frontend
+        run: |
+          npm run generate:api-types
+          if [ -n "$(git status --porcelain src/types/api.generated.ts)" ]; then
+            echo "::error::src/types/api.generated.ts 与后端 OpenAPI 不一致，请运行 npm run generate:api-types 并提交"
+            git status --porcelain src/types/api.generated.ts
+            git diff src/types/api.generated.ts | head -100
+            exit 1
+          fi
+
       - name: Typecheck frontend
         working-directory: frontend
         run: npm run typecheck
+
+      - name: Run frontend unit tests
+        working-directory: frontend
+        run: npm run test:unit
 
       - name: Build frontend
         working-directory: frontend

@@ -22,6 +22,7 @@ from ..services.holding_service import (
     validate_no_oversell,
 )
 from ..core.deps import get_current_active_user
+from ..services.symbol_normalization import normalize_manual_symbol
 from ._ownership import ensure_record_is_mutable, get_owned_record, validate_owned_references
 
 router = APIRouter()
@@ -332,6 +333,13 @@ def update_transaction(
         # 新鲜的旧键
         old_symbol = db_transaction.symbol
         old_market = db_transaction.market
+
+        # 归一化与创建入口同口径：按合并后的有效 (symbol, market) 计算——
+        # 只改 market 不改 symbol 时（如误录市场后修正为港股）同样要补零
+        if "symbol" in update_data or "market" in update_data:
+            effective_market = update_data.get("market", old_market)
+            effective_symbol = update_data.get("symbol", old_symbol)
+            update_data["symbol"] = normalize_manual_symbol(effective_symbol, effective_market)
 
         validate_owned_references(db, current_user.id, update_data)
         candidate_data = {

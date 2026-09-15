@@ -226,6 +226,7 @@ import { ElMessage } from 'element-plus'
 import { Wallet, TrendCharts, DataLine, Coin } from '@element-plus/icons-vue'
 import api from '../api'
 import { getApiErrorMessage } from '../utils/apiErrors'
+import type { MarketStat } from '../types'
 import {
   profitColor,
   formatNumber,
@@ -236,12 +237,6 @@ import {
 import { CHART_FONT_FAMILY, CHART_PALETTE, chartTooltipCurrency } from '@/styles/tokens'
 
 use([CanvasRenderer, EChartsPieChart, TitleComponent, TooltipComponent, LegendComponent])
-
-interface MarketStat {
-  market: string
-  total_cost: number
-  [key: string]: unknown
-}
 
 interface ReconciliationBadge {
   status?: string

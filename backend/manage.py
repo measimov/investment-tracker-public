@@ -13,6 +13,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replay every user's holdings per broker account (run after the "
         "account-scoped-holdings migration)",
     )
+    dayquot = subcommands.add_parser(
+        "sync-hkex-dayquot",
+        help="Pull HKEX Daily Quotations (official HK closes) for tracked HK "
+        "securities over the last N days (site keeps ~1 month)",
+    )
+    dayquot.add_argument("--days", type=int, default=10, help="calendar days to look back")
+    catalog = subcommands.add_parser(
+        "sync-security-catalog",
+        help="Refresh the security catalog (Tushare basics + HKEX list of securities)",
+    )
+    catalog.add_argument("--market", action="append", help="limit to a market, repeatable")
+    catalog.add_argument("--source", action="append", help="limit to a loader source, repeatable")
+    catalog.add_argument(
+        "--no-force", action="store_true", help="skip sources refreshed within the interval"
+    )
     return parser
 
 
@@ -57,6 +72,59 @@ def rebuild_holdings() -> int:
     finally:
         db.close()
 
+def sync_hkex_dayquot(days: int) -> int:
+    from app.database import SessionLocal
+    from app.services.hkex_dayquot_source import sync_recent_dayquots
+
+    db = SessionLocal()
+    try:
+        result = sync_recent_dayquots(db, lookback_days=days, max_reports=days)
+    finally:
+        db.close()
+    print(
+        f"Universe {result['universe']} HK securities; processed {len(result['processed'])} "
+        f"report(s), already synced {len(result['skipped_done'])}, "
+        f"no report {len(result['no_report'])}."
+    )
+    for item in result["processed"]:
+        print(
+            f"  {item['report_date']}: stored {item['stored']}, missing {item['missing']}, "
+            f"suspended {item['suspended']}, unpriced {item['unpriced']}"
+        )
+        for conflict in item["conflicts"]:
+            print(
+                f"    CONFLICT {conflict['symbol']}: {conflict['existing_source']} "
+                f"{conflict['existing_close']} -> official {conflict['official_close']}"
+            )
+    for error in result["errors"]:
+        print(f"  ERROR {error['report_date']}: {error['error']}")
+    return 1 if result["errors"] else 0
+
+
+def sync_security_catalog(markets, sources, *, force: bool) -> int:
+    from app.database import SessionLocal
+    from app.services.security_catalog_service import sync_security_catalog as run_sync
+
+    db = SessionLocal()
+    try:
+        result = run_sync(db, markets=markets, sources=sources, force=force)
+    finally:
+        db.close()
+    failed = 0
+    for item in result["sources"]:
+        line = f"  {item['source']:<22s} {item['status']:<8s}"
+        if item["status"] == "ok":
+            line += f" seen={item['rows_seen']} upserted={item['rows_upserted']}"
+        elif item["status"] == "skipped":
+            line += f" reason={item.get('reason')}"
+        else:
+            failed += 1
+            line += f" error={item.get('error')}"
+        print(line)
+    print(f"Done in {result['duration_seconds']:.1f}s; {failed} source(s) failed.")
+    return 1 if failed else 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -70,6 +138,12 @@ def main() -> int:
 
     if args.command == "rebuild-holdings":
         return rebuild_holdings()
+
+    if args.command == "sync-hkex-dayquot":
+        return sync_hkex_dayquot(args.days)
+
+    if args.command == "sync-security-catalog":
+        return sync_security_catalog(args.market, args.source, force=not args.no_force)
 
     parser.error(f"Unknown command: {args.command}")
 

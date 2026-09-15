@@ -373,7 +373,8 @@ def to_tencent_quote_code(symbol: str, market: Market) -> str:
     raise ValueError(f"腾讯行情不支持市场类型: {market.value}")
 
 
-def parse_tencent_quote_price(text: str, quote_code: str) -> Decimal:
+def parse_tencent_quote_fields(text: str, quote_code: str) -> list:
+    """腾讯行情 `v_{code}="a~b~c~…";` 载荷 → 字段列表（字段[1] 为名称、[3] 为最新价）。"""
     marker = f'v_{quote_code}="'
     start = text.find(marker)
     if start < 0:
@@ -382,8 +383,50 @@ def parse_tencent_quote_price(text: str, quote_code: str) -> Decimal:
     end = text.find('";', start)
     if end < 0:
         raise ValueError(f"腾讯行情响应格式异常: {quote_code}")
+    return text[start:end].split("~")
 
-    fields = text[start:end].split("~")
+
+def to_tencent_name_code(symbol: str, market: str) -> Optional[str]:
+    """名称解析用的腾讯代码（比 to_tencent_quote_code 多支持美股 us{TICKER}）。
+    刻意不放宽 to_tencent_quote_code：价格链依赖它对美股抛 ValueError 走别的源。"""
+    text = str(symbol or "").strip().upper()
+    if not text:
+        return None
+    if market in {"A股", "B股"}:
+        return f"{get_exchange_type(text)}{text}"
+    if market == "港股":
+        code = text[:-3] if text.endswith(".HK") else text
+        return f"hk{code.zfill(5)}" if code.isdigit() else f"hk{code}"
+    if market == "美股":
+        return f"us{text}"
+    return None
+
+
+def fetch_tencent_quote_name(symbol: str, market: str) -> Optional[str]:
+    """按需取标的中文名（A/B/港/美）；任何失败返回 None，绝不上抛。
+    响应是 GBK：价格解析从不在乎编码，名称必须显式设定。"""
+    quote_code = to_tencent_name_code(symbol, market)
+    if quote_code is None:
+        return None
+    try:
+        session = get_session()
+        response = session.get(
+            TENCENT_QUOTE_URL.format(codes=quote_code),
+            headers={"Referer": "https://gu.qq.com/", "User-Agent": random.choice(USER_AGENTS)},
+            timeout=(3, 8),
+        )
+        response.raise_for_status()
+        response.encoding = "gbk"
+        fields = parse_tencent_quote_fields(response.text, quote_code)
+        name = fields[1].strip() if len(fields) > 1 else ""
+        return name or None
+    except Exception as exc:  # noqa: BLE001 - 名称是锦上添花
+        logger.warning("腾讯行情取名失败 %s/%s: %s", market, symbol, str(exc)[:160])
+        return None
+
+
+def parse_tencent_quote_price(text: str, quote_code: str) -> Decimal:
+    fields = parse_tencent_quote_fields(text, quote_code)
     if len(fields) < 4:
         raise ValueError(f"腾讯行情字段不足: {quote_code}")
     name = fields[1] if len(fields) > 1 else quote_code
@@ -608,6 +651,31 @@ def fetch_us_stock_price_tushare(symbol: str) -> PriceResult:
         return price_result(price=None, source="tushare-us_daily", success=False, error=error_msg)
 
 
+def fetch_us_stock_price(symbol: str) -> PriceResult:
+    """美股：Tushare us_daily 优先，雪球实时报价兜底。
+
+    腾讯行情不支持美股，所以在雪球接入前美股是唯一没有任何 fallback 的市场
+    （us_daily 还只是日线收盘，盘中并不实时）。雪球每次请求限速 2-4s 且全局
+    串行，因此只作兜底、不作首选。
+    """
+    tushare_result = fetch_us_stock_price_tushare(symbol)
+    if tushare_result["success"]:
+        return tushare_result
+
+    from .xueqiu_source import fetch_xueqiu_stock_price
+
+    xueqiu_result = fetch_xueqiu_stock_price(symbol, Market.US_STOCK)
+    if xueqiu_result["success"]:
+        return xueqiu_result
+
+    return price_result(
+        price=None,
+        source="all-failed",
+        success=False,
+        error=f"{tushare_result.get('error')}; {xueqiu_result.get('error')}",
+    )
+
+
 def fetch_crypto_price_tushare(symbol: str) -> PriceResult:
     """
     Fetch crypto price from Tushare coin_bar latest daily bar.
@@ -667,6 +735,8 @@ def fetch_stock_price(symbol: str, market: str) -> PriceResult:
         return fetch_a_stock_price(symbol, market_enum)
     elif market_enum == Market.HK_STOCK:
         return fetch_hk_stock_price(symbol)
+    elif market_enum == Market.US_STOCK:
+        return fetch_us_stock_price(symbol)
     else:
         return fetch_global_price_tushare(symbol, market_enum)
 

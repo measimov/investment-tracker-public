@@ -20,6 +20,17 @@
             </el-tag>
           </div>
           <div class="header-actions">
+            <el-tag v-if="watchState === 'watching'" type="success" effect="plain" size="small">
+              已在观察清单
+            </el-tag>
+            <el-button
+              v-else-if="watchState === 'not-watching'"
+              :icon="View"
+              data-testid="add-to-watchlist-button"
+              @click="addToWatchlist"
+            >
+              加入观察
+            </el-button>
             <el-button
               type="primary"
               :loading="generating"
@@ -241,6 +252,44 @@
           />
         </section>
 
+        <!-- 格雷厄姆防御型准则 × 塔勒布脆弱性信号（graham_screen 预计算） -->
+        <section
+          v-if="grahamScreen.status === 'ok'"
+          class="data-section"
+          data-testid="graham-screen-section"
+        >
+          <h3>
+            格雷厄姆防御型准则
+            <el-tag size="small" effect="plain" type="info">
+              达标 {{ grahamScreen.passed }} / {{ grahamCriteria.length }} · 数据年度
+              {{ grahamScreen.as_of_year }}
+            </el-tag>
+          </h3>
+          <el-table :data="grahamCriteria" size="small" stripe>
+            <el-table-column label="准则" min-width="150">
+              <template #default="{ row }">
+                {{ GRAHAM_CRITERIA_NAMES[row.criterion] || row.criterion }}
+              </template>
+            </el-table-column>
+            <el-table-column label="判定" width="90">
+              <template #default="{ row }">
+                <el-tag :type="grahamVerdictTag(row.verdict)" size="small">
+                  {{ GRAHAM_VERDICT_LABELS[row.verdict] || row.verdict }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="依据" min-width="300">
+              <template #default="{ row }">
+                <span :class="{ 'red-flag': row.verdict === 'fail' }">{{ row.reason }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-if="fragilityParts.length" class="quality-footnote">
+            脆弱性信号：{{ fragilityParts.join('；') }}
+            （口径与含义见 AI 分析「非对称性与脆弱性」章节；不可判定 = 数据源边界，非达标）
+          </div>
+        </section>
+
         <!-- 利润质量指标 -->
         <section class="data-section" data-testid="earnings-quality-section">
           <h3>利润质量指标（红色 = 触及红旗阈值）</h3>
@@ -345,9 +394,10 @@
           data-testid="pivot-statements-section"
         >
           <h3>
-            年度核心科目（{{ market === '美股' ? 'SEC XBRL' : '雅虎财经' }}，单位
-            {{ pivotCurrency || '原币' }} 亿<template v-if="market === '港股'"
-              >；非官方接口，<strong>仅近 3-5 年</strong>——更长周期请看下方财报摘要</template
+            年度核心科目（{{
+              market === '美股' ? 'SEC XBRL' : '披露易年报/中报原文抽取 + 雅虎补缺'
+            }}，单位 {{ pivotCurrency || '原币' }} 亿<template v-if="market === '港股'"
+              >；生成分析时自动抽取年报三张表，覆盖可达十年，雅虎行仅补缺</template
             >）
           </h3>
           <el-table :data="pivotRows" size="small" stripe>
@@ -501,17 +551,22 @@
             </el-descriptions-item>
           </el-descriptions>
         </section>
+
+        <el-divider />
+        <OpinionSection :symbol="symbol" :market="market" />
       </template>
     </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ArrowLeft } from '@element-plus/icons-vue'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft, View } from '@element-plus/icons-vue'
+import OpinionSection from './security-detail/OpinionSection.vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
+import { useAliveGuard } from '../composables/useAliveGuard'
 import { getApiErrorMessage } from '../utils/apiErrors'
 import { renderMarkdown } from '@/utils/markdown'
 import { formatDateTime, formatNumber, toNumber } from '../utils/helpers'
@@ -565,9 +620,114 @@ const digestProgress = ref<{ digested: number; failed_capped: number }>({
   failed_capped: 0
 })
 const earningsQuality = ref<ProfileRow>({})
+
+// 观察状态三态：unknown（清单未加载完）期间不渲染按钮，防止先闪"加入观察"
+// 再变"已在观察"的抖动
+const watchState = ref<'unknown' | 'watching' | 'not-watching'>('unknown')
+
+// 观察状态请求纳入路由代次守卫（评审 P2）：快照当前 (market, symbol, generation)，
+// 快速同业跳转时旧响应晚到不得覆盖新标的的状态；走轻量 membership 端点，
+// 不为判断"在不在"拉整份 enriched 列表
+async function loadWatchState() {
+  const generation = requestGeneration
+  const targetMarket = market.value
+  const targetSymbol = symbol.value
+  try {
+    const response = await api.watchlistContains(targetSymbol, targetMarket)
+    if (isStale(generation)) return
+    watchState.value = response.data.watching ? 'watching' : 'not-watching'
+  } catch {
+    // 观察状态是锦上添花：失败保持 unknown，不打断详情页主流程
+  }
+}
+
+async function addToWatchlist() {
+  // 打开 prompt **之前**快照身份与代次（评审 P2 二轮）：prompt 挂起期间用浏览器
+  // 前进/后退切到同组件的 B 页再确认，晚快照会读到 B 的 symbol/generation，
+  // 把为 A 输入的理由加到 B 且 isStale 不会触发。prompt 返回后先判 stale 再 POST。
+  const generation = requestGeneration
+  const targetMarket = market.value
+  const targetSymbol = symbol.value
+  const targetName = analysis.value?.name || null
+  let note = ''
+  try {
+    // ElMessageBox.prompt 的返回类型是宽联合，value 需显式收窄
+    const result = (await ElMessageBox.prompt(
+      '观察理由/买入条件（可留空，之后可在观察清单页编辑）',
+      '加入观察',
+      {
+        confirmButtonText: '加入',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '如：等待 PB 回到 1.2 以下'
+      }
+    )) as { value?: string }
+    note = (result.value || '').trim()
+  } catch {
+    return // 用户取消
+  }
+  if (isStale(generation)) return // prompt 期间已离开该标的：不代它加入
+  try {
+    await api.addWatchlistItem({
+      symbol: targetSymbol,
+      market: targetMarket,
+      name: targetName,
+      note: note || null
+    })
+    if (isStale(generation)) return
+    watchState.value = 'watching'
+    ElMessage.success('已加入观察清单')
+  } catch (error) {
+    if (isStale(generation)) return
+    ElMessage.error(getApiErrorMessage(error, '加入观察失败'))
+  }
+}
+const grahamScreen = ref<ProfileRow>({})
+
+const GRAHAM_CRITERIA_NAMES: Record<string, string> = {
+  current_ratio: '流动比率 ≥ 2',
+  lt_debt_vs_net_current_assets: '长期债务 ≤ 净流动资产',
+  earnings_stability: '盈利稳定（十年为正）',
+  dividend_record: '连续分红记录',
+  earnings_growth: '盈利增长 ≥ 1/3',
+  pe: '市盈率 ≤ 15',
+  pb_or_product: '市净率 ≤ 1.5（或 PE×PB ≤ 22.5）'
+}
+const GRAHAM_VERDICT_LABELS: Record<string, string> = {
+  pass: '达标',
+  fail: '不达标',
+  indeterminate: '不可判定'
+}
+function grahamVerdictTag(verdict: string) {
+  if (verdict === 'pass') return 'success'
+  if (verdict === 'fail') return 'danger'
+  return 'info'
+}
+const grahamCriteria = computed(
+  () => (grahamScreen.value.criteria || []) as Array<Record<string, unknown>>
+)
+// 脆弱性信号拼展示串：只列有值的量化项，note 类字段原样透传
+const fragilityParts = computed(() => {
+  const fragility = (grahamScreen.value.fragility || {}) as Record<string, unknown>
+  const parts: string[] = []
+  if (typeof fragility.debt_to_assets === 'number')
+    parts.push(`总负债率 ${(fragility.debt_to_assets * 100).toFixed(1)}%`)
+  if (typeof fragility.net_debt_to_assets === 'number')
+    parts.push(
+      `净债务/总资产 ${(fragility.net_debt_to_assets * 100).toFixed(1)}%` +
+        (fragility.net_debt_to_assets < 0 ? '（净现金）' : '')
+    )
+  if (typeof fragility.interest_coverage === 'number')
+    parts.push(`利息覆盖 ${fragility.interest_coverage} 倍`)
+  if (typeof fragility.net_cash_to_market_cap === 'number')
+    parts.push(`净现金/市值 ${(fragility.net_cash_to_market_cap * 100).toFixed(1)}%`)
+  if (typeof fragility.interest_coverage_note === 'string')
+    parts.push(fragility.interest_coverage_note)
+  return parts
+})
 const backfilling = ref(false)
 const backfillResult = ref<ProfileRow | null>(null)
-let isUnmounted = false
+const { isUnmounted } = useAliveGuard()
 
 // 与后端 report_digest_prompts.DIGEST_FIELDS 同序（关键数字单列）
 const DIGEST_FIELD_ORDER = [
@@ -591,7 +751,32 @@ const pivotRows = computed<ProfileRow[]>(() => {
   if (market.value === '美股') {
     return (profileDatasets.value.edgar_companyfacts || []).filter((row) => row.fp === 'FY')
   }
-  if (market.value === '港股') return profileDatasets.value.yahoo_fundamentals || []
+  if (market.value === '港股') {
+    // 与后端 merge_hk_statement_rows 同口径：按**科目**合并——PDF 抽取行有值的科目优先，
+    // 雅虎补 PDF 没有的科目（只处理了中报时 FY 行可能只有资产负债表），同期不同币种不混
+    const byPeriod = new Map<string, ProfileRow>()
+    for (const row of (profileDatasets.value.report_statements || []).filter(
+      (r) => r.fp === 'FY'
+    )) {
+      byPeriod.set(String(row.end_date), { ...row })
+    }
+    for (const row of profileDatasets.value.yahoo_fundamentals || []) {
+      const key = String(row.end_date)
+      const pdf = byPeriod.get(key)
+      if (!pdf) {
+        byPeriod.set(key, { ...row })
+        continue
+      }
+      // 双方币种都已知且一致才逐科目补数；任一侧未知或不同 → PDF 行原样，不借金额也不贴币种
+      if (!pdf.currency || !row.currency || pdf.currency !== row.currency) continue
+      for (const [field, value] of Object.entries(row)) {
+        if (value != null && pdf[field] == null) pdf[field] = value
+      }
+    }
+    return [...byPeriod.values()].sort((a, b) =>
+      String(b.end_date).localeCompare(String(a.end_date))
+    )
+  }
   return []
 })
 const pivotCurrency = computed(() => pivotRows.value[0]?.currency || '')
@@ -786,7 +971,7 @@ function nextGeneration(): number {
 }
 
 function isStale(generation: number): boolean {
-  return isUnmounted || generation !== requestGeneration
+  return isUnmounted() || generation !== requestGeneration
 }
 
 async function loadAnalysis(generation: number) {
@@ -813,6 +998,7 @@ async function loadProfile(generation: number) {
     reportDigests.value = response.data.report_digests || []
     digestProgress.value = response.data.digest_progress || { digested: 0, failed_capped: 0 }
     earningsQuality.value = response.data.earnings_quality || {}
+    grahamScreen.value = response.data.graham_screen || {}
   } catch (error) {
     if (isStale(generation)) return
     ElMessage.error(getApiErrorMessage(error, '加载标的档案失败'))
@@ -887,8 +1073,8 @@ async function generateAnalysis() {
 }
 
 onMounted(() => {
-  isUnmounted = false
   reloadAll()
+  loadWatchState()
 })
 
 // 同业跳转复用同一路由组件：参数变化时清空并重载（旧标的的在途请求由
@@ -907,16 +1093,17 @@ watch(
     reportDigests.value = []
     digestProgress.value = { digested: 0, failed_capped: 0 }
     earningsQuality.value = {}
+    grahamScreen.value = {} // 评审 P2：与其他 profile 派生态一起清空，防旧标的准则卡残留
+    watchState.value = 'unknown'
     generating.value = false
     backfilling.value = false
     analysisJob.value = null
     reloadAll()
+    // 必须在 reloadAll 之后：它快照的是 reloadAll 刚推进的新代次；放在前面
+    // 会拿到旧代次，自己的响应回来就被 isStale 丢弃
+    loadWatchState()
   }
 )
-
-onUnmounted(() => {
-  isUnmounted = true
-})
 </script>
 
 <style scoped>

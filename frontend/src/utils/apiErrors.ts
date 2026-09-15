@@ -19,13 +19,9 @@ interface DetailItem {
   message?: string
 }
 
-export function getApiErrorMessage(error: unknown, fallback = '请求失败，请稍后重试'): string {
+/** 只从后端 response.data.detail 提取消息；没有 detail 返回 null。 */
+function messageFromDetail(error: unknown): string | null {
   const err = error as Partial<NormalizedApiError> | null | undefined
-
-  if (err?.userMessage) {
-    return err.userMessage
-  }
-
   const detail = err?.response?.data?.detail
 
   if (typeof detail === 'string' && detail.trim()) {
@@ -40,14 +36,21 @@ export function getApiErrorMessage(error: unknown, fallback = '请求失败，�
   }
 
   if (detail && typeof detail === 'object') {
-    return detail.message || detail.error || fallback
+    return detail.message || detail.error || null
   }
 
-  if (err?.message) {
-    return err.message
+  return null
+}
+
+export function getApiErrorMessage(error: unknown, fallback = '请求失败，请稍后重试'): string {
+  const err = error as Partial<NormalizedApiError> | null | undefined
+
+  if (err?.userMessage) {
+    return err.userMessage
   }
 
-  return fallback
+  // message 用 ||：空串也应落到兜底文案
+  return messageFromDetail(error) ?? (err?.message || fallback)
 }
 
 export function normalizeApiError(error: AxiosError): NormalizedApiError {
@@ -58,11 +61,14 @@ export function normalizeApiError(error: AxiosError): NormalizedApiError {
   } else if (!error.response) {
     userMessage = '网络连接失败，请检查网络'
   } else if (error.response.status === 403) {
-    userMessage = getApiErrorMessage(error, '没有权限执行此操作')
+    // 状态码分支不走 getApiErrorMessage：Axios 的 error.message 永远非空
+    // （"Request failed with status code 403"），途经它的话中文兜底永远
+    // 轮不上，用户会看到英文原文（单测揪出的实际行为）
+    userMessage = messageFromDetail(error) ?? '没有权限执行此操作'
   } else if (error.response.status === 503) {
-    userMessage = getApiErrorMessage(error, '服务暂时不可用，请稍后重试')
+    userMessage = messageFromDetail(error) ?? '服务暂时不可用，请稍后重试'
   } else if (error.response.status >= 500) {
-    userMessage = getApiErrorMessage(error, '服务器错误，请稍后重试')
+    userMessage = messageFromDetail(error) ?? '服务器错误，请稍后重试'
   } else {
     userMessage = getApiErrorMessage(error, error.message)
   }

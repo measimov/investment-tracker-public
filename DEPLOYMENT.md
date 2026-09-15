@@ -189,8 +189,26 @@ BACKUP_MODE=postgres ./backup.sh
 脚本会先写入 `.dump.partial`，同步等待 `pg_dump` 成功，再用
 `pg_restore --file=/dev/null` 完整读检。只有读检通过才会原子改名为 `.dump`，并生成
 配套的 `.sha256` 文件。存在 `.partial` 只表示一次未完成或未通过验证的备份，不能用于恢复。
-脚本优先使用本机的 PostgreSQL 客户端和 `DATABASE_URL`；本机未安装客户端时，会使用正在运行的
-`backend` 容器及其数据库连接配置，连接串不会写入备份日志。
+脚本使用本机的 PostgreSQL 客户端和 `DATABASE_URL`。
+
+**部署机没有 pg 客户端时脚本会直接报错**——`backend` 镜像刻意不含 pg_dump
+（2026-08-11 生产升级实锤，别指望容器回退）。此时用一次性 `postgres:16` 容器
+直连数据库备份，遵循同一套「`.partial` → 读检 → 原子改名 → SHA256」纪律：
+
+```bash
+URL=$(docker compose exec -T backend python -c 'from app.config import settings; print(settings.database_url)')
+docker run --rm -v "$HOME/backups:/backups" postgres:16 \
+  pg_dump "$URL" -Fc -f /backups/investment_$(date +%Y%m%d_%H%M%S).dump.partial
+```
+
+**数据库实例被多个项目共享时必须做表级备份**（整库 dump 既大、恢复面也不可控）：
+表清单不要手抄，直接从模型元数据生成后拼 `-t public.<表名>` 参数——
+
+```bash
+docker compose exec -T backend python -c 'from app.database import Base; import app.models; print(" ".join(sorted(Base.metadata.tables)))'
+```
+
+再加上 `alembic_version`。恢复同样只允许精确到本项目的表。
 
 恢复前先核验 SHA256，并优先恢复到新建的空数据库演练：
 
@@ -222,6 +240,12 @@ Excel 只是便于人工查阅的补充导出，不能替代包含完整应用�
 ./backup.sh
 
 git pull
+
+# 让 /health 的 build 字段可溯源（compose 运行时读 .env 的 BUILD_SHA）
+SHA=$(git rev-parse --short HEAD)
+grep -q '^BUILD_SHA=' .env && sed -i '' "s/^BUILD_SHA=.*/BUILD_SHA=$SHA/" .env \
+  || printf '\nBUILD_SHA=%s\n' "$SHA" >> .env
+
 docker compose build
 
 # 从 root 镜像升级到非 root 镜像时的一次性权限迁移（#143）：
@@ -257,6 +281,14 @@ curl --cacert "$APP_CA_CERT" https://<app-host>/health
 docker compose run --rm backend alembic upgrade head
 docker compose up -d
 ```
+
+### 后端启动/迁移报 PermissionError: '/app/app/...'
+
+宿主检出的源码文件带 600 权限（历史 umask 遗留）且镜像是修复前构建的：
+容器内 uid 10001 读不了 root 属主的 600 文件。当前 Dockerfile 已在构建期
+`chmod -R u+rwX,go+rX /app` 兜底，重新 `docker compose build` 即可；顺手把
+宿主仓库也归一化（`chmod -R u+rwX,go+rX backend frontend nginx`），避免
+用旧镜像时复发。
 
 ### 数据库连接失败
 

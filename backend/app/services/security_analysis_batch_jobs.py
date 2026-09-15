@@ -58,6 +58,10 @@ ANALYSIS_EXCLUSIVE_JOB_TYPES = [
     "security_analysis_batch",
     "report_digest_backfill",
     "report_digest_batch",
+    # 观点摘要只打 LLM 不打数据源，但共享 LLM 配额，且慢车道测试强制
+    # SLOW_LANE == set(EXCLUSIVE)，纳入互斥是正确语义
+    "opinion_summary",
+    "opinion_summary_batch",
 ]
 
 # 连续失败早停：每只标的耗时 1.5-12 分钟且花 LLM token，5 连败等于白烧一小时，
@@ -377,14 +381,29 @@ def get_batch_analysis_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]
     return get_job(job_id, JOB_TYPE, user_id)
 
 
-def ensure_no_conflicting_analysis_job(user_id: int, current_job_type: str) -> None:
+# 分析家族互斥预检的事务级顾问锁 key（int4；与 user_id 组成两段键）。
+# 任意常量即可，只要全仓唯一；与 users.py 的 _ADMIN_GUARD_LOCK_KEY 不同号。
+_ANALYSIS_GUARD_LOCK_KEY = 0x414E_4C59  # b"ANLY"
+
+
+def ensure_no_conflicting_analysis_job(db: Session, user_id: int, current_job_type: str) -> None:
     """分析类任务跨类型互斥：冲突时抛 AnalysisBusyError（API 映射 409）。
 
-    残余竞态（两个并发请求都通过预检）只会造成外部 API 双倍消耗、无数据损坏；
-    要收严可在建 job 的同一事务里加 pg_advisory_xact_lock。
+    check-then-create 跨 session 的残余竞态（两个**不同类型**的并发请求都通过
+    预检、各建一个 job）由 `pg_advisory_xact_lock` 关死（issue #145；同类型
+    本就由 partial unique index 兜住）：锁在**请求的事务**里持有直到请求结束，
+    而建 job 的 store session 在返回前已各自 commit——第二个并发请求在锁上
+    排队，拿到锁时必能看到先者已提交的活跃 job，从而 409。四类任务动辄数十
+    分钟且直接烧钱，双倍打外部 API 不可接受。
     """
+    from sqlalchemy import text as sa_text
+
     from .background_job_store import find_active_job_of_types
 
+    db.execute(
+        sa_text("SELECT pg_advisory_xact_lock(:key, :uid)"),
+        {"key": _ANALYSIS_GUARD_LOCK_KEY, "uid": user_id},
+    )
     active = find_active_job_of_types(
         user_id, ANALYSIS_EXCLUSIVE_JOB_TYPES, exclude_job_type=current_job_type
     )
@@ -395,6 +414,8 @@ def ensure_no_conflicting_analysis_job(user_id: int, current_job_type: str) -> N
         "security_analysis_batch": "批量分析",
         "report_digest_backfill": "财报摘要回填",
         "report_digest_batch": "批量财报摘要回填",
+        "opinion_summary": "观点摘要",
+        "opinion_summary_batch": "批量观点摘要",
     }
     label = labels.get(active.get("type"), active.get("type"))
     raise AnalysisBusyError(

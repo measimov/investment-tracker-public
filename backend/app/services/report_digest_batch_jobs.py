@@ -39,6 +39,7 @@ from .report_digest_service import (
     digest_versions_current,
     ensure_report_digests,
 )
+from .report_statement_service import STATEMENT_MARKETS, ensure_report_statements
 from .security_analysis_batch_jobs import (
     MAX_CONSECUTIVE_FAILURES,
     RESULTS_KEPT,
@@ -48,6 +49,31 @@ from .security_analysis_batch_jobs import (
 
 logger = get_app_logger(__name__)
 JOB_TYPE = "report_digest_batch"
+
+
+def _attach_statement_outcome(db, target: Dict[str, Any], outcome: Dict[str, Any]) -> None:
+    """港股顺带抽三张报表（同一成本护栏）：结果挂在 outcome["statements"]，缺口并入 gaps，
+    fatal 与摘要同词汇表向上传递。报表管线自身的意外异常不拖垮本标的的摘要结果。"""
+    try:
+        statements = ensure_report_statements(
+            db, target["symbol"], target["market"], max_new=DIGEST_BATCH_PER_SYMBOL,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "批量回填报表抽取意外失败 %s/%s: %s",
+            target["market"], target["symbol"], str(exc)[:200],
+        )
+        outcome["gaps"] = list(outcome.get("gaps") or []) + ["[报表抽取] 管线异常，本轮未抽取报表"]
+        return
+    outcome["statements"] = {
+        key: statements.get(key)
+        for key in ("total", "completed", "generated", "failed", "permanently_failed")
+    }
+    outcome["gaps"] = list(outcome.get("gaps") or []) + [
+        f"[报表抽取] {gap}" for gap in statements.get("gaps", [])
+    ]
+    if statements.get("fatal"):
+        outcome["fatal"] = statements["fatal"]
 
 # 每标的每轮最多补几份（与单标的回填 BACKFILL_BATCH_SIZE 一致）。
 # 33 标的 × 4 份 ≈ 130 份/轮：单轮 2-4 小时、约 6-7 元，商业画像与财报要点
@@ -201,6 +227,8 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                     db, target["symbol"], target["market"],
                     max_new=DIGEST_BATCH_PER_SYMBOL,
                 )
+                if target["market"] in STATEMENT_MARKETS and not outcome.get("fatal"):
+                    _attach_statement_outcome(db, target, outcome)
             except Exception as exc:
                 # ensure_report_digests 把下载/抽取/LLM 失败都消化成 gaps，
                 # 走到这里的是意外错误——记本标的失败，继续下一只
@@ -322,6 +350,8 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                         "blocked": blocked,
                         "remaining": outcome.get("remaining"),
                         "gap_count": len(gaps),
+                        # 港股顺带的三张报表抽取结果（其他市场为 None）
+                        "statements": outcome.get("statements"),
                         "elapsed_seconds": elapsed,
                     })
 

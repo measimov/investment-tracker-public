@@ -8,7 +8,10 @@ server {
     server_name ${NGINX_SERVER_NAME};
 
     location / {
-        return 301 https://$host$request_uri;
+        # 必须带 ${NGINX_HTTPS_PORT}（compose 由 FRONTEND_HTTPS_PORT 透传）：
+        # 非 443 部署（如 8080/8443）下裸 $host 会把用户跳到 443 上的别家服务。
+        # 443 时多出的 ":443" 会被浏览器规范化掉，无副作用。
+        return 301 https://$host:${NGINX_HTTPS_PORT}$request_uri;
     }
 }
 
@@ -22,6 +25,10 @@ server {
 
     ssl_certificate /etc/nginx/ssl/fullchain.pem;
     ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+
+    # 浏览器对不带协议的 "host:8443" 默认走 HTTP，打到本 HTTPS 端口会触发
+    # nginx 专用的 497；不接住就是一页裸 400。重定向回 HTTPS 同一入口。
+    error_page 497 =301 https://$host:${NGINX_HTTPS_PORT}$request_uri;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers on;

@@ -16,8 +16,12 @@ from .reconciliation_snapshot import ReconciliationSnapshot
 from .security_rule import SecurityRule
 from .llm_report import LlmReport, LlmReportMessage, LlmReportSchedule
 from .corporate_action_suggestion import CorporateActionSuggestion
+from .watchlist_item import WatchlistItem
 from .security_event import SecurityEvent
 from .security_profile import SecurityAnalysis, SecurityProfileData
+from .security_opinion import SecurityOpinionSummary
+from .hkex_dayquot_report import HkexDayquotReport
+from .security_catalog import SecurityCatalogEntry, SecurityCatalogSync
 
 __all__ = [
     "Transaction",
@@ -39,7 +43,12 @@ __all__ = [
     "LlmReportMessage",
     "LlmReportSchedule",
     "CorporateActionSuggestion",
+    "WatchlistItem",
     "SecurityEvent",
     "SecurityAnalysis",
     "SecurityProfileData",
+    "SecurityOpinionSummary",
+    "HkexDayquotReport",
+    "SecurityCatalogEntry",
+    "SecurityCatalogSync",
 ]

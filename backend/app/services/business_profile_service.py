@@ -20,6 +20,10 @@ from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
 from ..models.security_profile import SecurityProfileData
+from .business_profile_prompts import (
+    BUSINESS_PROFILE_SYSTEM_PROMPT,
+    PROFILE_PROMPT_VERSION,
+)
 from .llm_client import chat_completion
 from .report_digest_service import load_report_digests
 from .security_profile_service import load_symbol_profile, upsert_profile_row
@@ -37,6 +41,8 @@ PROFILE_FIELDS = ("商业模式", "行业与竞争", "供应商集中度", "客�
 
 # 数组字段的输出契约：(字段, 最少项, 最多项, 每项必需的字符串键)
 # prompt 声明的下限必须在解析层强制执行——JSON mode 只保证语法。
+# 改这里（输出 schema）与改 prompt 同责：必须 bump PROFILE_PROMPT_VERSION
+# （见 business_profile_prompts.py），否则输入未变的标的永远命中旧缓存。
 PROFILE_ARRAY_SPECS = (
     ("业务分部", 2, 6, ("名称", "收入占比", "毛利率", "趋势")),
     ("上游依赖", 1, 4, ("要素", "影响")),
@@ -44,19 +50,6 @@ PROFILE_ARRAY_SPECS = (
     ("估值观察因子", 2, 5, ("因子", "方向", "传导")),
 )
 
-BUSINESS_PROFILE_SYSTEM_PROMPT = """你是商业画像分析助手。只依据用户提供的财报摘要、业务概要原文节选与财务科目数据，为一家上市公司生成结构化商业画像；禁止引入任何对该公司的先验知识，原文与数据未提及的写"数据未提及"。
-
-输出严格 JSON（无 markdown 围栏）：
-{"商业模式": "怎么赚钱：产品/服务、定价方式、渠道，≤300字",
- "业务分部": [{"名称": "...", "收入占比": "如 35%（数据未提及则写'未披露'）", "毛利率": "...", "趋势": "上升|下降|平稳|未知"}],
- "上游依赖": [{"要素": "原材料/采购项/资金来源", "影响": "对成本或毛利的传导说明"}],
- "下游需求": [{"客群或场景": "...", "需求驱动": "..."}],
- "供应商集中度": "如'前五供应商占比 X%'；未披露则写'未披露'",
- "客户集中度": "同上",
- "行业与竞争": "报告自述的行业格局与竞争位置（注明为公司自述口径）",
- "估值观察因子": [{"因子": "具体可跟踪变量（如某原材料价格/某行业需求指标）", "方向": "上游成本|下游需求|政策|其他", "传导": "→毛利率 / →收入增速 等传导说明"}]}
-
-业务分部 2-6 项、上游依赖/下游需求各 1-4 项、估值观察因子 2-5 项。"""
 
 
 def build_business_profile_input(db: Session, symbol: str, market: str) -> Dict[str, Any]:
@@ -176,8 +169,14 @@ def ensure_business_profile(db: Session, symbol: str, market: str) -> Optional[D
     fingerprint = input_fingerprint(payload_input)
     stored = row.payload if row else None
     if stored and stored.get("status") == "ok":
-        if stored.get("input_fingerprint") == fingerprint:
-            return stored.get("profile")  # 缓存命中（输入内容未变）
+        # 命中要求输入指纹与 prompt 版本同时匹配（issue #145）：只比输入会让
+        # prompt/输出 schema 变更后，输入未变的标的永远命中旧缓存。缺字段当 v1。
+        stored_prompt_version = stored.get("prompt_version") or "1"
+        if (
+            stored.get("input_fingerprint") == fingerprint
+            and stored_prompt_version == PROFILE_PROMPT_VERSION
+        ):
+            return stored.get("profile")  # 缓存命中（输入与 prompt 版本均未变）
 
     try:
         completion = chat_completion(
@@ -199,6 +198,7 @@ def ensure_business_profile(db: Session, symbol: str, market: str) -> Optional[D
             "profile": profile,
             "source_end_date": payload_input["source_end_date"],
             "input_fingerprint": fingerprint,
+            "prompt_version": PROFILE_PROMPT_VERSION,
             "model": completion.get("model"),
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         })

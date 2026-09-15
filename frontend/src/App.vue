@@ -123,8 +123,10 @@ import { useAuthStore } from './stores/auth'
 import { useAppStatusStore } from './stores/appStatus'
 import { ElMessage } from 'element-plus'
 import {
+  ChatDotRound,
   Close,
   DataBoard,
+  View,
   MagicStick,
   DocumentCopy,
   List,
@@ -152,6 +154,8 @@ const navItems = [
   { path: '/transactions', label: '交易记录', icon: List },
   { path: '/corporate-actions', label: '公司行动', icon: DocumentCopy },
   { path: '/holdings', label: '当前持仓', icon: Wallet },
+  { path: '/watchlist', label: '观察清单', icon: View },
+  { path: '/opinions', label: '雪球观点', icon: ChatDotRound },
   { path: '/statistics', label: '统计分析', icon: TrendCharts },
   { path: '/reports', label: 'AI 复盘', icon: MagicStick },
   { path: '/exchange-rates', label: '汇率管理', icon: Money },

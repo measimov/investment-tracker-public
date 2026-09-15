@@ -44,6 +44,30 @@ class Settings(BaseSettings):
     # SEC EDGAR（美股基本面/10-K）：合规要求 UA 携带联系方式
     edgar_user_agent: str = ""
 
+    # 雪球数据源（stock.xueqiu.com）：免签名，但需登录态 Cookie，且不自动刷新。
+    # 二选一，XUEQIU_COOKIES 优先；两者都空 = 关闭该数据源（所有入口显式降级）。
+    #
+    # 生产建议用 COOKIE_FILE 且存浏览器插件的完整导出：探活脚本要读 expirationDate
+    # 才能在 xq_a_token（约 15 天寿命）过期**前**告警，{name: value} 形状没有这个
+    # 字段，只能等接口开始报错才发现。
+    xueqiu_cookies: str = ""
+    xueqiu_cookie_file: str = ""
+    # 上游限速：库内部按 [min, max] 随机间隔串行发请求，勿调低
+    xueqiu_min_delay_seconds: float = 2.0
+    xueqiu_max_delay_seconds: float = 4.0
+    xueqiu_timeout_seconds: float = 20.0
+    # Cookie 到期告警阈值（天），供 scripts/check_xueqiu_cookie_expiry.py 使用
+    xueqiu_cookie_warn_days: float = 7.0
+    xueqiu_cookie_critical_days: float = 3.0
+
+    # 雪球观点摘要（数据来自 xueqiu-timeline-archiver 写入同库的
+    # xueqiu_archiver_utterances 表，本应用只读）
+    xueqiu_opinion_recent_days: int = 30  # 近期窗口：转多/转空判断的分界
+    xueqiu_opinion_lookback_days: int = 180  # 喂给 LLM 的总回看深度
+    # archiver cron 停摆预警阈值：max(last_seen_at) 超过该时长未刷新即告警。
+    # cron 是日更节奏，48h = 容忍两次失败后再报
+    xueqiu_opinion_stale_hours: int = 48
+
     # 分红公告同步（Tushare dividend；仅 A/B 股）
     dividend_sync_lookback_days: int = 365
     dividend_sync_match_window_days: int = 30
@@ -88,6 +112,16 @@ class Settings(BaseSettings):
     # 于是客户端拿到一张"看着有效"的 token，下一次 /me 立刻 401——最难查的
     # 那种坏法。让它在启动时直接失败。
     session_absolute_max_hours: int = Field(default=168, gt=0)  # 7 天
+    # 港交所《每日行情报表》：港股收盘价的官方 T+1 源（免 token/Cookie）。
+    # 周期同步只推进已跟踪标的（持仓∪自选）的尾部；站点存档约一个月，
+    # 深历史仍走用户触发的 history-sync。每 tick 最多下载 N 份（25MB/份）
+    hkex_dayquot_sync_enabled: bool = True
+    hkex_dayquot_lookback_days: int = 10
+    hkex_dayquot_max_reports_per_tick: int = 5
+    # 标的全集（security_catalog）：Tushare 三张基础表 + 港交所證券名單，每周刷新
+    # （6h tick 按 last_success_at 判新鲜，重启不重拉）；manage.py sync-security-catalog 手动
+    security_catalog_sync_enabled: bool = True
+    security_catalog_sync_interval_hours: int = 168
     price_refresh_max_workers: int = 4
     # 主动刷新股价的新鲜度窗口：窗口内重复请求跳过（防连点浪费配额）
     price_refresh_freshness_seconds: int = 600

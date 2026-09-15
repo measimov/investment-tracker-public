@@ -1,0 +1,11 @@
+{
+  "market": "港股",
+  "symbol": "00700",
+  "end_date": "20141231",
+  "report_type": "annual",
+  "title": "2014年報",
+  "source_url": null,
+  "source_note": "披露易 2026-09 探针下载；pdfplumber extract_text 逐页，\\x0c 分页；附註节含「42 綜合現金流量表」同名小节标题",
+  "pdf_bytes": 3255722,
+  "chars": 137800
+}

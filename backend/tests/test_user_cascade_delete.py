@@ -20,6 +20,7 @@ from app.models.cash_event import CashEvent
 from app.models.corporate_action import CorporateAction
 from app.models.corporate_action_suggestion import CorporateActionSuggestion
 from app.models.security_rule import SecurityRule
+from app.models.watchlist_item import WatchlistItem
 from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.import_batch import ImportBatch
@@ -48,6 +49,7 @@ USER_SCOPED_TABLES = [
     "llm_reports",
     "reconciliation_snapshots",
     "transactions",
+    "watchlist_items",
 ]
 
 
@@ -137,6 +139,12 @@ def doomed_user():
             market="A股",
             action_type="CASH_DIVIDEND",
             ex_date=date(2026, 3, 1),
+        ),
+        WatchlistItem(
+            user_id=uid,
+            symbol="600WATCH",
+            market="A股",
+            note="级联删除固件",
         ),
         LlmReportSchedule(user_id=uid, cadence="weekly"),
         LlmReportMessage(report_id=report.id, user_id=uid, role="user", content="q"),

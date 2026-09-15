@@ -4,7 +4,8 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`110f6523a7aad0b781425abaef7414cd003859b7` (2026-08-09).
+`bd82291` (2026-09-15), plus the optional-dependency change from private
+PR #204 (`xueqiu_source` degrades explicitly when `xueqiu-market` is absent).
 
 Before syncing a new public release:
 
@@ -33,3 +34,11 @@ Public-only adaptations:
   filings; they do not contain broker statements or user portfolio data.
 - Treat the squashed `20260728_0001_initial_schema.py` as a fresh pre-v1.0
   baseline; it is not an in-place upgrade from the first public snapshot.
+- The private repository depends on the private `xueqiu-market` package
+  (雪球 quotes / A-share fundamentals / opinion matching). The public snapshot
+  drops that requirement and the CI/Docker credential plumbing for it; the
+  `xueqiu_source` wrapper degrades explicitly (`XueqiuUnavailable`) when the
+  package is not installed, and every dependent feature reports the data
+  source as unavailable instead of failing silently.
+- HKEX daily quotation and 披露易 annual/interim report fixtures are excerpts
+  of public exchange data.

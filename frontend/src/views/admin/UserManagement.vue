@@ -119,20 +119,15 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '../../api'
+import type { User } from '../../types'
 import { formatDateTime } from '../../utils/helpers'
 import { isApiError } from '../../utils/apiErrors'
 
-interface UserRow {
-  id: number
-  username: string
-  email: string
-  is_active: boolean
-  is_admin: boolean
-  [key: string]: unknown
-}
+// 后端 User schema 为准（此前手写副本把 email 写成必填非空，已漂移）
+type UserRow = User
 
 type ValidatorCallback = (error?: Error) => void
 
@@ -191,7 +186,7 @@ const validateConfirmPassword = (rule: unknown, value: string, callback: Validat
   }
 }
 
-const rules = {
+const rules: FormRules = {
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
     { min: 3, max: 50, message: '用户名长度应为3-50个字符', trigger: 'blur' }
@@ -203,7 +198,7 @@ const rules = {
   password: [{ required: true, validator: validatePassword, trigger: 'blur' }]
 }
 
-const resetPasswordRules = {
+const resetPasswordRules: FormRules = {
   new_password: [{ required: true, validator: validatePassword, trigger: 'blur' }],
   confirm_password: [{ required: true, validator: validateConfirmPassword, trigger: 'blur' }]
 }

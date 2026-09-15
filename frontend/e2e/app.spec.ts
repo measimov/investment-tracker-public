@@ -163,13 +163,16 @@ test('redirects anonymous users to login and supports login', async ({ page }) =
     page.locator('.login-card').getByRole('heading', { name: /投资追踪系统/ })
   ).toBeVisible()
 
+  // 守卫带上了 ?redirect=（#142：401/未登录不再丢页面）
+  await expect(page).toHaveURL(/redirect=%2Fholdings/)
+
   await page.getByPlaceholder('请输入用户名').fill(user.username)
   await page.getByPlaceholder('请输入密码').fill(user.password)
   await page.getByRole('button', { name: '登录' }).click()
 
-  await expect(page).toHaveURL(/\/$/)
-  await expect(page.getByText('总市值')).toBeVisible()
-  await expect(page.getByText('未实现盈亏')).toBeVisible()
+  // 登录成功后回跳到最初想去的持仓页，而不是首页
+  await expect(page).toHaveURL(/\/holdings$/)
+  await expect(page.getByRole('main')).toContainText('当前持仓')
   expect(await page.evaluate(() => window.localStorage.getItem('token'))).toBeNull()
   const cookies = await page.context().cookies()
   expect(cookies.find((cookie) => cookie.name === authCookieName)?.httpOnly).toBeTruthy()
@@ -370,6 +373,64 @@ test('creates a temporary user, verifies analytics curve, and deletes the user',
     await expect(page.getByText('卡玛率', { exact: true })).toBeVisible()
     await expect(page.locator('.chart-performance canvas')).toBeVisible()
     await expect(page.locator('body')).not.toContainText('NaN')
+  } finally {
+    await deleteTemporaryUser(request, adminToken, createdUser.id)
+  }
+})
+
+test('foreign-currency holding converts with loaded rates in the ranking table', async ({
+  page,
+  request
+}) => {
+  // [PR #177 复审回归] useExchangeRates 状态必须全局共享：拆分后加载与换算
+  // 曾分属不同实例，SGD 成本在持仓排行里按原币数值伪装成 CNY（≈ S$1000 显示
+  // 成 ¥1,000）。断言 ≈ 行是按已加载汇率折算后的金额。
+  const { adminToken, createdUser, password } = await createTemporaryUser(request)
+  try {
+    const token = await loginThroughApi(request, {
+      username: createdUser.username,
+      password
+    })
+
+    // 全局汇率表写入一个辨识度高的 SGD 汇率（幂等 upsert）
+    const rateResponse = await request.post('http://127.0.0.1:18000/api/exchange-rates/', {
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        from_currency: 'SGD',
+        to_currency: 'CNY',
+        rate: 5.5,
+        effective_date: '2026-01-01',
+        source: 'manual'
+      }
+    })
+    expect(rateResponse.ok()).toBeTruthy()
+
+    const buyResponse = await request.post('http://127.0.0.1:18000/api/transactions', {
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        symbol: 'FX001',
+        name: '外币折算测试资产',
+        market: '新加坡股',
+        transaction_type: 'BUY',
+        quantity: 100,
+        price: 10,
+        fee: 0,
+        transaction_date: '2026-01-02',
+        currency: 'SGD',
+        notes: 'fx conversion e2e buy'
+      }
+    })
+    expect(buyResponse.ok()).toBeTruthy()
+
+    await setAuthenticatedSession(page, token, createdUser)
+    await page.goto('/statistics')
+
+    // 持仓排行：总成本原币 S$1,000，≈ 行必须是已折算的 ¥5,500（而不是把
+    // 原币数值当 CNY 的 ¥1,000）
+    const rankingCard = page.locator('.el-card', { hasText: '持仓排行' })
+    const row = rankingCard.locator('tr', { hasText: 'FX001' })
+    await expect(row).toContainText('S$1,000')
+    await expect(row).toContainText('≈ ¥5,500', { timeout: 10000 })
   } finally {
     await deleteTemporaryUser(request, adminToken, createdUser.id)
   }
@@ -994,6 +1055,53 @@ test('dividend suggestion accept failure refreshes list to matched state', async
   }
 })
 
+test('leaving corporate actions mid dividend-sync stops follow-up requests', async ({
+  page,
+  request
+}) => {
+  // [PR #171 复审回归] 挂起 job 轮询 → 客户端路由离开 → 放行响应：
+  // pollJobUntilDone 被卸载守卫取消后必须直接收手——不得再请求建议列表/
+  // 计数（卸载后的请求与状态写入），也不得在别的页面弹迟到消息。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  let suggestionRequests = 0
+  await page.route(/\/api\/corporate-actions\/suggestions(\/count)?(\?|$)/, async (route) => {
+    suggestionRequests += 1
+    const url = route.request().url()
+    await route.fulfill({ json: url.includes('/count') ? { total: 0 } : [] })
+  })
+  await page.route('**/api/corporate-actions/dividend-sync-jobs', (route) =>
+    route.fulfill({ json: { id: 'sync-race', status: 'queued' } })
+  )
+  let releasePoll: () => void = () => {}
+  const pollGate = new Promise<void>((resolve) => {
+    releasePoll = resolve
+  })
+  await page.route('**/api/corporate-actions/dividend-sync-jobs/sync-race', async (route) => {
+    await pollGate
+    await route.fulfill({ json: { id: 'sync-race', status: 'running' } })
+  })
+
+  await page.goto('/corporate-actions')
+  await page.getByRole('tab', { name: /分红建议/ }).click()
+  const firstPoll = page.waitForRequest('**/api/corporate-actions/dividend-sync-jobs/sync-race')
+  await page.getByTestId('dividend-sync-button').click()
+  await firstPoll // 轮询响应此刻挂在闸上
+
+  const requestsBeforeLeave = suggestionRequests
+  // 客户端路由切走（SPA 存活、CorporateActions 卸载）——整页 goto 会销毁
+  // JS 上下文，复现不了这个竞态
+  await page.locator('.el-menu-item', { hasText: '交易记录' }).first().click()
+  await expect(page).toHaveURL(/\/transactions/)
+
+  releasePoll() // 放行挂起的响应 → 轮询以取消（null）收场
+  await page.waitForTimeout(800)
+
+  expect(suggestionRequests).toBe(requestsBeforeLeave)
+  await expect(page.locator('.el-message')).toHaveCount(0)
+})
+
 test('security rules API round-trip and the 特例规则 tab lists rules', async ({
   page,
   request
@@ -1338,6 +1446,233 @@ test('slow responses from a previous security never leak into the current one', 
   await expect(page.getByText('A的摘要不得出现在B页面')).toHaveCount(0)
   await expect(page.locator('body')).not.toContainText('A的全文正文')
   await expect(page.getByTestId('risk-level-tag')).toContainText('低')
+})
+
+test('graham criteria card is cleared on peer navigation while the new profile is pending', async ({
+  page,
+  request
+}) => {
+  // [评审 P2 回归] 同业跳转复用组件实例：路由切到 B 后、B 的 profile 返回前，
+  // A 的格雷厄姆准则卡不得继续显示在 B 的标题下；B 的 profile 失败时也不得残留。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  let releaseB: (() => void) | null = null
+  const bReleased = new Promise<void>((resolve) => {
+    releaseB = resolve
+  })
+
+  const profileBody = (symbol: string, withGraham: boolean) => ({
+    symbol,
+    market: 'A股',
+    supported: true,
+    capabilities: { structured: true, report_digest: true, risk_signals: true },
+    datasets: {},
+    latest_periods: {},
+    events: [],
+    report_digests: [],
+    digest_progress: { digested: 0, failed_capped: 0 },
+    business: {
+      profile: null,
+      peers: [{ symbol: 'GRMB', name: '同业标的B', industry: '银行' }],
+      industry: '银行'
+    },
+    earnings_quality: { status: 'no_data' },
+    graham_screen: withGraham
+      ? {
+          status: 'ok',
+          as_of_year: '2025',
+          passed: 1,
+          failed: 0,
+          indeterminate: 0,
+          criteria: [
+            { criterion: 'pe', verdict: 'pass', reason: 'A 的准则依据不得残留', value: 9 }
+          ],
+          fragility: {}
+        }
+      : { status: 'no_data' }
+  })
+
+  await page.route('**/api/securities/**/profile', async (route) => {
+    const isA = route.request().url().includes('GRMA')
+    if (!isA) {
+      await bReleased
+      // B 的 profile 失败：残留检查在失败路径同样成立
+      await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
+      return
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(profileBody('GRMA', true))
+    })
+  })
+  await page.route('**/api/securities/**/analysis', async (route) => {
+    await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
+  })
+
+  await page.goto('/securities/A股/GRMA')
+  await expect(page.getByTestId('graham-screen-section')).toContainText('A 的准则依据不得残留')
+
+  await page.getByTestId('peer-list').getByText('同业标的B').click()
+  await expect(page).toHaveURL(/GRMB/)
+  // B 的 profile 仍挂起：A 的准则卡必须已经清空
+  await expect(page.getByTestId('graham-screen-section')).toHaveCount(0)
+
+  releaseB!()
+  await page.waitForTimeout(500)
+  await expect(page).toHaveURL(/GRMB/)
+  await expect(page.getByTestId('graham-screen-section')).toHaveCount(0)
+})
+
+test('watch state ignores an out-of-order response after peer navigation', async ({
+  page,
+  request
+}) => {
+  // [评审 P2 回归] A 的 membership 响应（watching=true）挂起 → 点同业跳 B
+  // （B 返回 not-watching）→ 放行 A 的迟到响应：不得把 B 页面标成"已在观察清单"。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  let releaseA: (() => void) | null = null
+  const aReleased = new Promise<void>((resolve) => {
+    releaseA = resolve
+  })
+
+  const profileBody = (symbol: string) => ({
+    symbol,
+    market: 'A股',
+    supported: true,
+    capabilities: { structured: true, report_digest: true, risk_signals: true },
+    datasets: {},
+    latest_periods: {},
+    events: [],
+    report_digests: [],
+    digest_progress: { digested: 0, failed_capped: 0 },
+    business: {
+      profile: null,
+      peers: [{ symbol: 'WSB', name: '同业标的B', industry: '银行' }],
+      industry: '银行'
+    },
+    earnings_quality: { status: 'no_data' },
+    graham_screen: { status: 'no_data' }
+  })
+  await page.route('**/api/securities/**/profile', async (route) => {
+    const isA = route.request().url().includes('WSA')
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(profileBody(isA ? 'WSA' : 'WSB'))
+    })
+  })
+  await page.route('**/api/securities/**/analysis', async (route) => {
+    await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
+  })
+  await page.route('**/api/watchlist/contains**', async (route) => {
+    const isA = route.request().url().includes('WSA')
+    if (isA) await aReleased
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ watching: isA, item_id: isA ? 1 : null })
+    })
+  })
+
+  await page.goto('/securities/A股/WSA')
+  await expect(page.getByTestId('peer-list')).toContainText('同业标的B')
+  await page.getByTestId('peer-list').getByText('同业标的B').click()
+  await expect(page).toHaveURL(/WSB/)
+  await expect(page.getByTestId('add-to-watchlist-button')).toBeVisible()
+
+  releaseA!()
+  await page.waitForTimeout(500)
+  await expect(page).toHaveURL(/WSB/)
+  await expect(page.getByTestId('add-to-watchlist-button')).toBeVisible()
+  await expect(page.getByText('已在观察清单', { exact: true })).toHaveCount(0)
+})
+
+test('confirming the watch prompt after navigating away does not add the wrong security', async ({
+  page,
+  request
+}) => {
+  // [评审 P2 二轮回归] 在 A 页打开「加入观察」prompt → 浏览器 back 到同组件的 B 页
+  // → 再点确认：不得把为 A 输入的理由加到 B（也不得给 A 加）。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  const profileBody = (symbol: string) => ({
+    symbol,
+    market: 'A股',
+    supported: true,
+    capabilities: { structured: true, report_digest: true, risk_signals: true },
+    datasets: {},
+    latest_periods: {},
+    events: [],
+    report_digests: [],
+    digest_progress: { digested: 0, failed_capped: 0 },
+    business: {
+      profile: null,
+      // B 页挂 A 为同业：用客户端路由跳 A，history 里 B→A 都在同一 SPA 会话内，
+      // 之后 history.back() 才是客户端回退（page.goBack 跨硬导航会整页重载、弹窗消失）
+      peers: symbol === 'PRB' ? [{ symbol: 'PRA', name: '同业标的A', industry: '银行' }] : [],
+      industry: '银行'
+    },
+    earnings_quality: { status: 'no_data' },
+    graham_screen: { status: 'no_data' }
+  })
+  await page.route('**/api/securities/**/profile', async (route) => {
+    const symbol = route.request().url().includes('PRA') ? 'PRA' : 'PRB'
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(profileBody(symbol))
+    })
+  })
+  await page.route('**/api/securities/**/analysis', async (route) => {
+    await route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
+  })
+  await page.route('**/api/watchlist/contains**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ watching: false, item_id: null })
+    })
+  })
+  const posted: string[] = []
+  await page.route('**/api/watchlist', async (route) => {
+    if (route.request().method() === 'POST') {
+      posted.push(route.request().postDataJSON().symbol)
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({ id: 1, symbol: 'X', market: 'A股' })
+      })
+      return
+    }
+    await route.continue()
+  })
+
+  // 先到 B，再经同业链接客户端跳到 A（同组件复用、同一 SPA history）
+  await page.goto('/securities/A股/PRB')
+  await expect(page.getByTestId('peer-list')).toContainText('同业标的A')
+  await page.getByTestId('peer-list').getByText('同业标的A').click()
+  await expect(page).toHaveURL(/PRA/)
+  await expect(page.getByTestId('add-to-watchlist-button')).toBeVisible()
+
+  await page.getByTestId('add-to-watchlist-button').click()
+  const promptBox = page.locator('.el-message-box', { hasText: '加入观察' })
+  await promptBox.locator('textarea').fill('为 A 写的理由')
+
+  // 客户端 history 回退到 B：弹窗独立于路由仍挂着
+  await page.evaluate(() => window.history.back())
+  await expect(page).toHaveURL(/PRB/)
+  await expect(promptBox).toBeVisible()
+  // 弹窗仍挂着（ElMessageBox 独立于路由）：此时确认
+  await promptBox.getByRole('button', { name: '加入' }).click()
+  await page.waitForTimeout(500)
+
+  expect(posted).toEqual([]) // 既不加 B，也不代 A 加
+  await expect(page.getByText('已在观察清单', { exact: true })).toHaveCount(0)
 })
 
 test('an older request for the same security cannot overwrite a newer one (ABA)', async ({
@@ -2188,4 +2523,528 @@ test('a preview that resolves to zero explains instead of opening the confirm di
     timeout: 15000
   })
   await expect(page.locator('.el-message-box')).toHaveCount(0)
+})
+
+// ---------------------------------------------------------------------------
+// #142 核心 CRUD 盲区回归：汇率增删改、交易编辑/删除、统计页价格 what-if
+// ---------------------------------------------------------------------------
+
+test('exchange rate add, edit and delete through the UI', async ({ page, request }) => {
+  // 汇率是全局表：用 GBP + 旧生效日期（2020-01-02），不影响其他用例依赖的
+  // USD/HKD/SGD 最新汇率；POST 端点是 upsert，上次运行残留同键行也不会翻车。
+  // 「从API更新汇率」按钮走外部接口，E2E 不外呼——数据联动由当前汇率卡片断言。
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await page.goto('/exchange-rates')
+
+  await page.getByRole('button', { name: '手动添加汇率' }).click()
+  const addDialog = page.locator('.el-dialog', { hasText: '添加汇率' })
+  await expect(addDialog).toBeVisible()
+
+  // 目标币种默认 CNY、来源默认 manual（showAddDialog），只需点开源币种一个
+  // 下拉——多个 Element Plus popper 连开会撞上前一个的淡出期，选项定位到
+  // 正在关闭的浮层上
+  await addDialog.locator('.el-form-item', { hasText: '源币种' }).locator('.el-select').click()
+  await page
+    .locator('.el-select-dropdown:visible')
+    .getByRole('option', { name: '英镑 (GBP)' })
+    .click()
+  const rateInput = addDialog.locator('.el-form-item', { hasText: '汇率' }).locator('input')
+  await rateInput.fill('9.1234')
+  await rateInput.blur()
+  const dateInput = addDialog.locator('.el-form-item', { hasText: '生效日期' }).locator('input')
+  await dateInput.fill('2020-01-02')
+  await dateInput.press('Enter')
+  await addDialog.getByRole('button', { name: '确定' }).click()
+
+  const rateRow = page
+    .locator('.rate-history tr')
+    .filter({ hasText: 'GBP' })
+    .filter({ hasText: '2020/01/02' })
+  await expect(rateRow).toHaveCount(1)
+  await expect(rateRow).toContainText('9.1234')
+  // 当前汇率卡片联动：GBP 唯一一条即最新，卡片出现
+  await expect(page.locator('.current-rates').getByText('GBP', { exact: true })).toBeVisible()
+
+  // 编辑：只改汇率数值
+  await rateRow.getByRole('button', { name: '编辑' }).click()
+  const editDialog = page.locator('.el-dialog', { hasText: '编辑汇率' })
+  await expect(editDialog).toBeVisible()
+  const editRateInput = editDialog.locator('.el-form-item', { hasText: '汇率' }).locator('input')
+  await editRateInput.fill('8.5')
+  await editRateInput.blur()
+  await editDialog.getByRole('button', { name: '确定' }).click()
+  await expect(rateRow).toContainText('8.5000')
+
+  // 删除：确认框后行消失，当前汇率卡片同步移除 GBP
+  // （此处 ElMessageBox 未传 confirmButtonText，未配 locale 的默认按钮是 "OK"）
+  await rateRow.getByRole('button', { name: '删除' }).click()
+  await page
+    .locator('.el-message-box')
+    .getByRole('button', { name: /确定|OK/ })
+    .click()
+  await expect(rateRow).toHaveCount(0)
+  await expect(page.locator('.current-rates').getByText('GBP', { exact: true })).toHaveCount(0)
+})
+
+test('transaction edit and delete through the dialog', async ({ page, request }) => {
+  const { adminToken, createdUser, password } = await createTemporaryUser(request)
+  try {
+    const token = await loginThroughApi(request, {
+      username: createdUser.username,
+      password
+    })
+    const buyResponse = await request.post('http://127.0.0.1:18000/api/transactions', {
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        symbol: 'EDT001',
+        name: '编辑删除测试资产',
+        market: 'A股',
+        transaction_type: 'BUY',
+        quantity: 100,
+        price: 10,
+        fee: 0,
+        transaction_date: '2026-01-05',
+        currency: 'CNY',
+        notes: 'edit-delete e2e'
+      }
+    })
+    expect(buyResponse.ok()).toBeTruthy()
+
+    await setAuthenticatedSession(page, token, createdUser)
+    // 评审 P2：交易写入（PUT/DELETE）后"我的标的"候选缓存必须失效
+    let emptySearchCalls = 0
+    await page.route('**/api/securities/search*', (route) => {
+      if (!new URL(route.request().url()).searchParams.get('q')) emptySearchCalls += 1
+      return route.fulfill({
+        json: {
+          items: [],
+          catalog: {
+            ready: false,
+            stale: true,
+            last_success_at: null,
+            failing_sources: [],
+            capabilities: {}
+          }
+        }
+      })
+    })
+    await page.route('**/api/securities/resolve*', (route) =>
+      route.fulfill({
+        json: {
+          symbol: 'X',
+          market: 'A股',
+          name: null,
+          currency: null,
+          security_type: 'unknown',
+          list_status: 'unknown',
+          in_catalog: false,
+          resolved_from: null,
+          error: 'stub'
+        }
+      })
+    )
+    const probeEmptySearch = async () => {
+      await page.getByRole('button', { name: '新增交易' }).click()
+      const probe = page.locator('.el-dialog', { hasText: '新增交易' })
+      await probe.locator('.el-form-item', { hasText: '股票代码' }).locator('input').click()
+      await page.waitForTimeout(400)
+      await probe.getByRole('button', { name: '取消' }).click()
+      await expect(probe).toBeHidden()
+    }
+    await page.goto('/transactions')
+
+    const row = page.locator('tr', { hasText: 'EDT001' })
+    await expect(row).toHaveCount(1)
+    await probeEmptySearch()
+    await probeEmptySearch()
+    expect(emptySearchCalls).toBe(1) // 无写入：第二次命中缓存
+    await row.getByRole('button', { name: '编辑' }).click()
+
+    const dialog = page.locator('.el-dialog', { hasText: '编辑交易' })
+    await expect(dialog).toBeVisible()
+    const priceInput = dialog.locator('.el-form-item', { hasText: '价格' }).locator('input')
+    await priceInput.fill('12.5')
+    await priceInput.blur()
+    await dialog.getByRole('button', { name: '确定' }).click()
+
+    await expect(page.getByText('更新成功')).toBeVisible()
+    await expect(row).toContainText('12.5000')
+    await probeEmptySearch()
+    expect(emptySearchCalls).toBe(2) // PUT 后失效
+
+    await row.getByRole('button', { name: '删除' }).click()
+    await page.locator('.el-message-box').getByRole('button', { name: '确定' }).click()
+    await expect(page.getByText('删除成功')).toBeVisible()
+    await expect(row).toHaveCount(0)
+    await probeEmptySearch()
+    expect(emptySearchCalls).toBe(3) // DELETE 后失效
+  } finally {
+    await deleteTemporaryUser(request, adminToken, createdUser.id)
+  }
+})
+
+test('statistics price dialog what-if updates the FIFO performance card', async ({
+  page,
+  request
+}) => {
+  const { adminToken, createdUser, password } = await createTemporaryUser(request)
+  try {
+    const token = await loginThroughApi(request, {
+      username: createdUser.username,
+      password
+    })
+    const buyResponse = await request.post('http://127.0.0.1:18000/api/transactions', {
+      headers: { Authorization: `Bearer ${token}` },
+      data: {
+        symbol: 'PRC001',
+        name: '价格弹窗测试资产',
+        market: 'A股',
+        transaction_type: 'BUY',
+        quantity: 100,
+        price: 10,
+        fee: 0,
+        transaction_date: '2026-01-05',
+        currency: 'CNY',
+        notes: 'price-dialog e2e'
+      }
+    })
+    expect(buyResponse.ok()).toBeTruthy()
+
+    await setAuthenticatedSession(page, token, createdUser)
+    await page.goto('/statistics')
+
+    await page.getByRole('button', { name: '输入价格' }).click()
+    const dialog = page.locator('.el-dialog', { hasText: '输入当前价格' })
+    await expect(dialog).toBeVisible()
+    const priceInput = dialog.locator('tr', { hasText: 'PRC001' }).locator('input')
+    await priceInput.fill('12')
+    await priceInput.blur()
+    await dialog.getByRole('button', { name: '计算' }).click()
+
+    await expect(page.getByText('计算完成')).toBeVisible()
+    // 100 股 × (12 - 10)：当前市值 ¥1,200.00、浮盈率 +20.00%
+    const fifoCard = page.locator('.el-card', { hasText: '当前持仓表现' })
+    await expect(fifoCard).toContainText('¥1,200.00')
+    await expect(fifoCard).toContainText('20.00')
+  } finally {
+    await deleteTemporaryUser(request, adminToken, createdUser.id)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 观察清单（新 feature 轮 PR-B）：CRUD + 详情页「加入观察」闭环
+// ---------------------------------------------------------------------------
+
+test('watchlist add, edit, remove and detail-page integration', async ({ page, request }) => {
+  const { adminToken, createdUser, password } = await createTemporaryUser(request)
+  try {
+    const token = await loginThroughApi(request, {
+      username: createdUser.username,
+      password
+    })
+    await setAuthenticatedSession(page, token, createdUser)
+    // 标的选择器会打 /securities/search（聚焦）与 /resolve（手输后按需解析→腾讯行情）：
+    // 打桩保证 CI 零外呼；选择器本身另有专测
+    // 空查询 = "我的标的"候选（账本派生、缓存 5 分钟）：计数用来验证账本写入后重新取数
+    let emptySearchCalls = 0
+    await page.route('**/api/securities/search*', (route) => {
+      if (!new URL(route.request().url()).searchParams.get('q')) emptySearchCalls += 1
+      return route.fulfill({
+        json: {
+          items: [],
+          catalog: {
+            ready: false,
+            stale: true,
+            last_success_at: null,
+            failing_sources: [],
+            capabilities: {}
+          }
+        }
+      })
+    })
+    // 打开添加对话框并聚焦代码框：触发一次空查询；紧接着取消
+    const probeEmptySearch = async () => {
+      await page.getByTestId('add-watchlist-button').click()
+      const probe = page.locator('.el-dialog', { hasText: '添加观察标的' })
+      await probe.locator('.el-form-item', { hasText: '股票代码' }).locator('input').click()
+      await page.waitForTimeout(400) // el-autocomplete 聚焦取数有 200ms debounce
+      await probe.getByRole('button', { name: '取消' }).click()
+      await expect(probe).toBeHidden()
+    }
+    await page.route('**/api/securities/resolve*', (route) =>
+      route.fulfill({
+        json: {
+          symbol: 'WCH001',
+          market: 'A股',
+          name: null,
+          name_en: null,
+          currency: null,
+          security_type: 'unknown',
+          list_status: 'unknown',
+          in_catalog: false,
+          resolved_from: null,
+          error: 'stub'
+        }
+      })
+    )
+
+    // 1) 观察清单页添加
+    await page.goto('/watchlist')
+    await page.getByTestId('add-watchlist-button').click()
+    const dialog = page.locator('.el-dialog', { hasText: '添加观察标的' })
+    await expect(dialog).toBeVisible()
+    await dialog.locator('.el-form-item', { hasText: '股票代码' }).locator('input').fill('WCH001')
+    await dialog.locator('.el-form-item', { hasText: '市场' }).locator('.el-select').click()
+    await page.locator('.el-select-dropdown:visible').getByRole('option', { name: 'A股' }).click()
+    await dialog
+      .locator('.el-form-item', { hasText: '观察理由' })
+      .locator('textarea')
+      .fill('等待 PB 回到 1.2 以下')
+    await page.getByTestId('watchlist-submit').click()
+    await expect(page.getByText('已加入观察清单')).toBeVisible()
+
+    const row = page.locator('tr', { hasText: 'WCH001' })
+    await expect(row).toHaveCount(1)
+    await expect(row).toContainText('等待 PB 回到 1.2 以下')
+    await expect(row).toContainText('未同步档案') // 无档案数据 → 不显示误导性 0/7
+
+    // 重复添加 → 409 中文报错
+    await page.getByTestId('add-watchlist-button').click()
+    await dialog.locator('.el-form-item', { hasText: '股票代码' }).locator('input').fill('WCH001')
+    await dialog.locator('.el-form-item', { hasText: '市场' }).locator('.el-select').click()
+    await page.locator('.el-select-dropdown:visible').getByRole('option', { name: 'A股' }).click()
+    await page.getByTestId('watchlist-submit').click()
+    await expect(page.getByText('该标的已在观察清单中')).toBeVisible()
+    await dialog.getByRole('button', { name: '取消' }).click()
+
+    // 2) 编辑理由
+    await row.getByRole('button', { name: '编辑' }).click()
+    const editDialog = page.locator('.el-dialog', { hasText: '编辑观察标的' })
+    await editDialog
+      .locator('.el-form-item', { hasText: '观察理由' })
+      .locator('textarea')
+      .fill('修订后的观察理由')
+    await page.getByTestId('watchlist-submit').click()
+    await expect(row).toContainText('修订后的观察理由')
+    // 评审 P2：编辑自选（PUT）后候选缓存必须失效——下次空查询重新取数；无写入则命中缓存
+    const afterAdds = emptySearchCalls
+    await probeEmptySearch()
+    expect(emptySearchCalls).toBe(afterAdds + 1)
+    await probeEmptySearch()
+    expect(emptySearchCalls).toBe(afterAdds + 1)
+
+    // 3) 代码链接进详情页 → 显示已在观察（el-link 无 href，不具 link role，按文本点）
+    await row.locator('.el-link', { hasText: 'WCH001' }).click()
+    await expect(page).toHaveURL(/securities/)
+    await expect(page.getByText('已在观察清单', { exact: true })).toBeVisible()
+
+    // 4) 另一标的从详情页加入观察（prompt 填理由）
+    await page.goto(`/securities/${encodeURIComponent('A股')}/WCH002`)
+    await page.getByTestId('add-to-watchlist-button').click()
+    const promptBox = page.locator('.el-message-box', { hasText: '加入观察' })
+    await promptBox.locator('textarea').fill('详情页加入的理由')
+    await promptBox.getByRole('button', { name: '加入' }).click()
+    await expect(page.getByText('已加入观察清单')).toBeVisible()
+    await expect(page.getByText('已在观察清单', { exact: true })).toBeVisible()
+
+    // 5) 清单页可见两条；移除一条
+    await page.goto('/watchlist')
+    await expect(page.locator('tr', { hasText: 'WCH002' })).toContainText('详情页加入的理由')
+    await page.locator('tr', { hasText: 'WCH002' }).getByRole('button', { name: '移除' }).click()
+    await page.locator('.el-message-box').getByRole('button', { name: '确定' }).click()
+    await expect(page.getByText('已移出观察清单')).toBeVisible()
+    await expect(page.locator('tr', { hasText: 'WCH002' })).toHaveCount(0)
+    await expect(page.locator('tr', { hasText: 'WCH001' })).toHaveCount(1)
+    // 评审 P2：移除自选（DELETE）后候选缓存失效——空查询重新取数
+    const beforeRemoveProbe = emptySearchCalls
+    await probeEmptySearch()
+    expect(emptySearchCalls).toBe(beforeRemoveProbe + 1)
+  } finally {
+    await deleteTemporaryUser(request, adminToken, createdUser.id)
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 雪球观点页：e2e 库没有 archiver 外部表——正好验证"数据源未接入"的显式降级
+// （状态条 + 空表提示 + 批量按钮禁用），页面不得 5xx/白屏。
+// ---------------------------------------------------------------------------
+
+test('opinions page degrades explicitly without archiver source', async ({ page, request }) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+
+  await page.goto('/opinions')
+  await expect(page.getByTestId('opinion-source-missing')).toBeVisible()
+  await expect(page.getByTestId('opinion-batch-button')).toBeDisabled()
+  await expect(page.getByTestId('opinion-symbols-table')).toBeVisible()
+
+  // 详情页的观点 section：生成按钮点击后收到 409 预检（e2e 环境先命中
+  // "未配置 LLM"，配了 key 的环境则是"数据源未接入"），以信息条呈现而非报错弹窗
+  await page.goto('/securities/A股/600036')
+  await expect(page.getByTestId('opinion-section')).toBeVisible()
+  await page.getByTestId('generate-opinion-button').click()
+  await expect(page.getByTestId('opinion-section').locator('.el-alert')).toContainText(
+    /未接入|未配置 LLM/
+  )
+})
+
+// ---------------------------------------------------------------------------
+// 标的可搜索下拉（标的全集）：选中候选完整回填；手输新代码 + 选市场按需解析只填空；
+// 用户手改过的名称不被再次覆盖。/search 与 /resolve 打桩——目录内容与排序归后端 pytest
+// ---------------------------------------------------------------------------
+
+test('security select fills the transaction form from the catalog and keeps user edits', async ({
+  page,
+  request
+}) => {
+  const { adminToken, createdUser, password } = await createTemporaryUser(request)
+  try {
+    const token = await loginThroughApi(request, { username: createdUser.username, password })
+    await setAuthenticatedSession(page, token, createdUser)
+
+    const catalog = [
+      {
+        symbol: '00700',
+        market: '港股',
+        name: '腾讯控股',
+        name_en: 'Tencent Holdings Ltd.',
+        name_trad: '騰訊控股',
+        pinyin: 'TXKG',
+        currency: 'HKD',
+        security_type: 'stock',
+        board: '主板',
+        exchange: 'HKEX',
+        list_status: 'listed',
+        in_catalog: true,
+        origins: [],
+        last_used: null
+      },
+      {
+        symbol: '510300',
+        market: 'A股',
+        name: '沪深300ETF',
+        name_en: null,
+        name_trad: null,
+        pinyin: 'HS300ETF',
+        currency: 'CNY',
+        security_type: 'etf',
+        board: null,
+        exchange: 'SSE',
+        list_status: 'listed',
+        in_catalog: true,
+        origins: [],
+        last_used: null
+      }
+    ]
+    await page.route('**/api/securities/search*', async (route) => {
+      const q = (new URL(route.request().url()).searchParams.get('q') || '').toUpperCase()
+      const items = q
+        ? catalog.filter((c) => c.symbol.includes(q) || c.pinyin.includes(q) || c.name.includes(q))
+        : []
+      await route.fulfill({
+        json: {
+          items,
+          catalog: {
+            ready: true,
+            stale: false,
+            last_success_at: null,
+            failing_sources: [],
+            capabilities: { pinyin: true, simplified: true }
+          }
+        }
+      })
+    })
+    const resolveCalls: string[] = []
+    await page.route('**/api/securities/resolve*', async (route) => {
+      const url = new URL(route.request().url())
+      const symbol = url.searchParams.get('symbol') || ''
+      const market = url.searchParams.get('market') || ''
+      resolveCalls.push(`${market}|${symbol}`)
+      const hit = symbol === 'D05' && market === '新加坡股'
+      await route.fulfill({
+        json: {
+          symbol,
+          market,
+          name: hit ? 'DBS Group' : null,
+          name_en: null,
+          currency: hit ? 'SGD' : null,
+          security_type: 'unknown',
+          list_status: 'unknown',
+          in_catalog: hit,
+          resolved_from: hit ? 'tencent-quote' : null,
+          error: hit ? null : 'stub'
+        }
+      })
+    })
+
+    await page.goto('/transactions')
+    await page.getByRole('button', { name: '新增交易' }).click()
+    const dialog = page.locator('.el-dialog', { hasText: '新增交易' })
+    await expect(dialog).toBeVisible()
+    const formItem = (label: RegExp) =>
+      dialog
+        .locator('.el-form-item')
+        .filter({ has: page.locator('.el-form-item__label', { hasText: label }) })
+        .first()
+    // data-testid 经 el-autocomplete → el-input 透传落在原生 input 上，按表单项取 textbox 更稳
+    const symbolInput = formItem(/^股票代码$/).getByRole('textbox')
+    const nameInput = dialog.getByPlaceholder('资产名称')
+
+    // 1) 拼音检索 → 选中候选 → 名称/市场/币种一起回填
+    await symbolInput.fill('txkg')
+    const popper = page.locator('.security-select-popper:visible')
+    await expect(popper.getByRole('option', { name: /00700/ })).toBeVisible()
+    await expect(popper).toContainText('腾讯控股')
+    await expect(popper).toContainText('港股')
+    await popper.getByRole('option', { name: /00700/ }).click()
+    await expect(symbolInput).toHaveValue('00700')
+    await expect(nameInput).toHaveValue('腾讯控股')
+    await expect(formItem(/^市场$/).locator('.el-select')).toContainText('港股')
+    await expect(formItem(/^币种$/).locator('.el-select')).toContainText('HKD')
+
+    // 2) 手输新代码：自动带出的名称清空；选定市场后按需解析只填空的名称与推断币种
+    await symbolInput.fill('D05')
+    await symbolInput.press('Tab')
+    await expect(nameInput).toHaveValue('')
+    await formItem(/^市场$/)
+      .locator('.el-select')
+      .click()
+    await page
+      .locator('.el-select-dropdown:visible')
+      .getByRole('option', { name: '新加坡股' })
+      .click()
+    await expect(nameInput).toHaveValue('DBS Group')
+    await expect(formItem(/^币种$/).locator('.el-select')).toContainText('SGD')
+    expect(resolveCalls).toContain('新加坡股|D05')
+
+    // 3) 用户手改名称后再换代码：名称保留，不被清空也不被解析结果覆盖
+    await nameInput.fill('DBS')
+    await symbolInput.fill('D06')
+    await symbolInput.press('Tab')
+    await expect(symbolInput).toHaveValue('D06')
+    await expect(nameInput).toHaveValue('DBS')
+    expect(resolveCalls).toContain('新加坡股|D06')
+
+    // 4) ETF 候选带类型标签
+    await symbolInput.fill('510300')
+    await expect(popper.getByRole('option', { name: /510300/ })).toContainText('ETF')
+
+    // 5) 评审 P1：币种仍是自动推导值时切到推不出的市场必须清空——否则 BTC 会以 CNY 入账
+    await symbolInput.fill('BTC')
+    await symbolInput.press('Tab')
+    await formItem(/^市场$/)
+      .locator('.el-select')
+      .click()
+    await page
+      .locator('.el-select-dropdown:visible')
+      .getByRole('option', { name: '加密货币' })
+      .click()
+    await expect(formItem(/^币种$/).locator('.el-select')).not.toContainText(/CNY|HKD|USD|SGD/)
+    await dialog.getByRole('button', { name: '确定' }).click()
+    await expect(dialog.getByText('请选择币种')).toBeVisible()
+    await dialog.getByRole('button', { name: '取消' }).click()
+  } finally {
+    await deleteTemporaryUser(request, adminToken, createdUser.id)
+  }
 })

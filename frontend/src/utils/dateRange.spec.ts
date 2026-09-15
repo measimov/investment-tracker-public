@@ -1,9 +1,9 @@
-// 区间预设日期运算的纯函数测试（Node 直测，无浏览器）。
+// 区间预设日期运算的纯函数测试（自 e2e/date-range.spec.ts 迁入 vitest，#142）。
 // 覆盖检视意见指出的两类缺陷：toISOString 的 UTC 偏移、setMonth 的月末溢出。
-import { expect, test } from '@playwright/test'
-import { formatLocalDate, monthsBefore, presetRangeParams } from '../src/utils/dateRange'
+import { describe, expect, test } from 'vitest'
+import { formatLocalDate, monthsBefore, presetRangeParams } from './dateRange'
 
-test.describe('dateRange utils', () => {
+describe('dateRange utils', () => {
   test('formatLocalDate uses local calendar date, not UTC', () => {
     // 本地 0 点 30 分：toISOString 在正时区会回退到前一天，本地格式化不会
     expect(formatLocalDate(new Date(2026, 0, 1, 0, 30))).toBe('2026-01-01')

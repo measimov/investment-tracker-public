@@ -141,6 +141,22 @@ def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
     if missing_prices:
         warnings.append(f"以下标的缺少可用估值价格：{'、'.join(missing_prices)}")
 
+    # 雪球观点数据源停摆预警：只在"已接入但长时间未更新"时报（未部署 archiver
+    # 是合法形态，不该在看板报警）。探测本身异常静默——观点数据源的故障不配
+    # 拖垮整个看板。
+    try:
+        from ..xueqiu_opinion_source import source_freshness
+
+        opinion_freshness = source_freshness(db)
+        if opinion_freshness["available"] and opinion_freshness["stale"]:
+            latest = opinion_freshness.get("latest_scan_at") or "未知时间"
+            warnings.append(
+                f"雪球观点数据源自 {latest} 起未再更新，"
+                "archiver 采集 cron 可能已停摆"
+            )
+    except Exception:  # noqa: BLE001 —— 预警是锦上添花
+        pass
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "base_currency": "CNY",

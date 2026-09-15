@@ -625,7 +625,7 @@ def test_diagnostics_do_not_change_parser_version(monkeypatch):
 
     这条变红 = 动了不该动的东西（多半是顺手改了 HK_CONNECT 判据）。
     """
-    assert importer.PARSER_VERSION == "11"
+    assert importer.PARSER_VERSION == "12"
     assert importer.HK_CONNECT_MARKET_NAMES == {"沪港通", "深港通"}
 
 
@@ -666,7 +666,14 @@ def test_digit_class_patterns(raw, expected):
 
 @pytest.mark.parametrize(
     "raw, expected",
-    [("113050", "11****"), ("00700", "00***"), ("", ""), ("6", "6")],
+    [
+        ("113050", "11****"),
+        ("00700", "00***"),
+        ("", ""),
+        # 任何非空代码至少遮掉一个字符：美股有 F/T/V 这类一两位 ticker
+        ("6", "*"),
+        ("BA", "B*"),
+    ],
 )
 def test_mask_code_keeps_only_the_prefix(raw, expected):
     assert broker_import_common.mask_code(raw) == expected
@@ -700,3 +707,345 @@ def test_label_histogram_is_ordered_and_reproducible():
         {"a": "y", "count": 1},
         {"a": "z", "count": 1},
     ]
+
+
+# ---------------------------------------------------------------------------
+# 按业务分组的行形状 + 标的跨业务串联
+#
+# 全局 column_patterns 会被上千条买卖行淹没，看不出小众业务（转托转入、
+# 产品转托管确认、托管转出）自己长什么样；而"这批份额的场外买入是否也在
+# 单据里"更是完全答不了——那恰恰决定成本基础是已知还是未知（#174）。
+# ---------------------------------------------------------------------------
+
+
+def test_business_row_shapes_separate_small_businesses_from_trades(monkeypatch):
+    """分组后小众业务的形态才看得见：买卖行有价、转托管行价为零。"""
+    report, _errors = diagnose(
+        monkeypatch,
+        [
+            make_row(business="证券买入", price="10.00"),
+            make_row(business="证券买入", price="20.00"),
+            make_row(
+                business="转托转入",
+                code="161226",
+                price="0.00",
+                trade_amount="0.00",
+                amount="0.00",
+                commission="0.00",
+                other_fee="0.00",
+            ),
+        ],
+    )
+    shapes = {
+        (item["市场"], item["业务名称"]): item
+        for item in report["vocabulary"]["business_row_shapes"]
+    }
+
+    assert shapes[("上海", "证券买入")]["count"] == 2
+    assert shapes[("上海", "证券买入")]["value_counts"]["成交价格"] == {
+        "zero": 0,
+        "nonzero": 2,
+        "unparsable": 0,
+    }
+    custody = shapes[("上海", "转托转入")]
+    assert custody["count"] == 1
+    # 这一格就是 #174 要的答案：转托管有没有披露净值
+    assert custody["value_counts"]["成交价格"] == {"zero": 1, "nonzero": 0, "unparsable": 0}
+    assert custody["value_counts"]["PDF成交金额"]["zero"] == 1
+    assert custody["patterns"]["成交价格"][0]["成交价格"] == "d.dd"
+
+
+def test_business_row_shapes_keep_unparsable_separate_from_zero(monkeypatch):
+    """解析不出来 ≠ 为零——把两者折在一起正是 fees_all_zero 那次误报的成因。"""
+    report, _errors = diagnose(
+        monkeypatch, [make_row(business="证券买入", price="--")]
+    )
+    shapes = report["vocabulary"]["business_row_shapes"]
+    counts = next(
+        item for item in shapes if item["业务名称"] == "证券买入"
+    )["value_counts"]["成交价格"]
+
+    assert counts == {"zero": 0, "nonzero": 0, "unparsable": 1}
+
+
+def test_symbol_linkage_connects_one_symbol_across_businesses(monkeypatch):
+    """同一标的的申购→转托管→卖出串起来，才知道成本基础在不在单据里。"""
+    report, _errors = diagnose(
+        monkeypatch,
+        [
+            make_row(business="产品申购确认", code="161226", market="场外开基"),
+            make_row(business="转托转入", code="161226", price="0.00"),
+            make_row(business="证券卖出", code="161226", quantity="-100.00"),
+            make_row(business="证券买入", code="600000"),
+        ],
+    )
+    linkage = report["vocabulary"]["symbol_linkage"]
+    target = next(item for item in linkage["symbols"] if item["business_kinds"] == 3)
+
+    assert {entry["业务名称"] for entry in target["businesses"]} == {
+        "产品申购确认",
+        "转托转入",
+        "证券卖出",
+    }
+    assert target["code_masked"] == "16****"
+    assert target["code_length"] == 6
+    assert linkage["symbols_total"] == 2
+
+
+def test_symbol_linkage_uses_ordinals_not_reversible_hashes(monkeypatch):
+    """编号必须是本单据内的出现序号。
+
+    证券代码只有六位、空间极小，截断哈希可被离线枚举反推——#167 复审已就
+    文件名/元数据指出过同一问题，这里不能再犯。
+    """
+    report, _errors = diagnose(
+        monkeypatch,
+        [make_row(code="600000"), make_row(code="000001", market="深圳")],
+    )
+    ordinals = [item["symbol_ordinal"] for item in report["vocabulary"]["symbol_linkage"]["symbols"]]
+
+    assert sorted(ordinals) == [1, 2]
+    blob = flatten(report)
+    # 代码本身与其哈希都不得出现
+    import hashlib
+
+    for code in ("600000", "000001"):
+        assert code not in blob
+        assert hashlib.sha256(code.encode()).hexdigest()[:8] not in blob
+
+
+def test_new_vocabulary_blocks_do_not_leak(monkeypatch):
+    """新增两块同样受脱敏回归约束。"""
+    report, _errors = diagnose(
+        monkeypatch,
+        [
+            make_row(
+                code="113050",
+                name="南银转债",
+                quantity="700.00",
+                price="119.50",
+                trade_amount="987654.32",
+                amount="-987659.38",
+            )
+        ],
+    )
+    blob = flatten(report["vocabulary"])
+
+    for secret in ("987654", "119.50", "700.00", "南银转债", "113050", "A123456789"):
+        assert secret not in blob, f"词表块泄露了 {secret}"
+    assert "11****" in blob
+
+
+# ---------------------------------------------------------------------------
+# #175 复审：数值格里的错位内容、短代码、以及 linkage 的取证力
+# ---------------------------------------------------------------------------
+
+
+def test_numeric_cell_patterns_class_out_spilled_text(monkeypatch):
+    """列错位把证券名称粘进价格列时，模式里不得出现名称原文。
+
+    `digit_class` 只替换数字，字母与 CJK 会原样保留；而按业务分组的 top-2
+    会让这种单行模式**稳定**进入输出（全局 top-5 时还可能被挤掉），
+    泄露面实质变大。
+    """
+    report, _errors = diagnose(
+        monkeypatch,
+        [make_row(business="转托转入", price="73.04南银转债", trade_amount="0.00", amount="0.00")],
+    )
+    blob = flatten(report)
+
+    assert "南银转债" not in blob, blob
+    shapes = {item["业务名称"]: item for item in report["vocabulary"]["business_row_shapes"]}
+    assert shapes["转托转入"]["patterns"]["成交价格"][0]["成交价格"] == "dd.dd<X:4>"
+
+
+def test_short_tickers_are_never_echoed_whole(monkeypatch):
+    """一两位的美股 ticker 也必须至少遮掉一个字符。"""
+    report, _errors = diagnose(
+        monkeypatch,
+        [make_row(code="F", market="上海"), make_row(code="BA", market="上海")],
+    )
+    masked = {item["code_masked"] for item in report["vocabulary"]["symbol_linkage"]["symbols"]}
+
+    assert masked == {"*", "B*"}
+    assert broker_import_common.mask_code("F") == "*"
+    assert broker_import_common.mask_code("BA") == "B*"
+
+
+def test_symbol_key_is_keyed_and_stable_across_reports(monkeypatch):
+    """跨报告要能对上同一标的，同时不可被离线枚举。"""
+    import hashlib
+
+    rows = [make_row(code="600000")]
+    first, _e1 = diagnose(monkeypatch, rows)
+    second, _e2 = diagnose(monkeypatch, rows)
+    key_a = first["vocabulary"]["symbol_linkage"]["symbols"][0]["symbol_key"]
+    key_b = second["vocabulary"]["symbol_linkage"]["symbols"][0]["symbol_key"]
+
+    assert key_a == key_b and len(key_a) == 12
+    # 裸 sha256 前缀可被六位代码空间穷举，必须不是它
+    assert key_a != hashlib.sha256(b"600000").hexdigest()[:12]
+    assert "600000" not in flatten(first)
+
+
+def test_symbol_linkage_carries_order_and_magnitude_evidence(monkeypatch):
+    """共现只是线索：还要给出行序与数量占比，才谈得上判断成本是否可推。"""
+    report, _errors = diagnose(
+        monkeypatch,
+        [
+            make_row(business="产品申购确认", code="161226", market="场外开基", quantity="269.00"),
+            make_row(
+                business="转托转入",
+                code="161226",
+                quantity="269.00",
+                price="0.00",
+                trade_amount="0.00",
+                amount="0.00",
+            ),
+        ],
+    )
+    linkage = report["vocabulary"]["symbol_linkage"]
+    target = linkage["symbols"][0]
+    by_business = {item["业务名称"]: item for item in target["businesses"]}
+
+    # 行序即时间序：申购在转入之前
+    assert by_business["产品申购确认"]["first_row_number"] < by_business["转托转入"]["first_row_number"]
+    # 数量级对得上（等量 → 占比同为 1）
+    assert by_business["产品申购确认"]["quantity_share"] == Decimal("1.000000")
+    assert by_business["转托转入"]["quantity_share"] == Decimal("1.000000")
+    # 且必须写明这只是候选线索
+    assert "不构成" in linkage["note"]
+
+
+def test_label_spill_catches_concatenation_not_just_equality(monkeypatch):
+    """列错位常是拼接（"上海南银转债"），相等比较抓不住。"""
+    report, _errors = diagnose(
+        monkeypatch,
+        [make_row(market="上海南银转债", name="南银转债", trade_amount="920.00", amount="-925.06")],
+    )
+    blob = flatten(report)
+
+    assert "南银转债" not in blob, blob
+    assert report["error_rows"][0]["market"] == "<spilled:证券名称>"
+
+
+def test_linkage_keeps_rare_business_symbols_against_the_cap(monkeypatch):
+    """名额不能把要排查的标的静默裁掉。
+
+    普通标的很容易凑够买入/卖出/分红三种业务，而排查目标可能只有
+    「转托转入 + 卖出」两种。本仓真实对账单上这已经发生过：40 个名额里 24 个
+    是 kinds=2 的普通标的，一个含 `新股入账`（全局仅 1 次）的标的被挤掉，
+    进出全看出现序号。
+
+    改为按"参与过的最罕见业务"优先后，罕见业务的标的必定入选，且不需要硬编码
+    业务名单——将来出现没见过的罕见业务同样自动浮上来。
+    """
+    rows = []
+    # 50 个"三种业务"的普通标的，远超 top-40 名额
+    for index in range(50):
+        code = f"6{index:05d}"
+        rows.append(make_row(code=code, business="证券买入"))
+        rows.append(make_row(code=code, business="证券卖出", quantity="-100.00"))
+        rows.append(make_row(code=code, business="股息入账"))
+    # 目标：只有两种业务，且出现在最后
+    rows.append(
+        make_row(
+            code="161226",
+            market="深圳",
+            business="转托转入",
+            price="0.00",
+            trade_amount="0.00",
+            amount="0.00",
+        )
+    )
+    rows.append(make_row(code="161226", market="深圳", business="证券卖出", quantity="-269.00"))
+
+    report, _errors = diagnose(monkeypatch, rows)
+    linkage = report["vocabulary"]["symbol_linkage"]
+    shown = linkage["symbols"]
+
+    assert linkage["symbols_total"] == 51
+    assert linkage["symbols_shown"] == 51  # 不再被小上限裁剪
+    # 目标必须在，而且因为 转托转入 全局只出现 1 次，应当排在最前
+    target = shown[0]
+    assert {entry["业务名称"] for entry in target["businesses"]} == {"转托转入", "证券卖出"}
+    assert target["rarest_business_count"] == 1
+    # 逐业务覆盖率必须完整，无任何遗漏
+    assert all(
+        item["symbols_shown"] == item["symbols_total"] for item in linkage["business_coverage"]
+    )
+
+
+def test_linkage_never_silently_drops_a_whole_business(monkeypatch):
+    """截断吃掉整类业务时必须在报告里说出来。"""
+    report, _errors = diagnose(
+        monkeypatch,
+        [make_row(code="600000"), make_row(code="000001", market="深圳", business="股息入账")],
+    )
+    linkage = report["vocabulary"]["symbol_linkage"]
+
+    # 两个标的都在名额内，逐业务覆盖率应当满格
+    assert [item["symbols_shown"] for item in linkage["business_coverage"]] == [1, 1]
+
+
+def test_linkage_keeps_all_symbols_of_one_rare_business(monkeypatch):
+    """同一罕见业务下 41 个并列标的，第 41 个也必须能被诊断到。
+
+    罕见度排序只能保证业务**类别**优先，保证不了类别内的每个候选；而且该业务
+    一旦有代表，"整类落榜"的信号就永远是空的——遗漏彻底静默（#175 复审）。
+    实测本仓真实对账单 linkage 全量也只有 19~47 KB，小上限本就没有必要。
+    """
+    rows = []
+    for index in range(41):
+        code = f"16{index:04d}"
+        rows.append(
+            make_row(
+                code=code,
+                market="深圳",
+                business="转托转入",
+                price="0.00",
+                trade_amount="0.00",
+                amount="0.00",
+            )
+        )
+        rows.append(make_row(code=code, market="深圳", business="证券卖出", quantity="-100.00"))
+
+    report, _errors = diagnose(monkeypatch, rows)
+    linkage = report["vocabulary"]["symbol_linkage"]
+
+    assert linkage["symbols_total"] == 41
+    assert linkage["symbols_shown"] == 41
+    # 最后出现的那个标的同样在结果里
+    assert max(item["symbol_ordinal"] for item in linkage["symbols"]) == 41
+    custody = next(
+        item for item in linkage["business_coverage"] if item["业务名称"] == "转托转入"
+    )
+    assert custody == {"业务名称": "转托转入", "symbols_total": 41, "symbols_shown": 41}
+
+
+def test_linkage_reports_per_business_gap_when_the_backstop_bites(monkeypatch):
+    """真触到兜底上限时，遗漏必须逐业务可见、可量化，而不是静默。"""
+    monkeypatch.setattr(importer, "DIAGNOSTIC_LINKAGE_LIMIT", 2)
+    rows = []
+    for index in range(4):
+        rows.append(
+            make_row(
+                code=f"16{index:04d}",
+                market="深圳",
+                business="转托转入",
+                price="0.00",
+                trade_amount="0.00",
+                amount="0.00",
+            )
+        )
+
+    report, _errors = diagnose(monkeypatch, rows)
+    linkage = report["vocabulary"]["symbol_linkage"]
+    custody = next(
+        item for item in linkage["business_coverage"] if item["业务名称"] == "转托转入"
+    )
+
+    assert linkage["symbols_total"] == 4
+    assert linkage["symbols_shown"] == 2
+    # 该业务仍有代表，但缺了 2 个——这正是旧实现完全看不见的情形
+    assert custody == {"业务名称": "转托转入", "symbols_total": 4, "symbols_shown": 2}

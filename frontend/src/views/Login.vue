@@ -69,12 +69,23 @@
 
 <script setup lang="ts">
 import { ref, reactive } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { User, Lock } from '@element-plus/icons-vue'
 import { ElMessage, type FormInstance } from 'element-plus'
 
 const router = useRouter()
+const route = useRoute()
+
+// 只接受站内路径（单个 / 开头）：query 可被外部拼接，'//evil.com' 这类
+// 协议相对地址会变成开放重定向
+function safeRedirectTarget(): string {
+  const target = route.query.redirect
+  if (typeof target === 'string' && target.startsWith('/') && !target.startsWith('//')) {
+    return target
+  }
+  return '/'
+}
 const authStore = useAuthStore()
 
 const loginFormRef = ref<FormInstance | null>(null)
@@ -109,8 +120,8 @@ const handleLogin = async () => {
 
     if (result.success) {
       ElMessage.success('登录成功')
-      // Redirect to home page
-      router.push('/')
+      // 回到会话过期前的页面；无 redirect 时回首页
+      router.push(safeRedirectTarget())
     } else {
       errorMessage.value = result.message
     }

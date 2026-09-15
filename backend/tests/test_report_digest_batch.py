@@ -21,6 +21,19 @@ from app.services.security_profile_service import upsert_profile_row
 
 from .helpers import reset_tables
 
+
+@pytest.fixture(autouse=True)
+def _stub_statement_extraction(monkeypatch):
+    """港股目标会顺带跑三张报表抽取（真实实现要下载披露易 PDF 并调 LLM）：本文件只测
+    摘要批量骨架，默认打成零产出；专测见 test_hk_targets_attach_statement_outcome。"""
+    monkeypatch.setattr(
+        batch, "ensure_report_statements",
+        lambda *args, **kwargs: {
+            "total": 0, "completed": 0, "generated": 0, "failed": 0,
+            "permanently_failed": 0, "gaps": [], "fatal": None,
+        },
+    )
+
 JOB_TYPES = [
     "report_digest_batch", "security_analysis_batch",
     "security_analysis", "report_digest_backfill",
@@ -598,9 +611,9 @@ def test_exclusive_with_other_analysis_jobs(db, monkeypatch):
     for caller in ("security_analysis_batch", "security_analysis",
                    "report_digest_backfill"):
         with pytest.raises(AnalysisBusyError, match="批量财报摘要回填"):
-            ensure_no_conflicting_analysis_job(1, caller)
+            ensure_no_conflicting_analysis_job(db, 1, caller)
     # 自己不拦自己（重复点按钮命中 create_or_get_active_job 的幂等返回）
-    ensure_no_conflicting_analysis_job(1, batch.JOB_TYPE)
+    ensure_no_conflicting_analysis_job(db, 1, batch.JOB_TYPE)
 
 
 @pytest.mark.anyio
@@ -689,3 +702,53 @@ def test_losing_ownership_mid_loop_stops_the_batch_immediately(db, monkeypatch):
     stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
     db.refresh(stored)
     assert stored.status != "failed", "失权不是失败，僵尸不得把 job 标成 failed"
+
+
+def test_hk_targets_attach_statement_outcome(db, monkeypatch):
+    """港股目标顺带跑三张报表抽取：结果挂在 results[].statements，缺口并入 gap_count；
+    其他市场没有这一段（statements=None）。"""
+    _hold(db, "00700", "港股")
+    _hold(db, "600036", "A股")
+    seen: list = []
+
+    def fake_statements(db_, symbol, market, *, max_new):
+        seen.append((symbol, market, max_new))
+        return {
+            "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
+            "gaps": ["20161231 报表抽取失败（已封顶）"], "fatal": None,
+        }
+
+    monkeypatch.setattr(batch, "ensure_report_statements", fake_statements)
+    job, calls = _run(db, monkeypatch)
+    assert job["status"] == "succeeded"
+    assert seen == [("00700", "港股", batch.DIGEST_BATCH_PER_SYMBOL)]  # A 股不跑报表抽取
+    by_symbol = {row["symbol"]: row for row in job["results"]}
+    assert by_symbol["00700"]["statements"] == {
+        "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
+    }
+    assert by_symbol["00700"]["gap_count"] == 1  # 摘要零缺口 + 报表 1 条
+    assert by_symbol["600036"]["statements"] is None
+
+
+def test_hk_statement_fatal_aborts_batch_and_pipeline_error_is_isolated(db, monkeypatch):
+    _hold(db, "00700", "港股")
+    monkeypatch.setattr(
+        batch, "ensure_report_statements",
+        lambda *a, **k: {
+            "total": 1, "completed": 0, "generated": 0, "failed": 1, "permanently_failed": 0,
+            "gaps": ["x"], "fatal": {"kind": "llm_auth", "message": "LLM 调用失败（HTTP 401）"},
+        },
+    )
+    job, _calls = _run(db, monkeypatch)
+    assert job["status"] == "failed"
+    assert "HTTP 401" in (job.get("abort_reason") or "")
+
+    # 报表管线自身意外异常：不拖垮本标的的摘要结果，只记一条缺口（持仓沿用上面那条）
+    monkeypatch.setattr(
+        batch, "ensure_report_statements",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("披露易 503")),
+    )
+    job, _calls = _run(db, monkeypatch)
+    assert job["status"] == "succeeded" and job["success_count"] == 1
+    assert job["results"][0]["statements"] is None and job["results"][0]["gap_count"] == 1
+

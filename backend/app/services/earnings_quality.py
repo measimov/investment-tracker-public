@@ -102,6 +102,11 @@ def pivot_rows_to_statements(
             "n_income_attr_p": row.get("n_income_attr_p"),
             "sell_exp": row.get("sga_exp"),  # SGA 合并科目挂 sell_exp 位
             "admin_exp": None,
+            # graham_screen 消费：盈利增长（EPS 优先）与利息覆盖
+            "basic_eps": row.get("basic_eps"),
+            "diluted_eps": row.get("diluted_eps"),
+            "int_exp": row.get("int_exp"),
+            "operating_income": row.get("operating_income"),
         })
         balance.append({
             **base,
@@ -111,6 +116,11 @@ def pivot_rows_to_statements(
             "inventories": row.get("inventories"),
             "total_cur_assets": row.get("total_cur_assets"),
             "fix_assets": row.get("fix_assets"),
+            # graham_screen 消费：财务强度与净债务
+            "total_cur_liab": row.get("total_cur_liab"),
+            "total_debt": row.get("total_debt"),  # 港股 Yahoo 合计口径
+            "lt_debt": row.get("lt_debt"),  # 美股 EDGAR 长期债务口径
+            "money_cap": row.get("money_cap"),
         })
         cashflow.append({
             **base,
@@ -144,6 +154,44 @@ def pivot_rows_to_statements(
     }
 
 
+_STATEMENT_META_KEYS = frozenset({
+    "end_date", "fp", "currency", "is_comparative", "source_period_key", "source_report_type",
+    "source_end_date", "source_url", "source_fingerprint", "source_pages", "source_by_kind",
+    "extractor_version", "prompt_version",
+})
+
+
+def merge_hk_statement_rows(datasets: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """港股透视行 = 年报/中报 PDF 抽取行（report_statements，官方一手）优先，Yahoo 补缺。
+    **合并粒度是科目而不是整行**：只处理了中报时 `20251231|FY` 可能只有资产负债表比较列，
+    整行屏蔽 Yahoo 会让本来有的营收/利润/现金流全部变 None（PR #201 评审 P2）。**双方币种
+    已确认且一致**才逐科目合并；任一侧币种未知或不同，PDF 行原样保留、不补数，Yahoo 只在 PDF
+    没有该期时整行补入。"""
+    by_period: Dict[tuple, Dict[str, Any]] = {}
+    for row in datasets.get("report_statements", []) or []:
+        key = (str(row.get("end_date")), str(row.get("fp") or "FY"))
+        by_period[key] = dict(row)
+    for row in datasets.get("yahoo_fundamentals", []) or []:
+        key = (str(row.get("end_date")), str(row.get("fp") or "FY"))
+        pdf = by_period.get(key)
+        if pdf is None:
+            by_period[key] = dict(row)
+            continue
+        pdf_currency, yahoo_currency = pdf.get("currency"), row.get("currency")
+        # 双方币种都已确认且一致才能逐科目补数；任一侧未知或不同 → PDF 行原样、不借 Yahoo 的
+        # 金额也不借它的币种标签（parsed.currency 允许为 None，贴 Yahoo 币种就是猜）
+        if not pdf_currency or not yahoo_currency or pdf_currency != yahoo_currency:
+            continue
+        for field, value in row.items():
+            if field in _STATEMENT_META_KEYS or value is None:
+                continue
+            if pdf.get(field) is None:
+                pdf[field] = value
+    merged = list(by_period.values())
+    merged.sort(key=lambda row: str(row.get("end_date") or ""), reverse=True)
+    return merged
+
+
 def market_statements(
     market: str, datasets: Dict[str, List[Dict[str, Any]]]
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -156,7 +204,7 @@ def market_statements(
     if market == "美股":
         return pivot_rows_to_statements(datasets.get("edgar_companyfacts", []))
     if market == "港股":
-        return pivot_rows_to_statements(datasets.get("yahoo_fundamentals", []))
+        return pivot_rows_to_statements(merge_hk_statement_rows(datasets))
     return {
         key: datasets.get(key, [])
         for key in ("income", "balancesheet", "cashflow", "fina_indicator")

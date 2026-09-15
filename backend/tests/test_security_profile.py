@@ -116,6 +116,42 @@ def test_single_dataset_failure_does_not_abort(db, monkeypatch):
     assert result["datasets"]["fina_indicator"]["rows"] == 1
 
 
+def test_non_tushare_dataset_failure_never_aborts_the_symbol(db, monkeypatch):
+    """雪球/EDGAR/Yahoo 的报错不得中止整只标的的 Tushare 同步。
+
+    fatal 判据是中文子串匹配（"权限"/"积分不足"/"抱歉，您"），而第三方源的
+    上游报错里出现这几个字完全可能——不限定"该数据集确实走 Tushare"的话，
+    一次雪球 Cookie 过期就会把十一个 Tushare 数据集一起带走，且在调用方看来
+    只是"部分数据缺失"。
+    """
+    def fetch(dataset, symbol, market):
+        if dataset == "xueqiu_income":
+            raise RuntimeError("error_code=400016: 无权限访问该接口")
+        return [{"end_date": "20251231"}]
+
+    monkeypatch.setattr(svc, "fetch_dataset_rows", fetch)
+    result = svc.sync_symbol_profile(db, "600036", "A股")
+
+    assert "fatal" not in result
+    assert [f["dataset"] for f in result["failed"]] == ["xueqiu_income"]
+    # 雪球之后注册的数据集仍然被同步（未 break）
+    assert result["datasets"]["xueqiu_capital_flow"]["rows"] == 1
+    assert result["datasets"]["fina_indicator"]["rows"] == 1
+
+
+def test_tushare_dataset_fatal_still_aborts_the_symbol(db, monkeypatch):
+    """反向守卫：Tushare 自己的 token/权限错误仍必须立即中止。"""
+    def fetch(dataset, symbol, market):
+        if dataset == "fina_indicator":
+            raise RuntimeError("抱歉，您没有访问该接口的权限")
+        return [{"end_date": "20251231"}]
+
+    monkeypatch.setattr(svc, "fetch_dataset_rows", fetch)
+    result = svc.sync_symbol_profile(db, "600036", "A股")
+
+    assert result["fatal"]["dataset"] == "fina_indicator"
+
+
 def test_daily_basic_pruned_to_recent_rows(db, monkeypatch):
     _patch_fetch(monkeypatch, {
         "daily_basic": [
@@ -722,8 +758,10 @@ def test_hk_sync_and_load_route_only_yahoo_dataset(db, monkeypatch):
     assert set(result["datasets"]) == {"yahoo_fundamentals"}
 
     profile = svc.load_symbol_profile(db, "00700", "港股")
-    assert set(profile["datasets"]) == {"yahoo_fundamentals"}
+    # report_statements 是任务驱动数据集：随档案加载但不在 sync 里拉取
+    assert set(profile["datasets"]) == {"yahoo_fundamentals", "report_statements"}
     assert profile["latest_periods"]["yahoo_fundamentals"] == "20251231"
+    assert profile["datasets"]["report_statements"] == []
 
 
 def test_build_system_prompt_hk_branch():
@@ -733,10 +771,10 @@ def test_build_system_prompt_hk_branch():
     for banned in ("高质押", "大股东减持", "解禁临近", "审计非标"):
         assert banned in hk
     assert "risk_level 不得为 low" in hk
-    # 已接入披露易年报全文：风险来源改为年报「主要風險」章节，但结构化科目
-    # 仍只有近 3-5 年，风险等级下限保留
+    # 已接入披露易年报全文与年报/中报三张表抽取：结构化科目来自原文抽取（可达十年），
+    # 风险等级下限保留
     assert "主要風險" in hk
-    assert "仅近 3-5 年" in hk
+    assert "原文抽取" in hk and "report_statements" in hk
     assert "利润质量与会计风险" in hk  # 共享骨架保留
 
 
@@ -833,7 +871,10 @@ async def test_profile_api_flow(db, api_user, monkeypatch):
         profile = await client.get("/api/securities/A股/600036/profile", headers=auth)
         body = profile.json()
         assert body["supported"] is True
-        assert set(body["datasets"]) == set(svc.DATASETS)
+        # A股 注册表 = Tushare 的 DATASETS + 雪球数据集；档案响应按注册表分组，
+        # 断言 DATASETS 会在每次新增非 Tushare 数据源时假红
+        assert set(body["datasets"]) == set(svc.MARKET_DATASETS["A股"])
+        assert set(svc.DATASETS) < set(svc.MARKET_DATASETS["A股"])
         assert body["capabilities"] == svc.MARKET_CAPABILITIES["A股"]
 
         # 未配置 LLM key → 409；不支持市场 → 409
@@ -1012,6 +1053,42 @@ def test_parse_rejects_market_banned_tags():
                 '"report_markdown":"r"}',
                 market="美股",
             )
+    # [自检回归] 安全边际充足要求估值准则 pass，美/港股无估值数据源 → 确定性禁用；
+    # 安全边际不足不禁（财务强度 fail 单独可触发）
+    margin_payload = (
+        '{"tags":["安全边际充足"],"risk_level":"medium","summary":"s","report_markdown":"r"}'
+    )
+    # [评审 P1 二轮] A股 也不能无条件接受：必须按 graham_screen 实际 verdict 硬校验
+    def _graham(**verdicts):
+        base = {"pe": "pass", "pb_or_product": "pass", "current_ratio": "pass",
+                "lt_debt_vs_net_current_assets": "pass"}
+        base.update(verdicts)
+        return {"status": "ok", "criteria": [
+            {"criterion": key, "verdict": verdict} for key, verdict in base.items()
+        ]}
+
+    graham_ok = _graham()
+    graham_pb_fail = _graham(pb_or_product="fail")
+    graham_indeterminate = _graham(pe="indeterminate")
+    # [评审 P1 三轮] 长期债务准则同属财务强度：fail/indeterminate 都不得放行
+    graham_debt_fail = _graham(lt_debt_vs_net_current_assets="fail")
+    graham_debt_indeterminate = _graham(lt_debt_vs_net_current_assets="indeterminate")
+    assert parse_analysis_output(
+        margin_payload, market="A股", graham_screen=graham_ok
+    )["tags"] == ["安全边际充足"]
+    for bad in (
+        graham_pb_fail, graham_indeterminate, graham_debt_fail,
+        graham_debt_indeterminate, {"status": "no_data"}, None,
+    ):
+        with pytest.raises(ValueError, match="安全边际充足"):
+            parse_analysis_output(margin_payload, market="A股", graham_screen=bad)
+    for banned_market in ("美股", "港股"):
+        with pytest.raises(ValueError, match="禁用标签"):
+            parse_analysis_output(margin_payload, market=banned_market, graham_screen=graham_ok)
+    assert parse_analysis_output(
+        '{"tags":["安全边际不足"],"risk_level":"medium","summary":"s","report_markdown":"r"}',
+        market="美股",
+    )["tags"] == ["安全边际不足"]
     # 市场无关的通用标签不受影响
     ok = parse_analysis_output(
         '{"tags":["业绩增长"],"risk_level":"medium","summary":"s","report_markdown":"r"}',
@@ -1035,6 +1112,32 @@ def test_analysis_job_us_banned_tag_is_deterministic_failure(db, monkeypatch):
     assert job.status == "failed"
     assert "禁用标签" in (job.error or "")
     assert job.attempt_count == 1
+    assert db.query(SecurityAnalysis).count() == 0
+
+
+def test_analysis_job_margin_of_safety_with_debt_fail_is_deterministic_failure(
+    db, monkeypatch
+):
+    """[评审 P1 三轮] A股 贯通：PE/PB/流动比率全 pass、但有息负债 > 净流动资产
+    （长期债务准则 fail）→ 安全边际充足仍必须被拒绝。"""
+    job = _run_job(
+        db, monkeypatch, market="A股", symbol="600036",
+        llm_content=(
+            '{"tags":["安全边际充足"],"risk_level":"low","summary":"s",'
+            '"report_markdown":"r"}'
+        ),
+        datasets={
+            "income": [{"end_date": "20251231", "n_income_attr_p": 100.0, "basic_eps": 1.0}],
+            "balancesheet": [{
+                "end_date": "20251231", "total_cur_assets": 500.0, "total_cur_liab": 100.0,
+                "total_assets": 1000.0, "total_liab": 300.0, "money_cap": 200.0,
+                "lt_borr": 900.0,  # 有息负债 900 > 净流动资产 400 → 债务准则 fail
+            }],
+            "daily_basic": [{"trade_date": "20260801", "pe_ttm": 8.0, "pb": 1.0, "total_mv": 1.0}],
+        },
+    )
+    assert job.status == "failed"
+    assert "安全边际充足" in (job.error or "")
     assert db.query(SecurityAnalysis).count() == 0
 
 
@@ -1233,3 +1336,67 @@ def test_analyze_one_skips_digests_when_max_new_zero(db, monkeypatch):
     outcome = jobs.analyze_one(db, "600036", "A股", digest_max_new=0)
     assert outcome["status"] == "succeeded"
     assert outcome["digest_gaps"] == []
+
+
+def test_graham_inputs_take_annual_rows_not_recent_periods(db_session=None):
+    """[自检回归] 准则取数必须按年度行专取：caps 式"最近 N 报告期"窗口会被
+    季报挤到只剩 2-3 个年度行——十年盈利稳定恒 indeterminate 只是失灵，
+    分红记录截断成"连续 2 年"则是错误 fail（真实账本冒烟实锤，美的实际
+    连续分红 13 年）。"""
+    from app.database import SessionLocal
+    from app.models.security_profile import SecurityProfileData
+    from app.services.security_profile_service import compute_graham_for
+
+    db = SessionLocal()
+    symbol = "600GRAHAM"
+    try:
+        db.query(SecurityProfileData).filter(
+            SecurityProfileData.symbol == symbol
+        ).delete()
+        # 10 个年度行（2016-2025）+ 近 8 个季报行：倒序窗口会先吃满季报
+        for year in range(2016, 2026):
+            db.add(SecurityProfileData(
+                symbol=symbol, market="A股", dataset="income",
+                period_key=f"{year}1231",
+                payload={"end_date": f"{year}1231", "n_income_attr_p": 1000.0 + year,
+                         "basic_eps": 1.0 + (year - 2016) * 0.1},
+            ))
+            db.add(SecurityProfileData(
+                symbol=symbol, market="A股", dataset="balancesheet",
+                period_key=f"{year}1231",
+                payload={"end_date": f"{year}1231", "total_cur_assets": 500.0,
+                         "total_cur_liab": 100.0, "total_assets": 1000.0,
+                         "total_liab": 300.0, "money_cap": 200.0, "lt_borr": 50.0},
+            ))
+        for quarter in ("20250331", "20250630", "20250930", "20240331",
+                        "20240630", "20240930", "20260331", "20260630"):
+            db.add(SecurityProfileData(
+                symbol=symbol, market="A股", dataset="income", period_key=quarter,
+                payload={"end_date": quarter, "n_income_attr_p": 1.0},
+            ))
+        # 13 年分红实施记录
+        for year in range(2013, 2026):
+            db.add(SecurityProfileData(
+                symbol=symbol, market="A股", dataset="dividend_history",
+                period_key=f"{year}1231|实施|{year}0501",
+                payload={"end_date": f"{year}1231", "div_proc": "实施",
+                         "cash_div_tax": 0.5},
+            ))
+        db.commit()
+
+        result = compute_graham_for(db, symbol, "A股")
+        assert result is not None
+        verdicts = {c["criterion"]: c["verdict"] for c in result["criteria"]}
+        # 年度行专取：十年盈利稳定可判 pass（倒序混窗只会看到 2-3 个年度行）
+        assert verdicts["earnings_stability"] == "pass"
+        # 分红全量：连续 13 年 pass（截断窗口会错报 fail）
+        dividend = next(c for c in result["criteria"] if c["criterion"] == "dividend_record")
+        assert dividend["verdict"] == "pass"
+        assert "13 年" in dividend["reason"]
+    finally:
+        db.query(SecurityProfileData).filter(
+            SecurityProfileData.symbol == symbol
+        ).delete()
+        db.commit()
+        db.close()
+

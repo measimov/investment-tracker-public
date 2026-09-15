@@ -1,9 +1,15 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
     container_name: investment-tracker-backend
     volumes:
       - ${BACKEND_LOG_DIR:-./backend/logs}:/app/logs
+      # 雪球 Cookie 只读挂载——挂**目录**不挂文件：bind 一个缺失的文件路径
+      # 会被 Docker 在宿主机误建成同名目录，之后放真文件都放不进去（PR #186
+      # 评审实锤）。默认目录 backend/secrets 随仓库存在（.gitkeep），内容
+      # gitignore；XUEQIU_COOKIE_FILE 指向容器内 /app/secrets/ 下的文件名。
+      - ${XUEQIU_COOKIE_HOST_DIR:-./backend/secrets}:/app/secrets:ro
     environment:
       - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL in .env}
       - CORS_ORIGINS=${CORS_ORIGINS:?Set CORS_ORIGINS in .env}
@@ -51,6 +57,10 @@ services:
       - DISPLAY_TIMEZONE
       # 美股 EDGAR 合规要求 UA 带联系方式；不透传则容器内恒为空、恒用占位 UA
       - EDGAR_USER_AGENT=${EDGAR_USER_AGENT:-}
+      # 雪球数据源：留空 = 关闭（行情与 A股 xueqiu_* 数据集显式降级）。
+      # COOKIE_FILE 指容器内路径，对应上面的只读挂载。
+      - XUEQIU_COOKIE_FILE=${XUEQIU_COOKIE_FILE:-}
+      - XUEQIU_COOKIES=${XUEQIU_COOKIES:-}
       - LLM_REPORT_API_KEY=${LLM_REPORT_API_KEY:-}
       - LLM_REPORT_BASE_URL=${LLM_REPORT_BASE_URL:-https://api.deepseek.com}
       - LLM_REPORT_MODEL=${LLM_REPORT_MODEL:-deepseek-v4-pro}
@@ -73,6 +83,8 @@ services:
       - ${NGINX_LOG_DIR:-./logs/nginx}:/var/log/nginx
     environment:
       - NGINX_SERVER_NAME=${NGINX_SERVER_NAME:?Set NGINX_SERVER_NAME in .env}
+      # 复用发布端口作为重定向端口，单一事实来源；nginx 模板 envsubst 用
+      - NGINX_HTTPS_PORT=${FRONTEND_HTTPS_PORT:-443}
     depends_on:
       - backend
     restart: unless-stopped

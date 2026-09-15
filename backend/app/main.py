@@ -23,7 +23,9 @@ from .api import (
     excluded_securities,
     security_rules,
     llm_reports,
+    security_catalog,
     security_profiles,
+    watchlist,
 )
 from .core.logging import configure_logging, get_app_logger
 from .services.background_job_store import cleanup_expired_jobs, interrupt_stale_jobs
@@ -33,6 +35,8 @@ from .services.background_job_store import cleanup_expired_jobs, interrupt_stale
 # （report_digest_jobs / report_digest_batch_jobs）在冷启动时不会被导入——
 # 进程若在任务入队后重启，且没有用户再访问对应路由，queued/租约过期的任务
 # 永远不会被接管，只能被 stale 清理中断。这与 job 模块宣称的恢复语义相反。
+from .services import opinion_summary_batch_jobs as _opinion_summary_batch_jobs  # noqa: F401
+from .services import opinion_summary_jobs as _opinion_summary_jobs  # noqa: F401
 from .services import report_digest_batch_jobs as _report_digest_batch_jobs  # noqa: F401
 from .services import report_digest_jobs as _report_digest_jobs  # noqa: F401
 from .services.exchange_rate_service import refresh_rates_if_stale
@@ -49,6 +53,25 @@ from .services.benchmark_service import (  # noqa: E402
 )
 
 register_periodic_task(refresh_benchmark_tails, interval_seconds=BENCHMARK_REFRESH_SECONDS)
+
+# 港交所每日行情报表：港股收盘价的官方 T+1 源，只推进已跟踪标的的尾部；
+# 非交易日 404 即休市，无需交易日历
+from .services.hkex_dayquot_source import (  # noqa: E402
+    PERIODIC_INTERVAL_SECONDS as HKEX_DAYQUOT_REFRESH_SECONDS,
+    refresh_hk_dayquot,
+)
+
+register_periodic_task(refresh_hk_dayquot, interval_seconds=HKEX_DAYQUOT_REFRESH_SECONDS)
+
+# 标的全集：每周刷新（tick 6h，按 last_success_at 判新鲜，重启不重拉）
+from .services.security_catalog_service import (  # noqa: E402
+    PERIODIC_INTERVAL_SECONDS as SECURITY_CATALOG_REFRESH_SECONDS,
+    refresh_security_catalog,
+)
+
+register_periodic_task(
+    refresh_security_catalog, interval_seconds=SECURITY_CATALOG_REFRESH_SECONDS
+)
 
 
 configure_logging()
@@ -127,6 +150,16 @@ app.include_router(
     security_profiles.router,
     prefix="/api/securities",
     tags=["Security Profiles"],
+)
+app.include_router(
+    security_catalog.router,
+    prefix="/api/securities",
+    tags=["Security Catalog"],
+)
+app.include_router(
+    watchlist.router,
+    prefix="/api",
+    tags=["Watchlist"],
 )
 
 

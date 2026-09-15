@@ -108,3 +108,10 @@ certbot-webroot/
 *~
 .pytest_cache/
 test-results/
+
+# 雪球登录态 Cookie 与登录态导出：绝不入库
+backend/secrets/*
+!backend/secrets/.gitkeep
+.xueqiu-cookies.json
+*xueqiu*cookie*.json
+cookies.xueqiu.json

@@ -2,35 +2,22 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '../api'
 import { paramsKey } from '../utils/cacheKey'
+import type { HoldingResponse } from '../types'
 
-/** 后端持仓行：字段较多且随后端演进，这里只声明前端需要点名的字段。 */
-export interface Holding {
-  id: number
-  symbol: string
-  name?: string | null
-  market: string
-  quantity: number | string
-  total_cost?: number | string | null
-  avg_cost?: number | string | null
-  currency?: string
-  broker_account_id?: number | null
-  current_price?: number | string | null
-  [key: string]: unknown
-}
+// 后端 HoldingResponse schema 为准（PR #172 复审：放宽的手写副本会让必填
+// 字段删改从 typecheck 手里溜走）。Decimal 序列化为 string，展示经 toNumber。
+export type Holding = HoldingResponse
 
 interface FetchOptions {
   force?: boolean
 }
 
-function patchHoldingPrice(
-  cache: Record<string, Holding[]>,
-  holdingId: number | string,
-  price: number | string
-) {
+// 用服务端返回的整行回填缓存，而不是把用户输入的 price 原样写进去：
+// 类型上 current_price 是 Decimal 字符串，语义上 price_updated_at 等
+// 兄弟字段也随之更新，本地拼行两头都不对。
+function patchHolding(cache: Record<string, Holding[]>, updated: Holding) {
   Object.keys(cache).forEach((key) => {
-    cache[key] = cache[key].map((holding) =>
-      holding.id === holdingId ? { ...holding, current_price: price } : holding
-    )
+    cache[key] = cache[key].map((holding) => (holding.id === updated.id ? updated : holding))
   })
 }
 
@@ -68,7 +55,7 @@ export const useHoldingsStore = defineStore('holdings', () => {
 
   async function updateHoldingPrice(holdingId: number | string, price: number | string) {
     const response = await api.updateHoldingPrice(holdingId, price)
-    patchHoldingPrice(cache.value, holdingId, price)
+    patchHolding(cache.value, response.data)
     return response
   }
 

@@ -47,6 +47,18 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/watchlist',
+    name: 'Watchlist',
+    component: () => import('../views/Watchlist.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/opinions',
+    name: 'Opinions',
+    component: () => import('../views/Opinions.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/securities/:market/:symbol',
     name: 'SecurityDetail',
     component: () => import('../views/SecurityDetail.vue'),
@@ -124,7 +136,13 @@ router.beforeEach(async (to, from, next) => {
     // Route doesn't require auth (e.g., login page)
     // If user is already authenticated, redirect to home
     if (to.path === '/login' && authStore.isAuthenticated) {
-      next('/')
+      // 已登录还带着 redirect（如另一个标签页刚续上会话）：直接兑现回跳
+      const target = to.query.redirect
+      if (typeof target === 'string' && target.startsWith('/') && !target.startsWith('//')) {
+        next(target)
+      } else {
+        next('/')
+      }
       return
     }
   }

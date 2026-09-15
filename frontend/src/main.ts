@@ -1,7 +1,14 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
+// Element Plus 组件与 v-loading 由 unplugin-vue-components 按需引入
+// （vite.config.ts）。这里只补命令式 API 的样式：ElMessage/ElMessageBox/
+// ElNotification 在 .ts 里显式 import，模板解析器看不到它们的用点
+import 'element-plus/theme-chalk/base.css'
+import 'element-plus/theme-chalk/el-message.css'
+import 'element-plus/theme-chalk/el-message-box.css'
+import 'element-plus/theme-chalk/el-overlay.css'
+import 'element-plus/theme-chalk/el-notification.css'
+import 'element-plus/theme-chalk/el-loading.css'
 import './styles.css'
 import {
   ArrowDown,
@@ -59,6 +66,5 @@ for (const [key, component] of Object.entries(icons)) {
 }
 
 app.use(pinia)
-app.use(ElementPlus)
 app.use(router)
 app.mount('#app')

@@ -46,7 +46,12 @@
             :md="6"
           >
             <el-card shadow="hover">
-              <el-statistic :title="`1 ${currency} =`" :value="rate" :precision="4" suffix="CNY">
+              <el-statistic
+                :title="`1 ${currency} =`"
+                :value="Number(rate)"
+                :precision="4"
+                suffix="CNY"
+              >
                 <template #prefix>
                   <span class="currency-code">{{ currency }}</span>
                 </template>
@@ -124,7 +129,7 @@
           <el-select
             v-model="rateForm.from_currency"
             placeholder="请选择源币种"
-            :disabled="editingRate"
+            :disabled="!!editingRate"
           >
             <el-option
               v-for="curr in currencies"
@@ -139,7 +144,7 @@
           <el-select
             v-model="rateForm.to_currency"
             placeholder="请选择目标币种"
-            :disabled="editingRate"
+            :disabled="!!editingRate"
           >
             <el-option
               v-for="curr in currencies"
@@ -167,7 +172,7 @@
             placeholder="选择生效日期"
             format="YYYY-MM-DD"
             value-format="YYYY-MM-DD"
-            :disabled="editingRate"
+            :disabled="!!editingRate"
           />
         </el-form-item>
 
@@ -199,29 +204,17 @@ import { Refresh, Plus } from '@element-plus/icons-vue'
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import api from '@/api'
+import type { ExchangeRate, ExchangeRateLatest } from '@/types'
 import { CURRENCIES } from '@/utils/currency'
 import { formatNumber, todayLocalISODate } from '@/utils/helpers'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import { formatDate, formatDateTime } from '@/utils/helpers'
 
-interface RateRow {
-  id: number
-  from_currency: string
-  to_currency: string
-  rate: number | string
-  effective_date: string
-  source: string
-  is_active: boolean
-  [key: string]: unknown
-}
+// 后端 ExchangeRate schema 为准（此前手写副本把 source/is_active 写成非空，已漂移）
+type RateRow = ExchangeRate
 
-interface LatestRates {
-  base_currency?: string
-  rates?: Record<string, number | string>
-  effective_date?: string
-  source?: string
-  [key: string]: unknown
-}
+// 后端 ExchangeRateLatest schema 为准（此前手写副本把全部必填字段放宽为 optional）
+type LatestRates = ExchangeRateLatest
 
 const latestRates = ref<LatestRates | null>(null)
 const rateHistory = ref<RateRow[]>([])
@@ -345,8 +338,12 @@ const editRate = (rate: RateRow) => {
     to_currency: rate.to_currency,
     rate: Number(rate.rate),
     effective_date: rate.effective_date,
-    source: rate.source,
-    is_active: rate.is_active
+    // 后端两列可空（手工录入历史行）；表单模型是非空的，取默认值兜底。
+    // is_active 兜 false 而不是 true：折算查询按 is_(True) 过滤、列表也把
+    // NULL 按禁用显示——NULL 的现状语义就是"不参与估值"，编辑其他字段时
+    // 顺带发送 true 会让它静默生效并改变组合折算（PR #172 复审）。
+    source: rate.source ?? 'manual',
+    is_active: rate.is_active ?? false
   }
   dialogVisible.value = true
 }
@@ -396,6 +393,9 @@ const deleteRate = async (id: number) => {
 
     await api.deleteExchangeRate(id)
     ElMessage.success('删除成功')
+    // 与 submitRate 对齐：最新汇率卡片也要刷——删掉某币种唯一一条汇率后，
+    // 卡片不能继续展示已不存在的汇率（E2E 汇率增删改用例锁定此行为）
+    await loadLatestRates()
     await loadRateHistory()
   } catch (error) {
     if (error !== 'cancel') {

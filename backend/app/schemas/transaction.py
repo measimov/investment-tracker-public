@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import model_validator, BaseModel, Field, ConfigDict, field_validator
 from decimal import Decimal
 from datetime import date, datetime
 from typing import Optional
@@ -82,6 +82,16 @@ class TransactionBase(BaseModel):
 
 class TransactionCreate(TransactionBase):
     model_config = ConfigDict(extra="forbid")
+
+    # 归一化只在创建入口做（放 TransactionBase 会连 Response 一起跑：库里的
+    # 脏 symbol 会被"显示时修复"，掩盖真实数据问题）。更新路径在 API 层
+    # 合并出有效 (symbol, market) 后做同一归一，见 update_transaction。
+    @model_validator(mode="after")
+    def _normalize_symbol(self):
+        from ..services.symbol_normalization import normalize_manual_symbol
+
+        self.symbol = normalize_manual_symbol(self.symbol, self.market)
+        return self
 
 
 class TransactionUpdate(BaseModel):

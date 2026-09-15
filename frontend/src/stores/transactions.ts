@@ -3,24 +3,10 @@ import { ref } from 'vue'
 import api from '../api'
 import { paramsKey } from '../utils/cacheKey'
 import { useHoldingsStore } from './holdings'
+import type { Transaction as GeneratedTransaction } from '../types'
 
-/** 后端交易行：字段随后端演进，这里只声明前端点名使用的字段。 */
-export interface Transaction {
-  id: number
-  broker_account_id?: number | null
-  symbol: string
-  name?: string | null
-  market: string
-  transaction_type: string
-  quantity: number | string
-  price: number | string
-  fee: number | string
-  transaction_date: string
-  currency: string
-  notes?: string | null
-  import_batch_id?: number | null
-  [key: string]: unknown
-}
+// 后端 TransactionResponse schema 为准（PR #172 复审）
+export type Transaction = GeneratedTransaction
 
 interface FetchOptions {
   force?: boolean

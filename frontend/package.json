@@ -8,8 +8,10 @@
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json --composite false && vue-tsc --noEmit -p tsconfig.node.json --composite false",
     "format": "prettier --write src e2e",
+    "test:unit": "vitest run",
     "test:e2e": "rm -rf .e2e-work && mkdir -p .e2e-work && playwright test",
-    "test:e2e:headed": "rm -rf .e2e-work && mkdir -p .e2e-work && playwright test --headed"
+    "test:e2e:headed": "rm -rf .e2e-work && mkdir -p .e2e-work && playwright test --headed",
+    "generate:api-types": "python ../backend/scripts/export_openapi.py > openapi.json && openapi-typescript openapi.json -o src/types/api.generated.ts --empty-objects-unknown && prettier --write src/types/api.generated.ts"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
@@ -28,9 +30,12 @@
     "@types/node": "^20.19.43",
     "@vitejs/plugin-vue": "^5.0.3",
     "@vue/tsconfig": "^0.5.1",
+    "openapi-typescript": "^7.13.0",
     "prettier": "^3.8.3",
     "typescript": "~5.6",
+    "unplugin-vue-components": "^32.1.0",
     "vite": "^5.0.11",
+    "vitest": "^2.1.9",
     "vue-tsc": "^2.2.12"
   }
 }

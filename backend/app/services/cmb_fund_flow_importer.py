@@ -68,7 +68,10 @@ PARSER_NAME = "cmb_statement"
 #   v10 = 现金业务行入账为 CashEvent 并回填归档历史（cc5f7b9）
 #   v11 = 未归属红利税行改为可恢复（skip_reason=unattributed_tax）：不再计入
 #         判重的"已入账"，补齐股息后重导会在原归档行上就地转正（#132 子项 B）
-PARSER_VERSION = "11"
+#   v12 = 沪市可转债按「手」记账（1 手 = 10 张）：入账数量 ×10，对账期望毛额与
+#         容差同步放大。row_hash **不受影响**（判重仍按 PDF 原文数量），但同一
+#         行的持仓数量从 N 变成 10N，属入账口径变更
+PARSER_VERSION = "12"
 TRADE_BUSINESS_MAP = {
     "证券买入": "BUY",
     "证券卖出": "SELL",
@@ -89,6 +92,26 @@ CASH_INFLOW_EVENT_TYPES = {"DEPOSIT", "INTEREST", "OTHER", "TRANSFER_IN"}
 # 沪/深港通：价格列是 HKD，金额与费用列是 CNY 结算。结算汇率不披露，
 # 由行内推导（成交金额CNY ÷ (数量 × HKD价格)），并做合理区间校验。
 HK_CONNECT_MARKET_NAMES = {"沪港通", "深港通"}
+# 沪市可转债在对账单里以「手」记账（1 手 = 10 张），而成交均价是「每百元面值」净价
+# ——可转债单张面值恰为 100 元，所以那个价就是每张价格。于是
+# 成交金额 = 数量(手) × 10 × 价格，数量×均价 与 成交金额 天然差 10 倍。
+# 深市同类品种以「张」记账，无需换算。
+#
+# 实据（两份真实对账单，非推测）：
+#   深市 123266 博士转债 卖出：数量 10 × 价格 143.30 = 金额 1433.00，比值 1.0
+#   沪市 11xxxx 13 笔：金额 ÷ (数量 × 价格) 全部落在 9.9995 ~ 10.0003
+# 「每百元面值报价」是全国统一惯例，深市同样适用；若这 10 倍出在**价格**列，
+# 深市必然同样偏离，而它没有（且博士转债真实价若是 1433 元/张则荒谬）。
+# 所以差异只能在**数量**列的记账单位上。
+#
+# 刻意只收沪市可转债/可交换债前缀 11：沪市国债/企业债、以及 13xxxx 可交换债
+# 手上都没有样本。没有实据就不扩——未覆盖的形态会照常报错，而诊断报告
+# （#167）会把 market/代码前缀/比值直接打出来，届时加一个前缀即可。
+# **不要**改成"比值≈10 就换算"：那会把真实的数据错误一并"修正"掉，
+# 而且回购行的价格列是利率，利率一旦上到 10% 就会被误伤。
+LOT_QUOTED_MARKETS = ("上海",)
+LOT_QUOTED_CODE_PREFIXES = ("11",)
+LOT_SHARE_MULTIPLIER = Decimal("10")
 HK_CONNECT_SETTLEMENT_RATE_MIN = Decimal("0.5")
 HK_CONNECT_SETTLEMENT_RATE_MAX = Decimal("1.5")
 # 流水明细之后的章节：它们的表格行会被逐词提取误认成流水行（配号信息的
@@ -148,6 +171,19 @@ MANUAL_REVIEW_WARNING_SUFFIX = "manual review required"
 ROW_HASH_NOTE_PATTERN = re.compile(r"row_hash=([0-9a-f]{64})")
 
 
+def lot_share_multiplier(market_text: Any, security_code: Any) -> Decimal:
+    """对账单数量列 → 实际张数的换算系数（沪市可转债 10，其余 1）。
+
+    单点定义：对账校验与入账必须共用同一个系数，否则"预览通过、持仓翻十倍"
+    这种不一致会重新出现（#132 的主题）。
+    """
+    market = strip_bom(market_text)
+    code = strip_bom(security_code)
+    if market in LOT_QUOTED_MARKETS and code.startswith(LOT_QUOTED_CODE_PREFIXES):
+        return LOT_SHARE_MULTIPLIER
+    return Decimal("1")
+
+
 @dataclass
 class ParsedFlow:
     source_row_number: int
@@ -175,6 +211,10 @@ class ParsedFlow:
     notes: Optional[str]
     market_text: str = ""
     settlement_rate: Optional[Decimal] = None
+    # 数量列 → 实际张数的换算系数（沪市可转债 10）。**刻意不进 HASH_FIELDS**：
+    # row_hash 必须继续按 PDF 原文数量计算，否则历史已导入流水的判重键整体漂移，
+    # 重导即重复入账。换算只在入账口径上生效（见 booked_quantity）。
+    share_multiplier: Decimal = Decimal("1")
     # 排除清单命中标记：置位后所有入账语义（交易/股息/税/利息）失效，行只归档。
     excluded: bool = False
     # 现金管理产品标记（security_rules CASH_MANAGEMENT 类型 pre-pass 置位）：
@@ -268,6 +308,16 @@ class ParsedFlow:
             and self.trade_quantity != 0
             and self.trade_price > 0
         )
+
+    @property
+    def booked_quantity(self) -> Decimal:
+        """入账数量（张），恒为正。
+
+        与 `trade_quantity`（PDF 原文、参与 row_hash）刻意分开：判重键要稳定在
+        单据原文上，而持仓/成本/FIFO 要的是真实张数。所有建 Transaction 的地方
+        都必须走这个属性——`abs(flow.trade_quantity)` 在沪市可转债上会少十倍。
+        """
+        return abs(self.trade_quantity) * self.share_multiplier
 
     @property
     def total_fee(self) -> Decimal:
@@ -638,6 +688,19 @@ def parse_rows(
         market_text = strip_bom(row.get("市场")) or ""
         is_hk_connect = market_text in HK_CONNECT_MARKET_NAMES
         settlement_rate: Optional[Decimal] = None
+        # **只对买卖行生效**：10.000 这个比值只在 证券买入/证券卖出 上验证过，
+        # 它来自「成交金额 = 数量 × 10 × 价格」这个恒等式，而恒等式本身就只有
+        # 买卖行才成立。新股入账等零现金分支刻意跳过毛额对账，没有任何约束能
+        # 证伪它们的数量单位——若中签数量本就按张披露（本仓深市样本
+        # `123266 新股入账 数量=10.00` 正是按张），无条件放大会静默建出十倍
+        # 仓位，且没有任何对账会拦住它。没有实据的分支一律保持原口径。
+        share_multiplier = (
+            lot_share_multiplier(market_text, security_code)
+            if business_name in TRADE_BUSINESS_MAP
+            else Decimal("1")
+        )
+        # 校验与入账共用同一个换算后的数量，别再各算一遍
+        booked_quantity = abs(trade_quantity) * share_multiplier
 
         if business_name in TRADE_BUSINESS_MAP:
             pdf_trade_amount = strict_pdf_values["PDF成交金额"]
@@ -647,9 +710,9 @@ def parse_rows(
             pdf_total_fee = stamp_tax + commission + other_fee
             price_text = strip_bom(row.get("成交价格"))
             decimal_places = len(price_text.rsplit(".", 1)[1]) if "." in price_text else 0
-            gross_rounding_tolerance = (
-                abs(trade_quantity) * Decimal("0.5").scaleb(-decimal_places)
-            )
+            # 容差按「实际张数 × 半个最小价格变动单位」——沪市可转债的数量列
+            # 是手，不乘系数的话容差也会小十倍，跟着期望毛额一起错。
+            gross_rounding_tolerance = booked_quantity * Decimal("0.5").scaleb(-decimal_places)
             if TRADE_BUSINESS_MAP[business_name] == "BUY":
                 expected_amount = -(pdf_trade_amount + pdf_total_fee)
                 valid_quantity_sign = trade_quantity > 0
@@ -685,7 +748,7 @@ def parse_rows(
                     )
                     continue
             elif abs(
-                pdf_trade_amount - (abs(trade_quantity) * trade_price)
+                pdf_trade_amount - (booked_quantity * trade_price)
             ) > gross_rounding_tolerance + PDF_AMOUNT_TOLERANCE:
                 errors.append(
                     f"row {row_number}: PDF trade value does not reconcile "
@@ -806,6 +869,7 @@ def parse_rows(
                 notes=strip_bom(row.get("备注")) or None,
                 market_text=market_text,
                 settlement_rate=settlement_rate,
+                share_multiplier=share_multiplier,
                 is_cash_management_symbol=security_code in cash_management_symbols,
                 cash_event_type=cash_event_type,
             )
@@ -866,7 +930,7 @@ def flow_to_sample(flow: ParsedFlow, duplicate: bool) -> Dict[str, Any]:
         "market": market,
         "transaction_type": mapped_type,
         "trade_date": flow.trade_date.isoformat(),
-        "quantity": str(abs(flow.trade_quantity)),
+        "quantity": str(flow.booked_quantity),
         "price": str(flow.trade_price),
         "fee": str(flow.total_fee),
         "row_hash": flow.row_hash,
@@ -1006,6 +1070,17 @@ DIAGNOSTIC_PATTERN_COLUMNS = [
 DIAGNOSTIC_PATTERN_TOP_N = 5
 #: 费用三列——`fees_all_zero` 的判定必须以它们**全部**解析成功为前提
 DIAGNOSTIC_FEE_COLUMNS = ("佣金", "印花税", "其他费用")
+#: 按业务分组看行形状时关心的列
+DIAGNOSTIC_SHAPE_COLUMNS = ("成交价格", "成交数量", "PDF成交金额", "发生金额", "剩余数量")
+DIAGNOSTIC_SHAPE_TOP_N = 2
+#: symbol_linkage 的**失控兜底**上限，不是常规裁剪线。
+#:
+#: 原先取 40 是没必要的谨慎：实测本仓四份真实对账单（375~1733 行、46~114 个
+#: 标的），linkage 全量输出也只有 19~47 KB——诊断报告本就是一次性下载件，
+#: 这点体积毫无意义，而任何小上限都会在并列时把排查目标裁掉，且"该业务已由
+#: 前 N 个代表"会让遗漏彻底静默。改为只留一个防病态输入的高位兜底，
+#: 真触到时由 business_coverage 逐业务报出遗漏数量。
+DIAGNOSTIC_LINKAGE_LIMIT = 2000
 
 
 #: 标签列一旦发生列错位，挤进来的就是这些列的值——它们不能原样回传。
@@ -1024,15 +1099,20 @@ def _diagnostic_label(value: Any, record: Dict[str, Any]) -> str:
     排查的假设之一**——边界一偏，证券名称或证券账号就会落进"市场"列，再被
     词表原样抄进报告。
 
-    所以：值若与本行某个敏感列相同，只报「哪一列溢出来了」。这比抄出值本身
-    更有诊断价值（直接点名错位方向），且不泄露持仓与账号。其余一律过
+    所以：值若**包含**本行某个敏感列的内容，只报「哪一列溢出来了」。这比抄出
+    值本身更有诊断价值（直接点名错位方向），且不泄露持仓与账号。其余一律过
     `digit_class`，让账号形状（`Addddddddd`）可见而数字不可见。
+
+    用包含而非相等：提取器按 x 坐标把词拼进同一格，错位常表现为
+    「上海南银转债」这种拼接，相等比较抓不住。残留的边界情形是敏感列被整词
+    移走后自身为空——此时无从比对，只能靠标签词表白名单，留待后续。
     """
     text = strip_bom(value)
     if not text:
         return ""
     for column in DIAGNOSTIC_SENSITIVE_COLUMNS:
-        if text == strip_bom(record.get(column)):
+        sensitive = strip_bom(record.get(column))
+        if sensitive and sensitive in text:
             return f"<spilled:{column}>"
     return broker_import_common.digit_class(text, strip=strip_bom)
 
@@ -1077,7 +1157,7 @@ def _diagnostic_error_row(
             "security_code_length": len(security_code),
             "security_name_length": len(strip_bom(row.get("证券名称"))),
             "raw_patterns": {
-                column: broker_import_common.digit_class(row.get(column), strip=strip_bom)
+                column: broker_import_common.value_class(row.get(column), strip=strip_bom)
                 for column in DIAGNOSTIC_PATTERN_COLUMNS
             },
             # main 上的现行判据——用来直接证实/证伪"港股通写法没认出来"这一假设
@@ -1128,6 +1208,196 @@ def _diagnostic_error_row(
         }
     )
     return record
+
+
+def _diagnostic_value_counts(rows: List[Dict[str, Any]], column: str) -> Dict[str, int]:
+    """某列在一组行里的三态计数。
+
+    零 / 非零 / 解析失败必须分开数：把"解析不出来"折进"为零"，正是本模块
+    早先 `fees_all_zero` 那个误报的成因。
+    """
+    values = [parse_strict_pdf_decimal(row.get(column)) for row in rows]
+    return {
+        "zero": sum(1 for value in values if value is not None and value == 0),
+        "nonzero": sum(1 for value in values if value is not None and value != 0),
+        "unparsable": sum(1 for value in values if value is None),
+    }
+
+
+def _diagnostic_business_shapes(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """按 (市场, 业务名称) 分组的行形状剖面。
+
+    全局的 `column_patterns` 会被上千条买卖行淹没，看不出某个小众业务
+    （转托转入、产品转托管确认、托管转出……）自己长什么样——而"价格列是 0
+    还是净值"这种问题恰恰只能在分组后回答。
+    """
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
+    for record in records:
+        key = (
+            _diagnostic_label(record.get("市场"), record),
+            _diagnostic_label(record.get("业务名称"), record),
+        )
+        groups.setdefault(key, []).append(record)
+
+    shapes = []
+    for (market, business), rows in sorted(
+        groups.items(), key=lambda item: (-len(item[1]), item[0])
+    ):
+        shapes.append(
+            {
+                "市场": market,
+                "业务名称": business,
+                "count": len(rows),
+                "value_counts": {
+                    column: _diagnostic_value_counts(rows, column)
+                    for column in DIAGNOSTIC_SHAPE_COLUMNS
+                },
+                "patterns": {
+                    column: broker_import_common.label_histogram(
+                        [
+                            {
+                                column: broker_import_common.value_class(
+                                    row.get(column), strip=strip_bom
+                                )
+                            }
+                            for row in rows
+                        ],
+                        [column],
+                        strip=strip_bom,
+                    )[:DIAGNOSTIC_SHAPE_TOP_N]
+                    for column in DIAGNOSTIC_SHAPE_COLUMNS
+                },
+            }
+        )
+    return shapes
+
+
+def _diagnostic_symbol_linkage(
+    records: List[Dict[str, Any]], *, secret: str
+) -> Dict[str, Any]:
+    """同一标的在哪些业务里出现过，附时序与数量量级的匹配证据。
+
+    用来考察"这批份额的场外买入是否也在单据里"。**这是候选证据，不是证明**：
+    共现只说明同一标的出现在申购/转托管/卖出三种业务里，不能推出转入的那部分
+    数量其成本已知——申购 100、账外另得 200、随后转入并卖出 200，共现表也一样
+    好看。因此这里额外给出两样东西，供人工判断而非自动结论：
+
+    * `first_row_number` / `last_row_number`：单据内行序即时间序，看得出
+      申购是否发生在转入之前；
+    * `quantity_share`：该业务的 |Σ数量| 与本标的最大业务的比值（无量纲），
+      看得出数量级是否对得上。两者都对上才谈得上"成本可从本单据推出"。
+
+    `symbol_key` 用**服务端 secret 派生的 HMAC**：证券代码只有六位、空间极小，
+    截断 sha256 可被离线枚举反推（#167 复审已就文件名/元数据指出过同一问题）。
+    带密钥后同一部署的多份报告能把同一标的对上（#174 要的是"任一份对账单"），
+    而拿到报告的人没有 secret，反推不出代码。`symbol_ordinal` 只是本份报告内
+    的可读序号，方便肉眼引用。
+    """
+    ordinals: Dict[str, int] = {}
+    by_symbol: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for index, record in enumerate(records):
+        code = strip_bom(record.get("证券代码"))
+        if not code:
+            continue
+        if code not in ordinals:
+            ordinals[code] = len(ordinals) + 1
+        business = _diagnostic_label(record.get("业务名称"), record)
+        entry = by_symbol.setdefault(code, {}).setdefault(
+            business,
+            {"count": 0, "first_row": index + 2, "last_row": index + 2, "quantity": Decimal(0)},
+        )
+        entry["count"] += 1
+        entry["last_row"] = index + 2
+        quantity = parse_strict_pdf_decimal(record.get("成交数量"))
+        if quantity is not None:
+            entry["quantity"] += abs(quantity)
+
+    business_totals: Dict[str, int] = {}
+    for businesses in by_symbol.values():
+        for name, entry in businesses.items():
+            business_totals[name] = business_totals.get(name, 0) + entry["count"]
+
+    symbols = []
+    for code, businesses in by_symbol.items():
+        largest = max((entry["quantity"] for entry in businesses.values()), default=Decimal(0))
+        symbols.append(
+            {
+                "symbol_key": broker_import_common.stable_key(
+                    code, secret=secret, label="cmb-diagnostics-symbol-v1"
+                ),
+                "symbol_ordinal": ordinals[code],
+                "code_masked": broker_import_common.mask_code(code, keep=2),
+                "code_length": len(code),
+                "business_kinds": len(businesses),
+                "businesses": [
+                    {
+                        "业务名称": name,
+                        "count": entry["count"],
+                        "first_row_number": entry["first_row"],
+                        "last_row_number": entry["last_row"],
+                        "quantity_share": broker_import_common.safe_ratio(
+                            entry["quantity"], largest
+                        ),
+                    }
+                    for name, entry in sorted(
+                        businesses.items(), key=lambda item: (item[1]["first_row"], item[0])
+                    )
+                ],
+            }
+        )
+    # 排序先看"该标的参与过的最罕见业务有多罕见"，再看跨业务种类数。
+    #
+    # 只按 business_kinds 排会把要排查的标的静默裁掉：普通标的很容易凑够
+    # 买入/卖出/分红三种业务，而排查目标可能只有「转托转入 + 卖出」两种。
+    # 本仓真实对账单实测——40 个名额里 24 个是 kinds=2 的普通标的，而一个含
+    # `新股入账`（全局仅 1 次）的标的已经被挤掉，进出全看出现序号。
+    #
+    # 按罕见度排序不需要硬编码业务名单：转托管、托管转出、中签这些天然稀少，
+    # 会自动浮到最前；将来出现没见过的罕见业务同样自动入选。
+    for symbol in symbols:
+        symbol["rarest_business_count"] = min(
+            business_totals[entry["业务名称"]] for entry in symbol["businesses"]
+        )
+    symbols.sort(
+        key=lambda item: (
+            item["rarest_business_count"],
+            -item["business_kinds"],
+            item["symbol_ordinal"],
+        )
+    )
+    shown = symbols[:DIAGNOSTIC_LINKAGE_LIMIT]
+
+    # 逐业务覆盖率：兜底上限真被触到时，遗漏必须是可见且可量化的。
+    # 只报"某业务一个代表都没有"是不够的——同一罕见业务下 41 个并列标的被截到
+    # 40 个时，该业务仍有代表，遗漏却完全静默（#175 复审）。
+    shown_ordinals = {symbol["symbol_ordinal"] for symbol in shown}
+    coverage: Dict[str, Dict[str, int]] = {}
+    for symbol in symbols:
+        for entry in symbol["businesses"]:
+            slot = coverage.setdefault(
+                entry["业务名称"], {"symbols_total": 0, "symbols_shown": 0}
+            )
+            slot["symbols_total"] += 1
+            if symbol["symbol_ordinal"] in shown_ordinals:
+                slot["symbols_shown"] += 1
+
+    return {
+        "note": "共现是候选线索，不构成成本已知的证明；需配合行序与数量占比人工判断",
+        "ordering": (
+            "按参与过的最罕见业务升序排列；上限仅为防病态输入的兜底，"
+            "触到时逐业务的遗漏数见 business_coverage"
+        ),
+        "symbols_total": len(symbols),
+        "symbols_shown": len(shown),
+        "business_coverage": [
+            {"业务名称": name, **slot}
+            for name, slot in sorted(
+                coverage.items(),
+                key=lambda item: (item[1]["symbols_shown"] - item[1]["symbols_total"], item[0]),
+            )
+        ],
+        "symbols": shown,
+    }
 
 
 def build_cmb_diagnostics(
@@ -1252,11 +1522,14 @@ def build_cmb_diagnostics(
                 labels,
                 strip=strip_bom,
             ),
+            # 全局的 column_patterns 会被买卖行淹没，小众业务看不出自己的形态
+            "business_row_shapes": _diagnostic_business_shapes(records),
+            "symbol_linkage": _diagnostic_symbol_linkage(records, secret=settings.secret_key),
             "column_patterns": {
                 column: broker_import_common.label_histogram(
                     [
                         {
-                            column: broker_import_common.digit_class(
+                            column: broker_import_common.value_class(
                                 record.get(column), strip=strip_bom
                             )
                         }
@@ -1333,6 +1606,18 @@ def preview_cmb_fund_flow(
         [flow.row_hash for flow in parsed_rows],
         broker_account_id=broker_account_id,
     )
+    # 与导入路径同口径：已保留的**非可归属**税行（缺代码）按重复展示；
+    # 可归属税行仍放行，预览的"待入账"与导入的转正路径保持一致
+    preserved_tax = load_unattributed_tax_sources(
+        db,
+        BrokerFundFlow,
+        user_id=user_id,
+        hashes=[flow.row_hash for flow in parsed_rows],
+        broker_account_id=broker_account_id,
+    )
+    for flow in parsed_rows:
+        if not flow.is_dividend_tax and flow.row_hash in preserved_tax:
+            duplicate_hashes.add(flow.row_hash)
 
     result = build_import_result(
         filename=filename,
@@ -1457,7 +1742,7 @@ def prospective_transactions(
             symbol=flow.security_code,
             market=infer_market(flow.security_code, flow.currency, flow.shareholder_code),
             transaction_type=flow.transaction_type,
-            quantity=abs(flow.trade_quantity),
+            quantity=flow.booked_quantity,
             transaction_date=flow.trade_date,
             price=flow.trade_price,
             fee=flow.effective_fee,
@@ -1671,6 +1956,17 @@ def import_cmb_fund_flow(
             if flow.row_hash in existing_hashes:
                 continue
 
+            # 缺证券代码的税行进不了 is_dividend_tax 的转正/复用分支（判定
+            # 要求有代码），而 0011 已把这类历史孤儿回填成
+            # skip_reason=unattributed_tax、get_existing_hashes 又刻意放行
+            # 未归属行——不拦的话通用归档路径会插第二条同 hash 行撞唯一
+            # 约束，**整批导入崩掉**（2026-09-02 重导重叠区间对账单实锤）。
+            # 原行继续保留待人工归属，本批按重复计。
+            if not flow.is_dividend_tax and flow.row_hash in unattributed_tax_sources:
+                duplicate_hashes.add(flow.row_hash)
+                existing_hashes.add(flow.row_hash)
+                continue
+
             market = infer_market(flow.security_code, flow.currency, flow.shareholder_code)
 
             if flow.is_cash_interest:
@@ -1831,15 +2127,25 @@ def import_cmb_fund_flow(
             # 走到这里前面四个 is_* 分支都已 continue，故这里等价于原来那四个
             # 字段条件；用同一个谓词是为了让预览的"待入账交易"不可能与导入分叉。
             if not flow.becomes_transaction:
-                db.add(
-                    create_broker_fund_flow(
-                        user_id=user_id,
-                        broker_account_id=broker_account_id,
-                        filename=filename,
-                        flow=flow,
-                        import_batch_id=batch_id,
-                    )
+                archived = create_broker_fund_flow(
+                    user_id=user_id,
+                    broker_account_id=broker_account_id,
+                    filename=filename,
+                    flow=flow,
+                    import_batch_id=batch_id,
                 )
+                if (
+                    flow.business_name == TAX_BUSINESS_NAME
+                    and not flow.security_code
+                    and flow.amount < 0
+                ):
+                    # 与 0011 回填口径一致：缺代码税行归档即带未归属标记，
+                    # 重导走上面的重复守卫而非再次通用归档
+                    mark_unattributed_tax(
+                        archived,
+                        "preserved without security code; manual attribution required",
+                    )
+                db.add(archived)
                 existing_hashes.add(flow.row_hash)
                 continue
 
@@ -1861,7 +2167,7 @@ def import_cmb_fund_flow(
                 name=flow.security_name,
                 market=market,
                 transaction_type=flow.transaction_type,
-                quantity=abs(flow.trade_quantity),
+                quantity=flow.booked_quantity,
                 price=flow.trade_price,
                 fee=flow.effective_fee,
                 transaction_date=flow.trade_date,
