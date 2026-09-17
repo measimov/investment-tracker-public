@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "09618",
+  "end_date": "20231231",
+  "report_type": "annual",
+  "title": "09618_20231231_annual.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(262, 273)]，其余页置空以保住页码。京東 2023：亏损年份标题「合併經營狀況及綜合收益╱（損失）表」，三年升序 + 美元列",
+  "pages": 378,
+  "kept_pages": [
+    [
+      262,
+      273
+    ]
+  ],
+  "chars": 9938
+}

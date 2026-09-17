@@ -63,7 +63,7 @@ services:
       - XUEQIU_COOKIES=${XUEQIU_COOKIES:-}
       - LLM_REPORT_API_KEY=${LLM_REPORT_API_KEY:-}
       - LLM_REPORT_BASE_URL=${LLM_REPORT_BASE_URL:-https://api.deepseek.com}
-      - LLM_REPORT_MODEL=${LLM_REPORT_MODEL:-deepseek-v4-pro}
+      - LLM_REPORT_MODEL=${LLM_REPORT_MODEL:-deepseek-flash}
       - APP_VERSION=${APP_VERSION:-1.0.0}
       - BUILD_SHA=${BUILD_SHA:-unknown}
     restart: unless-stopped

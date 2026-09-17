@@ -48,6 +48,7 @@ from .report_digest_service import (
 )
 from .report_fetchers import download_report_pdf, hkex_reports
 from .report_statement_prompts import (
+    DERIVED_SUM_FIELDS,
     EXPENSE_MAGNITUDE_FIELDS,
     FIELD_KIND,
     PER_SHARE_FIELDS,
@@ -64,6 +65,7 @@ from .report_statements import (
     resolve_value,
     statement_rows_for_prompt,
     years_consistent,
+    detect_period_end,
 )
 
 logger = get_app_logger(__name__)
@@ -91,10 +93,14 @@ def _infer_hk_interim_end(title: str, ann_date: str) -> Optional[str]:
     ann = _parse_hkex_datetime(ann_date)
     if ann is None:
         return f"{year}0630"
-    for month, day in ((6, "30"), (9, "30"), (12, "31"), (3, "31")):
-        months_before = (ann.year - year) * 12 + (ann.month - month)
-        if 1 <= months_before <= 4:
-            return f"{year}{month:02d}{day}"
+    # 标题年份既可能是期末所在年（"2025 中期報告" = 2025-06-30），也可能是财年（6 月财年的
+    # 01023 "2026 中期報告" = 截至 2025-12-31 止六個月，刊发于 2026 年 2-3 月）：两个年份的
+    # 季末都试，取落在刊发窗口里的那个
+    for candidate_year in (year, year - 1):
+        for month, day in ((6, "30"), (9, "30"), (12, "31"), (3, "31")):
+            months_before = (ann.year - candidate_year) * 12 + (ann.month - month)
+            if 1 <= months_before <= 4:
+                return f"{candidate_year}{month:02d}{day}"
     return f"{year}0630"
 
 
@@ -148,9 +154,41 @@ def plan_statement_targets(symbol: str, market: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------- 抽取与映射
 
 
+def baseline_text(chars: List[Dict[str, Any]], *, page_height: float) -> str:
+    """按**基线**而不是字形框顶边聚行后抽文本。
+
+    pdfplumber 默认按 char 的 top 聚行，而 top 来自字体的 ascent/descent 度量：申洲國際
+    02313 的年报正文是 Source Han Sans（字形框整体落在基线之下）配 Helvetica 数字（正常
+    度量），同一行的科目名与数字 top 相差 7.5pt（半行），被拆成两行——58 行现金流量表全部
+    「无标签」，上一行的科目名进了下一行的上下文，模型推理 2.3 万 token 后仍把页脚「2025 43」
+    映射成经营现金流。两者的文本矩阵 f 分量（基线 y）完全相同，所以把每个字符的 top/bottom
+    改写成「基线 − 0.8×字号 / 基线 + 0.2×字号」再交给 pdfplumber 自己的聚行与排版，正常字体
+    的页面输出与 `page.extract_text()` 逐行一致。缺 matrix 或非直立文字的页面退回默认抽取。"""
+    adjusted: List[Dict[str, Any]] = []
+    for ch in chars:
+        matrix = ch.get("matrix")
+        if not matrix or len(matrix) < 6 or not ch.get("upright", True):
+            return pdfplumber.utils.extract_text(chars)
+        size = float(ch.get("size") or 0) or float(ch["bottom"] - ch["top"])
+        top = page_height - float(matrix[5]) - size * 0.8
+        shift = top - float(ch["top"])
+        copy = dict(ch)
+        copy["top"] = top
+        copy["bottom"] = top + size
+        copy["doctop"] = float(ch["doctop"]) + shift
+        copy["y1"] = page_height - top
+        copy["y0"] = page_height - top - size
+        adjusted.append(copy)
+    return pdfplumber.utils.extract_text(adjusted)
+
+
+def _page_text(page) -> str:
+    return baseline_text(page.chars, page_height=float(page.height))
+
+
 def _extract_pages(pdf_bytes: bytes) -> List[str]:
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-        return [page.extract_text() or "" for page in pdf.pages]
+        return [_page_text(page) for page in pdf.pages]
 
 
 def _locate(pages: List[str], target: Dict[str, Any]) -> Dict[str, ParsedStatement]:
@@ -159,12 +197,30 @@ def _locate(pages: List[str], target: Dict[str, Any]) -> Dict[str, ParsedStateme
     missing = [kind for kind in ("income", "balance") if kind not in located]
     if missing:
         raise ValueError(f"未能定位报表: {'、'.join(missing)}")
+    end_date = actual_period_end(located, target)
     for kind, parsed in located.items():
-        if not years_consistent(parsed, end_date=target["end_date"]):
-            raise ValueError(
-                f"{kind} 表头年份 {parsed.years} 与报告期 {target['end_date']} 不符"
-            )
+        if not years_consistent(parsed, end_date=end_date):
+            raise ValueError(f"{kind} 表头年份 {parsed.years} 与报告期 {end_date} 不符")
     return located
+
+
+def actual_period_end(located: Dict[str, ParsedStatement], target: Dict[str, Any]) -> str:
+    """报表表头声明的期末日优先于清单猜出来的 end_date（清单只有标题+公告日，非 12 月
+    财年的公司猜不准）。损益/现金流的「截至…止」是本期期末，資產負債表的「於…」亦然；
+    与猜测年份相差超过一年视为读错，仍用猜测。"""
+    guessed = target["end_date"]
+    for kind in ("income", "cashflow", "balance"):
+        parsed = located.get(kind)
+        if parsed is None:
+            continue
+        detected = detect_period_end(parsed)
+        if detected and abs(int(detected[:4]) - int(guessed[:4])) <= 1:
+            if detected != guessed:
+                logger.info(
+                    "报表期末以表头为准 %s: 清单猜测 %s → 表头 %s", target.get("title"), guessed, detected
+                )
+            return detected
+    return guessed
 
 
 def _prompt_statements(
@@ -234,6 +290,9 @@ def build_period_rows(
                     value = abs(value)
                 row[field] = _decimal_to_number(value)
     for row in rows_by_period.values():
+        for target, addends in DERIVED_SUM_FIELDS.items():
+            if row.get(target) is None and all(row.get(f) is not None for f in addends):
+                row[target] = sum(row[f] for f in addends)
         cfo, capex = row.get("n_cashflow_act"), row.get("capex")
         if cfo is not None and capex is not None:
             row["free_cashflow"] = cfo + capex  # capex 按报表符号为负
@@ -393,6 +452,8 @@ def ensure_report_statements(
                 pdf_bytes = download_report_pdf(target["url"], source="hkexnews")
                 fetched_bytes = len(pdf_bytes)
                 located = _locate(_extract_pages(pdf_bytes), target)
+            # period_key 是清单里这份报告的身份，不变；end_date 改按表头声明的期末日
+            target = {**target, "end_date": actual_period_end(located, target)}
             prompt_payload = _prompt_statements(located, target)
             completion = chat_completion(
                 build_statement_messages(

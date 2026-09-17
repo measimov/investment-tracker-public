@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "02313",
+  "end_date": "20250630",
+  "report_type": "interim",
+  "title": "02313_20250630_interim",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 按基线聚行逐页抽取，\\x0c 分页；仅保留报表附近页 [(14, 23)]，其余页置空以保住页码。申洲國際中报：「中期簡明綜合損益表」+ 独立的「中期簡明綜合全面收益表」；同年报的基线聚行问题，本金样由 baseline_text 抽取",
+  "pages": 46,
+  "kept_pages": [
+    [
+      14,
+      23
+    ]
+  ],
+  "chars": 6097
+}

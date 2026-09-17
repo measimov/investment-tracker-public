@@ -1,0 +1,21 @@
+{
+  "market": "港股",
+  "symbol": "00883",
+  "end_date": "20251231",
+  "report_type": "annual",
+  "title": "00883_20251231_annual.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(6, 8), (78, 87)]，其余页置空以保住页码。中國海洋石油：「合併損益及其他綜合收益表」；財務摘要页有「合併損益及其他綜合收益表（已經審計）」不是正表",
+  "pages": 155,
+  "kept_pages": [
+    [
+      6,
+      8
+    ],
+    [
+      78,
+      87
+    ]
+  ],
+  "chars": 9737
+}

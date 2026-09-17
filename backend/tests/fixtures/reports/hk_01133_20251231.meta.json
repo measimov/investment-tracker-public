@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "01133",
+  "end_date": "20251231",
+  "report_type": "annual",
+  "title": "01133_20251231_annual.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(74, 93)]，其余页置空以保住页码。哈爾濱電氣：H 股按中国准则编报，「合併利潤表」「合併資產負債表」+「母公司利潤表」终止，单位人民幣元",
+  "pages": 290,
+  "kept_pages": [
+    [
+      74,
+      93
+    ]
+  ],
+  "chars": 13524
+}

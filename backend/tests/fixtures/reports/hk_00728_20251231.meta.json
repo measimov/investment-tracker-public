@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "00728",
+  "end_date": "20251231",
+  "report_type": "annual",
+  "title": "00728_20251231_annual.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(146, 157)]，其余页置空以保住页码。中國電信：标题字间空格「合 併 綜 合 收 益 表」，损益表排在財務狀況表之后，「合併綜合收益表」双前缀",
+  "pages": 251,
+  "kept_pages": [
+    [
+      146,
+      157
+    ]
+  ],
+  "chars": 8498
+}

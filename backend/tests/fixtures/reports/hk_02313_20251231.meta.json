@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "02313",
+  "end_date": "20251231",
+  "report_type": "annual",
+  "title": "02313_20251231_annual",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 按基线聚行逐页抽取，\\x0c 分页；仅保留报表附近页 [(39, 48)]，其余页置空以保住页码。申洲國際年报：CJK 字体字形框整体落在基线之下，默认按 top 聚行会把每行科目名与数字拆成两行（58 行现金流量表全部无标签）；本金样由按基线聚行的 baseline_text 抽取",
+  "pages": 115,
+  "kept_pages": [
+    [
+      39,
+      48
+    ]
+  ],
+  "chars": 6580
+}

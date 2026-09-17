@@ -5,6 +5,7 @@ import gzip
 import json
 from pathlib import Path
 
+import pdfplumber
 import pytest
 
 from app.database import SessionLocal
@@ -46,6 +47,7 @@ def _shift_years_back(pages):
 
 
 INTERIM_2025_PAGES = _shift_years_back(INTERIM_PAGES)
+ANNUAL_2024_PAGES = _shift_years_back(ANNUAL_PAGES)
 INTERIM_2025_TARGET = {
     "title": "2025 中期報告", "ann_date": "20/08/2025 17:00",
     "url": "https://www1.hkexnews.hk/a/2025h1.pdf",
@@ -195,6 +197,8 @@ def test_plan_targets_marks_incomplete_when_one_listing_fails(monkeypatch):
 def test_infer_hk_interim_end():
     assert svc._infer_hk_interim_end("2026 中期報告", "20/08/2026 17:00") == "20260630"
     assert svc._infer_hk_interim_end("二零二五年中期報告", "28/11/2025 17:00") == "20250930"  # 3 月财年
+    # 6 月财年（01023）：「2026 中期報告」2026 年 3 月刊发 = 截至 2025-12-31 止六個月
+    assert svc._infer_hk_interim_end("中期報告 2026", "20/03/2026 17:00") == "20251231"
     assert svc._infer_hk_interim_end("2025 中期報告", "bad") == "20250630"
     assert svc._infer_hk_interim_end("中期報告", "20/08/2026 17:00") is None
 
@@ -384,17 +388,18 @@ def test_comparative_rows_fill_gaps_but_never_overwrite_primary(db, monkeypatch)
     fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
     assert fy2024["is_comparative"] is True and fy2024["source_period_key"] == "20251231|annual"
 
-    # 2024 年报（固件复用 2025 页面：表头年份含 2024，本期列按年份定位到 2024 列）
+    # 2024 年报 = 2025 页面整体前移一年（表头「截至二零二四年十二月三十一日止年度」，期末日
+    # 以表头为准，本期列 = 原 2025 列的数值）
     older = {"title": "2024 年報", "ann_date": "01/04/2025 16:30", "url": "https://www1.hkexnews.hk/a/2024.pdf"}
     calls = _patch_pipeline(
         monkeypatch, reports={"annual": [ANNUAL_TARGET, older]},
-        pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES, older["url"]: ANNUAL_PAGES},
+        pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES, older["url"]: ANNUAL_2024_PAGES},
     )
     result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
     assert (result["generated"], result["failed"]) == (1, 0)
     fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
     assert fy2024["is_comparative"] is False and fy2024["source_period_key"] == "20241231|annual"
-    assert fy2024["total_revenue"] == 660_257_000_000.0
+    assert fy2024["total_revenue"] == 751_766_000_000.0
     # 2025 本期行不受影响
     assert _rows(db, svc.STATEMENT_DATASET)["20251231|FY"]["source_period_key"] == "20251231|annual"
 
@@ -625,3 +630,89 @@ def test_stale_version_rows_are_invisible_until_recomputed(db, monkeypatch):
     assert result["failed"] == 1
     assert {row["end_date"] + "|" + row["fp"] for row in svc.load_report_statement_rows(db, SYMBOL, MARKET)} == visible
 
+
+
+# ---------------------------------------------------------------------------
+# 第一轮生产回填：期末日以表头为准 / 净资产格式推导总资产
+# ---------------------------------------------------------------------------
+
+
+def test_period_end_declared_in_header_overrides_listing_guess():
+    """01023（6 月财年）「2026 中期報告」：清单按标题年份猜 20260630，表头写着「截至二零二五年
+    十二月三十一日止六個月」——期末以表头为准，資產負債表比较列落到上财年末 2025-06-30；
+    年份一致性也按表头期末校验，否则猜错的清单日期会把定位成功的报表判成年份不符。"""
+    pages = _pages("hk_01023_20260630_interim")
+    target = {"end_date": "20260630", "report_type": "interim", "title": "中期報告 2026",
+              "period_key": "20260630|interim", "url": "u", "ann_date": "20/03/2026 17:00"}
+    located = svc._locate(pages, target)  # 不抛「年份不符」
+    assert svc.actual_period_end(located, target) == "20251231"
+    payload = svc._prompt_statements(located, {**target, "end_date": "20251231"})
+    assert payload["balance"]["columns"] == ["20251231 H1", "20250630 FY"]
+    assert payload["income"]["columns"] == ["20251231 H1", "20241231 H1"]
+    # 表头读不到期末（京东式「截至12月31日止年度」）→ 沿用清单猜测
+    jd = {k: v for k, v in locate_statements(_pages("hk_09618_20251231"), report_type="annual").items() if v}
+    assert svc.actual_period_end(jd, {"end_date": "20251231", "title": "x"}) == "20251231"
+    # 相差超过一年视为读错
+    assert svc.actual_period_end(located, {**target, "end_date": "20230630"}) == "20230630"
+
+
+def test_total_assets_derived_from_components_in_net_asset_format():
+    """09926 財務狀況表没有「資產總值」行：total_assets = 非流動資產總值 + 流動資產總值，
+    total_liab = 流動負債總額 + 非流動負債總額。"""
+    pages = _pages("hk_09926_20251231")
+    located = {k: v for k, v in locate_statements(pages, report_type="annual").items() if v}
+    balance = located["balance"]
+    by_label = {row.label: row.row_id for row in balance.rows}
+    mapping = {
+        "income": {}, "cashflow": {},
+        "balance": {
+            "total_nca": [by_label["非流動資產總值"]], "total_cur_assets": [by_label["流動資產總值"]],
+            "total_cur_liab": [by_label["流動負債總額"]], "total_ncl": [by_label["非流動負債總額"]],
+        },
+    }
+    target = {"end_date": "20251231", "report_type": "annual", "period_key": "20251231|annual", "url": "u"}
+    rows = {r["end_date"]: r for r in svc.build_period_rows({"balance": balance}, mapping, target, fingerprint="f")}
+    assert rows["20251231"]["total_assets"] == 16_000_440_000.0  # (4,723,170 + 11,277,270) 千元
+    assert rows["20251231"]["total_liab"] == 7_054_483_000.0  # (2,195,127 + 4,859,356) 千元
+    assert rows["20241231"]["total_assets"] == 12_754_965_000.0
+    # 报表直接给了合计行时不覆盖
+    mapping["balance"]["total_assets"] = [by_label["流動資產淨值"]]
+    rows = {r["end_date"]: r for r in svc.build_period_rows({"balance": balance}, mapping, target, fingerprint="f")}
+    assert rows["20251231"]["total_assets"] == 9_082_143_000.0
+
+
+def test_baseline_text_reunites_labels_whose_glyph_boxes_sit_below_the_baseline():
+    """02313 版式：CJK 字体的字形框整体落在基线之下，top 比同一行的数字低 7.5pt，pdfplumber
+    默认按 top 聚行把科目名与数字拆成两行；按基线聚行后回到一行。数字字体正常度量的行
+    （表头）输出不变。"""
+    def char(text, x0, baseline_y, *, size=9.0, drop=0.0):
+        # drop：字形框相对基线整体下沉的比例（Source Han Sans ≈ 1.0，Helvetica ≈ 0.2）
+        y1 = baseline_y + size * (1 - drop)
+        y0 = y1 - size
+        top, bottom = 842.0 - y1, 842.0 - y0
+        return {
+            "text": text, "x0": x0, "x1": x0 + size, "top": top, "bottom": bottom, "doctop": top,
+            "y0": y0, "y1": y1, "size": size, "upright": True, "matrix": (size, 0, 0, size, x0, baseline_y),
+            "height": size, "width": size, "object_type": "char",
+        }
+
+    chars = []
+    # 表头：附註 人民幣千元（同一字体，不受影响）
+    for i, ch in enumerate("附註"):
+        chars.append(char(ch, 366 + i * 9, 670.0, drop=1.0))
+    for i, ch in enumerate("人民幣千元"):
+        chars.append(char(ch, 411 + i * 9, 670.0, drop=1.0))
+    # 第一行：收入 5 30,993,732 —— 科目名 drop=1.0（top 低 7.5pt），数字 drop≈0.17
+    for i, ch in enumerate("收入"):
+        chars.append(char(ch, 57 + i * 9, 641.0, drop=1.0))
+    for i, ch in enumerate("5"):
+        chars.append(char(ch, 373 + i * 5, 641.0, drop=0.17))
+    for i, ch in enumerate("30,993,732"):
+        chars.append(char(ch, 412 + i * 5, 641.0, drop=0.17))
+    default = pdfplumber.utils.extract_text(chars).splitlines()
+    assert default == ["附註 人民幣千元", "5 30,993,732", "收入"]  # 复现默认聚行的拆行
+    fixed = svc.baseline_text(chars, page_height=842.0).splitlines()
+    assert fixed == ["附註 人民幣千元", "收入 5 30,993,732"]
+    # 缺 matrix 的字符：退回默认抽取
+    plain = [{k: v for k, v in c.items() if k != "matrix"} for c in chars]
+    assert svc.baseline_text(plain, page_height=842.0).splitlines() == default

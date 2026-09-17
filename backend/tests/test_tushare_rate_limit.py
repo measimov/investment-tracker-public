@@ -241,7 +241,7 @@ def test_compose_passes_tushare_and_llm_settings():
     for var in (
         "TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS=${TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS:-0.35}",
         "LLM_REPORT_API_KEY=${LLM_REPORT_API_KEY:-}",
-        "LLM_REPORT_MODEL=${LLM_REPORT_MODEL:-deepseek-v4-pro}",
+        "LLM_REPORT_MODEL=${LLM_REPORT_MODEL:-deepseek-flash}",
     ):
         assert var in compose, var
 

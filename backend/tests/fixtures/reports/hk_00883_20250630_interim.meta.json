@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "00883",
+  "end_date": "20250630",
+  "report_type": "interim",
+  "title": "00883_20250630_interim.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(38, 46)]，其余页置空以保住页码。中國海洋石油中报：「中期簡明合併…表（未經審計）」与排版错位的「（未經審計（）續）」",
+  "pages": 76,
+  "kept_pages": [
+    [
+      38,
+      46
+    ]
+  ],
+  "chars": 6288
+}

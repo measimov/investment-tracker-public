@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "01023",
+  "end_date": "20260630",
+  "report_type": "interim",
+  "title": "01023_20260630_interim.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(26, 36)]，其余页置空以保住页码。時代集團中报：6 月财年，「2026 中期報告」实为截至二零二五年十二月三十一日止六個月，資產負債表比较列为 2025-06-30",
+  "pages": 60,
+  "kept_pages": [
+    [
+      26,
+      36
+    ]
+  ],
+  "chars": 5256
+}

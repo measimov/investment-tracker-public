@@ -27,25 +27,36 @@ from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # v4：币种+单位分开排版（「美元 千元」「RMB million」）算一个布局单元，且表头布局须与数据行吻合才采信
-STATEMENT_EXTRACTOR_VERSION = 4
+STATEMENT_EXTRACTOR_VERSION = 5
 STATEMENT_KINDS = ("income", "balance", "cashflow")
 
 # 报表标题核心（繁/简；港股「綜合」= A股「合并」）。income 同时覆盖损益表与全面收益表
 # 「綜合」= 港股 IFRS 口径，「合并」= A股，「合併」= 港股按美国准则编报（京东 09618 用
 # 「合併經營狀況及綜合收益表」= statement of operations and comprehensive income）
-_CONSOL = r"(?:綜合|综合|合并|合併)"
+#
+# 第一轮生产实测补上的变体（每条都对应一家持仓公司的真实标题）：
+# - 中报前缀「中期簡明綜合…」/「未經審核簡明綜合…」（02156/06049/01023/02313 全部中报）
+# - 「合併損益及其他綜合收益表」（00883：「綜合收益」在此处= comprehensive income，不是合并）
+# - 「合併綜合收益表」（00728：合併 + 綜合 双前缀）
+# - 「合併利潤表」（01133：H 股按中国准则编报，利润表而非损益表）
+# - 「合併經營狀況及綜合收益╱（損失）表」（09618 2023：亏损年份标题带 ╱（損失））
+_CONSOL = r"(?:綜合|综合|合并|合併)(?:綜合|综合)?"
+_COND = r"(?:中期)?(?:未經審核|未经审核)?(?:簡明|简明)?(?:中期)?"
 _TITLE_CORE = {
     "income": (
-        rf"(?:簡明|简明)?{_CONSOL}"
+        rf"{_COND}{_CONSOL}(?:中期)?"
         r"(?:經營狀況及綜合收益|经营状况及综合收益|經營狀況|经营状况"
-        r"|損益及(?:其他)?全面(?:收益|收入)|损益及(?:其他)?全面(?:收益|收入)"
-        r"|全面收益|全面收入|損益|损益|收益|利润)表"
+        r"|損益及(?:其他)?(?:全面|綜合)(?:收益|收入)|损益及(?:其他)?(?:全面|综合)(?:收益|收入)"
+        r"|全面收益|全面收入|損益|损益|收益|利潤|利润)"
+        r"(?:\s*[╱/／]?\s*[（(]?(?:損失|虧損|亏损)[）)]?)?表"
     ),
-    "balance": rf"(?:簡明|简明)?{_CONSOL}(?:財務狀況|财务状况|資產負債|资产负债)表",
-    "cashflow": rf"(?:簡明|简明)?{_CONSOL}(?:現金流量|现金流量)表",
+    "balance": rf"{_COND}{_CONSOL}(?:中期)?(?:財務狀況|财务状况|資產負債|资产负债)表",
+    "cashflow": rf"{_COND}{_CONSOL}(?:中期)?(?:現金流量|现金流量)表",
 }
 _PREFIX = r"(?:\d{1,2}\s*[、.．]?\s*|[（(]?[一二三四五六七八九十]{1,3}[）)]?\s*[、.．]?\s*)?"
-_SUFFIX = r"(?:\s*[（(]\s*(?:續|续)\s*[）)])?"
+# 标题尾缀：（續）/（未經審核）/（未經審計）可叠加，括号允许错位（00883 中报排版出来的
+# 「（未經審計（）續）」）；只认这几个词，「（已經審計）」是財務摘要页的表格标题不是正表
+_SUFFIX = r"(?:[\s（）()]*(?:續|续|未經審核|未经审核|未經審計|未经审计))*[\s（）()]*"
 TITLE_LINE_RE = {
     kind: re.compile(rf"^{_PREFIX}(?P<title>{core}){_SUFFIX}\s*$")
     for kind, core in _TITLE_CORE.items()
@@ -53,8 +64,8 @@ TITLE_LINE_RE = {
 # 终止标题：母公司报表、权益变动表、附註起点（都不属于三张合并报表）
 _TERMINATOR_RE = re.compile(
     r"^" + _PREFIX + r"(?:"
-    r"母公司(?:資產負債|资产负债|利润|損益|损益|現金流量|现金流量)表"
-    r"|(?:簡明|简明)?(?:綜合|综合|合并|合併)(?:權益變動|权益变动|所有者权益变动|股東權益變動|股东权益变动)表"
+    r"母公司(?:資產負債|资产负债|利潤|利润|損益|损益|現金流量|现金流量)表"
+    rf"|{_COND}{_CONSOL}(?:中期)?(?:權益變動|权益变动|所有者权益变动|股東權益變動|股东权益变动)表"
     r"|(?:綜合|综合|合并|合併)?(?:財務報表|财务报表|中期財務資料|中期财务资料)(?:附註|附注)"
     r"|NOTES TO THE (?:CONSOLIDATED )?FINANCIAL STATEMENTS"
     r")" + _SUFFIX + r"\s*$",
@@ -62,6 +73,18 @@ _TERMINATOR_RE = re.compile(
 )
 _NOTES_HEADER_RE = re.compile(r"附註|附注|NOTES TO", re.I)
 _SUMMARY_HEADER_RE = re.compile(r"概要|摘要|Summary|Highlights", re.I)
+# 目录页：「28 簡明綜合損益表」这类带页码的目录行与编号标题同形，只能按页首「目錄」排除
+_TOC_HEADER_RE = re.compile(r"目錄|目录|CONTENTS", re.I)
+
+# 字间空格的标题（00728：「合 併 綜 合 收 益 表」「合 併 權 益 變 動 表」）：连续 ≥3 个单字
+# 以单个空格相隔时去掉空格。只压这种「单字链」，表头里「附註 人民幣千元 人民幣千元」的
+# 词间空格是列单位的分隔符，必须保留
+_CJK_CHAR = r"[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]"
+_SPACED_CJK_RE = re.compile(rf"{_CJK_CHAR}(?:[ \u3000]{_CJK_CHAR}){{2,}}")
+
+
+def squash_spaced_cjk(text: str) -> str:
+    return _SPACED_CJK_RE.sub(lambda m: m.group(0).replace(" ", "").replace("\u3000", ""), text)
 
 _NUM = r"\(?-?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\d+(?:\.\d+)?\)?|[–—-]"
 _VALUES = rf"(?:(?:{_NUM})\s+)*(?:{_NUM})"
@@ -178,7 +201,7 @@ def _line_stream(pages: Sequence[str]) -> List[_Line]:
     for page_no, page in enumerate(pages, start=1):
         idx = 0
         for raw in (page or "").splitlines():
-            text = raw.strip()
+            text = squash_spaced_cjk(raw.strip())
             if not text:
                 continue
             stream.append(_Line(page_no, idx, text))
@@ -338,6 +361,11 @@ def _collect_block(stream: Sequence[_Line], start: int, kind: str) -> _Block:
         found = match_title(line.text)
         if found and found[0] != kind:
             break
+        if found and line.page != start_page and line.index_in_page <= 2:
+            # 新一页页首又出现同类标题：结束本块，让下一页作为独立候选再由 locate_statements
+            # 按「相邻同类块」并入。否则 02156 中报里当页眉印在业绩公告首页的标题会把真正
+            # 的报表页吞进一个没有表头年份的块里，整块被拒后报表页也一并跳过
+            break
         if line.index_in_page == 0 and line.page != start_page:
             head = _page_first_lines(stream, i)
             if head and _NOTES_HEADER_RE.search(head[0]) and not match_title(head[0]):
@@ -348,6 +376,19 @@ def _collect_block(stream: Sequence[_Line], start: int, kind: str) -> _Block:
 
 
 _SMALL_INT_RE = re.compile(r"^\d{1,2}$")
+
+
+def _is_page_number_row(label: str, note: str, values: List[Optional[Decimal]]) -> bool:
+    """页眉/页脚里的页码（「120」或「2025 39」= 年份 + 页码）被当成只有一两个值的无标签行。
+    只在页首/页尾那一行判定（调用方保证），正文里的单值行（如每股股息）不受影响。"""
+    if label or note or not values or len(values) > 2 or any(v is None for v in values):
+        return False
+    ints = [int(v) for v in values if v == v.to_integral_value()]
+    if len(ints) != len(values):
+        return False
+    small = [v for v in ints if 0 < v < 1000]
+    years = [v for v in ints if 1990 <= v <= 2100]
+    return (len(ints) == 1 and len(small) == 1) or (len(ints) == 2 and len(small) == 1 and len(years) == 1)
 
 
 def _is_year_only_row(values: List[Optional[Decimal]]) -> bool:
@@ -436,11 +477,19 @@ def _expected_columns(
 
 def _parse_block(block: _Block) -> ParsedStatement:
     texts = [line.text for line in block.lines]
+    # 每页的头两行与末两行（页眉/页脚所在：09926 的页脚是「120」+ 公司名两行），用于剔除页码行
+    page_edges = set()
+    by_page: Dict[int, List[int]] = {}
+    for i, line in enumerate(block.lines):
+        by_page.setdefault(line.page, []).append(i)
+    for offsets in by_page.values():
+        page_edges.update(offsets[:2])
+        page_edges.update(offsets[-2:])
     header = texts[:HEADER_LINES]
     years = _header_years(header)
     interim_four = bool(_INTERIM_COLUMNS_RE.search(" ".join(header)))
     # 第一遍：解析全部数字行，拿主导列数（附注号粘列的行会多一列，是少数）
-    raw_rows: List[Tuple[str, str, List[str], List[str]]] = []
+    raw_rows: List[Tuple[str, str, List[str], List[str], int]] = []
     context: List[str] = []
     counts: Dict[int, int] = {}
     first_tokens: Dict[int, List[str]] = {}
@@ -457,7 +506,7 @@ def _parse_block(block: _Block) -> ParsedStatement:
         label, note, tokens = parsed
         if not tokens:
             continue
-        raw_rows.append((label, note, tokens, list(context) if not label else []))
+        raw_rows.append((label, note, tokens, list(context) if not label else [], offset))
         counts[len(tokens)] = counts.get(len(tokens), 0) + 1
         first_tokens.setdefault(len(tokens), []).append(tokens[0])
         if label:
@@ -466,11 +515,13 @@ def _parse_block(block: _Block) -> ParsedStatement:
     # 第二遍：剥附注号、剔年份行、定型
     rows: List[StatementRow] = []
     final_counts: Dict[int, int] = {}
-    for label, note, tokens, ctx in raw_rows:
+    for label, note, tokens, ctx, offset in raw_rows:
         if not note:
             note, tokens = _split_leading_note(tokens, expected)
         values = [parse_number(t) for t in tokens]
         if _is_year_only_row(values):
+            continue
+        if offset in page_edges and _is_page_number_row(label, note, values):
             continue
         rows.append(
             StatementRow(row_id=f"r{len(rows) + 1}", label=label, note=note, values=values, context=ctx)
@@ -492,11 +543,13 @@ def _parse_block(block: _Block) -> ParsedStatement:
     )
 
 
-def _acceptable(parsed: ParsedStatement, start_head: List[str], *, report_type: str) -> bool:
-    if len(parsed.rows) < MIN_ROWS:
-        return False
+def _structurally_ok(parsed: ParsedStatement, start_head: List[str], *, report_type: str) -> bool:
+    """排除性判定：財務摘要/概要页、目录页、五年概要、列数超限、附註页。不看行数与表头证据，
+    续页（页首重复标题、不重复表头）也按这一条判。"""
     if start_head and _SUMMARY_HEADER_RE.search(start_head[0]):
         return False
+    if any(_TOC_HEADER_RE.search(line) for line in start_head[:2]):
+        return False  # 目录页
     distinct_years = len(set(parsed.years))
     if distinct_years >= 5:
         return False  # 五年财务概要
@@ -510,14 +563,61 @@ def _acceptable(parsed: ParsedStatement, start_head: List[str], *, report_type: 
     return True
 
 
+def _header_evidence(parsed: ParsedStatement) -> bool:
+    """表头是不是一张正表的表头：整个表头里至少有一个年份（「截至2025年12月31日止年度」
+    「2025年\n2024年」分两行也算），且有列年份行或单位/币种之一。
+
+    「列年份」（`parsed.years`，同一行 ≥2 个年份，用于把数值列对到会计期）与「表头有年份
+    证据」是两回事：两个年份被抽成两行的合法报表列年份为空，仍是正表，列对应退回按位置。
+    02156 中报把报表标题当页眉印在业绩公告首页，那一页有「截至二零二五年六月三十日」却
+    既无列年份行也无单位/币种，正文是董事会声明——这是要排除的。"""
+    if not any(_years_in(line) for line in parsed.header):
+        return False
+    return bool(parsed.years) or parsed.unit_multiplier != 1 or bool(parsed.currency)
+
+
+def _acceptable(
+    parsed: ParsedStatement, start_head: List[str], *, report_type: str, min_rows: int = MIN_ROWS
+) -> bool:
+    if len(parsed.rows) < min_rows:
+        return False
+    if not _structurally_ok(parsed, start_head, report_type=report_type):
+        return False
+    return _header_evidence(parsed)
+
+
+def _combine(head: ParsedStatement, tail: ParsedStatement) -> ParsedStatement:
+    """短首块 + 续页块 → 一张表：表头/年份/单位/币种取首块，行顺延编号，列数按合并后的众数。"""
+    rows: List[StatementRow] = []
+    counts: Dict[int, int] = {}
+    for row in list(head.rows) + list(tail.rows):
+        rows.append(StatementRow(
+            row_id=f"r{len(rows) + 1}", label=row.label, note=row.note,
+            values=list(row.values), context=list(row.context),
+        ))
+        counts[len(row.values)] = counts.get(len(row.values), 0) + 1
+    return ParsedStatement(
+        kind=head.kind, page_start=head.page_start, page_end=tail.page_end, title=head.title,
+        header=list(head.header), unit_multiplier=head.unit_multiplier, currency=head.currency,
+        years=list(head.years), column_count=max(counts, key=lambda k: (counts[k], k)),
+        interim_four_columns=head.interim_four_columns, rows=rows,
+    )
+
+
 def locate_statements(
     pages: Sequence[str], *, report_type: str = "annual"
 ) -> Dict[str, Optional[ParsedStatement]]:
     """逐页文本 → {kind: ParsedStatement|None}。每类取**第一个**合格块，并吞并紧随
-    其后（相邻页）的同类块（綜合收益表 + 綜合全面收益表 / 多页資產負債表）。"""
+    其后（相邻页）的同类块（綜合收益表 + 綜合全面收益表 / 多页資產負債表）。
+
+    页首重复标题会把一张表切成逐页的块（见 `_collect_block`），所以总行数门槛
+    （MIN_ROWS）要在**组装完连续块之后**再判：首页只有五个金额行、其余在「（續）」页的
+    报表，首块单独看不够行数，先作为「短首块」挂起，等相邻下一页的同类块来了合并后再判；
+    结构性排除（无表头年份的公告页、目录页、附註页、五年概要）仍按单块判、不挂起。"""
     stream = _line_stream(pages)
     found: Dict[str, Optional[ParsedStatement]] = {kind: None for kind in STATEMENT_KINDS}
     absorbed_until: Dict[str, int] = {}
+    pending: Dict[str, ParsedStatement] = {}  # 结构合格但行数不足的短首块
     i = 0
     while i < len(stream):
         matched = match_title(stream[i].text)
@@ -530,12 +630,34 @@ def locate_statements(
         head = _page_first_lines(stream, i)
         current = found[kind]
         if current is None:
-            if _acceptable(parsed, head, report_type=report_type):
+            short_head = pending.get(kind)
+            continues_short_head = (
+                short_head is not None
+                and parsed.page_start == short_head.page_end + 1
+                and block.lines[0].index_in_page <= 2
+            )
+            if continues_short_head and _structurally_ok(parsed, head, report_type=report_type):
+                # 短首块的续页：只做排除性判定，不要求续页自带年份/单位（「綜合收益表（續）」
+                # 下面往往直接就是金额行），年份/单位/币种从首块继承
+                pending.pop(kind)
+                parsed = _combine(short_head, parsed)
+            elif _acceptable(parsed, head, report_type=report_type, min_rows=1):
+                pending.pop(kind, None)
+            else:
+                pending.pop(kind, None)
+                i = max(block.end, i + 1)
+                continue
+            if len(parsed.rows) >= MIN_ROWS:
                 found[kind] = parsed
                 absorbed_until[kind] = parsed.page_end
+            else:
+                pending[kind] = parsed
         elif (
             parsed.page_start <= absorbed_until.get(kind, -10) + 1
-            and len(parsed.rows) >= 3
+            # 页首重复标题的续页哪怕只剩一两行（00700 2014 綜合收益表第二页只有每股盈利）
+            # 也要并入，否则它后面的綜合全面收益表也因不再相邻而丢失；非页首的同类标题
+            # 仍要求 ≥3 行，挡住附註里「42 綜合現金流量表」这类小节
+            and len(parsed.rows) >= (1 if block.lines[0].index_in_page <= 2 else 3)
             and parsed.column_count <= current.column_count
             and not (head and _NOTES_HEADER_RE.search(head[0]) and not match_title(head[0]))
         ):
@@ -621,6 +743,61 @@ def period_columns(
     if prior is not None:
         cols.append(PeriodColumn(prior, _shift_year(end_date, -1), "FY", False))
     return cols
+
+
+_CJK_SMALL = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_DATE_NUM = r"\d{1,4}|[〇零一二三四五六七八九十]{1,4}"
+_DATE_CJK = rf"(?P<y>{_DATE_NUM})\s*年\s*(?P<m>{_DATE_NUM})\s*月\s*(?P<d>{_DATE_NUM})\s*日"
+# 「截至…日止年度」「於…日」，或整行只有一个日期（00883：「二零二五年十二月三十一日」）
+_PERIOD_END_RE = re.compile(
+    rf"(?:(?:截至|於|于)\s*|^(?=(?:{_DATE_NUM})\s*年\s*(?:{_DATE_NUM})\s*月\s*(?:{_DATE_NUM})\s*日"
+    rf"\s*(?:止(?:年度|六個月|六个月))?\s*$)){_DATE_CJK}"
+)
+_MONTHS_EN = {
+    "JANUARY": 1, "FEBRUARY": 2, "MARCH": 3, "APRIL": 4, "MAY": 5, "JUNE": 6, "JULY": 7,
+    "AUGUST": 8, "SEPTEMBER": 9, "OCTOBER": 10, "NOVEMBER": 11, "DECEMBER": 12,
+}
+_PERIOD_END_EN_RE = re.compile(
+    r"(?:ENDED|AS AT|AS OF)\s+(?P<d>\d{1,2})\s+(?P<mon>[A-Z]+)\s+(?P<y>\d{4})", re.I
+)
+
+
+def _cjk_int(text: str) -> Optional[int]:
+    """「二零二五」→ 2025（逐位）；「十二」「三十一」→ 12 / 31（十进制读法）。"""
+    if text.isdigit():
+        return int(text)
+    if "十" not in text:
+        digits = "".join(_CJK_DIGITS.get(ch, "") for ch in text)
+        return int(digits) if digits and len(digits) == len(text) else None
+    tens, _, ones = text.partition("十")
+    value = (_CJK_SMALL.get(tens, 1) if tens else 1) * 10
+    if ones:
+        if ones not in _CJK_SMALL:
+            return None
+        value += _CJK_SMALL[ones]
+    return value
+
+
+def detect_period_end(parsed: ParsedStatement) -> Optional[str]:
+    """从表头读报表自己声明的期末日（「截至二零二五年十二月三十一日止六個月」/「於2025年
+    6月30日」/「ENDED 31 MARCH 2026」）→ YYYYMMDD；读不到返 None。
+
+    披露易清单只给标题与公告日，期末日是按标题年份 + 刊发窗口猜的；6 月财年的公司
+    （01023）"2026 中期報告" 的期末其实是 2025-12-31。表头是唯一的权威来源。"""
+    for line in parsed.header:
+        found = _PERIOD_END_RE.search(line)
+        if found:
+            groups = found.groupdict()
+            year, month, day = (_cjk_int(groups[k]) for k in ("y", "m", "d"))
+            if year and month and day and 1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
+                return f"{year}{month:02d}{day:02d}"
+        found = _PERIOD_END_EN_RE.search(line)
+        if found and found.group("mon").upper() in _MONTHS_EN:
+            year, day = int(found.group("y")), int(found.group("d"))
+            month = _MONTHS_EN[found.group("mon").upper()]
+            if 1990 <= year <= 2100 and 1 <= day <= 31:
+                return f"{year}{month:02d}{day:02d}"
+    return None
 
 
 def years_consistent(parsed: ParsedStatement, *, end_date: str) -> bool:

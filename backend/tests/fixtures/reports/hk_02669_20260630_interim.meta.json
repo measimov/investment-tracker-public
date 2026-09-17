@@ -1,0 +1,21 @@
+{
+  "market": "港股",
+  "symbol": "02669",
+  "end_date": "20260630",
+  "report_type": "interim",
+  "title": "02669_20260630_interim.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(1, 3), (28, 41)]，其余页置空以保住页码。中海物業中报：目录页「28 簡明綜合損益表」带页码的目录行与编号标题同形",
+  "pages": 72,
+  "kept_pages": [
+    [
+      1,
+      3
+    ],
+    [
+      28,
+      41
+    ]
+  ],
+  "chars": 9152
+}

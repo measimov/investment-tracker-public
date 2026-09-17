@@ -5,6 +5,14 @@
 标题）、00700 2026 中报（簡明报表，损益四列 = 三个月+六个月）、01995 2018（「綜合損益及全面
 收益表」变体，千元）、02156 2025（中英双语）、09926 2025（附注列在左）、09618 2025（美国
 准则口径：年份升序 + 美元折算列，「合併經營狀況及綜合收益表」）。
+
+第一轮生产回填（2026-09）失败的版式，裁成只保留报表附近页的金样（其余页置空保住页码）：
+00728 2025（标题字间空格「合 併 綜 合 收 益 表」、损益表排在財務狀況表之后）、00883 2025 年报
+（「合併損益及其他綜合收益表」、財務摘要页的「（已經審計）」同名表）与 2025 中报（「（未經審計）」
+及错位的「（未經審計（）續）」）、01133 2025（中国准则「合併利潤表」+「母公司利潤表」终止、
+单位元）、09618 2023（亏损年份「…綜合收益╱（損失）表」）、02669 2026 中报（目录页带页码的
+「28 簡明綜合損益表」）、02313 2025 中报（「中期簡明綜合損益表」+ 独立全面收益表）、02156 2025
+中报（标题当页眉印在业绩公告首页）、01023 2026 中报（6 月财年：期末实为 2025-12-31）。
 """
 
 import gzip
@@ -31,7 +39,36 @@ ANNUAL = {
     "hk_02156_20251231": ((270, 271), (272, 273), (276, 277), 1_000, "CNY", [2025, 2024]),
     "hk_09926_20251231": ((120, 121), (122, 123), (126, 127), 1_000, "CNY", [2025, 2024]),
     "hk_09618_20251231": ((265, 266), (262, 264), (267, 270), 1_000_000, "CNY", None),
+    # 第一轮生产失败后补的版式
+    "hk_00728_20251231": ((150, 152), (148, 150), (153, 155), 1_000_000, "CNY", [2025, 2024]),
+    "hk_00883_20251231": ((80, 81), (82, 83), (85, 85), 1_000_000, "CNY", [2025, 2024]),
+    "hk_01133_20251231": ((85, 87), (75, 79), (90, 92), 1, "CNY", [2025, 2024]),
+    "hk_09618_20231231": ((267, 268), (264, 266), (269, 272), 1_000_000, "CNY", None),
+    "hk_02313_20251231": ((40, 41), (42, 43), (45, 47), 1_000, "CNY", [2025, 2024]),
 }
+INTERIM = {
+    # name: (income_pages, balance_pages, cashflow_pages, unit, currency, years)
+    "hk_00883_20250630_interim": ((39, 40), (41, 42), (44, 44), 1_000_000, "CNY", [2025, 2024]),
+    "hk_02669_20260630_interim": ((29, 31), (31, 33), (35, 41), 1_000, "CNY", [2026, 2025]),
+    "hk_02313_20250630_interim": ((15, 16), (17, 18), (20, 22), 1_000, "CNY", [2025, 2024]),
+    "hk_02156_20250630_interim": ((7, 7), (8, 9), (12, 12), 1_000, "CNY", [2025, 2024]),
+    "hk_01023_20260630_interim": ((27, 30), (30, 32), (34, 36), 1_000, "HKD", None),
+}
+
+
+@pytest.mark.parametrize("name", sorted(INTERIM))
+def test_interim_reports_locate_all_three_statements(name):
+    income, balance, cashflow, unit, currency, years = INTERIM[name]
+    found = rs.locate_statements(_pages(name), report_type="interim")
+    for kind, expected in (("income", income), ("balance", balance), ("cashflow", cashflow)):
+        parsed = found[kind]
+        assert parsed is not None, f"{name} 未定位 {kind}"
+        assert (parsed.page_start, parsed.page_end) == expected, (name, kind, parsed.page_start, parsed.page_end)
+        assert parsed.unit_multiplier == unit
+        assert parsed.currency == currency
+        assert parsed.column_count == 2
+        if years is not None:
+            assert parsed.years == years
 
 
 @pytest.mark.parametrize("name", sorted(ANNUAL))
@@ -303,3 +340,225 @@ def test_resolve_value_sums_rows_and_scales_units():
 def test_locate_returns_none_when_no_statement_present():
     found = rs.locate_statements(["公司簡介\n業務回顧", "董事會報告\n收入 1,000 900"], report_type="annual")
     assert found == {"income": None, "balance": None, "cashflow": None}
+
+
+# ---------------------------------------------------------------------------
+# 第一轮生产回填暴露的版式（每条对应一家持仓公司的真实报告）
+# ---------------------------------------------------------------------------
+
+
+def test_letter_spaced_titles_are_squashed_but_column_unit_words_are_kept():
+    assert rs.squash_spaced_cjk("合 併 綜 合 收 益 表") == "合併綜合收益表"
+    assert rs.squash_spaced_cjk("合 併 財 務 狀 況 表（ 續 ）") == "合併財務狀況表（續）"
+    # 表头的列单位由空格分隔，两字词之间的单个空格不是字间空格
+    assert rs.squash_spaced_cjk("附註 人民幣千元 人民幣千元") == "附註 人民幣千元 人民幣千元"
+    assert rs.squash_spaced_cjk("美元 千元 美元 千元") == "美元 千元 美元 千元"
+    assert rs.squash_spaced_cjk("經營收入 27 529,559 529,417") == "經營收入 27 529,559 529,417"
+
+
+def test_china_telecom_income_statement_follows_balance_sheet():
+    """00728：三张表标题全是字间空格版，且損益表排在財務狀況表之后——修复前財務狀況表把
+    后面两页损益表整个吞成自己的续页（103 行），损益表判定位失败。"""
+    found = rs.locate_statements(_pages("hk_00728_20251231"), report_type="annual")
+    assert found["income"].title == "合併綜合收益表"
+    assert (found["balance"].page_start, found["balance"].page_end) == (148, 150)
+    assert len(found["balance"].rows) < 60
+    revenue = next(r for r in found["income"].rows if r.label == "經營收入")
+    assert revenue.note == "27" and revenue.values == [Decimal("529559"), Decimal("529417")]
+
+
+def test_cnooc_summary_table_with_audited_suffix_is_not_the_statement():
+    """00883 財務摘要页有「合併損益及其他綜合收益表（已經審計）」，正表在 80 页。"""
+    found = rs.locate_statements(_pages("hk_00883_20251231"), report_type="annual")
+    assert found["income"].page_start == 80
+    assert rs.match_title("合併損益及其他綜合收益表（已經審計）") is None
+    assert rs.match_title("中期簡明合併損益及其他綜合收益表（未經審計（）續）")[0] == "income"
+
+
+def test_cas_format_h_share_uses_profit_table_and_parent_terminator():
+    """01133 按中国准则：「合併利潤表」三页，「母公司利潤表」终止；金额单位为元。"""
+    found = rs.locate_statements(_pages("hk_01133_20251231"), report_type="annual")
+    income = found["income"]
+    assert income.title == "合併利潤表" and income.page_end == 87  # 88 页起是母公司利潤表
+    revenue = next(r for r in income.rows if r.label.startswith("一.") or "營業總收入" in r.label)
+    assert revenue.values == [Decimal("46068852537.30"), Decimal("38721429041.12")]
+    assert income.unit_multiplier == 1
+
+
+def test_jd_2023_loss_year_title_variant():
+    found = rs.locate_statements(_pages("hk_09618_20231231"), report_type="annual")
+    assert found["income"].title == "合併經營狀況及綜合收益╱（損失）表"
+    assert found["income"].years == [2021, 2022, 2023] and found["income"].column_count == 4
+    cols = rs.period_columns(found["income"], report_type="annual", end_date="20231231")
+    assert [(c.column, c.end_date) for c in cols] == [(2, "20231231"), (1, "20221231")]
+
+
+def test_table_of_contents_page_is_not_a_statement():
+    """02669 目录页「28 簡明綜合損益表」与编号标题同形：只能按页首「目錄」排除。"""
+    pages = _pages("hk_02669_20260630_interim")
+    assert any("目錄" in line for line in pages[1].splitlines()[:2])
+    found = rs.locate_statements(pages, report_type="interim")
+    assert found["income"].page_start == 29
+    assert found["income"].years == [2026, 2025]
+
+
+def test_running_header_title_on_announcement_page_is_skipped():
+    """02156 中报：报表标题当页眉印在业绩公告首页（正文是董事会声明，表头无年份），真正的
+    损益表在下一页——按页首同类标题切块，首页块因无年份被拒，下一页作为独立候选被接受。"""
+    found = rs.locate_statements(_pages("hk_02156_20250630_interim"), report_type="interim")
+    income = found["income"]
+    assert (income.page_start, income.page_end) == (7, 7)
+    assert income.years == [2025, 2024]
+    eps = next(r for r in income.rows if r.label.startswith("Basic"))
+    assert eps.values == [Decimal("0.16"), Decimal("0.14")]
+
+
+def test_interim_prefix_and_separate_comprehensive_income_statement():
+    """02313：「中期簡明綜合損益表」+ 下一页独立的「中期簡明綜合全面收益表」并入同一 income 块。"""
+    found = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")
+    income = found["income"]
+    assert income.title == "中期簡明綜合損益表" and (income.page_start, income.page_end) == (15, 16)
+    assert found["balance"].title == "中期簡明綜合財務狀況表"
+
+
+@pytest.mark.parametrize("line, kind", [
+    ("中期簡明綜合損益表", "income"), ("未經審核簡明綜合財務狀況表", "balance"),
+    ("中期簡明合併現金流量表（未經審計）", "cashflow"), ("合併損益及其他綜合收益表", "income"),
+    ("合併綜合收益表", "income"), ("合併利潤表", "income"), ("合併經營狀況及綜合收益╱（損失）表", "income"),
+    ("簡明綜合中期財務狀況表", "balance"), ("綜合損益表（未經審核）（續）", "income"),
+])
+def test_title_variants_from_first_production_round(line, kind):
+    assert rs.match_title(line)[0] == kind
+
+
+@pytest.mark.parametrize("line", [
+    "合併損益及其他綜合收益表（已經審計）", "母公司利潤表", "中期簡明綜合權益變動表",
+    "28 簡明綜合損益表 96 Condensed Consolidated",
+])
+def test_title_variants_still_rejected(line):
+    assert rs.match_title(line) is None
+    assert line != "母公司利潤表" or rs._is_terminator(line)
+
+
+def test_detect_period_end_from_statement_header():
+    found = rs.locate_statements(_pages("hk_01023_20260630_interim"), report_type="interim")
+    # 6 月财年：「截至二零二五年十二月三十一日止六個月」/「於二零二五年十二月三十一日」
+    assert rs.detect_period_end(found["income"]) == "20251231"
+    assert rs.detect_period_end(found["balance"]) == "20251231"
+    cols = rs.period_columns(found["balance"], report_type="interim", end_date="20251231")
+    assert [(c.end_date, c.fp, c.is_primary) for c in cols] == [("20251231", "H1", True), ("20250630", "FY", False)]
+    # 阿拉伯数字 / 整行日期 / 英文
+    make = lambda header: rs.ParsedStatement(  # noqa: E731
+        kind="income", page_start=1, page_end=1, title="t", header=header, unit_multiplier=1,
+        currency=None, years=[], column_count=2, interim_four_columns=False, rows=[],
+    )
+    assert rs.detect_period_end(make(["截至2026年3月31日止年度"])) == "20260331"
+    assert rs.detect_period_end(make(["二零二五年十二月三十一日"])) == "20251231"
+    assert rs.detect_period_end(make(["FOR THE YEAR ENDED 31 MARCH 2026"])) == "20260331"
+    assert rs.detect_period_end(make(["截至12月31日止年度", "2025年 2024年"])) is None
+
+
+
+def test_shenzhou_rows_are_labeled_after_baseline_clustering():
+    """02313：金样由按基线聚行的抽取生成，科目名回到数字所在行——此前 pdfplumber 默认按
+    字形框顶边聚行时三张表 115 行全部无标签（见 report_statement_service.baseline_text）。"""
+    found = rs.locate_statements(_pages("hk_02313_20251231"), report_type="annual")
+    for kind in ("income", "balance", "cashflow"):
+        rows = found[kind].rows
+        unlabeled = [r for r in rows if not r.label]
+        assert len(unlabeled) <= 1, (kind, [(r.note, r.values) for r in unlabeled])
+    revenue = next(r for r in found["income"].rows if r.label == "收入")
+    assert revenue.note == "5" and revenue.values == [Decimal("30993732"), Decimal("28662938")]
+    cfo = next(r for r in found["cashflow"].rows if r.label == "經營業務所得現金流量淨額")
+    assert cfo.values == [Decimal("5549401"), Decimal("5272964")]
+    interim = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")
+    assert all(r.label for r in interim["income"].rows)
+
+
+def test_page_numbers_at_page_edges_are_not_rows():
+    """页眉「120」（09926 按基线聚行后页码与公司名分行）与页脚「2025 39」（02313）不是数据行；
+    正文里的单值行（每股股息）照常保留。"""
+    pages = [
+        "綜合損益表\n截至2025年12月31日止年度\n2025年 2024年\n人民幣千元 人民幣千元\n"
+        "收入 100 90\n毛利 50 40\n經營盈利 30 20\n除稅前盈利 28 18\n年度盈利 20 15\n每股股息 0.5\n2025 39",
+        "120\n綜合損益表\n2025年 2024年\n其他全面收益 5 4\n全面收益總額 25 19\n120 康方生物科技 | 2025年年度報告",
+    ]
+    found = rs.locate_statements(pages, report_type="annual")
+    labels = [(r.label, [str(v) for v in r.values]) for r in found["income"].rows]
+    assert ("每股股息", ["0.5"]) in labels
+    assert all(vals not in (["2025", "39"], ["120"]) for _, vals in labels), labels
+    assert rs._is_page_number_row("", "", [Decimal("2025"), Decimal("39")])
+    assert rs._is_page_number_row("", "", [Decimal("120")])
+    assert not rs._is_page_number_row("", "", [Decimal("0.5")])
+    assert not rs._is_page_number_row("", "6", [Decimal("120")])
+
+
+_SHORT_HEAD_PAGE = (
+    "綜合收益表\n截至2025年12月31日止年度\n2025年 2024年\n人民幣千元 人民幣千元\n"
+    "收入 1,000 900\n銷售成本 (600) (550)\n毛利 400 350\n其他收入 20 10\n經營盈利 420 360"
+)
+_CONTINUATION_PAGE = (
+    "綜合收益表（續）\n截至2025年12月31日止年度\n2025年 2024年\n人民幣千元 人民幣千元\n"
+    "財務成本 (20) (15)\n除稅前盈利 400 345\n所得稅 (80) (70)\n年度盈利 320 275\n"
+    "每股盈利－基本 0.32 0.28\n每股盈利－攤薄 0.31 0.27"
+)
+
+
+def test_short_first_page_is_kept_when_continuation_page_completes_the_statement():
+    """PR #202 评审：首页只有 5 个金额行、其余在「（續）」页——总行数门槛要在组装完连续块
+    之后再判，否则首页（含收入）整个丢失。"""
+    found = rs.locate_statements([_SHORT_HEAD_PAGE, _CONTINUATION_PAGE], report_type="annual")
+    income = found["income"]
+    assert (income.page_start, income.page_end) == (1, 2)
+    assert [r.label for r in income.rows][:3] == ["收入", "銷售成本", "毛利"]
+    assert len(income.rows) == 11 and income.column_count == 2
+    assert [r.row_id for r in income.rows] == [f"r{i}" for i in range(1, 12)]
+    assert income.years == [2025, 2024] and income.unit_multiplier == 1_000
+
+
+def test_two_short_pages_together_reach_the_row_threshold():
+    head = _SHORT_HEAD_PAGE.rsplit("\n", 2)[0]  # 3 行
+    tail = "\n".join(_CONTINUATION_PAGE.splitlines()[:8])  # 4 行
+    found = rs.locate_statements([head, tail], report_type="annual")
+    assert found["income"] is not None and len(found["income"].rows) == 7
+    assert found["income"].rows[0].label == "收入"
+    # 单独一页 3 行、没有续页：仍不够门槛
+    assert rs.locate_statements([head, "附註\n1. 一般資料"], report_type="annual")["income"] is None
+
+
+def test_short_head_only_merges_with_the_adjacent_next_page():
+    """中间隔着附註页：短首块不再与两页之外的同类块拼接，后者单独够 6 行则单独成表。"""
+    notes = "綜合財務報表附註\n1. 一般資料\n本公司於開曼群島註冊成立。"
+    found = rs.locate_statements([_SHORT_HEAD_PAGE, notes, _CONTINUATION_PAGE], report_type="annual")
+    assert found["income"] is not None and (found["income"].page_start, found["income"].page_end) == (3, 3)
+    assert found["income"].rows[0].label == "財務成本"
+
+
+def test_continuation_page_without_repeated_header_inherits_head_metadata():
+    """PR #202 评审：「綜合收益表（續）」下面直接是金额行、不重复日期/年份/单位——续页不得
+    因自身没有表头证据被拒（那会连带丢掉挂起的短首块），年份/单位/币种从首块继承。"""
+    bare_continuation = "\n".join(
+        line for line in _CONTINUATION_PAGE.splitlines()
+        if line not in ("截至2025年12月31日止年度", "2025年 2024年", "人民幣千元 人民幣千元")
+    )
+    found = rs.locate_statements([_SHORT_HEAD_PAGE, bare_continuation], report_type="annual")
+    income = found["income"]
+    assert income is not None and (income.page_start, income.page_end) == (1, 2)
+    assert len(income.rows) == 11 and income.rows[0].label == "收入"
+    assert income.years == [2025, 2024] and income.unit_multiplier == 1_000 and income.currency == "CNY"
+
+
+def test_years_split_across_two_header_lines_is_still_a_statement():
+    """PR #202 评审：列年份（同一行 ≥2 个年份）为空 ≠ 表头没有年份。「2025年」「2024年」被抽成
+    两行的合法报表要接受，数值列退回按位置对应。"""
+    page = _SHORT_HEAD_PAGE.replace("2025年 2024年", "2025年\n2024年") + "\n年度盈利 320 275"
+    found = rs.locate_statements([page], report_type="annual")
+    income = found["income"]
+    assert income is not None and len(income.rows) == 6 and income.years == []
+    cols = rs.period_columns(income, report_type="annual", end_date="20251231")
+    assert [(c.column, c.end_date) for c in cols] == [(0, "20251231"), (1, "20241231")]
+    # 只有年份、没有列年份行也没有单位/币种：仍是要排除的公告页（02156 首页的形态）
+    bare = "綜合收益表\n截至2025年12月31日止年度\n董事會欣然宣佈\n" + "\n".join(
+        f"項目{i} {i * 100} {i * 90}" for i in range(1, 8)
+    )
+    assert rs.locate_statements([bare], report_type="annual")["income"] is None

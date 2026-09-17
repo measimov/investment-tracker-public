@@ -4,8 +4,7 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`bd82291` (2026-09-15), plus the optional-dependency change from private
-PR #204 (`xueqiu_source` degrades explicitly when `xueqiu-market` is absent).
+`45f275b` (2026-09-17).
 
 Before syncing a new public release:
 

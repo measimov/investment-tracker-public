@@ -67,3 +67,21 @@ def test_messages_carry_rows_targets_and_schema():
     assert prompts.STATEMENT_PROMPT_VERSION >= 1
     assert set(prompts.STATEMENT_FIELDS) == {"income", "balance", "cashflow"}
     assert "free_cashflow" not in prompts.STATEMENT_FIELDS["cashflow"]  # 由代码推导，不让模型映射
+
+
+def test_required_balance_fields_accept_net_asset_format_components():
+    """港股净资产格式没有「資產總值」行：total_nca + total_cur_assets 齐全即满足必需科目。"""
+    from app.services.report_statement_prompts import parse_statement_mapping
+
+    rows = {"income": ["r1"], "balance": ["r1", "r2", "r3"]}
+    content = json.dumps({
+        "income": {"total_revenue": ["r1"]},
+        "balance": {"total_assets": None, "total_nca": ["r1"], "total_cur_assets": ["r2"], "total_cur_liab": ["r3"]},
+    })
+    mapping, unresolved = parse_statement_mapping(content, rows)
+    assert mapping["balance"] == {"total_nca": ["r1"], "total_cur_assets": ["r2"], "total_cur_liab": ["r3"]}
+    assert unresolved == []
+    # 只有其中一个分项 → 仍判缺失，错误信息列出备选组
+    content = json.dumps({"income": {"total_revenue": ["r1"]}, "balance": {"total_nca": ["r1"]}})
+    with pytest.raises(ValueError, match="total_assets 或 total_nca\\+total_cur_assets"):
+        parse_statement_mapping(content, rows)

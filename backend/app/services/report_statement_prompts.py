@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from .report_statements import STATEMENT_EXTRACTOR_VERSION
 
-STATEMENT_PROMPT_VERSION = 1
+STATEMENT_PROMPT_VERSION = 2
 
 # 目标科目：与 report_fetchers.YAHOO_HK_FIELD_MAP / earnings_quality.pivot_rows_to_statements
 # 对齐（同名 = 同口径），下游利润质量/格雷厄姆/分析输入零改动即可消费
@@ -35,14 +35,17 @@ STATEMENT_FIELDS: Dict[str, Dict[str, str]] = {
         "diluted_eps": "每股摊薄盈利（每股金额，不按单位放大）",
     },
     "balance": {
-        "total_assets": "资产总额/总资产",
-        "total_cur_assets": "流动资产总额",
-        "total_cur_liab": "流动负债总额",
+        "total_assets": "资产总额/总资产/资产总值（港股净资产格式的报表常常没有这一行，"
+        "此时留 null，由系统用 total_nca + total_cur_assets 推导，不要拿「總資產減流動負債」冒充）",
+        "total_nca": "非流动资产总额/非流动资产总值/非流动资产合计",
+        "total_cur_assets": "流动资产总额/流动资产总值/流动资产合计",
+        "total_cur_liab": "流动负债总额/流动负债总值/流动负债合计",
+        "total_ncl": "非流动负债总额/非流动负债总值/非流动负债合计",
         "accounts_receiv": "应收账款/贸易应收款项（若与其他应收合并列示则取合并行）",
         "inventories": "存货",
         "fix_assets": "物业、设备及器材/物业、厂房及设备/固定资产（不含使用权资产）",
         "money_cap": "现金及现金等价物（不含受限制现金/定期存款）",
-        "total_liab": "负债总额/总负债",
+        "total_liab": "负债总额/总负债（没有合计行则留 null，由系统用 total_cur_liab + total_ncl 推导）",
         "total_hldr_eqy_exc_min_int": "本公司权益持有人应占权益/归属母公司股东权益（不含非控制性权益）",
         "total_debt": "借款合计：短期借款+长期借款+应付票据/债券（流动与非流动都算，多行求和；不含租赁负债与经营性应付）",
     },
@@ -60,8 +63,19 @@ PER_SHARE_FIELDS = frozenset({"basic_eps", "diluted_eps"})
 EXPENSE_MAGNITUDE_FIELDS = frozenset(
     {"cost_of_revenue", "sga_exp", "int_exp", "income_tax", "depr_fa_coga_dpba"}
 )
-# 至少要解析出的科目：缺了说明定位到了别的表或映射失败，整份判确定性失败
-REQUIRED_FIELDS = {"income": ("total_revenue",), "balance": ("total_assets",)}
+# 至少要解析出的科目：缺了说明定位到了别的表或映射失败，整份判确定性失败。每张表列出
+# 若干「备选组」，任一组齐全即可——港股净资产格式的財務狀況表没有「資產總值」行（09926/
+# 03900/06049 年报全是「非流動資產總值 / 流動資產總值 / 總資產減流動負債」），总资产由两个
+# 分项合计推导（见 DERIVED_SUM_FIELDS）
+REQUIRED_FIELDS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+    "income": (("total_revenue",),),
+    "balance": (("total_assets",), ("total_nca", "total_cur_assets")),
+}
+# 报表没有直接列出时按分项求和推导的合计科目：目标 → 加数（缺任一加数则不推导）
+DERIVED_SUM_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "total_assets": ("total_nca", "total_cur_assets"),
+    "total_liab": ("total_cur_liab", "total_ncl"),
+}
 # 科目 → 所属报表（比较期按表合并、覆盖粒度都以此为准）；free_cashflow 由现金流量表推导
 FIELD_KIND: Dict[str, str] = {
     field: kind for kind, fields in STATEMENT_FIELDS.items() for field in fields
@@ -92,6 +106,9 @@ _SYSTEM_PROMPT = """你是财务报表科目映射器。用户给出一家上市
 4. 只能使用输入里出现过的 id；不得引入任何公司先验知识。
 5. 合计科目优先取合并合计行（如「收入」的合计行而不是各分部行；无标签的合计行以上下文/附注判断）。
 6. 符号按报表原样，不要为了正负去挑别的行。
+6a. 財務狀況表若没有「資產總值/總資產」合计行（港股净资产格式），total_assets 留 null，\
+改为映射 total_nca（非流動資產總值）与 total_cur_assets（流動資產總值），系统会相加；\
+「總資產減流動負債」「流動資產淨值」都不是总资产。
 7. 输出严格 JSON：{"income": {科目: [id...] | null, ...}, "balance": {...}, "cashflow": {...}}，\
 只包含输入中存在的报表，不要任何解释文字。"""
 
@@ -170,10 +187,11 @@ def parse_statement_mapping(
                 resolved[field] = good
         mapping[kind] = resolved
 
-    for kind, fields in REQUIRED_FIELDS.items():
+    for kind, groups in REQUIRED_FIELDS.items():
         if kind not in statements:
             continue
-        for field in fields:
-            if field not in mapping.get(kind, {}):
-                raise ValueError(f"科目映射缺少必需科目 {kind}.{field}")
+        resolved_fields = mapping.get(kind, {})
+        if not any(all(field in resolved_fields for field in group) for group in groups):
+            wanted = " 或 ".join("+".join(group) for group in groups)
+            raise ValueError(f"科目映射缺少必需科目 {kind}.{wanted}")
     return mapping, unresolved

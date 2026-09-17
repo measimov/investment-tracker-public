@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # LLM report (DeepSeek / OpenAI-compatible; empty key disables the feature)
     llm_report_api_key: str = ""
     llm_report_base_url: str = "https://api.deepseek.com"
-    llm_report_model: str = "deepseek-v4-pro"
+    llm_report_model: str = "deepseek-flash"
     llm_report_timeout_seconds: int = 120
     # DeepSeek 推理 token 与输出共享此配额：8192 实测被长分析报告吃穿
     # （港股分析要求额外写明数据边界，report_markdown 截断或整体为空）

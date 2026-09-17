@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "02156",
+  "end_date": "20250630",
+  "report_type": "interim",
+  "title": "02156_20250630_interim.json",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；pdfplumber extract_text 逐页，\\x0c 分页；仅保留报表附近页 [(5, 13)]，其余页置空以保住页码。建發物業中报：报表标题当页眉印在业绩公告首页（正文是董事会声明），真正报表在下一页；现金流量表年份字形缺失",
+  "pages": 74,
+  "kept_pages": [
+    [
+      5,
+      13
+    ]
+  ],
+  "chars": 13476
+}

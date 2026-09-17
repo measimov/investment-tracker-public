@@ -48,7 +48,7 @@ BUILD_SHA=unknown
 BACKGROUND_WORKER_ENABLED=true
 LLM_REPORT_API_KEY=
 LLM_REPORT_BASE_URL=https://api.deepseek.com
-LLM_REPORT_MODEL=deepseek-v4-pro
+LLM_REPORT_MODEL=deepseek-flash
 ```
 
 其余可调参数（Tushare 限速、价格新鲜度窗口、`BACKGROUND_JOB_*`）见 `.env.example`。

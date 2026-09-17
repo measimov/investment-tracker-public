@@ -81,8 +81,8 @@ def chat_completion(
         raise LLMClientError(f"LLM 响应格式异常: {response.text[:300]}") from exc
 
     if not content:
-        # 推理模型（如 deepseek-v4-pro）会先产生 reasoning_content；输出配额
-        # 被推理耗尽时 content 为空——这是确定性截断，报清晰错误而非落空报告。
+        # 推理模型（deepseek-flash / 此前的 deepseek-v4-pro）会先产生 reasoning_content；
+        # 输出配额被推理耗尽时 content 为空——这是确定性截断，报清晰错误而非落空报告。
         raise LLMClientError(
             f"LLM 输出为空（finish_reason={choice.get('finish_reason')}），"
             "可能是 max_tokens 配额被推理消耗，可调大 llm_report_max_output_tokens"
