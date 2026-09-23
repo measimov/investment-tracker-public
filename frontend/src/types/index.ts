@@ -35,6 +35,7 @@ export type WatchlistMembership = components['schemas']['WatchlistMembershipResp
 export type SecurityEvent = components['schemas']['SecurityEventResponse']
 export type DividendSuggestion = components['schemas']['SuggestionResponse']
 export type BrokerImportResult = components['schemas']['BrokerImportResult']
+export type SuspectedDuplicateSample = components['schemas']['SuspectedDuplicateSample']
 export type BrokerImportSample = components['schemas']['BrokerImportSample']
 export type ExchangeRate = components['schemas']['ExchangeRate']
 export type ExchangeRateLatest = components['schemas']['ExchangeRateLatest']

@@ -584,6 +584,30 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/corporate-actions/{action_id}/cost-basis': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    /**
+     * Update Opening Position Cost
+     * @description 给期初建仓补录成本（#174）。
+     *
+     *     对账单只能证明数量/日期/账户，成本它不知道；导入建的行动整体不可编辑
+     *     （ensure_record_is_mutable），但成本必须有补录通道——否则「成本未知」永远解不开。
+     *     只开放两个成本字段与备注，其余字段仍不可改；重算持仓在同一事务里提交。
+     */
+    patch: operations['update_opening_position_cost_api_corporate_actions__action_id__cost_basis_patch']
+    trace?: never
+  }
   '/api/exchange-rates/': {
     parameters: {
       query?: never
@@ -2572,6 +2596,12 @@ export interface components {
        */
       total_cost: string
       /**
+       * Unknown Cost Quantity
+       * @description 成本未知的份额（期初建仓/转托管转入），成本为估计值
+       * @default 0
+       */
+      unknown_cost_quantity: string
+      /**
        * Updated At
        * Format: date-time
        */
@@ -2585,6 +2615,8 @@ export interface components {
     Body_import_cmb_fund_flows_api_import_cmb_fund_flows_post: {
       /** Broker Account Id */
       broker_account_id?: number | null
+      /** Confirm Suspected Row Hashes */
+      confirm_suspected_row_hashes?: string | null
       /**
        * File
        * Format: binary
@@ -2655,6 +2687,8 @@ export interface components {
     Body_preview_cmb_fund_flows_api_import_cmb_fund_flows_preview_post: {
       /** Broker Account Id */
       broker_account_id?: number | null
+      /** Confirm Suspected Row Hashes */
+      confirm_suspected_row_hashes?: string | null
       /**
        * File
        * Format: binary
@@ -2813,6 +2847,11 @@ export interface components {
        */
       eligible_fx_rows: number
       /**
+       * Eligible Opening Position Rows
+       * @default 0
+       */
+      eligible_opening_position_rows: number
+      /**
        * Eligible Tax Rows
        * @default 0
        */
@@ -2915,6 +2954,13 @@ export interface components {
       source_account_masks?: string[]
       /** Statement Scope */
       statement_scope?: string | null
+      /**
+       * Suspected Duplicate Rows
+       * @default 0
+       */
+      suspected_duplicate_rows: number
+      /** Suspected Duplicate Samples */
+      suspected_duplicate_samples?: components['schemas']['SuspectedDuplicateSample'][]
       /** Total Rows */
       total_rows: number
       /**
@@ -3203,21 +3249,22 @@ export interface components {
         | 'BONUS_ISSUE'
         | 'SPIN_OFF'
         | 'MERGER'
+        | 'OPENING_POSITION'
       /**
        * Adjusted Cost Per Share
-       * @description 调整后的每股成本
+       * @description 期初建仓单位成本（可选）
        */
       adjusted_cost_per_share?: number | string | null
       /**
        * Adjusted Quantity
-       * @description 调整后的持股数量
+       * @description 期初建仓数量
        */
       adjusted_quantity?: number | string | null
       /** Broker Account Id */
       broker_account_id?: number | null
       /**
        * Cost Basis Adjustment
-       * @description 成本基础调整金额
+       * @description 期初建仓总成本（可选）
        */
       cost_basis_adjustment?: number | string | null
       /**
@@ -3343,21 +3390,22 @@ export interface components {
         | 'BONUS_ISSUE'
         | 'SPIN_OFF'
         | 'MERGER'
+        | 'OPENING_POSITION'
       /**
        * Adjusted Cost Per Share
-       * @description 调整后的每股成本
+       * @description 期初建仓单位成本（可选）
        */
       adjusted_cost_per_share?: string | null
       /**
        * Adjusted Quantity
-       * @description 调整后的持股数量
+       * @description 期初建仓数量
        */
       adjusted_quantity?: string | null
       /** Broker Account Id */
       broker_account_id?: number | null
       /**
        * Cost Basis Adjustment
-       * @description 成本基础调整金额
+       * @description 期初建仓总成本（可选）
        */
       cost_basis_adjustment?: string | null
       /**
@@ -3494,6 +3542,7 @@ export interface components {
             | 'BONUS_ISSUE'
             | 'SPIN_OFF'
             | 'MERGER'
+            | 'OPENING_POSITION'
           )
         | null
       /** Adjusted Cost Per Share */
@@ -3816,6 +3865,12 @@ export interface components {
        */
       total_cost: string
       /**
+       * Unknown Cost Quantity
+       * @description 成本未知的份额（期初建仓/转托管转入），成本为估计值
+       * @default 0
+       */
+      unknown_cost_quantity: string
+      /**
        * Updated At
        * Format: date-time
        */
@@ -3969,6 +4024,18 @@ export interface components {
      */
     LoginResponse: {
       user: components['schemas']['User']
+    }
+    /**
+     * OpeningPositionCostUpdate
+     * @description 只补录成本（导入建的期初仓也允许）：数量/日期/账户来自对账单，不在此改。
+     */
+    OpeningPositionCostUpdate: {
+      /** Adjusted Cost Per Share */
+      adjusted_cost_per_share?: number | string | null
+      /** Cost Basis Adjustment */
+      cost_basis_adjustment?: number | string | null
+      /** Notes */
+      notes?: string | null
     }
     /**
      * PriceBatchUpdate
@@ -4349,6 +4416,47 @@ export interface components {
        * Format: date-time
        */
       updated_at: string
+    }
+    /**
+     * SuspectedDuplicateSample
+     * @description 疑似重复成交行（#190）：与已入账流水同「代码/日期/方向/数量/金额/币种」但 hash 不同。
+     */
+    SuspectedDuplicateSample: {
+      /** Amount */
+      amount: string
+      /** Existing Import Batch Id */
+      existing_import_batch_id?: number | null
+      /** Existing Price */
+      existing_price?: string | null
+      /** Existing Row Hash */
+      existing_row_hash?: string | null
+      /** Existing Row Number */
+      existing_row_number?: number | null
+      /** Existing Source Filename */
+      existing_source_filename?: string | null
+      /** Market */
+      market: string
+      /** Name */
+      name?: string | null
+      /**
+       * Previously Held
+       * @default false
+       */
+      previously_held: boolean
+      /** Price */
+      price: string
+      /** Quantity */
+      quantity: string
+      /** Row Hash */
+      row_hash: string
+      /** Row Number */
+      row_number: number
+      /** Symbol */
+      symbol: string
+      /** Trade Date */
+      trade_date: string
+      /** Transaction Type */
+      transaction_type: string
     }
     /**
      * Token
@@ -5817,6 +5925,41 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  update_opening_position_cost_api_corporate_actions__action_id__cost_basis_patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        action_id: number
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['OpeningPositionCostUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CorporateActionResponse']
+        }
       }
       /** @description Validation Error */
       422: {

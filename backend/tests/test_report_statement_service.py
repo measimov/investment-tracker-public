@@ -11,6 +11,7 @@ import pytest
 from app.database import SessionLocal
 from app.models.security_profile import SecurityProfileData
 from app.services import report_statement_prompts as prompts
+from app.services import report_statement_checks as checks
 from app.services import report_statement_service as svc
 from app.services import security_profile_service as profile_svc
 from app.services.earnings_quality import market_statements, merge_hk_statement_rows
@@ -675,10 +676,14 @@ def test_total_assets_derived_from_components_in_net_asset_format():
     assert rows["20251231"]["total_assets"] == 16_000_440_000.0  # (4,723,170 + 11,277,270) 千元
     assert rows["20251231"]["total_liab"] == 7_054_483_000.0  # (2,195,127 + 4,859,356) 千元
     assert rows["20241231"]["total_assets"] == 12_754_965_000.0
-    # 报表直接给了合计行时不覆盖
-    mapping["balance"]["total_assets"] = [by_label["流動資產淨值"]]
+    # 报表直接给了合计行时不覆盖（这里故意映射到「總資產減流動負債」验证不推导）
+    mapping["balance"]["total_assets"] = [by_label["總資產減流動負債"]]
     rows = {r["end_date"]: r for r in svc.build_period_rows({"balance": balance}, mapping, target, fingerprint="f")}
-    assert rows["20251231"]["total_assets"] == 9_082_143_000.0
+    assert rows["20251231"]["total_assets"] == 13_805_313_000.0
+    # 映射到「流動資產淨值」这种比流动资产还小的行：硬失败（流动资产 > 总资产），主行直接抛
+    mapping["balance"]["total_assets"] = [by_label["流動資產淨值"]]
+    with pytest.raises(ValueError, match="报表校验失败"):
+        svc.build_period_rows({"balance": balance}, mapping, target, fingerprint="f")
 
 
 def test_baseline_text_reunites_labels_whose_glyph_boxes_sit_below_the_baseline():
@@ -716,3 +721,190 @@ def test_baseline_text_reunites_labels_whose_glyph_boxes_sit_below_the_baseline(
     # 缺 matrix 的字符：退回默认抽取
     plain = [{k: v for k, v in c.items() if k != "matrix"} for c in chars]
     assert svc.baseline_text(plain, page_height=842.0).splitlines() == default
+
+
+def test_overdrawn_characters_keep_only_the_last_drawn_layer():
+    """01023 2023：标题位置先画模板页眉「綜合財務報表附註」再画「綜合損益表」，位置逐字重合。
+    按画家模型只保留后画的一层，同文重画（加粗）也去重。"""
+    def char(text, x0, baseline_y, *, size=25.0):
+        y1 = baseline_y + size * 0.8
+        top = 842.0 - y1
+        return {"text": text, "x0": x0, "x1": x0 + size, "top": top, "bottom": top + size, "doctop": top,
+                "y0": y1 - size, "y1": y1, "size": size, "upright": True,
+                "matrix": (size, 0, 0, size, x0, baseline_y), "height": size, "width": size, "object_type": "char"}
+
+    hidden = [char(t, 56.7 + i * 24.4, 720.0) for i, t in enumerate("綜合財務報表附註")]
+    visible = [char(t, 56.7 + i * 24.4, 720.0) for i, t in enumerate("綜合損益表")]
+    bold_twice = [char(t, 56.7 + i * 8, 690.0, size=8.0) for i, t in enumerate("截至二零二三年")] * 2
+    text = svc.baseline_text(hidden + visible + bold_twice, page_height=842.0)
+    assert text.splitlines() == ["綜合損益表", "截至二零二三年"]
+
+
+# ---------------------------------------------------------------------------
+# 可信度层：写入时的交叉核对 / 存疑清洗 / 规则升版零 LLM 重校验
+# ---------------------------------------------------------------------------
+
+
+def _seed_yahoo(db, end_date, **fields):
+    from app.services.security_profile_service import upsert_profile_row
+
+    payload = {"end_date": end_date, "fp": "FY", "currency": "CNY", **fields}
+    upsert_profile_row(db, SYMBOL, MARKET, "yahoo_fundamentals", end_date, payload)
+    db.commit()
+
+
+def test_write_cross_checks_primary_rows_against_yahoo(db, monkeypatch):
+    """雅虎同财年营收相差 3% → 主行存疑、gaps 说明原因、抽取行记 suspect_periods；0.5% 在容差内。"""
+    _seed_yahoo(db, "20251231", total_revenue=751_766_000_000.0 * 1.03, total_assets=2_038_986_000_000.0)
+    _seed_yahoo(db, "20241231", total_revenue=660_257_000_000.0 * 1.005)
+    calls = _patch_pipeline(
+        monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES},
+    )
+    result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert (result["generated"], result["failed"]) == (1, 0)
+    assert result["suspect"] == 1 and result["suspect_periods"] == ["20251231|FY"]
+    assert any("20251231 报表科目校验存疑" in gap and "雅虎" in gap for gap in result["gaps"])
+    rows = _rows(db, svc.STATEMENT_DATASET)
+    fy2025 = rows["20251231|FY"]
+    assert fy2025["validation"]["status"] == "suspect"
+    assert fy2025["validation"]["suspect_fields"] == ["total_revenue"]
+    assert fy2025["total_revenue"] == 751_766_000_000.0  # 原值仍在库里（UI 打标展示）
+    assert rows["20241231|FY"]["validation"]["status"] == "ok"
+    extract = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+    assert extract["suspect_periods"] == ["20251231|FY"]
+    assert calls["llm"] == 1
+
+
+def test_suspect_fields_are_scrubbed_for_analysis_and_filled_by_yahoo(db, monkeypatch):
+    from app.services.earnings_quality import merge_hk_statement_rows
+    from app.services.security_profile_service import load_graham_inputs, load_symbol_profile
+
+    _seed_yahoo(db, "20251231", total_revenue=751_766_000_000.0 * 1.03, n_cashflow_act=303_052_000_000.0)
+    _patch_pipeline(
+        monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES},
+    )
+    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    profile = load_symbol_profile(db, SYMBOL, MARKET)
+    pdf_rows = profile["datasets"]["report_statements"]
+    fy2025 = next(r for r in pdf_rows if r["end_date"] == "20251231")
+    assert fy2025["validation"]["status"] == "suspect"  # 档案里保留原值与标记
+    merged = merge_hk_statement_rows(profile["datasets"])
+    merged_2025 = next(r for r in merged if r["end_date"] == "20251231")
+    # 存疑的营收被清空后由雅虎补上；未存疑的科目仍是 PDF 值
+    assert merged_2025["total_revenue"] == pytest.approx(751_766_000_000.0 * 1.03)
+    assert merged_2025["n_cashflow_act"] == 303_052_000_000.0
+    assert merged_2025["cost_of_revenue"] == 329_173_000_000.0
+    inputs = load_graham_inputs(db, SYMBOL, MARKET)
+    graham_2025 = next(r for r in inputs["statement_datasets"]["report_statements"] if r["end_date"] == "20251231")
+    assert graham_2025["validation"]["status"] == "suspect"  # 原行进入；透视层再清洗
+
+
+def test_analysis_input_scrubs_suspect_fields_and_marks_status():
+    from app.services.security_analysis_jobs import _compact_statement_rows
+
+    rows = [{
+        "end_date": "20251231", "fp": "FY", "currency": "CNY", "total_revenue": 1.0, "total_assets": 2.0,
+        "validation": {"status": "suspect", "suspect_fields": ["total_revenue"]},
+        "source_url": "u",
+    }]
+    compact = _compact_statement_rows("report_statements", rows)
+    assert compact == [{"end_date": "20251231", "fp": "FY", "currency": "CNY", "validation_status": "suspect",
+                        "total_assets": 2.0}]
+
+
+def test_revalidate_upgrades_stale_validation_without_llm(db, monkeypatch):
+    calls = _patch_pipeline(
+        monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES},
+    )
+    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert calls["llm"] == 1
+    # 规则升版：把库里的 validation 版本改旧，并塞进一条会触发存疑的雅虎行
+    from app.services.security_profile_service import upsert_profile_row
+
+    for period_key, payload in _rows(db, svc.STATEMENT_DATASET).items():
+        stale = dict(payload)
+        stale["validation"] = {**payload["validation"], "version": 0}
+        upsert_profile_row(db, SYMBOL, MARKET, svc.STATEMENT_DATASET, period_key, stale)
+    db.commit()
+    _seed_yahoo(db, "20241231", total_assets=1_780_995_000_000.0 * 1.5)
+    outcome = svc.revalidate_report_statements(db, SYMBOL, MARKET)
+    assert outcome == {"revalidated": 2, "suspect": 1}
+    rows = _rows(db, svc.STATEMENT_DATASET)
+    assert rows["20241231|FY"]["validation"]["status"] == "suspect"
+    assert rows["20241231|FY"]["validation"]["version"] == checks.STATEMENT_VALIDATION_VERSION
+    assert rows["20251231|FY"]["validation"]["status"] == "ok"
+    assert calls["llm"] == 1  # 零 LLM
+    # 再跑一次：都已是当前版本，不动
+    assert svc.revalidate_report_statements(db, SYMBOL, MARKET) == {"revalidated": 0, "suspect": 0}
+
+
+def test_comparative_column_from_newer_report_cross_checks_existing_primary(db, monkeypatch):
+    """先处理 2024 年报（主行），再处理 2025 年报：其 2024 比较列不覆盖主行，但用来核对主行。"""
+    older = {"title": "2024 年報", "ann_date": "01/04/2025 16:30", "url": "https://www1.hkexnews.hk/a/2024.pdf"}
+    _patch_pipeline(
+        monkeypatch, reports={"annual": [older]}, pages_by_url={older["url"]: ANNUAL_2024_PAGES},
+    )
+    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
+    assert fy2024["is_comparative"] is False
+    assert not any(c["id"].startswith("comparative_") for c in fy2024["validation"]["checks"])
+
+    _patch_pipeline(
+        monkeypatch, reports={"annual": [ANNUAL_TARGET, older]},
+        pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES, older["url"]: ANNUAL_2024_PAGES},
+    )
+    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
+    assert fy2024["is_comparative"] is False and fy2024["source_period_key"] == "20241231|annual"
+    comparative = [c for c in fy2024["validation"]["checks"] if c["id"].startswith("comparative_")]
+    assert comparative and all(c["source"] == "20251231|annual" for c in comparative)
+    # 2024 年报的"本期"数值是 2025 页面平移而来（751,766），与 2025 年报比较列（660,257）差 12% → 存疑
+    assert fy2024["validation"]["status"] == "suspect"
+    assert "total_revenue" in fy2024["validation"]["suspect_fields"]
+
+
+def test_revalidate_keeps_comparative_evidence_when_no_yahoo_row(db, monkeypatch):
+    """评审 P2：由下一年比较列判出的存疑，在校验规则升版重跑（且该期没有雅虎行）后必须保留——
+    比较列本身已被主行覆盖，证据存在主行的 comparative_evidence 上随行重跑。"""
+    from app.services.security_profile_service import upsert_profile_row
+
+    older = {"title": "2024 年報", "ann_date": "01/04/2025 16:30", "url": "https://www1.hkexnews.hk/a/2024.pdf"}
+    _patch_pipeline(monkeypatch, reports={"annual": [older]}, pages_by_url={older["url"]: ANNUAL_2024_PAGES})
+    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    calls = _patch_pipeline(
+        monkeypatch, reports={"annual": [ANNUAL_TARGET, older]},
+        pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES, older["url"]: ANNUAL_2024_PAGES},
+    )
+    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
+    assert fy2024["validation"]["status"] == "suspect"
+    assert fy2024["comparative_evidence"]["source_period_key"] == "20251231|annual"
+    assert fy2024["comparative_evidence"]["total_revenue"] == 660_257_000_000.0
+
+    # 规则升版：库里版本改旧；该期没有任何雅虎行
+    for period_key, payload in _rows(db, svc.STATEMENT_DATASET).items():
+        stale = dict(payload)
+        stale["validation"] = {**payload["validation"], "version": 0}
+        upsert_profile_row(db, SYMBOL, MARKET, svc.STATEMENT_DATASET, period_key, stale)
+    db.commit()
+    assert _rows(db, "yahoo_fundamentals") == {}
+    outcome = svc.revalidate_report_statements(db, SYMBOL, MARKET)
+    assert outcome["revalidated"] == 2 and outcome["suspect"] >= 1
+    fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
+    assert fy2024["validation"]["status"] == "suspect"
+    assert "total_revenue" in fy2024["validation"]["suspect_fields"]
+    comparative = [c for c in fy2024["validation"]["checks"] if c["id"].startswith("comparative_")]
+    assert comparative and all(c["source"] == "20251231|annual" for c in comparative)
+    assert calls["llm"] == 1  # 重校验零 LLM
+
+    # 主行重抽（新行对象）也要把证据带过去：把 2024 年报重新处理一遍
+    for period_key, payload in _rows(db, svc.EXTRACT_DATASET).items():
+        if period_key == "20241231|annual":
+            stale = dict(payload)
+            stale["extractor_version"] = 0
+            upsert_profile_row(db, SYMBOL, MARKET, svc.EXTRACT_DATASET, period_key, stale)
+    db.commit()
+    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
+    assert fy2024["comparative_evidence"]["source_period_key"] == "20251231|annual"
+    assert fy2024["validation"]["status"] == "suspect"

@@ -117,13 +117,13 @@ STATEMENT_LLM_FIELDS: Dict[str, tuple] = {
     ),
     # 港股 PDF 抽取行：只送科目与期别，源 URL/页码/指纹等溯源元数据留在库里
     "report_statements": (
-        "end_date", "fp", "currency", "is_comparative",
+        "end_date", "fp", "currency", "is_comparative", "validation_status",
         "total_revenue", "cost_of_revenue", "gross_profit", "operating_income",
-        "n_income_attr_p", "total_profit", "income_tax", "sga_exp", "int_exp",
-        "basic_eps", "diluted_eps", "total_assets", "total_cur_assets", "total_cur_liab",
-        "accounts_receiv", "inventories", "fix_assets", "money_cap", "total_liab",
-        "total_hldr_eqy_exc_min_int", "total_debt", "n_cashflow_act", "capex",
-        "free_cashflow", "depr_fa_coga_dpba",
+        "n_income_attr_p", "total_profit", "income_tax", "ebitda", "sga_exp", "int_exp",
+        "basic_eps", "diluted_eps", "total_assets", "total_nca", "total_cur_assets",
+        "total_cur_liab", "total_ncl", "accounts_receiv", "inventories", "fix_assets",
+        "money_cap", "total_liab", "total_hldr_eqy_exc_min_int", "total_equity", "minority_int",
+        "total_debt", "n_cashflow_act", "capex", "free_cashflow", "depr_fa_coga_dpba",
     ),
 }
 
@@ -132,6 +132,17 @@ def _compact_statement_rows(dataset: str, rows: list) -> list:
     fields = STATEMENT_LLM_FIELDS.get(dataset)
     if not fields:
         return rows
+    if dataset == "report_statements":
+        from .report_statement_checks import scrub_suspect_fields
+
+        # 校验存疑的科目不送模型（已置空），但把"这一期被清洗过"说出来
+        rows = [
+            {
+                **scrub_suspect_fields(row),
+                "validation_status": (row.get("validation") or {}).get("status"),
+            }
+            for row in rows
+        ]
     return [
         {field: row.get(field) for field in fields if row.get(field) is not None}
         for row in rows

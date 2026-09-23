@@ -102,6 +102,7 @@ def test_fifo_pnl_tracks_partial_lot_cost_and_remaining_cost():
                 "quantity": 30.0,
                 "total_cost": 360.0,
                 "date": "2026-01-02",
+                "cost_known": True,
             }
         ]
     finally:

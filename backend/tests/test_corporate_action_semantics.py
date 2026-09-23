@@ -210,3 +210,115 @@ def test_schema_requires_a_quantity_field():
         action_type="STOCK_DIVIDEND", distribution_ratio="10:3", **base
     )
     CorporateActionCreate(action_type="STOCK_SPLIT", new_shares=Decimal("200"), **base)
+
+
+# ---------------------------------------------------------------------------
+# #174 期初建仓（OPENING_POSITION）：账户级绝对数量 + 可选成本，四处重放同源
+# ---------------------------------------------------------------------------
+
+
+def _seed_opening(db, *, on_account: bool, **action_fields):
+    """空账本上直接建期初仓（成本已知/未知），可选再买 100 股验证平均成本合并。"""
+    account = BrokerAccount(
+        user_id=1, broker="东方财富", account_name="东财", base_currency="CNY",
+    )
+    db.add(account)
+    db.flush()
+    db.add(CorporateAction(
+        user_id=1, symbol="600000", name="浦发银行", market="A股",
+        action_type="OPENING_POSITION", ex_date=date(2026, 1, 5), currency="CNY",
+        broker_account_id=account.id if on_account else None, adjusted_quantity=Decimal("50"),
+        **action_fields,
+    ))
+    db.commit()
+    return account.id
+
+
+@pytest.mark.parametrize(
+    "action_fields,expected_total_cost,expected_unknown",
+    [
+        ({}, Decimal("0"), Decimal("50")),  # 成本未知：0 成本入账、未知份额 50
+        ({"adjusted_cost_per_share": Decimal("8")}, Decimal("400"), Decimal("0")),
+        ({"cost_basis_adjustment": Decimal("450")}, Decimal("450"), Decimal("0")),
+        # 两者都给：总成本优先（校验层要求一致，这里直接落库验证优先级）
+        (
+            {"adjusted_cost_per_share": Decimal("9"), "cost_basis_adjustment": Decimal("450")},
+            Decimal("450"), Decimal("0"),
+        ),
+    ],
+)
+def test_opening_position_replays_agree_across_holding_fifo_and_precheck(
+    action_fields, expected_total_cost, expected_unknown
+):
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account_id = _seed_opening(db, on_account=True, **action_fields)
+        holding = recalculate_holdings(db, 1, "600000", "A股")
+        assert holding.broker_account_id == account_id  # 落在行动自己的账户桶
+        assert Decimal(str(holding.quantity)) == Decimal("50")
+        assert Decimal(str(holding.total_cost)) == expected_total_cost
+        assert Decimal(str(holding.unknown_cost_quantity)) == expected_unknown
+        fifo = fifo_results_for_user(db, 1, {("600000", "A股")})[("600000", "A股")]
+        lots = fifo["buy_queue"]
+        assert sum(Decimal(str(b["quantity"])) for b in lots) == Decimal("50")
+        assert all(b["cost_known"] is (expected_unknown == 0) for b in lots)
+        precheck = calculate_account_position_quantities(
+            db, user_id=1, broker_account_id=account_id, snapshot_date=date(2026, 12, 31),
+        )[("600000", "A股")]
+        assert precheck == Decimal("50")
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_null_account_opening_position_opens_the_unassigned_bucket_only():
+    """NULL 账户的期初仓开在未指定账户桶，**不**让某个账户的预检借它放行卖出。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account_id = _seed_opening(db, on_account=False, adjusted_cost_per_share=Decimal("8"))
+        holding = recalculate_holdings(db, 1, "600000", "A股")
+        assert holding.broker_account_id is None and Decimal(str(holding.quantity)) == Decimal("50")
+        precheck = calculate_account_position_quantities(
+            db, user_id=1, broker_account_id=account_id, snapshot_date=date(2026, 12, 31),
+        )
+        assert precheck.get(("600000", "A股"), Decimal("0")) == Decimal("0")
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_selling_unknown_cost_lots_marks_realized_pnl_as_estimated():
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account_id = _seed_opening(db, on_account=True)
+        db.add(Transaction(
+            user_id=1, symbol="600000", name="浦发银行", market="A股",
+            transaction_type="SELL", quantity=Decimal("20"), price=Decimal("12"),
+            fee=Decimal("0"), transaction_date=date(2026, 2, 1), currency="CNY",
+            broker_account_id=account_id,
+        ))
+        db.commit()
+        holding = recalculate_holdings(db, 1, "600000", "A股")
+        assert Decimal(str(holding.quantity)) == Decimal("30")
+        assert Decimal(str(holding.unknown_cost_quantity)) == Decimal("30")
+        fifo = fifo_results_for_user(db, 1, {("600000", "A股")})[("600000", "A股")]
+        assert fifo["estimated_cost_trade_count"] == 1
+        assert fifo["closed_trades"][0]["cost_estimated"] is True
+        assert fifo["closed_trades"][0]["realized_pnl"] == pytest.approx(240.0)  # 成本按 0
+    finally:
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_schema_requires_quantity_and_consistent_costs_for_opening_position():
+    base = {"symbol": "600000", "market": "A股", "action_type": "OPENING_POSITION", "ex_date": "2026-01-05"}
+    with pytest.raises(ValueError, match="adjusted_quantity"):
+        CorporateActionCreate(**base)
+    with pytest.raises(ValueError, match="不一致"):
+        CorporateActionCreate(**base, adjusted_quantity=Decimal("50"),
+                              adjusted_cost_per_share=Decimal("8"), cost_basis_adjustment=Decimal("100"))
+    ok = CorporateActionCreate(**base, adjusted_quantity=Decimal("50"))
+    assert ok.adjusted_cost_per_share is None and ok.cost_basis_adjustment is None

@@ -27,7 +27,7 @@ from __future__ import annotations
 import io
 from datetime import date
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pdfplumber
 from sqlalchemy.orm import Session
@@ -47,6 +47,14 @@ from .report_digest_service import (
     source_fingerprint,
 )
 from .report_fetchers import download_report_pdf, hkex_reports
+from .report_statement_checks import (
+    CROSS_CHECK_FIELDS,
+    cross_check_row,
+    finalize_validation,
+    hard_failures,
+    validation_current,
+    validation_summary,
+)
 from .report_statement_prompts import (
     DERIVED_SUM_FIELDS,
     EXPENSE_MAGNITUDE_FIELDS,
@@ -154,6 +162,43 @@ def plan_statement_targets(symbol: str, market: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------- 抽取与映射
 
 
+def _drop_overdrawn(chars: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """被后画的文字覆盖的字符串整段丢掉（画家模型：后画的盖住先画的）。
+
+    時代集團 01023 的报表页在标题位置先画了模板页眉「綜合財務報表附註」再画「綜合損益表」，
+    渲染出来只见后者，但两串字符位置逐字重合，pdfplumber 按 x 排序后拼成
+    「綜綜合合財損務益報表表附註」，标题永远匹配不上。按内容流把字符切成「同一行连续绘制」
+    的串；一串里过半字符槽位被后面的串覆盖，就整串视为被盖住（露出的尾巴「表附註」渲染时
+    也不可见——它和被盖住的部分属于同一次绘制）。同文重画（加粗效果）也顺带去重。"""
+    if not chars:
+        return chars
+    slot = [
+        (round(float(ch["x0"]) * 2), round(float(ch["top"]) * 2), round(float(ch.get("size") or 0) * 2))
+        for ch in chars
+    ]
+    last_index: Dict[Tuple[int, int, int], int] = {}
+    for index, key in enumerate(slot):
+        last_index[key] = index
+    if len(last_index) == len(chars):
+        return chars
+    # 同一行（top/size 相同）、内容流里连续且 x 单调向右的字符 = 一次绘制的串；x 回退
+    # 说明另一串从左边重新开始画（同一位置重画的加粗、或盖在上面的新标题）
+    runs: List[List[int]] = [[0]]
+    for index in range(1, len(chars)):
+        if slot[index][1:] == slot[index - 1][1:] and slot[index][0] > slot[index - 1][0]:
+            runs[-1].append(index)
+        else:
+            runs.append([index])
+    dropped: set = set()
+    for run in runs:
+        covered = sum(1 for index in run if last_index[slot[index]] != index)
+        if covered >= 2 and covered * 2 >= len(run):
+            dropped.update(run)
+        else:
+            dropped.update(index for index in run if last_index[slot[index]] != index)
+    return [ch for index, ch in enumerate(chars) if index not in dropped]
+
+
 def baseline_text(chars: List[Dict[str, Any]], *, page_height: float) -> str:
     """按**基线**而不是字形框顶边聚行后抽文本。
 
@@ -165,7 +210,7 @@ def baseline_text(chars: List[Dict[str, Any]], *, page_height: float) -> str:
     改写成「基线 − 0.8×字号 / 基线 + 0.2×字号」再交给 pdfplumber 自己的聚行与排版，正常字体
     的页面输出与 `page.extract_text()` 逐行一致。缺 matrix 或非直立文字的页面退回默认抽取。"""
     adjusted: List[Dict[str, Any]] = []
-    for ch in chars:
+    for ch in _drop_overdrawn(chars):
         matrix = ch.get("matrix")
         if not matrix or len(matrix) < 6 or not ch.get("upright", True):
             return pdfplumber.utils.extract_text(chars)
@@ -255,6 +300,8 @@ def build_period_rows(
     """映射 + 解析行 → 各会计期的科目行（本期 is_comparative=False，比较期 True）。"""
     rows_by_period: Dict[str, Dict[str, Any]] = {}
     for kind, parsed in located.items():
+        if not mapping.get(kind):
+            continue  # 软必需科目缺失时整张表已被丢弃：不留空来源占位
         columns = period_columns(parsed, report_type=target["report_type"], end_date=target["end_date"])
         for col in columns:
             key = f"{col.end_date}|{col.fp}"
@@ -271,14 +318,18 @@ def build_period_rows(
                 "source_pages": {},
                 # 每张表的来源报告（比较期按表合并时判新旧）
                 "source_by_kind": {},
+                # 每张表各自识别出的币种/单位：三张表不一致是硬失败，不猜
+                "currency_by_kind": {},
+                "unit_by_kind": {},
                 "extractor_version": STATEMENT_EXTRACTOR_VERSION,
                 "prompt_version": STATEMENT_PROMPT_VERSION,
             })
-            row["currency"] = row["currency"] or parsed.currency
+            row["currency_by_kind"][kind] = parsed.currency
+            row["unit_by_kind"][kind] = parsed.unit_multiplier
             row["source_pages"][kind] = [parsed.page_start, parsed.page_end]
             row["source_by_kind"][kind] = {
                 "period_key": target["period_key"], "end_date": target["end_date"],
-                "report_type": target["report_type"],
+                "report_type": target["report_type"], "ann_date": target.get("ann_date"),
             }
             for field, row_ids in mapping.get(kind, {}).items():
                 value = resolve_value(
@@ -289,21 +340,44 @@ def build_period_rows(
                 if field in EXPENSE_MAGNITUDE_FIELDS:
                     value = abs(value)
                 row[field] = _decimal_to_number(value)
+    rows: List[Dict[str, Any]] = []
     for row in rows_by_period.values():
-        for target, addends in DERIVED_SUM_FIELDS.items():
-            if row.get(target) is None and all(row.get(f) is not None for f in addends):
-                row[target] = sum(row[f] for f in addends)
+        known = sorted({c for c in row["currency_by_kind"].values() if c})
+        row["currency"] = known[0] if len(known) == 1 else None
+        # 记下**实际**由代码推导的科目及其输入：清洗输入时派生值一并失效（评审 P1）
+        row["derived_fields"] = {}
+        for derived, addends in DERIVED_SUM_FIELDS.items():
+            if row.get(derived) is None and all(row.get(f) is not None for f in addends):
+                row[derived] = sum(row[f] for f in addends)
+                row["derived_fields"][derived] = list(addends)
         cfo, capex = row.get("n_cashflow_act"), row.get("capex")
         if cfo is not None and capex is not None:
-            row["free_cashflow"] = cfo + capex  # capex 按报表符号为负
-    return list(rows_by_period.values())
+            # capex 按报表符号通常为负；个别报表写正数，按绝对值扣才不会把 FCF 算大
+            row["free_cashflow"] = cfo - abs(capex)
+            row["derived_fields"]["free_cashflow"] = ["n_cashflow_act", "capex"]
+        failures = hard_failures(row)
+        if failures:
+            if not row["is_comparative"]:
+                raise ValueError("报表校验失败: " + "；".join(failures))
+            # 比较期行不可信就丢掉：相邻年份的报告会再写一次，垃圾比较行比没有更糟
+            logger.warning(
+                "丢弃比较期行 %s（%s）: %s", row["end_date"], target.get("period_key"), failures
+            )
+            continue
+        finalize_validation(row)
+        rows.append(row)
+    return rows
 
 
 def _source_rank(source: Optional[Dict[str, Any]]) -> tuple:
-    """来源报告的新旧：报告期越新越优；同期年报优于中报。"""
+    """来源报告的新旧：报告期越新越优；同期年报优于中报；再同则公告日晚者（修订版）优。"""
     if not source:
-        return ("", 0)
-    return (str(source.get("end_date") or ""), 1 if source.get("report_type") == "annual" else 0)
+        return ("", 0, "")
+    return (
+        str(source.get("end_date") or ""),
+        1 if source.get("report_type") == "annual" else 0,
+        _hkex_sort_key(source.get("ann_date") or ""),
+    )
 
 
 def merge_comparative_row(
@@ -365,22 +439,142 @@ def merge_comparative_row(
     merged["is_comparative"] = True
     merged["extractor_version"] = STATEMENT_EXTRACTOR_VERSION
     merged["prompt_version"] = STATEMENT_PROMPT_VERSION
+    # 合并结果的科目来自两份报告，原 validation 已失效
+    finalize_validation(merged)
     return merged
 
 
-def _write_period_rows(db: Session, symbol: str, market: str, rows: List[Dict[str, Any]]) -> List[str]:
+def _yahoo_row(db: Session, symbol: str, market: str, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """同财年的 Yahoo 行（键是裸 end_date，没有 |FY 后缀——两侧键形不同，只在内存里按
+    (end_date, fp) 对齐，见 earnings_quality.merge_hk_statement_rows）。中报没有 Yahoo 对照。"""
+    if row.get("fp") != "FY":
+        return None
+    found = _load_row(db, symbol, market, "yahoo_fundamentals", str(row["end_date"]))
+    return found.payload if found else None
+
+
+def comparative_evidence(comparative: Dict[str, Any]) -> Dict[str, Any]:
+    """另一份报告比较列里可重跑的证据切片：来源与币种 + 交叉核对科目。存在主行的
+    `comparative_evidence` 上——比较列本身通常被主行覆盖、没有第二条行可回读，规则升版重校验
+    时若不保存这份证据，先前由它判出的存疑会被静默清除（PR #207 评审 P2）。"""
+    evidence = {
+        "source_period_key": comparative.get("source_period_key"),
+        "source_report_type": comparative.get("source_report_type"),
+        "source_end_date": comparative.get("source_end_date"),
+        "currency": comparative.get("currency"),
+    }
+    for field in CROSS_CHECK_FIELDS:
+        if comparative.get(field) is not None:
+            evidence[field] = comparative[field]
+    return evidence
+
+
+def _evidence_rank(evidence: Optional[Dict[str, Any]]) -> tuple:
+    if not evidence:
+        return _source_rank(None)
+    return _source_rank({
+        "end_date": evidence.get("source_end_date"),
+        "report_type": evidence.get("source_report_type"),
+    })
+
+
+def attach_comparative_evidence(row: Dict[str, Any], comparative: Optional[Dict[str, Any]]) -> None:
+    """把比较列证据挂到主行上；已有证据时只被来源更新（或同源）的替换。"""
+    if not comparative:
+        return
+    incoming = comparative_evidence(comparative)
+    if _evidence_rank(incoming) >= _evidence_rank(row.get("comparative_evidence")):
+        row["comparative_evidence"] = incoming
+
+
+def _cross_checks(
+    db: Session, symbol: str, market: str, row: Dict[str, Any],
+    *, comparative: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Yahoo 同财年行 + 比较列证据（传入的新证据，否则行上保存的）。"""
+    attach_comparative_evidence(row, comparative)
+    return cross_check_row(
+        row,
+        yahoo_row=_yahoo_row(db, symbol, market, row),
+        comparative_row=row.get("comparative_evidence"),
+    )
+
+
+def _write_period_rows(
+    db: Session, symbol: str, market: str, rows: List[Dict[str, Any]]
+) -> Tuple[List[str], List[str]]:
+    """写各期行并做交叉核对 → (写入的 period_key, 存疑的 period_key)。
+
+    主行：与 Yahoo 同财年行、以及库里已有的**另一份报告的比较列**核对后覆盖写入。
+    比较行：目标期已有主行时不写，但用这份报告的比较列反过来核对那条主行并重写它的
+    validation——旧年份的主行由此被下一年的报告校验。"""
     written: List[str] = []
+    suspect: List[str] = []
     for row in rows:
         period_key = f"{row['end_date']}|{row['fp']}"
-        payload = row
+        existing = _load_row(db, symbol, market, STATEMENT_DATASET, period_key)
+        existing_payload = existing.payload if existing else None
         if row["is_comparative"]:
-            existing = _load_row(db, symbol, market, STATEMENT_DATASET, period_key)
-            payload = merge_comparative_row(existing.payload if existing else None, row)
+            payload = merge_comparative_row(existing_payload, row)
             if payload is None:
+                if existing_payload and not existing_payload.get("is_comparative") and statement_row_current(
+                    existing_payload
+                ):
+                    primary = dict(existing_payload)
+                    finalize_validation(
+                        primary, extra_checks=_cross_checks(db, symbol, market, primary, comparative=row)
+                    )
+                    _upsert(db, symbol, market, STATEMENT_DATASET, period_key, primary)
+                    if primary["validation"]["status"] == "suspect":
+                        suspect.append(period_key)
                 continue
+            finalize_validation(payload, extra_checks=_cross_checks(db, symbol, market, payload))
+        else:
+            comparative = None
+            if existing_payload and existing_payload.get("is_comparative"):
+                if existing_payload.get("source_period_key") != row.get("source_period_key"):
+                    comparative = existing_payload
+            elif existing_payload and existing_payload.get("comparative_evidence"):
+                # 主行重抽：旧主行上保存的比较列证据随行延续（比较列本身早已被覆盖）
+                row["comparative_evidence"] = existing_payload["comparative_evidence"]
+            payload = row
+            finalize_validation(
+                payload, extra_checks=_cross_checks(db, symbol, market, payload, comparative=comparative)
+            )
         _upsert(db, symbol, market, STATEMENT_DATASET, period_key, payload)
         written.append(period_key)
-    return written
+        if payload["validation"]["status"] == "suspect":
+            suspect.append(period_key)
+    return written, suspect
+
+
+def revalidate_report_statements(db: Session, symbol: str, market: str) -> Dict[str, int]:
+    """校验规则升版后零下载零 LLM 重算存量行的 validation：恒等式、Yahoo 核对，以及行上
+    保存的比较列证据（`comparative_evidence`，写入时由另一份报告的比较列留下）——三者都
+    重跑，规则升版不会把先前由比较列判出的存疑清掉。返回 {revalidated, suspect}。"""
+    rows = (
+        db.query(SecurityProfileData)
+        .filter(
+            SecurityProfileData.symbol == symbol,
+            SecurityProfileData.market == market,
+            SecurityProfileData.dataset == STATEMENT_DATASET,
+        )
+        .all()
+    )
+    revalidated = suspect = 0
+    for row in rows:
+        payload = row.payload or {}
+        if not statement_row_current(payload) or validation_current(payload):
+            continue
+        refreshed = dict(payload)
+        finalize_validation(refreshed, extra_checks=_cross_checks(db, symbol, market, refreshed))
+        _upsert(db, symbol, market, STATEMENT_DATASET, row.period_key, refreshed)
+        revalidated += 1
+        if refreshed["validation"]["status"] == "suspect":
+            suspect += 1
+    if revalidated:
+        db.commit()
+    return {"revalidated": revalidated, "suspect": suspect}
 
 
 def _extract_row_current(payload: Dict[str, Any], fingerprint: str) -> bool:
@@ -399,7 +593,7 @@ def ensure_report_statements(
     result: Dict[str, Any] = {
         "total": 0, "completed": 0, "generated": 0, "attempted": 0, "failed": 0,
         "remaining": 0, "pending_periods": [], "gaps": [], "permanently_failed": 0,
-        "plan_incomplete": False, "fatal": None,
+        "plan_incomplete": False, "fatal": None, "suspect": 0, "suspect_periods": [],
     }
     if market not in STATEMENT_MARKETS:
         return result
@@ -467,7 +661,14 @@ def ensure_report_statements(
                 {kind: [r.row_id for r in parsed.rows] for kind, parsed in located.items()},
             )
             period_rows = build_period_rows(located, mapping, target, fingerprint=fingerprint)
-            written = _write_period_rows(db, symbol, market, period_rows)
+            written, suspect_periods = _write_period_rows(db, symbol, market, period_rows)
+            for period in suspect_periods:
+                stored = _load_row(db, symbol, market, STATEMENT_DATASET, period)
+                reason = validation_summary(stored.payload if stored else {})
+                result["gaps"].append(f"{period.split('|')[0]} 报表科目校验存疑（{reason}）")
+                if period not in result["suspect_periods"]:
+                    result["suspect_periods"].append(period)
+            result["suspect"] = len(result["suspect_periods"])
             usage = completion.get("usage", {})
             _upsert(db, symbol, market, EXTRACT_DATASET, period_key, {
                 "status": "ok",
@@ -485,6 +686,7 @@ def ensure_report_statements(
                 "mapping": mapping,
                 "unresolved": unresolved,
                 "periods_written": written,
+                "suspect_periods": suspect_periods,
                 "model": completion.get("model"),
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
@@ -533,6 +735,14 @@ def ensure_report_statements(
                     "message": f"LLM 调用失败（HTTP {exc.status_code}）：{str(exc)[:150]}",
                 }
                 break
+    # 校验规则升版后的存量行：零下载零 LLM 补算（≤ 二十几行，与本轮成本无关）
+    try:
+        refreshed = revalidate_report_statements(db, symbol, market)
+        if refreshed["suspect"]:
+            result["gaps"].append(f"另有 {refreshed['suspect']} 个会计期的存量报表行重新校验后存疑")
+    except Exception as exc:  # noqa: BLE001 - 重校验失败不影响抽取结果
+        db.rollback()
+        logger.warning("报表行重校验失败 %s %s: %s", symbol, market, str(exc)[:200])
     if result["pending_periods"]:
         result["gaps"].insert(
             0,

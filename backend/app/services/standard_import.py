@@ -10,6 +10,8 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pandas as pd
+
+from .portfolio.semantics import QUANTITY_ACTION_TYPES
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
@@ -69,13 +71,8 @@ STANDARD_CORPORATE_ACTION_OPTIONAL_DEFAULTS = {
     "notes": None,
 }
 
-HOLDING_AFFECTING_ACTION_TYPES = {
-    "STOCK_DIVIDEND",
-    "RIGHTS_ISSUE",
-    "STOCK_SPLIT",
-    "REVERSE_SPLIT",
-    "BONUS_ISSUE",
-}
+# 唯一定义在 portfolio/semantics（#174 评审：四份副本漏一处即静默不重算）
+HOLDING_AFFECTING_ACTION_TYPES = set(QUANTITY_ACTION_TYPES)
 
 
 def normalize_symbol_value(value) -> str:

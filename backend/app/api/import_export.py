@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -253,15 +255,35 @@ async def import_corporate_actions_excel(
         raise as_user_data_error(exc, "公司行动 Excel 导入失败") from exc
 
 
+_ROW_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def parse_confirmed_row_hashes(raw: str | None) -> frozenset[str]:
+    """`confirm_suspected_row_hashes` 表单字段：逗号分隔的 64 位十六进制 row_hash。
+    形状不对直接 400——这是前端勾选后回传的值，不是用户手打的。"""
+    if not raw or not raw.strip():
+        return frozenset()
+    hashes = {token.strip().lower() for token in raw.split(",") if token.strip()}
+    bad = sorted(token for token in hashes if not _ROW_HASH_RE.match(token))
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"confirm_suspected_row_hashes 含非法 row_hash: {bad[0][:20]}",
+        )
+    return frozenset(hashes)
+
+
 @router.post("/import/cmb-fund-flows/preview", response_model=BrokerImportResult)
 async def preview_cmb_fund_flows(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
+    confirm_suspected_row_hashes: str | None = Form(None),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Preview 招商证券 PDF 对账单 import."""
     validate_cmb_fund_flow_filename(file.filename)
+    confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
     contents = await read_upload(file)
     try:
@@ -271,6 +293,7 @@ async def preview_cmb_fund_flows(
             contents,
             file.filename,
             broker_account_id=broker_account_id,
+            confirmed_row_hashes=confirmed,
         )
     except (*USER_DATA_ERRORS, *PARSER_ERRORS) as exc:
         raise as_user_data_error(exc, "Error previewing 招商证券对账单") from exc
@@ -280,11 +303,13 @@ async def preview_cmb_fund_flows(
 async def import_cmb_fund_flows(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
+    confirm_suspected_row_hashes: str | None = Form(None),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Import 招商证券 PDF 对账单. Duplicate row hashes are skipped."""
     validate_cmb_fund_flow_filename(file.filename)
+    confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
     contents = await read_upload(file)
     try:
@@ -294,6 +319,7 @@ async def import_cmb_fund_flows(
             contents,
             file.filename,
             broker_account_id=broker_account_id,
+            confirmed_row_hashes=confirmed,
         )
     except (*USER_DATA_ERRORS, *PARSER_ERRORS) as exc:
         raise as_user_data_error(exc, "Error importing 招商证券对账单") from exc

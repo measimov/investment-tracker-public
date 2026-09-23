@@ -47,7 +47,7 @@ API：
 | --- | --- |
 | `symbol` | 股票/资产代码 |
 | `market` | 市场，例如 A股、港股、美股、加密货币 |
-| `action_type` | 公司行动类型，例如 `CASH_DIVIDEND`、`STOCK_SPLIT`、`REVERSE_SPLIT` |
+| `action_type` | 公司行动类型，例如 `CASH_DIVIDEND`、`STOCK_SPLIT`、`REVERSE_SPLIT`、`OPENING_POSITION`（期初建仓/转托管转入，账户级绝对数量） |
 | `ex_date` | 除权除息日，建议 `YYYY-MM-DD` |
 
 可选字段：
@@ -69,9 +69,9 @@ API：
 | `subscription_amount` | 空 | 配股认购金额 |
 | `split_ratio` | 空 | 拆股/合股比例，例如 `1:2` 或 `40:1` |
 | `new_shares` | 空 | 拆股/合股后的股数 |
-| `cost_basis_adjustment` | 空 | 成本基础调整 |
-| `adjusted_quantity` | 空 | 调整后的数量 |
-| `adjusted_cost_per_share` | 空 | 调整后的每股成本 |
+| `cost_basis_adjustment` | 空 | `OPENING_POSITION` 的总成本（可选） |
+| `adjusted_quantity` | 空 | `OPENING_POSITION` 的建仓数量（该类型必填，>0） |
+| `adjusted_cost_per_share` | 空 | `OPENING_POSITION` 的单位成本（可选；与总成本同时给出时须一致；两者都空 = 成本未知，持仓与已实现盈亏标记为估计） |
 | `currency` | `CNY` | 币种 |
 | `notes` | 空 | 备注 |
 

@@ -20,6 +20,11 @@ defineEmits<{ transfer: [row: Holding] }>()
 const isMobileView = useMediaQuery('(max-width: 640px)')
 const router = useRouter()
 
+// 成本未知份额（期初建仓/转托管转入未补录成本，#174）；旧后端不带该字段时视为 0
+function unknownCostQuantity(row: Holding): number {
+  return toNumber(row.unknown_cost_quantity ?? 0)
+}
+
 function openSecurityDetail(row: { symbol: string; market: string }) {
   router.push(`/securities/${encodeURIComponent(row.market)}/${encodeURIComponent(row.symbol)}`)
 }
@@ -75,6 +80,14 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
       <el-table-column prop="avg_cost" label="平均成本" min-width="105" align="right">
         <template #default="{ row }">
           {{ formatNumber(row.avg_cost, 4) }}
+          <el-tooltip
+            v-if="unknownCostQuantity(row) > 0"
+            content="其中这部分来自成本未知的期初建仓/转托管转入，平均成本与已实现盈亏为估计值；可在公司行动页补录成本"
+          >
+            <el-tag type="warning" size="small" effect="plain" class="unknown-cost-tag">
+              成本未知 {{ formatNumber(unknownCostQuantity(row), 4) }}
+            </el-tag>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column prop="total_cost" label="总成本" min-width="135" align="right">
@@ -299,6 +312,15 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
       <div class="mobile-card-meta">
         <span>数量 {{ formatNumber(row.quantity, 4) }}</span>
         <span>成本 {{ formatNumber(row.avg_cost, 4) }}</span>
+        <el-tag
+          v-if="unknownCostQuantity(row) > 0"
+          type="warning"
+          size="small"
+          effect="plain"
+          class="unknown-cost-tag"
+        >
+          成本未知 {{ formatNumber(unknownCostQuantity(row), 4) }}
+        </el-tag>
         <span>{{ row.currency }}</span>
       </div>
 
@@ -328,6 +350,10 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
 </template>
 
 <style scoped>
+.unknown-cost-tag {
+  margin-left: 4px;
+}
+
 .holding-name {
   margin-right: 6px;
 }

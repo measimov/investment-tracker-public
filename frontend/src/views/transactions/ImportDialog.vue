@@ -4,7 +4,7 @@ import { UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 import { getApiErrorMessage } from '@/utils/apiErrors'
-import type { BrokerAccount, BrokerImportResult } from '@/types'
+import type { BrokerAccount, BrokerImportResult, SuspectedDuplicateSample } from '@/types'
 import { downloadFile, todayLocalISODate } from '@/utils/helpers'
 import { brokerAccountLabel } from './shared'
 
@@ -24,6 +24,29 @@ const uploadFile = ref<File | null>(null)
 const importMode = ref('standard')
 const brokerPreview = ref<BrokerPreview | null>(null)
 const importBrokerAccountId = ref<number | null>(null)
+// 疑似重复（#190）：用户勾选后确认为真实成交的 row_hash，随预览/导入一起回传；
+// 换文件、换账户、换模式都要清空——确认是对某一份文件里某几行的决定
+const confirmedSuspectedHashes = ref<string[]>([])
+const selectedSuspectedRows = ref<SuspectedDuplicateSample[]>([])
+const suspectedSamples = computed<SuspectedDuplicateSample[]>(
+  () => brokerPreview.value?.suspected_duplicate_samples ?? []
+)
+const suspectedHeldCount = computed(() => brokerPreview.value?.suspected_duplicate_rows ?? 0)
+const suspectedTotalCount = computed(() => suspectedSamples.value.length)
+function handleSuspectedSelection(rows: SuspectedDuplicateSample[]) {
+  selectedSuspectedRows.value = rows
+}
+async function confirmSelectedSuspected() {
+  const hashes = selectedSuspectedRows.value.map((row) => row.row_hash)
+  if (!hashes.length) {
+    ElMessage.warning('请先勾选要确认为真实成交的行')
+    return
+  }
+  confirmedSuspectedHashes.value = Array.from(
+    new Set([...confirmedSuspectedHashes.value, ...hashes])
+  )
+  await handleImportPreview()
+}
 
 const importAccept = computed(() => {
   // IBKR：规范格式为 trade_history.xlsx；Activity CSV 保留供历史回填
@@ -93,24 +116,33 @@ function open() {
   visible.value = true
 }
 
+function resetConfirmedSuspected() {
+  confirmedSuspectedHashes.value = []
+  selectedSuspectedRows.value = []
+}
+
 function handleFileChange(file: { raw?: File }) {
   uploadFile.value = file.raw ?? null
   brokerPreview.value = null
+  resetConfirmedSuspected()
 }
 
 function handleFileRemove() {
   uploadFile.value = null
   brokerPreview.value = null
+  resetConfirmedSuspected()
 }
 
 watch(importMode, () => {
   uploadFile.value = null
   brokerPreview.value = null
   importBrokerAccountId.value = null
+  resetConfirmedSuspected()
 })
 
 watch(importBrokerAccountId, () => {
   brokerPreview.value = null
+  resetConfirmedSuspected()
 })
 
 async function handleImportPreview() {
@@ -134,9 +166,14 @@ async function handleImportPreview() {
     } else if (importMode.value === 'eastmoney') {
       response = await api.previewEastmoneyStatement(uploadFile.value, importBrokerAccountId.value)
     } else {
-      response = await api.previewCmbFundFlows(uploadFile.value, importBrokerAccountId.value)
+      response = await api.previewCmbFundFlows(
+        uploadFile.value,
+        importBrokerAccountId.value,
+        confirmedSuspectedHashes.value
+      )
     }
     brokerPreview.value = response.data
+    selectedSuspectedRows.value = []
     ElMessage.success('预览完成')
   } catch (error) {
     ElMessage.error('预览失败：' + getApiErrorMessage(error))
@@ -162,7 +199,11 @@ async function handleImport() {
     // 标志收窄不了它；三个券商分支内的赋值经流程分析拿到精确类型
     let brokerResult: BrokerImportResult | null = null
     if (importMode.value === 'cmb') {
-      response = await api.importCmbFundFlows(uploadFile.value, importBrokerAccountId.value)
+      response = await api.importCmbFundFlows(
+        uploadFile.value,
+        importBrokerAccountId.value,
+        confirmedSuspectedHashes.value
+      )
       brokerResult = response.data
       successMessage =
         `导入交易 ${response.data.imported_transactions} 条，` +
@@ -222,6 +263,7 @@ async function handleImport() {
     uploadFile.value = null
     brokerPreview.value = null
     importBrokerAccountId.value = null
+    resetConfirmedSuspected()
     emit('imported', { force: false })
   } catch (error) {
     ElMessage.error('导入失败：' + getApiErrorMessage(error))
@@ -342,6 +384,9 @@ defineExpose({ open })
           {{ brokerPreview.source_account_masks.join(' / ') }}
         </el-descriptions-item>
         <el-descriptions-item label="总行数">{{ brokerPreview.total_rows }}</el-descriptions-item>
+        <el-descriptions-item v-if="importMode === 'cmb'" label="疑似重复">
+          {{ brokerPreview.suspected_duplicate_rows || 0 }}
+        </el-descriptions-item>
         <el-descriptions-item v-if="brokerPreview.archived_source_rows != null" label="来源归档">
           {{ brokerPreview.archived_source_rows }}
         </el-descriptions-item>
@@ -428,6 +473,62 @@ defineExpose({ open })
         show-icon
         title="未发现重复的买卖流水"
       />
+      <div
+        v-if="suspectedTotalCount > 0"
+        class="suspected-block"
+        data-testid="suspected-duplicates"
+      >
+        <el-alert
+          class="preview-alert"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="
+            suspectedHeldCount > 0
+              ? `${suspectedHeldCount} 条成交疑似与已入账流水重复（同日/同标的/同数量/同金额，成交价精度不同），本次不入账，待人工确认`
+              : `${suspectedTotalCount} 条此前归档的疑似重复成交仍待确认（本次按重复跳过）`
+          "
+          description="券商新旧导出的成交价小数位不同时，同一笔成交会算出不同的流水指纹。勾选确认为「真实的另一笔成交」后重新预览，再导入即入账；不勾选则保持归档不入账。"
+        />
+        <el-table
+          :data="suspectedSamples"
+          size="small"
+          row-key="row_hash"
+          max-height="280"
+          @selection-change="handleSuspectedSelection"
+        >
+          <el-table-column type="selection" width="40" />
+          <el-table-column prop="trade_date" label="日期" width="105" />
+          <el-table-column prop="symbol" label="代码" width="90" />
+          <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="transaction_type" label="方向" width="70" />
+          <el-table-column prop="quantity" label="数量" width="100" align="right" />
+          <el-table-column prop="amount" label="发生金额" width="120" align="right" />
+          <el-table-column label="已入账价格 → 本单价格" min-width="150" align="right">
+            <template #default="{ row }">
+              {{ row.existing_price ?? '—' }} → {{ row.price }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="row_number" label="行号" width="70" align="right" />
+        </el-table>
+        <div class="suspected-actions">
+          <span class="suspected-hint">
+            已显示 {{ suspectedTotalCount }} 条
+            <template v-if="confirmedSuspectedHashes.length">
+              · 已确认 {{ confirmedSuspectedHashes.length }} 条
+            </template>
+          </span>
+          <el-button
+            size="small"
+            type="warning"
+            plain
+            :loading="importing"
+            @click="confirmSelectedSuspected"
+          >
+            确认所选为真实成交并重新预览
+          </el-button>
+        </div>
+      </div>
       <el-alert
         v-if="brokerPreview.warnings?.length"
         class="preview-alert"
@@ -528,6 +629,26 @@ defineExpose({ open })
 
 .import-preview {
   margin-top: 16px;
+}
+
+.suspected-block {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suspected-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.suspected-hint {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .preview-alert {

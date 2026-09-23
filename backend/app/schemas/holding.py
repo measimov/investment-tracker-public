@@ -18,6 +18,9 @@ class HoldingResponse(BaseModel):
     quantity: Decimal = Field(..., description="Current holding quantity")
     avg_cost: Decimal = Field(..., description="Average cost per unit")
     total_cost: Decimal = Field(..., description="Total cost")
+    unknown_cost_quantity: Decimal = Field(
+        default=Decimal("0"), description="成本未知的份额（期初建仓/转托管转入），成本为估计值"
+    )
     currency: str = Field(..., description="Currency")
     current_price: Optional[Decimal] = Field(None, description="Current stock price")
     price_updated_at: Optional[datetime] = Field(None, description="Price update timestamp")

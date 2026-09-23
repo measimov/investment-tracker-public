@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "03900",
+  "end_date": "20190630",
+  "report_type": "interim",
+  "title": "03900_20190630_interim",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(34, 43)]，其余页置空以保住页码。綠城中國 2019 中报：标题拆成两行「簡明綜合」+「損益及其他全面收益表」，權益變動表同样拆行",
+  "pages": 87,
+  "kept_pages": [
+    [
+      34,
+      43
+    ]
+  ],
+  "chars": 9439
+}

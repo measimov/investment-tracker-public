@@ -19,8 +19,11 @@ from ..schemas.corporate_action import (
     CorporateActionUpdate,
     CorporateActionResponse,
     CashDividendCreate,
-    StockDividendCreate
+    OpeningPositionCostUpdate,
+    StockDividendCreate,
+    validate_opening_position_fields,
 )
+from ..services.portfolio.semantics import OPENING_POSITION, QUANTITY_ACTION_TYPES
 from ..schemas.corporate_action_suggestion import (
     SecurityEventResponse,
     SuggestionAccept,
@@ -128,7 +131,7 @@ def create_corporate_action(
         db.flush()
 
         # 如果是会影响持仓的公司行动，重新计算持仓
-        if action.action_type in ["STOCK_DIVIDEND", "RIGHTS_ISSUE", "STOCK_SPLIT", "REVERSE_SPLIT", "BONUS_ISSUE"]:
+        if action.action_type in QUANTITY_ACTION_TYPES:
             recalculate_holdings(db, current_user.id, action.symbol, action.market, commit=False)
         db.commit()
     except ValueError as exc:
@@ -331,7 +334,7 @@ def update_corporate_action(
         db.flush()
 
         # 如果是会影响持仓的公司行动，重新计算持仓
-        if old_action_type in ["STOCK_DIVIDEND", "RIGHTS_ISSUE", "STOCK_SPLIT", "REVERSE_SPLIT", "BONUS_ISSUE"]:
+        if old_action_type in QUANTITY_ACTION_TYPES:
             recalculate_holdings(db, current_user.id, old_symbol, old_market, commit=False)
             if db_action.symbol != old_symbol or db_action.market != old_market:
                 recalculate_holdings(db, current_user.id, db_action.symbol, db_action.market, commit=False)
@@ -343,6 +346,54 @@ def update_corporate_action(
         db.rollback()
         raise
 
+    db.refresh(db_action)
+    return db_action
+
+
+@router.patch("/{action_id:int}/cost-basis", response_model=CorporateActionResponse)
+def update_opening_position_cost(
+    action_id: int,
+    payload: OpeningPositionCostUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """给期初建仓补录成本（#174）。
+
+    对账单只能证明数量/日期/账户，成本它不知道；导入建的行动整体不可编辑
+    （ensure_record_is_mutable），但成本必须有补录通道——否则「成本未知」永远解不开。
+    只开放两个成本字段与备注，其余字段仍不可改；重算持仓在同一事务里提交。
+    """
+    update_data = payload.model_dump(exclude_unset=True)
+    try:
+        lock_record(db, "corporate-action-record", action_id)
+        db_action = db.query(CorporateAction).filter(
+            CorporateAction.id == action_id,
+            CorporateAction.user_id == current_user.id,
+        ).first()
+        if not db_action:
+            raise HTTPException(status_code=404, detail="公司行动记录不存在")
+        db.refresh(db_action)
+        if db_action.action_type != OPENING_POSITION:
+            raise HTTPException(status_code=422, detail="只有期初建仓可以补录成本")
+        cost_per_share = update_data.get("adjusted_cost_per_share", db_action.adjusted_cost_per_share)
+        total_cost = update_data.get("cost_basis_adjustment", db_action.cost_basis_adjustment)
+        try:
+            validate_opening_position_fields(db_action.adjusted_quantity, cost_per_share, total_cost)
+        except ValueError as exc:
+            # 字段自身不一致是 422（与 Create 的校验同口径），不是重放失败
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        lock_security_timeline(db, current_user.id, db_action.symbol, db_action.market)
+        for field, value in update_data.items():
+            setattr(db_action, field, value)
+        db.flush()
+        recalculate_holdings(db, current_user.id, db_action.symbol, db_action.market, commit=False)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"该修改会使持仓重放失败：{exc}") from exc
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(db_action)
     return db_action
 
@@ -379,7 +430,7 @@ def delete_corporate_action(
         db.flush()
 
         # 如果是会影响持仓的公司行动，重新计算持仓
-        if action_type in ["STOCK_DIVIDEND", "RIGHTS_ISSUE", "STOCK_SPLIT", "REVERSE_SPLIT", "BONUS_ISSUE"]:
+        if action_type in QUANTITY_ACTION_TYPES:
             recalculate_holdings(db, current_user.id, symbol, market, commit=False)
         db.commit()
     except ValueError as exc:

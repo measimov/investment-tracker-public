@@ -175,6 +175,14 @@ def create_transfer(
         source_state = baseline.get(transfer.from_broker_account_id)
         if source_state is None or source_state['quantity'] <= 0:
             raise HTTPException(status_code=422, detail="转出账户当前无该证券持仓")
+        # 成本未知的桶（期初建仓/转托管转入）转仓会生成零价腿：TransactionResponse 要求
+        # price>0，落库后 GET /transactions 直接 500。先补录成本再转（#174）
+        if source_state.get('unknown_cost_quantity', Decimal("0")) > 0 or source_state['avg_cost'] <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="转出账户桶含成本未知的持仓（期初建仓/转托管转入），转仓会生成零价腿；"
+                "请先在公司行动页补录成本再转仓",
+            )
 
         common = {
             "user_id": current_user.id,

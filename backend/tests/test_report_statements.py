@@ -45,14 +45,20 @@ ANNUAL = {
     "hk_01133_20251231": ((85, 87), (75, 79), (90, 92), 1, "CNY", [2025, 2024]),
     "hk_09618_20231231": ((267, 268), (264, 266), (269, 272), 1_000_000, "CNY", None),
     "hk_02313_20251231": ((40, 41), (42, 43), (45, 47), 1_000, "CNY", [2025, 2024]),
+    # 第二轮生产回填后补的版式
+    "hk_01133_20231231": ((73, 75), (63, 67), (78, 80), 1, "CNY", []),
+    "hk_01995_20191231": ((83, 83), (84, 85), (88, 89), 1_000, "CNY", [2019, 2018]),
+    "hk_01023_20230630": ((62, 64), (64, 65), (67, 69), 1_000, "HKD", [2023, 2022]),
+    "hk_09618_20201231": ((254, 256), (251, 253), (257, 260), 1_000, "CNY", None),
 }
 INTERIM = {
     # name: (income_pages, balance_pages, cashflow_pages, unit, currency, years)
     "hk_00883_20250630_interim": ((39, 40), (41, 42), (44, 44), 1_000_000, "CNY", [2025, 2024]),
     "hk_02669_20260630_interim": ((29, 31), (31, 33), (35, 41), 1_000, "CNY", [2026, 2025]),
     "hk_02313_20250630_interim": ((15, 16), (17, 18), (20, 22), 1_000, "CNY", [2025, 2024]),
-    "hk_02156_20250630_interim": ((7, 7), (8, 9), (12, 12), 1_000, "CNY", [2025, 2024]),
+    "hk_02156_20250630_interim": ((6, 7), (8, 9), (12, 12), 1_000, "CNY", [2025, 2024]),
     "hk_01023_20260630_interim": ((27, 30), (30, 32), (34, 36), 1_000, "HKD", None),
+    "hk_03900_20190630_interim": ((35, 35), (36, 37), (40, 42), 1_000, "CNY", [2019, 2018]),
 }
 
 
@@ -402,14 +408,16 @@ def test_table_of_contents_page_is_not_a_statement():
     assert found["income"].years == [2026, 2025]
 
 
-def test_running_header_title_on_announcement_page_is_skipped():
-    """02156 中报：报表标题当页眉印在业绩公告首页（正文是董事会声明，表头无年份），真正的
-    损益表在下一页——按页首同类标题切块，首页块因无年份被拒，下一页作为独立候选被接受。"""
+def test_statement_printed_on_announcement_page_starts_after_the_board_paragraph():
+    """02156 中报：损益表印在业绩公告首页——标题下先是董事会声明段落，年份/单位行被推到第
+    13 行之后，再往下才是「收益 Revenue 4 1,822,878 1,602,395」。表头取到第一条金额行为止，
+    首页作为报表首块被接受，与下一页页首重复标题的续页合并。"""
     found = rs.locate_statements(_pages("hk_02156_20250630_interim"), report_type="interim")
     income = found["income"]
-    assert (income.page_start, income.page_end) == (7, 7)
-    assert income.years == [2025, 2024]
-    eps = next(r for r in income.rows if r.label.startswith("Basic"))
+    assert (income.page_start, income.page_end) == (6, 7)
+    assert income.years == [2025, 2024] and income.unit_multiplier == 1_000
+    assert "Revenue" in income.rows[0].label and income.rows[0].values == [Decimal("1822878"), Decimal("1602395")]
+    eps = next(r for r in income.rows if "Basic" in r.label)
     assert eps.values == [Decimal("0.16"), Decimal("0.14")]
 
 
@@ -562,3 +570,132 @@ def test_years_split_across_two_header_lines_is_still_a_statement():
         f"項目{i} {i * 100} {i * 90}" for i in range(1, 8)
     )
     assert rs.locate_statements([bare], report_type="annual")["income"] is None
+
+
+# ---------------------------------------------------------------------------
+# 第二轮生产回填暴露的版式
+# ---------------------------------------------------------------------------
+
+
+def test_cas_headers_without_years_use_period_captions_as_evidence():
+    """01133 2023 按中国准则：表头没有年份，只有「本期金額 上期金額」「期末餘額 期初餘額」，
+    列年份为空、按位置对应（本期在前）；母公司「利潤表」「資產負債表」不被当成合并报表。"""
+    found = rs.locate_statements(_pages("hk_01133_20231231"), report_type="annual")
+    income = found["income"]
+    assert income.years == [] and income.title == "合併利潤表"
+    assert income.rows[0].values == [Decimal("29250349896.53"), Decimal("24984261415.23")]
+    cols = rs.period_columns(income, report_type="annual", end_date="20231231")
+    assert [(c.column, c.end_date) for c in cols] == [(0, "20231231"), (1, "20221231")]
+    # 紧随其后的母公司报表只叫「資產負債表」「利潤表」「現金流量表」：裸标题终止合并报表块
+    assert (found["balance"].page_start, found["balance"].page_end) == (63, 67)
+    assert (income.page_start, income.page_end) == (73, 75)
+    assert (found["cashflow"].page_start, found["cashflow"].page_end) == (78, 80)
+    assert rs._is_terminator("資產負債表") and rs._is_terminator("利潤表（續）") and rs._is_terminator("現金流量表 81")
+
+
+def test_title_split_across_two_lines_is_rejoined():
+    """03900 2019 中报：「簡明綜合」独占一行、下一行「損益及其他全面收益表」；權益變動表同样拆行，
+    拼回后才能作为终止标题，否则財務狀況表块会一路吞到十几列的權益變動表。"""
+    found = rs.locate_statements(_pages("hk_03900_20190630_interim"), report_type="interim")
+    assert found["income"].title == "簡明綜合損益及其他全面收益表"
+    assert found["balance"].column_count == 2 and (found["balance"].page_start, found["balance"].page_end) == (36, 37)
+    stream = rs._line_stream(["簡明綜合\n權益變動表\n截至2019年6月30日止六個月"])
+    assert [line.text for line in stream][:2] == ["簡明綜合權益變動表", "截至2019年6月30日止六個月"]
+    assert rs._is_terminator("簡明綜合權益變動表")
+
+
+@pytest.mark.parametrize("line, kind", [
+    ("綜合全面收益表 82", "income"), ("83 綜合財務狀況表", "balance"), ("綜合現金流量表 108", "cashflow"),
+    ("101 綜合損益表（續） 102", "income"),
+])
+def test_title_line_tolerates_page_numbers(line, kind):
+    assert rs.match_title(line)[0] == kind
+
+
+def test_title_line_rejects_amount_rows_that_end_with_numbers():
+    assert rs.match_title("綜合收益表 1,234") is None
+    assert rs.match_title("綜合收益表 2025 2024") is None
+
+
+def test_unit_tokens_with_currency_after_magnitude_count_as_columns():
+    """09618 2020：「附註 人民幣千元 人民幣千元 千美元」= 三个金额列（美元折算列写成「千美元」）。"""
+    assert rs._unit_token_columns(["附註 人民幣千元 人民幣千元 千美元"]) == 3
+    assert rs._unit_token_columns(["附註 人民幣千元 人民幣千元 百萬美元"]) == 3
+    found = rs.locate_statements(_pages("hk_01133_20231231"), report_type="annual")
+    # 页脚「2023年度報告 79」不是数据行
+    assert all(not r.label.endswith("年度報告") for r in found["cashflow"].rows)
+
+
+def test_jd_2020_usd_column_written_as_qian_meiyuan_keeps_three_columns():
+    found = rs.locate_statements(_pages("hk_09618_20201231"), report_type="annual")
+    balance = found["balance"]
+    assert balance.column_count == 3 and balance.years == [2019, 2020]
+    total = next(r for r in balance.rows if r.label == "資產總額")
+    assert total.values == [Decimal("259723704"), Decimal("422287794"), Decimal("64718436")]
+    cols = rs.period_columns(balance, report_type="annual", end_date="20201231")
+    assert [(c.column, c.end_date) for c in cols] == [(1, "20201231"), (0, "20191231")]
+
+
+def test_overdrawn_running_header_page_locates_after_dedupe():
+    """01023 2023：金样文本由 baseline_text 去掉被盖住的模板页眉后生成，三张表全部定位。"""
+    found = rs.locate_statements(_pages("hk_01023_20230630"), report_type="annual")
+    assert found["income"].title == "綜合損益表" and found["income"].currency == "HKD"
+
+
+# ---------------------------------------------------------------------------
+# 被空格拆开的数字：只在有证据时粘（PR #207 评审 P1）
+# ---------------------------------------------------------------------------
+def test_malformed_thousands_group_is_glued_with_or_without_column_count():
+    from app.services.report_statements import parse_row
+
+    # 09926 2020：「854,84」不是合法数值，行内证据充分，不知道列数也粘
+    assert parse_row("非流動資產總值 854,84 3 416,97 5")[2] == [Decimal("854843"), Decimal("416975")]
+    assert parse_row("非流動資產總值 854,84 3 416,97 5", expected_columns=2)[2] == [
+        Decimal("854843"), Decimal("416975"),
+    ]
+
+
+def test_legal_two_column_decimals_are_never_glued():
+    from app.services.report_statements import parse_row
+
+    # 千元报表里合法的两列：一位小数 + 单个整数。列数吻合/未知都不能改写
+    assert parse_row("現金 1,234.5 6", expected_columns=2)[2] == [Decimal("1234.5"), Decimal("6")]
+    assert parse_row("現金 1,234.5 6")[2] == [Decimal("1234.5"), Decimal("6")]
+    assert parse_row("其他 157.0 6.4", expected_columns=2)[2] == [Decimal("157.0"), Decimal("6.4")]
+
+
+def test_decimal_tail_is_glued_only_when_token_count_exceeds_known_columns():
+    from app.services.report_statements import parse_row
+
+    # 01133 形态：两列表里出现三个 token 且尾数被拆 → 粘回恰好两列
+    assert parse_row("營業收入 1,648,565,774.6 1 1,500,000,000.00", expected_columns=2)[2] == [
+        Decimal("1648565774.61"), Decimal("1500000000.00"),
+    ]
+    # 多出的 token 是附注号：粘完落到 列数+1，再由附注剥离
+    label, note, values = parse_row("營業收入 5 1,648,565,774.6 1 1,500,000,000.00", expected_columns=2)
+    assert note == "5" and values == [Decimal("1648565774.61"), Decimal("1500000000.00")]
+    # 粘完仍对不上列数 → 原样不动（宁可多列也不错列）
+    assert parse_row("x 1,234.5 6 7 8", expected_columns=2)[2] == [
+        Decimal("1234.5"), Decimal("6"), Decimal("7"), Decimal("8"),
+    ]
+
+
+def test_note_column_plus_exact_columns_is_never_glued():
+    """评审 P1：附注号 + 恰好列数的合法金额（末列单个数字）——多出的 token 是附注号，
+    不是断字证据。粘了会把附注顶成本期、上期粘进本期。"""
+    from app.services.report_statements import parse_row
+
+    assert parse_row("收入 12 1,234.5 6", expected_columns=2) == ("收入", "12", [Decimal("1234.5"), Decimal("6")])
+    assert parse_row("收入 12(a) 1,234.5 6", expected_columns=2) == (
+        "收入", "12(a)", [Decimal("1234.5"), Decimal("6")],
+    )
+    # 无标签合计行同样：首 token 是附注号形态
+    assert parse_row("12 1,234.5 6", expected_columns=2) == ("", "12", [Decimal("1234.5"), Decimal("6")])
+    # 附注号 + 真断字（四个 token）：先粘再剥附注
+    assert parse_row("收入 12 1,648,565,774.6 1 2,000.00", expected_columns=2) == (
+        "收入", "12", [Decimal("1648565774.61"), Decimal("2000.00")],
+    )
+    # 标签里已带附注号（「所得稅開支 12(a) …」形态由 _parse_row_tokens 剥出）→ 列数吻合不动
+    assert parse_row("所得稅開支 12(a) (47,448) (45,018)", expected_columns=2)[2] == [
+        Decimal("-47448"), Decimal("-45018"),
+    ]

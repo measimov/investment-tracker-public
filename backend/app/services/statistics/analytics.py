@@ -551,6 +551,12 @@ def calculate_performance_analytics(
     opening_estimated_positions = curve_quality.get("opening_estimated_positions", [])
     if opening_estimated_positions:
         warnings.append("部分期初持仓缺少历史收盘价，已使用最近交易价估算期初市值。")
+    estimated_inflow_events = curve_quality.get("estimated_inflow_events", [])
+    if estimated_inflow_events:
+        warnings.append(
+            "存在成本未知的期初建仓/转托管转入，TTWR 以当日最新价估算其流入，相关区间收益为估计值；"
+            "请在公司行动页补录成本。"
+        )
     invalid_position_events = curve_quality.get("invalid_position_events", [])
     if invalid_position_events:
         warnings.append(

@@ -352,3 +352,18 @@ def test_own_validation_message_still_visible_after_ordering_change():
 
     assert "第 3 行" in detail
     assert "文件无法解析" not in detail
+
+
+@pytest.mark.anyio
+async def test_malformed_confirm_list_is_a_400(token_password, cmb_account):
+    """#190：confirm_suspected_row_hashes 是前端勾选回传的 64 位十六进制，形状不对直接 400。"""
+    async with _client() as client:
+        headers = await _auth_headers(client, token_password)
+        response = await client.post(
+            "/api/import/cmb-fund-flows/preview",
+            headers=headers,
+            files={"file": ("cmb.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")},
+            data={"broker_account_id": str(cmb_account), "confirm_suspected_row_hashes": "abc,DEF"},
+        )
+    assert response.status_code == 400
+    assert "confirm_suspected_row_hashes" in response.json()["detail"]

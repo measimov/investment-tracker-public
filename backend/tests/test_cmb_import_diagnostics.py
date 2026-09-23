@@ -625,7 +625,7 @@ def test_diagnostics_do_not_change_parser_version(monkeypatch):
 
     这条变红 = 动了不该动的东西（多半是顺手改了 HK_CONNECT 判据）。
     """
-    assert importer.PARSER_VERSION == "12"
+    assert importer.PARSER_VERSION == "14"
     assert importer.HK_CONNECT_MARKET_NAMES == {"沪港通", "深港通"}
 
 

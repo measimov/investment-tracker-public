@@ -29,8 +29,12 @@ def test_unknown_ids_are_dropped_and_reported():
     })
     mapping, unresolved = prompts.parse_statement_mapping(content, ROWS)
     assert mapping["income"] == {"total_revenue": ["r1"]}
-    assert sorted(unresolved) == ["income.income_tax:type", "income.int_exp:r42", "income.total_revenue:r99"]
-    assert mapping["cashflow"] == {}  # 输出里没有的报表 → 空映射，不是错误
+    assert sorted(unresolved) == [
+        "cashflow.n_cashflow_act:required", "income.income_tax:type", "income.int_exp:r42",
+        "income.total_revenue:r99",
+    ]
+    # 输出里没有现金流量表 → 软必需缺失：空映射 + unresolved 记一笔，不是错误
+    assert mapping["cashflow"] == {}
 
 
 @pytest.mark.parametrize("content, message", [

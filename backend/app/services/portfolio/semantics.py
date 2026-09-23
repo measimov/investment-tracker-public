@@ -85,14 +85,51 @@ def cash_dividend_amounts(action) -> Tuple[Decimal, Decimal, Decimal]:
     return gross, tax, net
 
 
-# 会改变持仓数量的公司行动（现金股息等不在其列）
+# 会改变持仓数量的公司行动（现金股息等不在其列）。
+# **唯一定义**：fifo / standard_import / api 层都从这里引用，别再各抄一份——
+# 新类型漏在任何一份副本里都会静默不重算持仓（#174 评审实锤四份副本）。
 QUANTITY_ACTION_TYPES = (
     "STOCK_DIVIDEND",
     "BONUS_ISSUE",
     "RIGHTS_ISSUE",
     "STOCK_SPLIT",
     "REVERSE_SPLIT",
+    "OPENING_POSITION",
 )
+
+# 期初建仓 / 转托管转入（#174）：账户级**绝对数量**的批次加入，成本可选。
+# 对账单里的「转托转入」是场外份额转入场内，成交价列为 0——数量与日期是第一方证据，
+# 成本是未知的；未知就按 0 成本入队并全链路标记「估计」，绝不静默当成零成本。
+OPENING_POSITION = "OPENING_POSITION"
+
+
+def opening_position_lot(action):
+    """OPENING_POSITION → (数量, 总成本或 None=成本未知)；非本类型或数量无效返回 None。
+
+    成本优先级：cost_basis_adjustment（总成本）> adjusted_cost_per_share × 数量 > 未知。
+    三列复用的是 CorporateAction 上此前无人读写的「成本基础调整」字段。
+    """
+    if getattr(action, "action_type", None) != OPENING_POSITION:
+        return None
+    quantity_raw = getattr(action, "adjusted_quantity", None)
+    if quantity_raw is None:
+        return None
+    quantity = Decimal(str(quantity_raw))
+    if quantity <= 0:
+        return None
+    total_raw = getattr(action, "cost_basis_adjustment", None)
+    if total_raw is not None:
+        return quantity, Decimal(str(total_raw))
+    per_share_raw = getattr(action, "adjusted_cost_per_share", None)
+    if per_share_raw is not None:
+        return quantity, Decimal(str(per_share_raw)) * quantity
+    return quantity, None
+
+
+def opening_position_bucket(action, per_account: bool):
+    """目标桶永远是行动自己的账户（NULL = 未指定账户桶）：期初建仓**创建**一个桶，
+    不能像其他绝对数量行动那样"挂到唯一持有人"。"""
+    return getattr(action, "broker_account_id", None) if per_account else None
 
 
 def action_has_ratio(action) -> bool:
@@ -130,4 +167,8 @@ def apply_action_quantity(action, quantity: Decimal) -> Decimal:
         sub_price = getattr(action, "subscription_price", None)
         if sub_qty and sub_price:
             return quantity + Decimal(str(sub_qty))
+    if action_type == OPENING_POSITION:
+        lot = opening_position_lot(action)
+        if lot is not None:
+            return quantity + lot[0]
     return quantity

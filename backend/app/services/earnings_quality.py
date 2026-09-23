@@ -157,7 +157,8 @@ def pivot_rows_to_statements(
 _STATEMENT_META_KEYS = frozenset({
     "end_date", "fp", "currency", "is_comparative", "source_period_key", "source_report_type",
     "source_end_date", "source_url", "source_fingerprint", "source_pages", "source_by_kind",
-    "extractor_version", "prompt_version",
+    "extractor_version", "prompt_version", "validation", "currency_by_kind", "unit_by_kind",
+    "derived_fields", "comparative_evidence",
 })
 
 
@@ -167,10 +168,13 @@ def merge_hk_statement_rows(datasets: Dict[str, List[Dict[str, Any]]]) -> List[D
     整行屏蔽 Yahoo 会让本来有的营收/利润/现金流全部变 None（PR #201 评审 P2）。**双方币种
     已确认且一致**才逐科目合并；任一侧币种未知或不同，PDF 行原样保留、不补数，Yahoo 只在 PDF
     没有该期时整行补入。"""
+    from .report_statement_checks import rederive_fields, scrub_suspect_fields
+
     by_period: Dict[tuple, Dict[str, Any]] = {}
     for row in datasets.get("report_statements", []) or []:
         key = (str(row.get("end_date")), str(row.get("fp") or "FY"))
-        by_period[key] = dict(row)
+        # 校验存疑的科目先置空，让 Yahoo 补——存疑值不得进利润质量/格雷厄姆/分析输入
+        by_period[key] = scrub_suspect_fields(row)
     for row in datasets.get("yahoo_fundamentals", []) or []:
         key = (str(row.get("end_date")), str(row.get("fp") or "FY"))
         pdf = by_period.get(key)
@@ -187,6 +191,8 @@ def merge_hk_statement_rows(datasets: Dict[str, List[Dict[str, Any]]]) -> List[D
                 continue
             if pdf.get(field) is None:
                 pdf[field] = value
+        # 清洗时随输入一起失效的派生科目（FCF/分项合计）在可信补缺后重新推导
+        rederive_fields(pdf)
     merged = list(by_period.values())
     merged.sort(key=lambda row: str(row.get("end_date") or ""), reverse=True)
     return merged

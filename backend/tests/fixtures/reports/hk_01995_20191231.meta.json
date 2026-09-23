@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "01995",
+  "end_date": "20191231",
+  "report_type": "annual",
+  "title": "01995_20191231_annual",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(81, 90)]，其余页置空以保住页码。旭輝永升 2019：页眉把页码排在标题同一行「綜合全面收益表 82」「83 綜合財務狀況表」",
+  "pages": 175,
+  "kept_pages": [
+    [
+      81,
+      90
+    ]
+  ],
+  "chars": 7353
+}

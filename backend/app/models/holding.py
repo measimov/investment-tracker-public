@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from sqlalchemy import Column, Integer, String, Numeric, DateTime, UniqueConstraint, ForeignKey
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -25,6 +27,11 @@ class Holding(Base):
     quantity = Column(Numeric(18, 8), nullable=False)
     avg_cost = Column(Numeric(18, 8), nullable=False)
     total_cost = Column(Numeric(18, 8), nullable=False)
+    # 成本未知的份额（期初建仓/转托管转入，#174）：这部分按 0 成本并入 avg_cost，
+    # 持仓成本与已实现盈亏对它们是估计值；>0 时前端打「成本未知」标签、转仓被拒
+    unknown_cost_quantity = Column(
+        Numeric(18, 8), nullable=False, default=Decimal("0"), server_default="0"
+    )
     currency = Column(String(10), default="CNY")
     current_price = Column(Numeric(18, 8), nullable=True)  # 当前股价
     price_updated_at = Column(DateTime(timezone=True), nullable=True)  # 股价更新时间

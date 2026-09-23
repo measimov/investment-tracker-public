@@ -11,7 +11,8 @@ export const actionTypeNames: Record<string, string> = {
   RIGHTS_ISSUE: '配股',
   STOCK_SPLIT: '拆股',
   REVERSE_SPLIT: '合股',
-  BONUS_ISSUE: '送股'
+  BONUS_ISSUE: '送股',
+  OPENING_POSITION: '期初建仓/转托管转入'
 }
 
 export type ElTagType = 'success' | 'warning' | 'info' | 'primary' | 'danger'
@@ -22,7 +23,8 @@ export const actionTypeTags: Record<string, ElTagType> = {
   RIGHTS_ISSUE: 'info',
   STOCK_SPLIT: 'primary',
   REVERSE_SPLIT: 'primary',
-  BONUS_ISSUE: 'warning'
+  BONUS_ISSUE: 'warning',
+  OPENING_POSITION: 'info'
 }
 
 export function getActionTypeName(type: string) {
@@ -46,4 +48,13 @@ export function brokerAccountLabelById(
   if (!accountId) return '未分配'
   const account = accounts.find((item) => item.id === accountId)
   return account ? brokerAccountLabel(account) : '已删除账户'
+}
+
+/** 期初建仓的成本状态：两个成本字段都空 = 成本未知（派生状态，与后端一致） */
+export function openingPositionCostKnown(row: {
+  adjusted_cost_per_share?: unknown
+  cost_basis_adjustment?: unknown
+}): boolean {
+  const has = (value: unknown) => value !== null && value !== undefined && value !== ''
+  return has(row.adjusted_cost_per_share) || has(row.cost_basis_adjustment)
 }

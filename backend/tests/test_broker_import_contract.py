@@ -150,6 +150,21 @@ def test_result_keys_are_all_carried_by_response_model(broker):
 
 
 @pytest.mark.parametrize("broker", sorted(RESULT_BUILDERS))
+def test_result_defaults_suspected_duplicates_to_zero(broker):
+    """疑似重复守卫（#190）暂只有招商接线，其余两家的骨架默认 0 / 空列表。"""
+    result = RESULT_BUILDERS[broker]()
+    assert result["suspected_duplicate_rows"] == 0
+    assert result["suspected_duplicate_samples"] == []
+
+
+@pytest.mark.parametrize("broker", sorted(RESULT_BUILDERS))
+def test_result_defaults_opening_position_rows_to_zero(broker):
+    """期初建仓（#174）暂只有招商接线，其余两家的骨架默认 0。"""
+    result = RESULT_BUILDERS[broker]()
+    assert result["eligible_opening_position_rows"] == 0
+
+
+@pytest.mark.parametrize("broker", sorted(RESULT_BUILDERS))
 def test_result_covers_batch_settlement_keys(broker):
     """结算契约：complete_import_batch 直取的键三家都必须在场。
 

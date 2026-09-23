@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "01023",
+  "end_date": "20230630",
+  "report_type": "annual",
+  "title": "01023_20230630_annual",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(61, 70)]，其余页置空以保住页码。時代集團 2023：报表页标题位置先画模板页眉「綜合財務報表附註」再画「綜合損益表」，位置逐字重合；文本由 baseline_text 的 _drop_overdrawn 去重后生成",
+  "pages": 159,
+  "kept_pages": [
+    [
+      61,
+      70
+    ]
+  ],
+  "chars": 7528
+}

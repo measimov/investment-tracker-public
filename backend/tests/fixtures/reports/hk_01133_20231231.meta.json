@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "01133",
+  "end_date": "20231231",
+  "report_type": "annual",
+  "title": "01133_20231231_annual",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(62, 86)]，其余页置空以保住页码。哈爾濱電氣 2023：中国准则，表头没有年份只有「本期金額 上期金額」「期末餘額 期初餘額」、「金額單位均為人民幣元」；母公司报表紧随其后",
+  "pages": 302,
+  "kept_pages": [
+    [
+      62,
+      86
+    ]
+  ],
+  "chars": 20451
+}

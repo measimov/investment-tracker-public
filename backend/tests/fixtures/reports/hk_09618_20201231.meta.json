@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "09618",
+  "end_date": "20201231",
+  "report_type": "annual",
+  "title": "09618_20201231_annual",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(250, 261)]，其余页置空以保住页码。京東 2020：美元折算列的单位写成「千美元」（幅度词在币种前）",
+  "pages": 351,
+  "kept_pages": [
+    [
+      250,
+      261
+    ]
+  ],
+  "chars": 10641
+}

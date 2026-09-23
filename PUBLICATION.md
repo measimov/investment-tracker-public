@@ -4,7 +4,7 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`45f275b` (2026-09-17).
+`9e3d9aa` (2026-09-23).
 
 Before syncing a new public release:
 

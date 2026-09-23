@@ -13,6 +13,9 @@ from .portfolio.semantics import (
     apply_action_quantity,
     bonus_share_factor,
     split_share_factor,
+    OPENING_POSITION,
+    opening_position_bucket,
+    opening_position_lot,
 )
 
 logger = get_app_logger(__name__)
@@ -240,7 +243,13 @@ def load_account_quantity_actions(
         if (action.symbol, action.market) in keys
         and (
             action_has_ratio(action)
-            or action.broker_account_id in (broker_account_id, None)
+            # 期初建仓创建的是它自己账户的桶：NULL 账户的期初仓开在未指定账户桶，
+            # 不能让账户预检借它放行本账户的卖出
+            or (
+                action.broker_account_id == broker_account_id
+                if action.action_type == OPENING_POSITION
+                else action.broker_account_id in (broker_account_id, None)
+            )
         )
     ]
 
@@ -369,6 +378,7 @@ def recalculate_holdings(
             row.quantity = state['quantity']
             row.avg_cost = state['avg_cost']
             row.total_cost = state['total_cost']
+            row.unknown_cost_quantity = state['unknown_cost_quantity']
             if state['name']:
                 row.name = state['name']
             row.currency = state['currency']
@@ -382,6 +392,7 @@ def recalculate_holdings(
                 quantity=state['quantity'],
                 avg_cost=state['avg_cost'],
                 total_cost=state['total_cost'],
+                unknown_cost_quantity=state['unknown_cost_quantity'],
                 currency=state['currency'],
                 current_price=inherited_price,
                 price_updated_at=inherited_price_at,
@@ -406,9 +417,18 @@ def _new_bucket_state():
         'quantity': Decimal("0"),
         'avg_cost': Decimal("0"),
         'total_cost': Decimal("0"),
+        # 成本未知的份额（期初建仓/转托管转入，#174）：avg_cost/total_cost 对这部分是估计值
+        'unknown_cost_quantity': Decimal("0"),
         'name': None,
         'currency': "CNY",
     }
+
+
+def _clamp_unknown(state):
+    """减仓后未知成本份额不得超过剩余数量（先卖掉的按 FIFO 未必是未知批次，这里只是
+    展示口径的上界；精确的估计标记由 FIFO 逐批次给出）。"""
+    if state['unknown_cost_quantity'] > state['quantity']:
+        state['unknown_cost_quantity'] = max(state['quantity'], Decimal("0"))
 
 
 # 语义已上提到内核 semantics（原先 holding_service 与 fifo 各有一份拷贝）
@@ -464,14 +484,21 @@ def _replay_events(events, symbol, market, *, per_account):
                             f"{state['quantity']} for {symbol} ({market}) on {txn.transaction_date}"
                         )
                     moved_cost = state['avg_cost'] * move_qty
+                    # 未知成本份额按比例随转仓迁移
+                    moved_unknown = (
+                        state['unknown_cost_quantity'] * move_qty / state['quantity']
+                        if state['quantity'] > 0 else Decimal("0")
+                    )
                     state['quantity'] -= move_qty
+                    state['unknown_cost_quantity'] -= moved_unknown
                     if state['quantity'] > 0:
                         state['total_cost'] = state['quantity'] * state['avg_cost']
                     else:
                         state['quantity'] = Decimal("0")
                         state['avg_cost'] = Decimal("0")
                         state['total_cost'] = Decimal("0")
-                    pending_transfers[txn.id] = (move_qty, moved_cost)
+                        state['unknown_cost_quantity'] = Decimal("0")
+                    pending_transfers[txn.id] = (move_qty, moved_cost, moved_unknown)
                 else:  # TRANSFER_IN
                     entry = pending_transfers.pop(txn.linked_transaction_id, None)
                     if entry is None:
@@ -479,7 +506,7 @@ def _replay_events(events, symbol, market, *, per_account):
                             f"transfer in id={txn.id} has no processed linked "
                             f"transfer-out (linked={txn.linked_transaction_id})"
                         )
-                    move_qty, moved_cost = entry
+                    move_qty, moved_cost, moved_unknown = entry
                     state = bucket(txn.broker_account_id)
                     new_quantity = state['quantity'] + move_qty
                     state['total_cost'] = state['quantity'] * state['avg_cost'] + moved_cost
@@ -487,6 +514,7 @@ def _replay_events(events, symbol, market, *, per_account):
                         state['total_cost'] / new_quantity if new_quantity > 0 else Decimal("0")
                     )
                     state['quantity'] = new_quantity
+                    state['unknown_cost_quantity'] += moved_unknown
                 continue
 
             account_id = txn.broker_account_id if per_account else None
@@ -527,6 +555,7 @@ def _replay_events(events, symbol, market, *, per_account):
                     state['quantity'] = Decimal("0")
                     state['avg_cost'] = Decimal("0")
                     state['total_cost'] = Decimal("0")
+                _clamp_unknown(state)
 
             if txn.name:
                 state['name'] = txn.name
@@ -551,10 +580,28 @@ def _replay_events(events, symbol, market, *, per_account):
                         factor = split_share_factor(action, state['quantity'])
                     if factor is not None:
                         state['quantity'] = state['quantity'] * factor
+                        state['unknown_cost_quantity'] = state['unknown_cost_quantity'] * factor
                         state['avg_cost'] = (
                             state['total_cost'] / state['quantity']
                             if state['quantity'] > 0 else Decimal("0")
                         )
+
+            elif action_type == OPENING_POSITION:
+                lot = opening_position_lot(action)
+                if lot is not None:
+                    lot_qty, lot_cost = lot
+                    state = bucket(opening_position_bucket(action, per_account))
+                    new_quantity = state['quantity'] + lot_qty
+                    if lot_cost is not None:
+                        state['total_cost'] = state['quantity'] * state['avg_cost'] + lot_cost
+                    else:
+                        # 成本未知：按 0 成本并入，份额记入 unknown_cost_quantity 供展示/守卫
+                        state['total_cost'] = state['quantity'] * state['avg_cost']
+                        state['unknown_cost_quantity'] += lot_qty
+                    state['quantity'] = new_quantity
+                    state['avg_cost'] = (
+                        state['total_cost'] / new_quantity if new_quantity > 0 else Decimal("0")
+                    )
 
             elif action_type == "RIGHTS_ISSUE":
                 if action.subscription_quantity and action.subscription_price:

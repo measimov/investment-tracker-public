@@ -25,7 +25,8 @@ import {
   brokerAccountLabel,
   brokerAccountLabelById as labelById,
   getActionTypeName,
-  getActionTypeTag
+  getActionTypeTag,
+  openingPositionCostKnown
 } from './shared'
 
 // 后端 schema 为准（生成类型；Decimal 序列化为 string，展示经 toNumber）
@@ -90,6 +91,9 @@ const form = reactive<{
   subscription_price: number | null
   subscription_quantity: number | null
   split_ratio: string
+  opening_quantity: number | null
+  opening_cost_per_share: number | null
+  opening_total_cost: number | null
   currency: string
   notes: string
 }>({
@@ -111,6 +115,10 @@ const form = reactive<{
   subscription_quantity: null,
   // 拆股
   split_ratio: '',
+  // 期初建仓（#174）：数量必填，两个成本可选，都空 = 成本未知
+  opening_quantity: null,
+  opening_cost_per_share: null,
+  opening_total_cost: null,
   // 通用
   currency: 'CNY',
   notes: ''
@@ -156,6 +164,13 @@ function actionDetail(row: Record<string, unknown>): string {
     case 'REVERSE_SPLIT':
       if (has(row.split_ratio)) parts.push(`拆分比例: ${row.split_ratio}`)
       if (has(row.new_shares)) parts.push(`拆后股数: ${num(row.new_shares, 2)}`)
+      break
+    case 'OPENING_POSITION':
+      if (has(row.adjusted_quantity)) parts.push(`数量: ${num(row.adjusted_quantity, 2)}`)
+      if (has(row.cost_basis_adjustment)) parts.push(`总成本: ${num(row.cost_basis_adjustment, 2)}`)
+      else if (has(row.adjusted_cost_per_share))
+        parts.push(`单位成本: ${num(row.adjusted_cost_per_share, 4)}`)
+      else parts.push('成本未知')
       break
   }
 
@@ -292,10 +307,62 @@ function handleEdit(row: CorporateActionRow) {
     subscription_price: row.subscription_price ? toNumber(row.subscription_price) : null,
     subscription_quantity: row.subscription_quantity ? toNumber(row.subscription_quantity) : null,
     split_ratio: row.split_ratio || '',
+    opening_quantity: row.adjusted_quantity ? toNumber(row.adjusted_quantity) : null,
+    opening_cost_per_share: row.adjusted_cost_per_share
+      ? toNumber(row.adjusted_cost_per_share)
+      : null,
+    opening_total_cost: row.cost_basis_adjustment ? toNumber(row.cost_basis_adjustment) : null,
     currency: row.currency || 'CNY',
     notes: row.notes || ''
   })
   dialogVisible.value = true
+}
+
+// 期初建仓补录成本：导入建的行动整体只读，但成本必须有通道（#174）
+const costDialogVisible = ref(false)
+const costSubmitting = ref(false)
+const costForm = reactive<{
+  id: number | null
+  symbol: string
+  quantity: number | null
+  cost_per_share: number | null
+  total_cost: number | null
+  notes: string
+}>({ id: null, symbol: '', quantity: null, cost_per_share: null, total_cost: null, notes: '' })
+
+function handleBackfillCost(row: CorporateAction) {
+  costForm.id = row.id
+  costForm.symbol = row.symbol
+  costForm.quantity = row.adjusted_quantity ? toNumber(row.adjusted_quantity) : null
+  costForm.cost_per_share = row.adjusted_cost_per_share
+    ? toNumber(row.adjusted_cost_per_share)
+    : null
+  costForm.total_cost = row.cost_basis_adjustment ? toNumber(row.cost_basis_adjustment) : null
+  costForm.notes = row.notes || ''
+  costDialogVisible.value = true
+}
+
+async function handleSubmitCost() {
+  if (costForm.id === null) return
+  if (costForm.cost_per_share === null && costForm.total_cost === null) {
+    ElMessage.warning('请填写单位成本或总成本')
+    return
+  }
+  costSubmitting.value = true
+  try {
+    await api.updateOpeningPositionCost(costForm.id, {
+      adjusted_cost_per_share: costForm.cost_per_share,
+      cost_basis_adjustment: costForm.total_cost,
+      notes: costForm.notes
+    })
+    ElMessage.success('成本已补录，持仓已重算')
+    costDialogVisible.value = false
+    loadActions()
+  } catch (error) {
+    ElMessage.error('补录失败：' + getApiErrorMessage(error))
+  } finally {
+    costSubmitting.value = false
+  }
 }
 
 function handleActionTypeChange() {
@@ -307,6 +374,9 @@ function handleActionTypeChange() {
   form.subscription_price = null
   form.subscription_quantity = null
   form.split_ratio = ''
+  form.opening_quantity = null
+  form.opening_cost_per_share = null
+  form.opening_total_cost = null
 }
 
 async function handleSubmit() {
@@ -341,6 +411,10 @@ async function handleSubmit() {
       submitData.distribution_ratio = form.distribution_ratio
     } else if (form.action_type === 'STOCK_SPLIT' || form.action_type === 'REVERSE_SPLIT') {
       submitData.split_ratio = form.split_ratio
+    } else if (form.action_type === 'OPENING_POSITION') {
+      submitData.adjusted_quantity = form.opening_quantity
+      submitData.adjusted_cost_per_share = form.opening_cost_per_share
+      submitData.cost_basis_adjustment = form.opening_total_cost
     }
 
     if (isEdit.value) {
@@ -471,6 +545,7 @@ defineExpose({ reload: loadActions })
           <el-option label="拆股" value="STOCK_SPLIT" />
           <el-option label="合股" value="REVERSE_SPLIT" />
           <el-option label="送股" value="BONUS_ISSUE" />
+          <el-option label="期初建仓/转托管转入" value="OPENING_POSITION" />
         </el-select>
       </el-form-item>
       <el-form-item label="日期">
@@ -563,11 +638,20 @@ defineExpose({ reload: loadActions })
           <template #default="{ row }">{{ actionDetail(row) }}</template>
         </el-table-column>
         <el-table-column prop="notes" label="备注" min-width="150" show-overflow-tooltip />
-        <el-table-column label="操作" width="150">
+        <el-table-column label="操作" width="170">
           <template #default="{ row }">
-            <el-tag v-if="row.import_batch_id" type="info" effect="plain" size="small">
-              导入只读
-            </el-tag>
+            <template v-if="row.import_batch_id">
+              <el-tag type="info" effect="plain" size="small">导入只读</el-tag>
+              <el-button
+                v-if="row.action_type === 'OPENING_POSITION' && !openingPositionCostKnown(row)"
+                type="warning"
+                size="small"
+                text
+                @click="handleBackfillCost(row)"
+              >
+                补录成本
+              </el-button>
+            </template>
             <template v-else>
               <el-button type="primary" size="small" text @click="handleEdit(row)">
                 编辑
@@ -613,9 +697,18 @@ defineExpose({ reload: loadActions })
         </div>
 
         <div class="mobile-card-actions">
-          <el-tag v-if="row.import_batch_id" type="info" effect="plain" size="small">
-            导入只读
-          </el-tag>
+          <template v-if="row.import_batch_id">
+            <el-tag type="info" effect="plain" size="small">导入只读</el-tag>
+            <el-button
+              v-if="row.action_type === 'OPENING_POSITION' && !openingPositionCostKnown(row)"
+              type="warning"
+              size="small"
+              text
+              @click="handleBackfillCost(row)"
+            >
+              补录成本
+            </el-button>
+          </template>
           <template v-else>
             <el-button type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
             <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
@@ -695,6 +788,7 @@ defineExpose({ reload: loadActions })
             <el-option label="拆股" value="STOCK_SPLIT" />
             <el-option label="合股" value="REVERSE_SPLIT" />
             <el-option label="送股" value="BONUS_ISSUE" />
+            <el-option label="期初建仓/转托管转入" value="OPENING_POSITION" />
           </el-select>
         </el-form-item>
 
@@ -769,6 +863,26 @@ defineExpose({ reload: loadActions })
           </el-form-item>
         </template>
 
+        <!-- 期初建仓专用字段（#174） -->
+        <template v-if="form.action_type === 'OPENING_POSITION'">
+          <el-divider content-position="left">期初建仓</el-divider>
+
+          <el-form-item label="数量" prop="opening_quantity">
+            <el-input-number v-model="form.opening_quantity" :min="0" :precision="4" />
+          </el-form-item>
+
+          <el-form-item label="单位成本" prop="opening_cost_per_share">
+            <el-input-number v-model="form.opening_cost_per_share" :min="0" :precision="4" />
+          </el-form-item>
+
+          <el-form-item label="总成本" prop="opening_total_cost">
+            <el-input-number v-model="form.opening_total_cost" :min="0" :precision="2" />
+            <div class="form-tip">
+              账户必选；两个成本都留空 = 成本未知，持仓成本与已实现盈亏将标记为估计值
+            </div>
+          </el-form-item>
+        </template>
+
         <!-- 通用字段 -->
         <el-divider content-position="left">其他信息</el-divider>
 
@@ -793,10 +907,50 @@ defineExpose({ reload: loadActions })
         </div>
       </template>
     </el-dialog>
+
+    <!-- 期初建仓补录成本（#174）：导入建的行动只开放成本字段 -->
+    <el-dialog
+      v-model="costDialogVisible"
+      title="补录期初建仓成本"
+      :width="isMobileView ? '95%' : '480px'"
+      :fullscreen="isMobileView"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="cost-dialog-tip"
+        :title="`${costForm.symbol} 数量 ${formatNumber(costForm.quantity, 4)}，来自对账单，不可改`"
+        description="填写单位成本或总成本其一即可；两者都填时须一致。保存后持仓与已实现盈亏立即重算。"
+      />
+      <el-form :model="costForm" label-width="100px" label-position="top">
+        <el-form-item label="单位成本">
+          <el-input-number v-model="costForm.cost_per_share" :min="0" :precision="4" />
+        </el-form-item>
+        <el-form-item label="总成本">
+          <el-input-number v-model="costForm.total_cost" :min="0" :precision="2" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="costForm.notes" type="textarea" :rows="2" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <div class="mobile-dialog-footer">
+          <el-button @click="costDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="handleSubmitCost" :loading="costSubmitting">
+            保存并重算
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
   </el-card>
 </template>
 
 <style scoped>
+.cost-dialog-tip {
+  margin-bottom: 16px;
+}
+
 .stats-alert {
   margin-bottom: 14px;
 }

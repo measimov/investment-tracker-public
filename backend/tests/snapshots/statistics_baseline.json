@@ -557,9 +557,11 @@
       "current_market_value_cny": 99554.0,
       "current_market_value_usd": 13826.944444,
       "data_quality": {
+        "estimated_cost_trade_count": 0,
         "invalid_sell_event_count": 0,
         "invalid_sell_events": [],
         "missing_rate_currencies": [],
+        "unknown_cost_lot_count": 0,
         "unpriced_position_count": 0,
         "unpriced_positions": [],
         "warnings": []
@@ -650,6 +652,7 @@
       "base_currency": "CNY",
       "closed_trades": [
         {
+          "cost_estimated": false,
           "currency": "CNY",
           "date": "2025-08-01",
           "holding_days": 122,
@@ -663,6 +666,7 @@
           "symbol": "600519"
         },
         {
+          "cost_estimated": false,
           "currency": "USD",
           "date": "2025-06-10",
           "holding_days": 151,
@@ -677,9 +681,11 @@
         }
       ],
       "data_quality": {
+        "estimated_cost_trade_count": 0,
         "invalid_sell_event_count": 0,
         "invalid_sell_events": [],
         "missing_rate_currencies": [],
+        "unknown_cost_lot_count": 0,
         "warnings": []
       },
       "missing_rate_currencies": [],

@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # v4：币种+单位分开排版（「美元 千元」「RMB million」）算一个布局单元，且表头布局须与数据行吻合才采信
-STATEMENT_EXTRACTOR_VERSION = 5
+STATEMENT_EXTRACTOR_VERSION = 7
 STATEMENT_KINDS = ("income", "balance", "cashflow")
 
 # 报表标题核心（繁/简；港股「綜合」= A股「合并」）。income 同时覆盖损益表与全面收益表
@@ -53,22 +53,27 @@ _TITLE_CORE = {
     "balance": rf"{_COND}{_CONSOL}(?:中期)?(?:財務狀況|财务状况|資產負債|资产负债)表",
     "cashflow": rf"{_COND}{_CONSOL}(?:中期)?(?:現金流量|现金流量)表",
 }
-_PREFIX = r"(?:\d{1,2}\s*[、.．]?\s*|[（(]?[一二三四五六七八九十]{1,3}[）)]?\s*[、.．]?\s*)?"
+_PREFIX = r"(?:\d{1,3}\s*[、.．]?\s*|[（(]?[一二三四五六七八九十]{1,3}[）)]?\s*[、.．]?\s*)?"
+# 行尾页码（01995：页眉「綜合全面收益表 82」把页码排在同一行）
+_PAGE_NO = r"(?:\s+\d{1,3})?"
 # 标题尾缀：（續）/（未經審核）/（未經審計）可叠加，括号允许错位（00883 中报排版出来的
 # 「（未經審計（）續）」）；只认这几个词，「（已經審計）」是財務摘要页的表格标题不是正表
 _SUFFIX = r"(?:[\s（）()]*(?:續|续|未經審核|未经审核|未經審計|未经审计))*[\s（）()]*"
 TITLE_LINE_RE = {
-    kind: re.compile(rf"^{_PREFIX}(?P<title>{core}){_SUFFIX}\s*$")
+    kind: re.compile(rf"^{_PREFIX}(?P<title>{core}){_SUFFIX}{_PAGE_NO}\s*$")
     for kind, core in _TITLE_CORE.items()
 }
 # 终止标题：母公司报表、权益变动表、附註起点（都不属于三张合并报表）
 _TERMINATOR_RE = re.compile(
     r"^" + _PREFIX + r"(?:"
     r"母公司(?:資產負債|资产负债|利潤|利润|損益|损益|現金流量|现金流量)表"
+    # 中国准则年报（01133）里紧随合并报表的母公司报表只叫「資產負債表」「利潤表」「現金流量表」
+    # ——不带「合併/綜合」的裸标题整行出现即视为合并报表结束（裸标题本来就不会被认作合并报表）
+    r"|(?:資產負債|资产负债|利潤|利润|損益|损益|現金流量|现金流量|財務狀況|财务状况)表"
     rf"|{_COND}{_CONSOL}(?:中期)?(?:權益變動|权益变动|所有者权益变动|股東權益變動|股东权益变动)表"
     r"|(?:綜合|综合|合并|合併)?(?:財務報表|财务报表|中期財務資料|中期财务资料)(?:附註|附注)"
     r"|NOTES TO THE (?:CONSOLIDATED )?FINANCIAL STATEMENTS"
-    r")" + _SUFFIX + r"\s*$",
+    r")" + _SUFFIX + _PAGE_NO + r"\s*$",
     re.I,
 )
 _NOTES_HEADER_RE = re.compile(r"附註|附注|NOTES TO", re.I)
@@ -113,6 +118,7 @@ _INTERIM_COLUMNS_RE = re.compile(r"(三個月|三个月|three months).*(六個�
 MIN_ROWS = 6
 MAX_BLOCK_PAGES = 6
 HEADER_LINES = 12
+HEADER_MAX_LINES = 40
 
 
 @dataclass
@@ -196,16 +202,32 @@ class _Line:
     text: str
 
 
+# 只含标题前缀的孤行：「簡明綜合」「中期簡明綜合」「合併」——下一行若能与之拼成报表/终止标题
+# 就是被换行拆开的标题（03900 2019 中报把「簡明綜合」单独排一行）
+_TITLE_PREFIX_ONLY_RE = re.compile(rf"^{_COND}{_CONSOL}$")
+
+
 def _line_stream(pages: Sequence[str]) -> List[_Line]:
     stream: List[_Line] = []
     for page_no, page in enumerate(pages, start=1):
-        idx = 0
-        for raw in (page or "").splitlines():
-            text = squash_spaced_cjk(raw.strip())
-            if not text:
+        texts = [squash_spaced_cjk(raw.strip()) for raw in (page or "").splitlines()]
+        texts = [t for t in texts if t]
+        merged: List[str] = []
+        i = 0
+        while i < len(texts):
+            text = texts[i]
+            if (
+                i + 1 < len(texts)
+                and _TITLE_PREFIX_ONLY_RE.match(text)
+                and (match_title(text + texts[i + 1]) or _is_terminator(text + texts[i + 1]))
+            ):
+                merged.append(text + texts[i + 1])
+                i += 2
                 continue
+            merged.append(text)
+            i += 1
+        for idx, text in enumerate(merged):
             stream.append(_Line(page_no, idx, text))
-            idx += 1
     return stream
 
 
@@ -235,9 +257,46 @@ def parse_number(token: str) -> Optional[Decimal]:
     return -value if negative else value
 
 
+# 被空格拆开的数字（09926 2020：`854,84 3 416,97 5`；01133：`1,648,565,774.6 1`）：pdfplumber
+# 把末位数字排到了独立的 word。两种形态的证据强度不同，处理时机也不同：
+# - 「两位的千分组 + 空格 + 一位数字」：`854,84` 本身就不是合法数值（千分组必须三位），这是
+#   行内的**明确断字证据**，解 token 时就粘回去；
+# - 「带千分组的一位小数 + 空格 + 一位数字」：`1,234.5 6` 完全可能是合法的两列（千元/百万元
+#   报表里一位小数常见），只有在**已知列数且 token 数多出来**时才粘（PR #207 评审 P1）——
+#   `_parse_row_tokens` 不知道列数，所以这一步放在 parse_row 里按列数做
+_SPLIT_THOUSANDS_RE = re.compile(r"(\d,\d{2}) (\d)(?![\d,.])")
+_SPLIT_DECIMAL_RE = re.compile(r"(\d{1,3}(?:,\d{3})+\.\d) (\d)(?![\d,.])")
+
+
+def glue_split_digits(line: str) -> str:
+    """只粘有明确断字证据的形态（畸形两位千分组）。"""
+    previous = None
+    while previous != line:
+        previous = line
+        line = _SPLIT_THOUSANDS_RE.sub(r"\1\2", line)
+    return line
+
+
+def glue_decimal_tail(tokens: List[str], expected: int) -> List[str]:
+    """按列数粘小数尾数：token 数比已知列数多才尝试，且粘完必须恰好落到 列数 或 列数+1
+    （首 token 是附注号）——否则原样返回。列数未知或已吻合的行一律不动；「附注号 + 恰好列数」
+    的布局由 parse_row 先行识别，不会走到这里。"""
+    if not expected or len(tokens) <= expected:
+        return tokens
+    glued = _SPLIT_DECIMAL_RE.sub(r"\1\2", " ".join(tokens)).split()
+    if len(glued) >= len(tokens):
+        return tokens
+    if len(glued) == expected:
+        return glued
+    if len(glued) == expected + 1 and _LEADING_NOTE_RE.match(glued[0]):
+        return glued  # 多出的那个是附注号，随后由 _split_leading_note 剥离
+    return tokens
+
+
 def _parse_row_tokens(line: str) -> Optional[Tuple[str, str, List[str]]]:
     """数字行 → (label, note, value_tokens)；非数字行返回 None。
     无标签的合计行（`6 751,766 660,257` / `229,801 196,467`）标签为空。"""
+    line = glue_split_digits(line)
     only = _VALUES_ONLY_RE.match(line)
     if only:
         tokens = only.group("values").split()
@@ -272,6 +331,13 @@ def parse_row(
     if parsed is None:
         return None
     label, note, tokens = parsed
+    if not note and expected_columns and len(tokens) == expected_columns + 1 and _LEADING_NOTE_RE.match(
+        tokens[0]
+    ):
+        # 多出的那个 token 就是附注号：列布局已被完整解释，**不得再粘**——先粘会把两个合法
+        # 金额粘成一个、附注号顶成本期金额，两期静默错列（PR #207 评审 P1）
+        return label, tokens[0], [parse_number(t) for t in tokens[1:]]
+    tokens = glue_decimal_tail(tokens, expected_columns)
     if not note:
         note, tokens = _split_leading_note(tokens, expected_columns)
     return label, note, [parse_number(t) for t in tokens]
@@ -378,10 +444,15 @@ def _collect_block(stream: Sequence[_Line], start: int, kind: str) -> _Block:
 _SMALL_INT_RE = re.compile(r"^\d{1,2}$")
 
 
+_FOOTER_LABEL_RE = re.compile(r"年度報告|年度报告|年報|年报|中期報告|中期报告|Annual Report|Interim Report", re.I)
+
+
 def _is_page_number_row(label: str, note: str, values: List[Optional[Decimal]]) -> bool:
-    """页眉/页脚里的页码（「120」或「2025 39」= 年份 + 页码）被当成只有一两个值的无标签行。
-    只在页首/页尾那一行判定（调用方保证），正文里的单值行（如每股股息）不受影响。"""
-    if label or note or not values or len(values) > 2 or any(v is None for v in values):
+    """页眉/页脚里的页码（「120」或「2025 39」= 年份 + 页码，或「2023年度報告 79」）被当成只有
+    一两个值的行。只在页首/页尾那一行判定（调用方保证），正文里的单值行（如每股股息）不受影响。"""
+    if label and not (_FOOTER_LABEL_RE.search(label) and len(values) == 1):
+        return False
+    if note or not values or len(values) > 2 or any(v is None for v in values):
         return False
     ints = [int(v) for v in values if v == v.to_integral_value()]
     if len(ints) != len(values):
@@ -423,7 +494,11 @@ def _split_leading_note(tokens: List[str], expected: int) -> Tuple[str, List[str
 _CURRENCY_WORDS = r"人民幣|人民币|港幣|港币|港元|美元|RMB|HK\$|US\$|USD|HKD|CNY"
 _UNIT_WORDS = r"千元|百萬元|百万元|萬元|万元|元|'000|’000|million|thousand|millions|thousands"
 _CURRENCY_ONLY_RE = re.compile(rf"^(?:{_CURRENCY_WORDS})$", re.I)
-_UNIT_BEARING_RE = re.compile(rf"^(?:{_CURRENCY_WORDS})?(?:{_UNIT_WORDS})$", re.I)
+# 「人民幣千元」「美元千元」也有「千美元」「百萬美元」（09618 2020 的美元折算列）：币种可前可后
+_MAGNITUDE_WORDS = r"千|百萬|百万|萬|万|million|thousand"
+_UNIT_BEARING_RE = re.compile(
+    rf"^(?:{_CURRENCY_WORDS})?(?:{_UNIT_WORDS})$|^(?:{_MAGNITUDE_WORDS})\s*(?:{_CURRENCY_WORDS})$", re.I
+)
 
 
 def _unit_token_columns(header: Sequence[str]) -> int:
@@ -475,8 +550,27 @@ def _expected_columns(
     return min_common
 
 
+_GROUPED_AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+
+
+def _is_data_row(text: str) -> bool:
+    """金额行：至少两个数值列，或含千分位金额；「ENDED 30 JUNE 2025」这类只有一个裸数字
+    的表头行不算，年份行（「2025年 2024年」）也不算。"""
+    parsed = _parse_row_tokens(text)
+    if parsed is None or _is_header_like(text, []):
+        return False
+    tokens = parsed[2]
+    return len(tokens) >= 2 or any(_GROUPED_AMOUNT_RE.search(token) for token in tokens)
+
+
 def _parse_block(block: _Block) -> ParsedStatement:
     texts = [line.text for line in block.lines]
+    # 表头 = 第一条数字行之前的全部行（至少 HEADER_LINES、最多 HEADER_MAX_LINES）：02156 中报把
+    # 报表印在业绩公告首页，董事会声明段落把年份/单位行推到第 13 行之后，固定取 12 行看不到
+    first_row = next(
+        (i for i, text in enumerate(texts[1:HEADER_MAX_LINES], start=1) if _is_data_row(text)),
+        HEADER_LINES,
+    )
     # 每页的头两行与末两行（页眉/页脚所在：09926 的页脚是「120」+ 公司名两行），用于剔除页码行
     page_edges = set()
     by_page: Dict[int, List[int]] = {}
@@ -485,7 +579,7 @@ def _parse_block(block: _Block) -> ParsedStatement:
     for offsets in by_page.values():
         page_edges.update(offsets[:2])
         page_edges.update(offsets[-2:])
-    header = texts[:HEADER_LINES]
+    header = texts[:max(HEADER_LINES, first_row)]
     years = _header_years(header)
     interim_four = bool(_INTERIM_COLUMNS_RE.search(" ".join(header)))
     # 第一遍：解析全部数字行，拿主导列数（附注号粘列的行会多一列，是少数）
@@ -563,6 +657,10 @@ def _structurally_ok(parsed: ParsedStatement, start_head: List[str], *, report_t
     return True
 
 
+# 中国准则（H 股按 CAS 编报，01133）的列标题不写年份：「本期金額 上期金額」「期末餘額 期初餘額」
+_CAS_PERIOD_CAPTION_RE = re.compile(r"本期金額|上期金額|期末餘額|期初餘額|本期金额|上期金额|期末余额|期初余额")
+
+
 def _header_evidence(parsed: ParsedStatement) -> bool:
     """表头是不是一张正表的表头：整个表头里至少有一个年份（「截至2025年12月31日止年度」
     「2025年\n2024年」分两行也算），且有列年份行或单位/币种之一。
@@ -571,6 +669,8 @@ def _header_evidence(parsed: ParsedStatement) -> bool:
     证据」是两回事：两个年份被抽成两行的合法报表列年份为空，仍是正表，列对应退回按位置。
     02156 中报把报表标题当页眉印在业绩公告首页，那一页有「截至二零二五年六月三十日」却
     既无列年份行也无单位/币种，正文是董事会声明——这是要排除的。"""
+    if any(_CAS_PERIOD_CAPTION_RE.search(line) for line in parsed.header):
+        return True  # 本期/上期列标题 = 期间证据（列对应按位置：本期在前）
     if not any(_years_in(line) for line in parsed.header):
         return False
     return bool(parsed.years) or parsed.unit_multiplier != 1 or bool(parsed.currency)

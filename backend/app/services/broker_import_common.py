@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -172,6 +172,8 @@ def iso_date_range(dates: Sequence[date]) -> Tuple[Optional[str], Optional[str]]
 # 展示截断集中一处：样本各 10 条、告警/错误各 50 条。
 RESULT_SAMPLE_LIMIT = 10
 RESULT_MESSAGE_LIMIT = 50
+# 疑似重复清单不是"看几条样本"而是"逐条决定"，上限单独放宽；count 字段仍给真实总数
+RESULT_SUSPECTED_SAMPLE_LIMIT = 200
 
 
 def base_import_result(
@@ -206,6 +208,9 @@ def base_import_result(
     skipped_unsupported_rows: int = 0,
     skipped_conflict_rows: int = 0,
     expected_archived_rows: int = 0,
+    suspected_duplicate_rows: int = 0,
+    suspected_duplicate_samples: Optional[List[dict]] = None,
+    eligible_opening_position_rows: int = 0,
 ) -> Dict[str, Any]:
     """三家 build_import_result 共用的结果骨架——分类逻辑留在各导入器，这里只统一"皮"。
 
@@ -245,6 +250,14 @@ def base_import_result(
         "skipped_excluded_rows": skipped_excluded_rows,
         "excluded_unbooked_rows": excluded_unbooked_rows,
         "expected_archived_rows": expected_archived_rows,
+        # 疑似重复（#190）：与已入账流水同键但 hash 不同的成交行，归档不入账待人工确认。
+        # 样本上限单独给（不是展示用的 10 条，而是用户要逐条决定的清单）。
+        "suspected_duplicate_rows": suspected_duplicate_rows,
+        "suspected_duplicate_samples": (suspected_duplicate_samples or [])[
+            :RESULT_SUSPECTED_SAMPLE_LIMIT
+        ],
+        # 期初建仓行（转托转入，#174）：入账为 OPENING_POSITION 公司行动
+        "eligible_opening_position_rows": eligible_opening_position_rows,
         "affected_symbols": affected_symbols,
         "date_start": date_start,
         "date_end": date_end,
@@ -510,6 +523,26 @@ def find_dividend_for_tax(
 # ---------------------------------------------------------------------------
 
 UNATTRIBUTED_TAX = "unattributed_tax"
+# 存量归档的「转托转入/转存管转入」（#174）：升级后回填此标记，重导时在原行上转正为
+# OPENING_POSITION 公司行动，与税行同一套三段式
+UNBOOKED_OPENING_POSITION = "unbooked_opening_position"
+# 「托管转出」（深圳，真实减仓）本版未建模：归档并告警持仓可能高估，如实 PARTIAL
+UNBOOKED_CUSTODY_OUT = "unbooked_custody_out"
+
+
+def mark_unbooked(source, skip_reason: str, note: str):
+    """把新建的归档行标记为"已归档未入账"（调用方负责 db.add）。"""
+    source.skip_reason = skip_reason
+    source.notes = f"{source.notes or ''}; {note}".strip("; ")
+    return source
+
+
+def attribute_source(source, *, corporate_action_id: int, note: str):
+    """就地转正为公司行动：补链接、清标记、留痕。绝不插新行（row_hash 唯一约束）。"""
+    source.corporate_action_id = corporate_action_id
+    source.skip_reason = None
+    source.notes = f"{source.notes or ''}; {note}".strip("; ")
+    return source
 
 
 # ---------------------------------------------------------------------------
@@ -587,20 +620,28 @@ class ProspectiveCorporateAction:
     new_shares: Optional[Decimal] = None
     subscription_quantity: Optional[Decimal] = None
     subscription_price: Optional[Decimal] = None
+    # OPENING_POSITION（#174）：数量 / 单位成本(可选) / 总成本(可选)
+    adjusted_quantity: Optional[Decimal] = None
+    adjusted_cost_per_share: Optional[Decimal] = None
+    cost_basis_adjustment: Optional[Decimal] = None
 
 
-def load_unattributed_tax_sources(
+def load_held_sources(
     db: Session,
     model,
     *,
     user_id: int,
+    skip_reason: str,
+    unlinked_column,
     hashes=None,
     hash_aliases: Optional[Dict[str, str]] = None,
     broker_account_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """本批"已归档但未归属"的税行，键一律是**当前 row_hash**。
+    """本批"已归档但未入账"（`skip_reason` 指定原因、`unlinked_column` 仍为空）的源行，
+    键一律是**当前 row_hash**。未归属税行与疑似重复行共用这一个加载器。
 
-    调用方要把这些 hash 从"重复行"里排除，否则它们永远等不到补齐的股息。
+    调用方要把这些 hash 从"重复行"里排除（或按各自规则处理），否则它们永远等不到
+    补齐的股息 / 人工确认。
 
     hash_aliases: {历史/别名 hash → 当前 hash}。东财的判重口径是
     `row_hash OR legacy_row_hash`（老版本算法存档的行仍在库里），只按当前
@@ -618,12 +659,34 @@ def load_unattributed_tax_sources(
     query = db.query(model).filter(
         model.user_id == user_id,
         model.row_hash.in_(list(lookup)),
-        model.skip_reason == UNATTRIBUTED_TAX,
-        model.corporate_action_id.is_(None),
+        model.skip_reason == skip_reason,
+        unlinked_column.is_(None),
     )
     if broker_account_id is not None:
         query = query.filter(model.broker_account_id == broker_account_id)
     return {lookup[row.row_hash]: row for row in query.all()}
+
+
+def load_unattributed_tax_sources(
+    db: Session,
+    model,
+    *,
+    user_id: int,
+    hashes=None,
+    hash_aliases: Optional[Dict[str, str]] = None,
+    broker_account_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """本批"已归档但未归属"的税行（`load_held_sources` 的税行特化）。"""
+    return load_held_sources(
+        db,
+        model,
+        user_id=user_id,
+        skip_reason=UNATTRIBUTED_TAX,
+        unlinked_column=model.corporate_action_id,
+        hashes=hashes,
+        hash_aliases=hash_aliases,
+        broker_account_id=broker_account_id,
+    )
 
 
 def mark_unattributed_tax(source, note: str):
@@ -641,3 +704,119 @@ def attribute_tax_source(source, corporate_action_id: int):
         f"{source.notes or ''}; attributed during account-scoped re-import"
     ).strip("; ")
     return source
+
+
+# ---------------------------------------------------------------------------
+# 疑似重复守卫（#190）——row_hash 之外的第二层，**不改任何 hash 输入**
+#
+# 同一笔真实成交在券商新旧导出里成交价精度不同（1.30 vs 1.2980），trade_price 在
+# HASH_FIELDS 里，hash 判重失效 → 双份入账。改 HASH_FIELDS 是 HASH-CRITICAL 变更
+# （全部历史行换键、必须双跑 parity），代价极大；这里改为：hash 仍是一级键，
+# 另按「代码 / 日期 / 方向 / |数量| / 发生金额 / 币种」找已入账的归档行——发生金额
+# 是结算精确值，不受展示精度影响，所以同键不同 hash 的差异面恰好就是精度漂移。
+#
+# 三条纪律：
+#   1. **计数而非存在**：同日同价的真实多笔成交是常态（同批判重靠
+#      duplicate_occurrence 区分），每键只把"多出已入账行数"的那部分判疑似；
+#   2. 已入账一侧只认 `transaction_id IS NOT NULL` 的归档行（"这笔经济成交入过账吗"），
+#      归档行有精确 amount 而 Transaction 没有金额列；
+#   3. 疑似行归档为 skip_reason=SUSPECTED_DUPLICATE、不入账，沿用未归属税行的
+#      三段式（标记 → 重导时加载 → 人工确认后原地转正），绝不插第二条同 hash 行。
+# ---------------------------------------------------------------------------
+
+SUSPECTED_DUPLICATE = "suspected_duplicate"
+
+# (证券代码, 成交日期, 方向, |数量|, 发生金额, 币种) —— Decimal 直接参与比较
+# （1.30 == 1.3），不要字符串化
+BookedTradeKey = Tuple[str, date, str, Decimal, Decimal, str]
+
+
+@dataclass
+class SuspectedDuplicateResolution:
+    """`classify_suspected_duplicates` 的结论，预览与导入共用同一份。"""
+
+    held_hashes: set = field(default_factory=set)  # 本批判疑似、要归档不入账的 row_hash
+    matches: Dict[str, Any] = field(default_factory=dict)  # row_hash → 配对的已入账归档行
+    previously_held: Dict[str, Any] = field(default_factory=dict)  # 上次已归档为疑似的行
+    confirmed_hashes: frozenset = frozenset()
+
+
+def mark_suspected_duplicate(source, note: str):
+    """把新建的归档行标记为"疑似重复"（调用方负责 db.add）。"""
+    source.skip_reason = SUSPECTED_DUPLICATE
+    source.notes = f"{source.notes or ''}; {note}".strip("; ")
+    return source
+
+
+def book_suspected_source(source, transaction_id: int):
+    """人工确认为真实成交后就地转正：补交易链接、清标记、留痕。绝不插新行。"""
+    source.transaction_id = transaction_id
+    source.skip_reason = None
+    source.notes = (
+        f"{source.notes or ''}; confirmed as a distinct trade during re-import"
+    ).strip("; ")
+    return source
+
+
+def classify_suspected_duplicates(
+    db: Session,
+    model,
+    *,
+    user_id: int,
+    broker_account_id: Optional[int],
+    candidates: Sequence[Any],
+    key_of_flow: Callable[[Any], BookedTradeKey],
+    key_of_source: Callable[[Any], Optional[BookedTradeKey]],
+    batch_hashes: set,
+    previously_held: Optional[Dict[str, Any]] = None,
+    confirmed_hashes: frozenset = frozenset(),
+) -> SuspectedDuplicateResolution:
+    """按二级键把本批候选行分成"疑似重复（扣住）"与"照常入账"。
+
+    candidates: 会成为交易且 hash 不在库里的解析行（调用方已剔除 hash 命中行）；
+    key_of_flow / key_of_source: 解析行 / 归档行 → BookedTradeKey（归档行返回 None 表示
+    它不是成交行，不参与配对）；batch_hashes: 本批全部 row_hash——hash 已命中的
+    已入账行由本批的重复行"解释"，不再占用额度。
+    """
+    previously_held = previously_held or {}
+    resolution = SuspectedDuplicateResolution(
+        previously_held=dict(previously_held), confirmed_hashes=confirmed_hashes
+    )
+    pool = sorted(
+        (
+            flow
+            for flow in candidates
+            if flow.row_hash not in confirmed_hashes and flow.row_hash not in previously_held
+        ),
+        key=lambda flow: (flow.source_row_number or 0, flow.row_hash),
+    )
+    if not pool:
+        return resolution
+    keys = {key_of_flow(flow) for flow in pool}
+    query = db.query(model).filter(
+        model.user_id == user_id,
+        model.transaction_id.isnot(None),
+        model.trade_date.in_(sorted({key[1] for key in keys})),
+        model.security_code.in_(sorted({key[0] for key in keys})),
+    )
+    if broker_account_id is not None:
+        query = query.filter(model.broker_account_id == broker_account_id)
+    else:
+        query = query.filter(model.broker_account_id.is_(None))
+    existing_by_key: Dict[BookedTradeKey, List[Any]] = {}
+    for row in query.order_by(model.trade_date, model.security_code, model.id).all():
+        if row.row_hash in batch_hashes:
+            continue  # 本批已有同 hash 行与之配对，不再占用额度
+        key = key_of_source(row)
+        if key is not None and key in keys:
+            existing_by_key.setdefault(key, []).append(row)
+    consumed: Dict[BookedTradeKey, int] = {}
+    for flow in pool:
+        key = key_of_flow(flow)
+        budget = existing_by_key.get(key, [])
+        used = consumed.get(key, 0)
+        if used < len(budget):
+            resolution.held_hashes.add(flow.row_hash)
+            resolution.matches[flow.row_hash] = budget[used]
+            consumed[key] = used + 1
+    return resolution

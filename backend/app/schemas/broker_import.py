@@ -16,6 +16,28 @@ class BrokerImportSample(BaseModel):
     duplicate: bool
 
 
+class SuspectedDuplicateSample(BaseModel):
+    """疑似重复成交行（#190）：与已入账流水同「代码/日期/方向/数量/金额/币种」但 hash 不同。"""
+
+    row_number: int
+    symbol: str
+    name: Optional[str] = None
+    market: str
+    transaction_type: str
+    trade_date: str
+    quantity: str
+    amount: str
+    price: str
+    existing_price: Optional[str] = None
+    existing_source_filename: Optional[str] = None
+    existing_import_batch_id: Optional[int] = None
+    existing_row_number: Optional[int] = None
+    existing_row_hash: Optional[str] = None
+    row_hash: str
+    # 上一批已归档为疑似、仍未确认：本次按重复计，列出来供确认
+    previously_held: bool = False
+
+
 class BrokerImportResult(BaseModel):
     broker: str = "招商证券"
     filename: str
@@ -53,6 +75,11 @@ class BrokerImportResult(BaseModel):
     skipped_excluded_rows: int = 0
     # 本批新增（非重复）的排除行：批次状态的预期跳过抵扣口径
     excluded_unbooked_rows: int = 0
+    # 疑似重复（#190）：归档不入账，待人工确认（confirm_suspected_row_hashes 重导）
+    suspected_duplicate_rows: int = 0
+    suspected_duplicate_samples: List[SuspectedDuplicateSample] = Field(default_factory=list)
+    # 期初建仓行（招商「转托转入」→ OPENING_POSITION 公司行动，#174）
+    eligible_opening_position_rows: int = 0
     affected_symbols: int
     date_start: Optional[str] = None
     date_end: Optional[str] = None

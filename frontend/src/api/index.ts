@@ -356,14 +356,25 @@ const api = {
       broker_account_id: brokerAccountId
     })
   },
-  previewCmbFundFlows(file: File | Blob, brokerAccountId: number | string | null = null) {
+  // confirmHashes：用户确认为真实成交的疑似重复行（#190），空数组时不发该字段
+  previewCmbFundFlows(
+    file: File | Blob,
+    brokerAccountId: number | string | null = null,
+    confirmHashes: string[] = []
+  ) {
     return uploadFile('/import/cmb-fund-flows/preview', file, {
-      broker_account_id: brokerAccountId
+      broker_account_id: brokerAccountId,
+      confirm_suspected_row_hashes: confirmHashes.join(',')
     })
   },
-  importCmbFundFlows(file: File | Blob, brokerAccountId: number | string | null = null) {
+  importCmbFundFlows(
+    file: File | Blob,
+    brokerAccountId: number | string | null = null,
+    confirmHashes: string[] = []
+  ) {
     return uploadFile('/import/cmb-fund-flows', file, {
-      broker_account_id: brokerAccountId
+      broker_account_id: brokerAccountId,
+      confirm_suspected_row_hashes: confirmHashes.join(',')
     })
   },
   previewIbkrActivity(file: File | Blob, brokerAccountId: number | string | null = null) {
@@ -402,6 +413,10 @@ const api = {
   },
   updateCorporateAction(id: number | string, data: RequestData) {
     return apiClient.put<CorporateAction>(`/corporate-actions/${id}`, data)
+  },
+  // 期初建仓补录成本（导入建的行动也允许，只开放两个成本字段与备注，#174）
+  updateOpeningPositionCost(id: number | string, data: RequestData) {
+    return apiClient.patch<CorporateAction>(`/corporate-actions/${id}/cost-basis`, data)
   },
   deleteCorporateAction(id: number | string) {
     return apiClient.delete(`/corporate-actions/${id}`)

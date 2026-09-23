@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 from .report_statements import STATEMENT_EXTRACTOR_VERSION
 
-STATEMENT_PROMPT_VERSION = 2
+STATEMENT_PROMPT_VERSION = 3
 
 # 目标科目：与 report_fetchers.YAHOO_HK_FIELD_MAP / earnings_quality.pivot_rows_to_statements
 # 对齐（同名 = 同口径），下游利润质量/格雷厄姆/分析输入零改动即可消费
@@ -47,6 +47,10 @@ STATEMENT_FIELDS: Dict[str, Dict[str, str]] = {
         "money_cap": "现金及现金等价物（不含受限制现金/定期存款）",
         "total_liab": "负债总额/总负债（没有合计行则留 null，由系统用 total_cur_liab + total_ncl 推导）",
         "total_hldr_eqy_exc_min_int": "本公司权益持有人应占权益/归属母公司股东权益（不含非控制性权益）",
+        "total_equity": "权益总额/权益合计/总权益（含非控制性权益；权益部分的合计行。没有则留 null，"
+        "由系统用 total_hldr_eqy_exc_min_int + minority_int 推导）",
+        "minority_int": "非控股权益/非控制性权益/少数股东权益——**权益部分**的那一行（可能为负）；"
+        "不是负债内的少数股东款项",
         "total_debt": "借款合计：短期借款+长期借款+应付票据/债券（流动与非流动都算，多行求和；不含租赁负债与经营性应付）",
     },
     "cashflow": {
@@ -70,11 +74,16 @@ EXPENSE_MAGNITUDE_FIELDS = frozenset(
 REQUIRED_FIELDS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
     "income": (("total_revenue",),),
     "balance": (("total_assets",), ("total_nca", "total_cur_assets")),
+    "cashflow": (("n_cashflow_act",),),
 }
+# 软必需：缺了不整份判失败，而是**丢掉这张表**并记 unresolved——01133 式的现金流量表块
+# 越界到乱码表时，损益/資產負債表本身是好的；没有经营现金流的 capex 单独也没用
+SOFT_REQUIRED_KINDS = frozenset({"cashflow"})
 # 报表没有直接列出时按分项求和推导的合计科目：目标 → 加数（缺任一加数则不推导）
 DERIVED_SUM_FIELDS: Dict[str, Tuple[str, ...]] = {
     "total_assets": ("total_nca", "total_cur_assets"),
     "total_liab": ("total_cur_liab", "total_ncl"),
+    "total_equity": ("total_hldr_eqy_exc_min_int", "minority_int"),
 }
 # 科目 → 所属报表（比较期按表合并、覆盖粒度都以此为准）；free_cashflow 由现金流量表推导
 FIELD_KIND: Dict[str, str] = {
@@ -109,6 +118,9 @@ _SYSTEM_PROMPT = """你是财务报表科目映射器。用户给出一家上市
 6a. 財務狀況表若没有「資產總值/總資產」合计行（港股净资产格式），total_assets 留 null，\
 改为映射 total_nca（非流動資產總值）与 total_cur_assets（流動資產總值），系统会相加；\
 「總資產減流動負債」「流動資產淨值」都不是总资产。
+6b. total_equity 取**权益部分**的合计行（權益總額/總權益/權益合計，含非控股權益），\
+minority_int 取权益部分的「非控股權益/非控制性權益/少數股東權益」行；负债内的少数股东款项\
+不算。没有权益总额行时 total_equity 留 null，系统用归母权益 + 非控股权益推导。
 7. 输出严格 JSON：{"income": {科目: [id...] | null, ...}, "balance": {...}, "cashflow": {...}}，\
 只包含输入中存在的报表，不要任何解释文字。"""
 
@@ -193,5 +205,9 @@ def parse_statement_mapping(
         resolved_fields = mapping.get(kind, {})
         if not any(all(field in resolved_fields for field in group) for group in groups):
             wanted = " 或 ".join("+".join(group) for group in groups)
+            if kind in SOFT_REQUIRED_KINDS:
+                mapping[kind] = {}
+                unresolved.append(f"{kind}.{wanted}:required")
+                continue
             raise ValueError(f"科目映射缺少必需科目 {kind}.{wanted}")
     return mapping, unresolved

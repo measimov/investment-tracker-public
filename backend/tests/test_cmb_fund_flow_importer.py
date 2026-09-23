@@ -1503,7 +1503,7 @@ def test_cmb_parser_version_tracks_booking_semantics():
 
     若本断言失败，说明你改了 parser 行为——请升级 PARSER_VERSION 并更新此处。
     """
-    assert importer.PARSER_VERSION == "12"
+    assert importer.PARSER_VERSION == "14"
 
 
 def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
@@ -2401,3 +2401,494 @@ def test_cmb_lot_multiplier_does_not_touch_zero_cash_businesses(monkeypatch):
     assert flow.transaction_type == "BUY"  # 中签仍然建仓
     assert flow.share_multiplier == Decimal("1")
     assert flow.booked_quantity == Decimal("10.00")  # 不是 100
+
+
+# ---------------------------------------------------------------------------
+# #190 疑似重复守卫：券商新旧导出成交价精度不同（1.30 vs 1.2980），trade_price 在
+# HASH_FIELDS 里 → hash 判重失效 → 双份入账。row_hash 不动，另按
+# (代码/日期/方向/|数量|/发生金额/币种) 找已入账行，多出来的部分归档不入账待确认。
+# ---------------------------------------------------------------------------
+
+
+def _drift_flow(row_number, row_hash, *, price, quantity="900", amount="-1173.20",
+                code="515180", day=26, business_name="证券买入", currency="CNY"):
+    from dataclasses import replace
+
+    flow = parsed_flow(
+        row_number=row_number, row_hash=row_hash, business_name=business_name,
+        trade_date=date(2026, 6, day), quantity=quantity, price=price, amount=amount,
+    )
+    # 贴近 PDF 源：流水号/合同编号永远为空
+    return replace(
+        flow, security_code=code, security_name="国联安半导体ETF", currency=currency,
+        serial_number=None, contract_number=None,
+        commission=Decimal("5"), remaining_quantity=None,
+    )
+
+
+def _fake_hash(label: str) -> str:
+    return hashlib.sha256(label.encode()).hexdigest()
+
+
+def _old_export(n=6):
+    return [_drift_flow(i + 1, _fake_hash(f"old-{i}"), price="1.30") for i in range(n)]
+
+
+def _new_export(n=6):
+    return [_drift_flow(i + 1, _fake_hash(f"new-{i}"), price="1.2980") for i in range(n)]
+
+
+def _import(db, account, monkeypatch, flows, **kwargs):
+    _patch_parse(monkeypatch, flows, {"证券买入": len(flows)})
+    return import_cmb_fund_flow(
+        db, 1, b"%PDF-" + str(id(flows)).encode(), "cmb.pdf",
+        broker_account_id=account.id, **kwargs,
+    )
+
+
+def _preview(db, account, monkeypatch, flows, **kwargs):
+    _patch_parse(monkeypatch, flows, {"证券买入": len(flows)})
+    return importer.preview_cmb_fund_flow(
+        db, 1, b"%PDF-" + str(id(flows)).encode(), "cmb.pdf",
+        broker_account_id=account.id, **kwargs,
+    )
+
+
+def test_cmb_price_precision_drift_is_held_not_double_booked(monkeypatch):
+    """生产实锤（#190）：旧导出 2 位小数入账后，新导出 4 位小数同笔成交必须被扣住。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商精度漂移账户")
+        first = _import(db, account, monkeypatch, _old_export())
+        assert first["imported_transactions"] == 6 and first["batch_status"] == "COMPLETED"
+
+        second = _import(db, account, monkeypatch, _new_export())
+        assert second["suspected_duplicate_rows"] == 6
+        assert second["imported_transactions"] == 0
+        assert second["duplicate_rows"] == 0
+        assert second["batch_status"] == "PARTIAL"
+        assert db.query(Transaction).count() == 6, "同笔成交不得双份入账"
+        held = db.query(BrokerFundFlow).filter_by(skip_reason="suspected_duplicate").all()
+        assert len(held) == 6 and all(row.transaction_id is None for row in held)
+        assert all("manual confirmation required" in (row.notes or "") for row in held)
+        batch = db.get(ImportBatch, second["import_batch_id"])
+        assert "疑似" in (batch.error_message or "") and batch.skipped_count == 6
+
+        sample = second["suspected_duplicate_samples"][0]
+        assert sample["price"] == "1.2980" and sample["existing_price"] == "1.3"
+        assert Decimal(sample["quantity"]) == 900 and Decimal(sample["amount"]) == Decimal("-1173.20")
+        assert sample["existing_row_hash"] and sample["previously_held"] is False
+        assert sample["existing_import_batch_id"] == first["import_batch_id"]
+        # HASH_FIELDS 未动：两份导出的 hash 本来就不同
+        assert {s["row_hash"] for s in second["suspected_duplicate_samples"]} == {
+            f.row_hash for f in _new_export()
+        }
+    finally:
+        db.close()
+
+
+def test_cmb_same_batch_double_fills_still_book(monkeypatch):
+    """同日同价同量的两笔真实成交（同批靠 duplicate_occurrence 区分）照常入账。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商同批双笔账户")
+        result = _import(db, account, monkeypatch, _new_export(2))
+        assert result["imported_transactions"] == 2
+        assert result["suspected_duplicate_rows"] == 0
+    finally:
+        db.close()
+
+
+def test_cmb_only_excess_over_booked_count_is_held(monkeypatch):
+    """库里已入账 1 笔，本批同键 2 笔新 hash：扣 1 笔、入 1 笔（计数语义，不是存在语义）。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商额度账户")
+        _import(db, account, monkeypatch, _old_export(1))
+        result = _import(db, account, monkeypatch, _new_export(2))
+        assert result["suspected_duplicate_rows"] == 1
+        assert result["imported_transactions"] == 1
+        assert db.query(Transaction).count() == 2
+    finally:
+        db.close()
+
+
+def test_cmb_hash_duplicates_consume_the_budget(monkeypatch):
+    """库里 E1(h1) E2(h2) 已入账；本批 h1 + h3：h1 是 hash 重复、只剩 E2 可配 → h3 扣住；
+    本批 h1 + h3 + h4：h3 扣住、h4 入账。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商额度占用账户")
+        old = _old_export(2)
+        _import(db, account, monkeypatch, old)
+        h3 = _drift_flow(3, _fake_hash("h3"), price="1.2980")
+        h4 = _drift_flow(4, _fake_hash("h4"), price="1.2980")
+        result = _import(db, account, monkeypatch, [old[0], h3])
+        assert result["duplicate_rows"] == 1 and result["suspected_duplicate_rows"] == 1
+        assert result["imported_transactions"] == 0
+
+        result = _import(db, account, monkeypatch, [old[0], h3, h4])
+        # h3 上次已归档为疑似 → 本次按重复计；h4 与 E2 配对 → 扣住；无可入账
+        assert result["duplicate_rows"] == 2 and result["suspected_duplicate_rows"] == 1
+        assert db.query(Transaction).count() == 2
+    finally:
+        db.close()
+
+
+def test_cmb_guard_ignores_rows_that_do_not_become_transactions(monkeypatch):
+    """排除清单命中的标的即使同键漂移也不进守卫——它们本来就不入账为交易，只归档。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商非交易行账户")
+        db.add(SecurityRule(
+            user_id=1, rule_type="EXCLUDE", symbol="511880", market="A股",
+            payload={}, note="排除",
+        ))
+        db.commit()
+        old = [_drift_flow(1, _fake_hash("f1"), price="100.56", code="511880", quantity="900",
+                           amount="-90499.50")]
+        new = [_drift_flow(1, _fake_hash("f2"), price="100.5550", code="511880", quantity="900",
+                           amount="-90499.50")]
+        first = _import(db, account, monkeypatch, old)
+        second = _import(db, account, monkeypatch, new)
+        assert first["imported_transactions"] == 0 and second["imported_transactions"] == 0
+        assert second["suspected_duplicate_rows"] == 0
+    finally:
+        db.close()
+
+
+def test_cmb_preview_and_import_agree_on_suspected_rows(monkeypatch):
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商预览一致账户")
+        _import(db, account, monkeypatch, _old_export(3))
+        new = _new_export(4)  # 3 笔漂移 + 1 笔真新增（第 4 笔同键但超出额度）
+        preview = _preview(db, account, monkeypatch, new)
+        assert preview["suspected_duplicate_rows"] == 3
+        assert preview["errors_total"] == 0
+        preview_hashes = {s["row_hash"] for s in preview["suspected_duplicate_samples"]}
+        imported = _import(db, account, monkeypatch, new)
+        assert imported["suspected_duplicate_rows"] == 3
+        assert imported["imported_transactions"] == 1
+        assert {s["row_hash"] for s in imported["suspected_duplicate_samples"]} == preview_hashes
+    finally:
+        db.close()
+
+
+def test_cmb_suspected_reimport_is_duplicate_not_crash(monkeypatch):
+    """#189 同款：已归档为疑似的行重导，不得插第二条同 hash 行撞唯一约束；批次 COMPLETED。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商疑似重导账户")
+        _import(db, account, monkeypatch, _old_export())
+        _import(db, account, monkeypatch, _new_export())
+        third = _import(db, account, monkeypatch, _new_export())
+        assert third["duplicate_rows"] == 6
+        assert third["suspected_duplicate_rows"] == 0
+        assert third["batch_status"] == "COMPLETED" and third["errors_total"] == 0
+        assert all(s["previously_held"] for s in third["suspected_duplicate_samples"])
+        assert len(third["suspected_duplicate_samples"]) == 6
+        assert db.query(BrokerFundFlow).filter_by(skip_reason="suspected_duplicate").count() == 6
+        assert db.query(BrokerFundFlow).count() == 12
+        preview = _preview(db, account, monkeypatch, _new_export())
+        assert preview["duplicate_rows"] == 6 and preview["suspected_duplicate_rows"] == 0
+    finally:
+        db.close()
+
+
+def test_cmb_confirmed_suspected_rows_are_booked_in_place(monkeypatch):
+    """带确认清单重导：确认的行在原归档行上转正（不插新行），其余仍按重复计。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商确认转正账户")
+        _import(db, account, monkeypatch, _old_export())
+        _import(db, account, monkeypatch, _new_export())
+        confirm = frozenset({_new_export()[0].row_hash})
+
+        preview = _preview(db, account, monkeypatch, _new_export(), confirmed_row_hashes=confirm)
+        assert preview["suspected_duplicate_rows"] == 0
+        assert preview["duplicate_rows"] == 5
+        assert len(preview["suspected_duplicate_samples"]) == 5  # 仍待确认的 5 条
+
+        result = _import(db, account, monkeypatch, _new_export(), confirmed_row_hashes=confirm)
+        assert result["imported_transactions"] == 1 and result["duplicate_rows"] == 5
+        assert db.query(Transaction).count() == 7
+        assert db.query(BrokerFundFlow).count() == 12, "转正不得插新行"
+        booked = db.query(BrokerFundFlow).filter_by(row_hash=next(iter(confirm))).one()
+        assert booked.transaction_id is not None and booked.skip_reason is None
+        assert "confirmed as a distinct trade" in booked.notes
+        assert db.query(BrokerFundFlow).filter_by(skip_reason="suspected_duplicate").count() == 5
+    finally:
+        db.close()
+
+
+def test_cmb_confirm_list_must_reference_rows_in_the_file(monkeypatch):
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商确认校验账户")
+        with pytest.raises(ValueError, match="确认列表"):
+            _preview(db, account, monkeypatch, _new_export(1), confirmed_row_hashes=frozenset({"9" * 64}))
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# #174 转托转入 → 期初建仓（OPENING_POSITION）；场外确认行 = 预期归档
+# ---------------------------------------------------------------------------
+
+MIGRATION_OPENING_POSITION = "20260920_0020"
+
+
+def _opening_flow(row_number, row_hash, *, price="0", quantity="269", code="161226",
+                  business_name="转托转入", day=20, market_text="深圳"):
+    from dataclasses import replace
+
+    flow = parsed_flow(
+        row_number=row_number, row_hash=row_hash, business_name=business_name,
+        trade_date=date(2025, 12, day), quantity=quantity, price=price, amount="0",
+    )
+    return replace(
+        flow, security_code=code, security_name="白银LOF", commission=Decimal("0"),
+        serial_number=None, contract_number=None, market_text=market_text,
+    )
+
+
+def _sell_flow(row_number, row_hash, *, quantity="269", code="161226", day=29):
+    from dataclasses import replace
+
+    flow = parsed_flow(
+        row_number=row_number, row_hash=row_hash, business_name="证券卖出",
+        trade_date=date(2025, 12, day), quantity=f"-{quantity}", price="5.00",
+        amount=str(Decimal(quantity) * Decimal("5.00") - Decimal("5")),
+    )
+    return replace(flow, security_code=code, security_name="白银LOF", commission=Decimal("5"),
+                   serial_number=None, contract_number=None)
+
+
+def _off_exchange_flow(row_number, row_hash, *, business_name, quantity="269", amount="0"):
+    from dataclasses import replace
+
+    flow = parsed_flow(
+        row_number=row_number, row_hash=row_hash, business_name=business_name,
+        trade_date=date(2025, 12, 19), quantity=quantity, price="0", amount=amount,
+    )
+    return replace(flow, security_code="161226", security_name="白银LOF", commission=Decimal("0"),
+                   serial_number=None, contract_number=None, market_text="场外开基")
+
+
+def test_cmb_custody_transfer_in_books_opening_position_and_unblocks_sell(monkeypatch):
+    """issue #174 现场：转托转入 +269（价 0）+ 同单卖出 269 → 预览无预检错误、导入 COMPLETED，
+    期初建仓成本未知在告警/持仓两处显式暴露。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商转托管账户")
+        flows = [_opening_flow(1, hashlib.sha256(b"in").hexdigest()),
+                 _sell_flow(2, hashlib.sha256(b"sell").hexdigest())]
+        counts = {"转托转入": 1, "证券卖出": 1}
+        _patch_parse(monkeypatch, flows, counts)
+        preview = importer.preview_cmb_fund_flow(db, 1, b"%PDF-p", "cmb.pdf", broker_account_id=account.id)
+        assert preview["errors_total"] == 0, preview["errors"]
+        assert preview["eligible_opening_position_rows"] == 1
+        assert any("期初建仓入账，成本未知" in w for w in preview["warnings"])
+
+        _patch_parse(monkeypatch, flows, counts)
+        result = import_cmb_fund_flow(db, 1, b"%PDF-i", "cmb.pdf", broker_account_id=account.id)
+        assert result["batch_status"] == "COMPLETED", result
+        assert result["imported_corporate_actions"] == 1 and result["imported_transactions"] == 1
+        assert result["warnings"] == preview["warnings"]
+        action = db.query(CorporateAction).one()
+        assert action.action_type == "OPENING_POSITION" and action.broker_account_id == account.id
+        assert action.adjusted_quantity == Decimal("269") and action.adjusted_cost_per_share is None
+        assert action.cost_basis_adjustment is None and action.import_batch_id == result["import_batch_id"]
+        archived = db.query(BrokerFundFlow).filter_by(row_hash=flows[0].row_hash).one()
+        assert archived.corporate_action_id == action.id and archived.skip_reason is None
+        holdings = db.query(Holding).filter_by(symbol="161226").all()
+        assert holdings == []  # 269 转入、269 卖出 → 清仓
+    finally:
+        db.close()
+
+
+def test_cmb_custody_transfer_in_with_price_records_cost(monkeypatch):
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商转托管有价账户")
+        flows = [_opening_flow(1, hashlib.sha256(b"in-priced").hexdigest(), price="4.50", quantity="100")]
+        _patch_parse(monkeypatch, flows, {"转托转入": 1})
+        result = import_cmb_fund_flow(db, 1, b"%PDF-i", "cmb.pdf", broker_account_id=account.id)
+        assert result["batch_status"] == "COMPLETED" and result["warnings"] == []
+        action = db.query(CorporateAction).one()
+        assert action.adjusted_cost_per_share == Decimal("4.5") and action.cost_basis_adjustment == Decimal("450")
+        holding = db.query(Holding).filter_by(symbol="161226").one()
+        assert holding.quantity == Decimal("100") and holding.total_cost == Decimal("450")
+        assert holding.unknown_cost_quantity == Decimal("0")
+    finally:
+        db.close()
+
+
+def test_cmb_sell_without_opening_position_is_still_rejected(monkeypatch):
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商无期初仓账户")
+        _patch_parse(monkeypatch, [_sell_flow(1, hashlib.sha256(b"lone-sell").hexdigest())], {"证券卖出": 1})
+        with pytest.raises(ValueError, match="缺少期初持仓或证券转入记录"):
+            import_cmb_fund_flow(db, 1, b"%PDF-i", "cmb.pdf", broker_account_id=account.id)
+        assert db.query(Transaction).count() == 0
+    finally:
+        db.close()
+
+
+def test_cmb_legacy_archived_transfer_in_is_promoted_after_migration(monkeypatch):
+    """迁移前无链接归档的转托转入：0020 回填 skip_reason 后，重导在原行上转正；再导计重复。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商存量转入账户")
+        legacy = _opening_flow(1, hashlib.sha256(b"legacy-in").hexdigest())
+        db.add(importer.create_broker_fund_flow(
+            user_id=1, broker_account_id=account.id, filename="legacy.pdf", flow=legacy, import_batch_id=None,
+        ))
+        db.commit()
+        orphan_id = db.query(BrokerFundFlow).one().id
+
+        run_migration(db, MIGRATION_OPENING_POSITION, "downgrade")
+        run_migration(db, MIGRATION_OPENING_POSITION, "upgrade")
+        db.commit()
+        db.expire_all()
+        orphan = db.query(BrokerFundFlow).one()
+        assert orphan.skip_reason == "unbooked_opening_position"
+        assert "migration 20260920_0020" in orphan.notes
+
+        _patch_parse(monkeypatch, [legacy, _sell_flow(2, hashlib.sha256(b"sell-2").hexdigest())],
+                     {"转托转入": 1, "证券卖出": 1})
+        result = import_cmb_fund_flow(db, 1, b"%PDF-re", "cmb.pdf", broker_account_id=account.id)
+        assert result["imported_corporate_actions"] == 1 and result["batch_status"] == "COMPLETED"
+        recovered = db.query(BrokerFundFlow).filter_by(row_hash=legacy.row_hash).one()
+        assert recovered.id == orphan_id and recovered.corporate_action_id is not None
+        assert recovered.skip_reason is None
+
+        _patch_parse(monkeypatch, [legacy], {"转托转入": 1})
+        again = import_cmb_fund_flow(db, 1, b"%PDF-again", "cmb.pdf", broker_account_id=account.id)
+        assert again["duplicate_rows"] == 1 and db.query(CorporateAction).count() == 1
+    finally:
+        db.close()
+
+
+def test_cmb_preserved_transfer_in_that_is_now_excluded_counts_as_duplicate(monkeypatch):
+    """#189 同款：已回填标记的转入行若被排除清单命中，重导按重复计，不撞唯一约束。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商转入排除账户")
+        legacy = _opening_flow(1, hashlib.sha256(b"legacy-ex").hexdigest())
+        archived = importer.create_broker_fund_flow(
+            user_id=1, broker_account_id=account.id, filename="legacy.pdf", flow=legacy, import_batch_id=None,
+        )
+        archived.skip_reason = "unbooked_opening_position"
+        db.add(archived)
+        db.add(SecurityRule(user_id=1, rule_type="EXCLUDE", symbol="161226", market="A股", payload={}, note="x"))
+        db.commit()
+        _patch_parse(monkeypatch, [legacy], {"转托转入": 1})
+        result = import_cmb_fund_flow(db, 1, b"%PDF-ex", "cmb.pdf", broker_account_id=account.id)
+        assert result["duplicate_rows"] == 1 and result["errors_total"] == 0
+        assert db.query(BrokerFundFlow).count() == 1 and db.query(CorporateAction).count() == 0
+    finally:
+        db.close()
+
+
+def test_cmb_off_exchange_confirmations_are_expected_archives(monkeypatch):
+    """场外开基的申购/赎回/转托管确认只归档且不拖批次 PARTIAL；托管转出（深圳）如实 PARTIAL + 告警。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = _cmb_account(db, "招商场外账户")
+        buy = parsed_flow(row_number=1, row_hash=hashlib.sha256(b"buy").hexdigest(), business_name="证券买入",
+                          trade_date=date(2025, 12, 1), quantity="100", price="10", amount="-1001")
+        flows = [
+            buy,
+            _off_exchange_flow(2, hashlib.sha256(b"sub").hexdigest(), business_name="产品申购确认", amount="-1000"),
+            _off_exchange_flow(3, hashlib.sha256(b"red").hexdigest(), business_name="产品赎回确认", quantity="-100", amount="1000"),
+            _off_exchange_flow(4, hashlib.sha256(b"cust").hexdigest(), business_name="产品转托管确认", quantity="-269"),
+        ]
+        _patch_parse(monkeypatch, flows, {"证券买入": 1, "产品申购确认": 1, "产品赎回确认": 1, "产品转托管确认": 1})
+        result = import_cmb_fund_flow(db, 1, b"%PDF-off", "cmb.pdf", broker_account_id=account.id)
+        assert result["expected_archived_rows"] == 3 and result["skipped_non_trade_rows"] == 0
+        assert result["batch_status"] == "COMPLETED", result
+        assert db.query(BrokerFundFlow).count() == 4
+
+        out = _opening_flow(5, hashlib.sha256(b"out").hexdigest(), business_name="托管转出", quantity="-50")
+        _patch_parse(monkeypatch, [out], {"托管转出": 1})
+        result = import_cmb_fund_flow(db, 1, b"%PDF-out", "cmb.pdf", broker_account_id=account.id)
+        assert result["batch_status"] == "PARTIAL"
+        assert any("托管转出" in w and "高估" in w for w in result["warnings"])
+        assert db.query(BrokerFundFlow).filter_by(row_hash=out.row_hash).one().skip_reason == "unbooked_custody_out"
+
+        # 同一份（重叠区间）对账单再导：正常成交 + 托管转出——托管转出归档行必须幂等，
+        # 不能再次通用归档撞 row_hash 唯一约束把整批（含新成交）回滚
+        buy2 = parsed_flow(row_number=6, row_hash=hashlib.sha256(b"buy2").hexdigest(), business_name="证券买入",
+                           trade_date=date(2025, 12, 30), quantity="100", price="10", amount="-1001")
+        _patch_parse(monkeypatch, [out, buy2], {"托管转出": 1, "证券买入": 1})
+        preview = importer.preview_cmb_fund_flow(db, 1, b"%PDF-out2", "cmb.pdf", broker_account_id=account.id)
+        assert preview["duplicate_rows"] == 1 and preview["errors_total"] == 0
+        again = import_cmb_fund_flow(db, 1, b"%PDF-out2", "cmb.pdf", broker_account_id=account.id)
+        assert again["duplicate_rows"] == 1 and again["imported_transactions"] == 1
+        assert again["batch_status"] == "COMPLETED", again
+        # 持仓仍可能高估：告警不因归档行已存在而消音，且预览/导入一致
+        assert again["warnings"] == preview["warnings"]
+        assert any("托管转出" in w and "高估" in w for w in again["warnings"])
+        assert db.query(BrokerFundFlow).filter_by(row_hash=out.row_hash).count() == 1
+        assert db.query(Transaction).count() == 2
+    finally:
+        db.close()
+
+
+def test_cmb_prospective_opening_positions_match_what_import_books(monkeypatch):
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        flows = [_opening_flow(1, hashlib.sha256(b"p1").hexdigest()),
+                 _opening_flow(2, hashlib.sha256(b"p2").hexdigest(), price="2", quantity="10")]
+        prospective = importer.prospective_corporate_actions(flows, set(), broker_account_id=7)
+        assert [(p.action_type, p.adjusted_quantity, p.adjusted_cost_per_share, p.cost_basis_adjustment)
+                for p in prospective] == [
+            ("OPENING_POSITION", Decimal("269"), None, None),
+            ("OPENING_POSITION", Decimal("10"), Decimal("2"), Decimal("20")),
+        ]
+        assert prospective[0].broker_account_id == 7
+        assert importer.prospective_corporate_actions(flows, {flows[0].row_hash}, broker_account_id=7)[0].adjusted_quantity == Decimal("10")
+    finally:
+        db.close()
+
+
+def test_cmb_custody_transfer_in_parse_validation(monkeypatch):
+    """零现金前提与场内腿断言：违反即阻断，诊断词表能看到。"""
+    rows = [
+        pdf_dataframe_row(证券代码="161226", 证券名称="白银LOF", 业务名称="转托转入", 成交价格="0.00",
+                          成交数量="269.00", PDF成交金额="0.00", 发生金额="0.00", 佣金="0.00", 其他费用="0.00"),
+        pdf_dataframe_row(证券代码="161226", 证券名称="白银LOF", 业务名称="转托转入", 成交价格="0.00",
+                          成交数量="-269.00", PDF成交金额="0.00", 发生金额="0.00", 佣金="0.00", 其他费用="0.00"),
+        pdf_dataframe_row(证券代码="161226", 证券名称="白银LOF", 业务名称="转托转入", 成交价格="0.00",
+                          成交数量="269.00", PDF成交金额="0.00", 发生金额="-10.00", 佣金="0.00", 其他费用="0.00"),
+        # 真实对账单形态：存管账户侧的记账行——无代码、「资金」市场、全 0。不是持仓事件，
+        # 既不阻断也不建仓，照旧通用归档
+        pdf_dataframe_row(证券代码="", 证券名称="", 业务名称="转存管转入", 市场="资金", 成交价格="0.00",
+                          成交数量="0.00", PDF成交金额="0.00", 发生金额="0.00", 佣金="0.00", 其他费用="0.00"),
+    ]
+    monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: pd.DataFrame(rows))
+    parsed, counts, total, errors, warnings = importer.parse_rows_with_warnings(b"%PDF-fake", "statement.pdf")
+    assert len(parsed) == 2 and parsed[0].is_opening_position and not parsed[0].opening_cost_known
+    assert not parsed[1].is_opening_position and not parsed[1].security_code
+    assert len(errors) == 2
+    assert any("quantity must be positive" in e for e in errors)
+    assert any("zero-cash row" in e for e in errors)

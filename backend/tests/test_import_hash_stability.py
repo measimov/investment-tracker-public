@@ -114,3 +114,12 @@ def test_normalize_and_strict_decimal_semantics_are_stable():
     assert ibkr.normalize_hash_value(date(2026, 1, 22)) == "2026-01-22"
     assert cmb.parse_strict_pdf_decimal("1,234.50") == Decimal("1234.50")
     assert em.parse_strict_decimal("1,234.50") == Decimal("1234.50")
+
+
+def test_cmb_hash_fields_are_pinned():
+    """#190 的疑似重复守卫是 hash 之外的第二层：HASH_FIELDS 一个都不许动。"""
+    assert cmb.HASH_FIELDS == [
+        "broker", "trade_date", "serial_number", "business_name", "security_code",
+        "currency", "trade_price", "trade_quantity", "amount", "stamp_tax", "commission",
+        "other_fee", "contract_number", "shareholder_code",
+    ]

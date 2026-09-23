@@ -13,7 +13,8 @@ ActionType = Literal[
     "REVERSE_SPLIT",      # 合股
     "BONUS_ISSUE",        # 送股
     "SPIN_OFF",           # 拆分
-    "MERGER"              # 合并
+    "MERGER",             # 合并
+    "OPENING_POSITION",   # 期初建仓 / 转托管转入（账户级绝对数量，成本可选，#174）
 ]
 
 
@@ -52,10 +53,11 @@ class CorporateActionBase(BaseModel):
     split_ratio: Optional[str] = Field(None, max_length=20, description="拆股比例（如1:2）")
     new_shares: Optional[Decimal] = Field(None, ge=0, description="拆股后的股数")
 
-    # 成本基础调整
-    cost_basis_adjustment: Optional[Decimal] = Field(None, description="成本基础调整金额")
-    adjusted_quantity: Optional[Decimal] = Field(None, ge=0, description="调整后的持股数量")
-    adjusted_cost_per_share: Optional[Decimal] = Field(None, ge=0, description="调整后的每股成本")
+    # 期初建仓（OPENING_POSITION）专用：建仓数量 / 单位成本(可选) / 总成本(可选)。
+    # 两个成本都留空 = 成本未知（派生状态，不存布尔），持仓与已实现盈亏标记为估计
+    cost_basis_adjustment: Optional[Decimal] = Field(None, ge=0, description="期初建仓总成本（可选）")
+    adjusted_quantity: Optional[Decimal] = Field(None, ge=0, description="期初建仓数量")
+    adjusted_cost_per_share: Optional[Decimal] = Field(None, ge=0, description="期初建仓单位成本（可选）")
 
     # 其他
     currency: str = Field(default="CNY", max_length=10, description="币种")
@@ -98,7 +100,30 @@ class CorporateActionCreate(CorporateActionBase):
         elif self.action_type in ("STOCK_SPLIT", "REVERSE_SPLIT"):
             if not self.split_ratio and self.new_shares is None:
                 raise ValueError("拆股/合股必须提供 split_ratio 或 new_shares")
+        elif self.action_type == "OPENING_POSITION":
+            validate_opening_position_fields(
+                self.adjusted_quantity, self.adjusted_cost_per_share, self.cost_basis_adjustment
+            )
         return self
+
+
+def validate_opening_position_fields(quantity, cost_per_share, total_cost) -> None:
+    """期初建仓：数量必填且 >0；两个成本字段都给时必须一致（按数量容差 1 分）。"""
+    if quantity is None or quantity <= 0:
+        raise ValueError("期初建仓必须提供 adjusted_quantity（>0）")
+    if cost_per_share is not None and total_cost is not None:
+        tolerance = max(Decimal("0.01") * quantity, Decimal("0.01"))
+        if abs(cost_per_share * quantity - total_cost) > tolerance:
+            raise ValueError("期初建仓的 单位成本×数量 与 总成本 不一致")
+
+
+class OpeningPositionCostUpdate(BaseModel):
+    """只补录成本（导入建的期初仓也允许）：数量/日期/账户来自对账单，不在此改。"""
+    model_config = ConfigDict(extra="forbid")
+
+    adjusted_cost_per_share: Optional[Decimal] = Field(None, ge=0)
+    cost_basis_adjustment: Optional[Decimal] = Field(None, ge=0)
+    notes: Optional[str] = None
 
 
 class CorporateActionUpdate(BaseModel):

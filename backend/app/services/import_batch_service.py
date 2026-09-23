@@ -25,6 +25,7 @@ BATCH_SETTLEMENT_KEYS = frozenset(
         "skipped_unsupported_rows",
         "skipped_conflict_rows",
         "skipped_non_trade_rows",
+        "suspected_duplicate_rows",
     }
 )
 
@@ -233,8 +234,16 @@ def complete_import_batch(
     batch.skipped_count = unbooked_source_rows
     batch.error_count = error_count
     batch.status = "PARTIAL" if partial else "COMPLETED"
+    suspected_duplicate_rows = int(result["suspected_duplicate_rows"])
     if errors:
         batch.error_message = _error_message("; ".join(errors))
+    elif suspected_duplicate_rows:
+        # 疑似重复行（#190）也在 unbooked 里，但要把原因说清楚：用户要做的是逐条确认，
+        # 不是排查"为什么没入账"
+        batch.error_message = (
+            f"{suspected_duplicate_rows} 条成交疑似与已入账流水重复（成交价精度不同），"
+            "已归档未入账，待人工确认"
+        )
     elif unbooked_source_rows:
         batch.error_message = (
             f"{unbooked_source_rows} source row(s) were not booked to a canonical event"
