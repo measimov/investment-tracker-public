@@ -115,3 +115,6 @@ backend/secrets/*
 .xueqiu-cookies.json
 *xueqiu*cookie*.json
 cookies.xueqiu.json
+
+# symlinked from the private checkout during local verification; never publish
+frontend/node_modules
