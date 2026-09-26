@@ -9,11 +9,15 @@ EDGAR 合规要求：UA 须携带联系方式（settings.edgar_user_agent），�
 """
 
 import json
+import socket
 import threading
 import time
 from typing import Any, Dict, List, Optional
 
 import requests
+import requests.adapters
+import urllib3
+import urllib3.connection
 
 from ..core.logging import get_app_logger
 
@@ -49,6 +53,20 @@ _sleep = time.sleep
 
 PDF_DOWNLOAD_TIMEOUT_SECONDS = 60
 PDF_MAX_BYTES = 50 * 1024 * 1024
+# 下载总时长与最低速度：`timeout=` 只管「多久没有任何字节」，连接退化成涓流时（2026-09-26 实测
+# 披露易某个 Akamai 边缘节点每秒 1.8KB，正常 500-700KB/s）字节一直在来、永远不超时，一份
+# 大 PDF 要下几个小时并卡死整个补跑。超过总时长或宽限期后平均速度过低即放弃这条连接并换新
+# 连接重试一次；仍失败抛 requests.Timeout（调用方按瞬时失败处理，不烧 attempts）
+PDF_DOWNLOAD_DEADLINE_SECONDS = 180
+PDF_MIN_SPEED_GRACE_SECONDS = 30
+PDF_MIN_BYTES_PER_SECOND = 32 * 1024
+PDF_DOWNLOAD_ATTEMPTS = 2
+_PDF_CHUNK_BYTES = 64 * 1024
+# 主线程监督下载的轮询间隔（墙钟上限的精度）
+_PDF_WATCHDOG_POLL_SECONDS = 0.5
+# 打断后等待工作线程收尾的上限（shutdown 后 recv 立即失败，正常毫秒级）
+_PDF_WORKER_JOIN_SECONDS = 5.0
+_monotonic = time.monotonic
 
 # A股报告 category → 报告类型标记
 CNINFO_CATEGORIES = {
@@ -171,23 +189,167 @@ def download_report_pdf(url: str, *, source: str = "cninfo") -> bytes:
         if source == "hkexnews"
         else (_CNINFO_HEADERS, _CNINFO_MIN_INTERVAL_SECONDS)
     )
-    _throttle(source, interval)
-    response = requests.get(
-        url,
-        headers=headers,
-        timeout=PDF_DOWNLOAD_TIMEOUT_SECONDS,
-        stream=True,
-    )
-    response.raise_for_status()
-    chunks: List[bytes] = []
-    total = 0
-    for chunk in response.iter_content(chunk_size=1 << 20):
-        total += len(chunk)
-        if total > PDF_MAX_BYTES:
-            response.close()
-            raise ValueError(f"PDF 超过大小上限 {PDF_MAX_BYTES // (1 << 20)}MB")
-        chunks.append(chunk)
-    return b"".join(chunks)
+    last_error: Optional[requests.Timeout] = None
+    for _attempt in range(PDF_DOWNLOAD_ATTEMPTS):
+        _throttle(source, interval)
+        try:
+            return _download_once(url, headers)
+        except requests.Timeout as exc:
+            # 慢连接/总时长超限：换一条新连接（CDN 可能分到另一个边缘节点）再试
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
+def _tracking_session(sockets: List[socket.socket]) -> requests.Session:
+    """每次下载一个独立 Session：连接池的连接类在**建出 socket 的那一刻**登记它的一个 dup。
+
+    取消不能依赖 `requests.get` 返回——响应头阶段（服务端持续涓流不结束的响应头，每个字节都
+    重置读超时）`response` 还是 None（PR #212 评审 P2）。也不能登记原始 socket 本身：HTTPS 的
+    `wrap_socket` 会 detach 原始 socket 的 fd（之后 `fileno()` 为 -1，shutdown 只得到 EBADF），
+    TLS 握手与响应头阶段都拿不到 SSLSocket（评审 P1）。`sock.dup()` 是指向**同一个内核
+    socket** 的独立 fd：detach 动不到它，shutdown 它会让 SSLSocket 的阻塞 recv/握手立即失败，
+    且 fd 归我们所有、不存在被复用成别的连接的风险。dup 在下载结束时由 `_close_sockets` 关闭。"""
+
+    def track(conn_cls):
+        class _Tracked(conn_cls):
+            def _new_conn(self):  # noqa: D401 — urllib3 钩子
+                sock = super()._new_conn()
+                try:
+                    sockets.append(sock.dup())
+                except OSError:
+                    pass
+                return sock
+        return _Tracked
+
+    class _Pool(urllib3.HTTPConnectionPool):
+        ConnectionCls = track(urllib3.connection.HTTPConnection)
+
+    class _TlsPool(urllib3.HTTPSConnectionPool):
+        ConnectionCls = track(urllib3.connection.HTTPSConnection)
+
+    adapter = requests.adapters.HTTPAdapter(max_retries=0)
+    adapter.poolmanager.pool_classes_by_scheme = {"http": _Pool, "https": _TlsPool}
+    session = requests.Session()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _download_once(url: str, headers: Dict[str, str]) -> bytes:
+    """一次下载，受**墙钟**总时长与最低速度约束。
+
+    检查不能只放在「收到一块数据之后」：`iter_content` 攒满一块（或 EOF）才 yield，只要字节
+    持续涓流进来，`timeout=` 的读超时也不触发——100B/s 时第一块就要十分钟，1B/s 要十几小时
+    （PR #212 评审 P1，用真实流式服务复现）。所以读取放在工作线程里，主线程按墙钟监督：超过
+    总时长或宽限期后平均速度过低，就 shutdown 底层 socket，让阻塞中的 recv 立即失败——等待
+    响应头的阶段同样被覆盖。工作线程是 daemon，被放弃后随 socket 关闭自行结束。"""
+    state: Dict[str, Any] = {"response": None, "total": 0, "result": None, "error": None}
+    sockets: List[socket.socket] = []
+    session = _tracking_session(sockets)
+    abort = threading.Event()
+    done = threading.Event()
+    started = _monotonic()
+
+    def check(total: int) -> None:
+        elapsed = _monotonic() - started
+        if elapsed > PDF_DOWNLOAD_DEADLINE_SECONDS:
+            raise requests.Timeout(
+                f"PDF 下载超过总时长 {PDF_DOWNLOAD_DEADLINE_SECONDS}s（已收 {total // 1024}KB）"
+            )
+        if elapsed > PDF_MIN_SPEED_GRACE_SECONDS and total / elapsed < PDF_MIN_BYTES_PER_SECOND:
+            raise requests.Timeout(
+                f"PDF 下载过慢（{int(total / elapsed / 1024)}KB/s < "
+                f"{PDF_MIN_BYTES_PER_SECOND // 1024}KB/s），放弃这条连接"
+            )
+
+    def worker() -> None:
+        response = None
+        try:
+            response = session.get(
+                url, headers=headers, timeout=PDF_DOWNLOAD_TIMEOUT_SECONDS, stream=True
+            )
+            state["response"] = response
+            if abort.is_set():
+                return
+            response.raise_for_status()
+            chunks: List[bytes] = []
+            # 块要小：块越大，正常下载时工作线程内的检查越稀疏（墙钟上限由主线程兜底）
+            for chunk in response.iter_content(chunk_size=_PDF_CHUNK_BYTES):
+                if abort.is_set():
+                    return
+                state["total"] += len(chunk)
+                if state["total"] > PDF_MAX_BYTES:
+                    raise ValueError(f"PDF 超过大小上限 {PDF_MAX_BYTES // (1 << 20)}MB")
+                chunks.append(chunk)
+                check(state["total"])
+            state["result"] = b"".join(chunks)
+        except BaseException as exc:  # noqa: BLE001 — 原样交回主线程
+            state["error"] = exc
+        finally:
+            if response is not None:
+                response.close()
+            session.close()
+            done.set()
+
+    thread = threading.Thread(target=worker, name="pdf-download", daemon=True)
+    thread.start()
+    try:
+        while not done.wait(timeout=_PDF_WATCHDOG_POLL_SECONDS):
+            try:
+                check(state["total"])
+            except requests.Timeout:
+                abort.set()
+                _shutdown_sockets(sockets)
+                _force_close(state["response"])
+                # 打断后工作线程应立即结束；等它收尾（有界），线程与连接真正释放而不是被遗弃
+                thread.join(timeout=_PDF_WORKER_JOIN_SECONDS)
+                raise
+    finally:
+        if not thread.is_alive():
+            _close_sockets(sockets)
+    if state["error"] is not None:
+        raise state["error"]
+    return state["result"]
+
+
+def _shutdown_sockets(sockets: List[socket.socket]) -> None:
+    for sock in list(sockets):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def _close_sockets(sockets: List[socket.socket]) -> None:
+    """关闭登记的 dup（工作线程已结束后才关：之前关掉就失去打断手段）。"""
+    while sockets:
+        try:
+            sockets.pop().close()
+        except OSError:
+            pass
+
+
+def _force_close(response: Optional[requests.Response]) -> None:
+    """从另一线程打断阻塞中的读取：close() 在 Linux 上不保证唤醒正在 recv 的线程，
+    shutdown(SHUT_RDWR) 才会。握手与响应头阶段 response 还是 None，由 `_shutdown_sockets` 按
+    连接建立时登记的 dup 打断（见 `_tracking_session`），这里只做响应对象的收尾。"""
+    if response is None:
+        return
+    raw = getattr(response, "raw", None)
+    sock = getattr(getattr(raw, "_connection", None), "sock", None)
+    if sock is None:
+        fp = getattr(raw, "_fp", None)
+        sock = getattr(getattr(getattr(fp, "fp", None), "raw", None), "_sock", None)
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    try:
+        response.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ---------------------------------------------------------------------------

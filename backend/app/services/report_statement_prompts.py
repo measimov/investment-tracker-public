@@ -11,11 +11,12 @@ LLM **只做映射，不碰数字**：输入是 `report_statements` 解析出的
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Sequence, Tuple
+import re
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .report_statements import STATEMENT_EXTRACTOR_VERSION
 
-STATEMENT_PROMPT_VERSION = 3
+STATEMENT_PROMPT_VERSION = 4
 
 # 目标科目：与 report_fetchers.YAHOO_HK_FIELD_MAP / earnings_quality.pivot_rows_to_statements
 # 对齐（同名 = 同口径），下游利润质量/格雷厄姆/分析输入零改动即可消费
@@ -76,6 +77,15 @@ REQUIRED_FIELDS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
     "balance": (("total_assets",), ("total_nca", "total_cur_assets")),
     "cashflow": (("n_cashflow_act",),),
 }
+# 未有收入的公司（18A 生物科技，09926 2020 中报）：損益表第一行就是「其他收入及收益淨額」，
+# 根本没有收入行。收入缺失时，若表里**没有任何收入行**且映射出了净利/税前利润，接受并记
+# unresolved——判据看行标签，不看模型说了什么（有收入行却没映射仍是确定性失败）
+REVENUE_LABEL_RE = re.compile(
+    r"^(?!其他|other)(?:[\d\s、.．()（）一二三四五六七八九十]*)?"
+    r"(?:營業總收入|营业总收入|營業收入|营业收入|收入|收益|營業額|营业额|revenue|turnover)",
+    re.I,
+)
+PRE_REVENUE_FALLBACK_FIELDS = ("n_income_attr_p", "total_profit")
 # 软必需：缺了不整份判失败，而是**丢掉这张表**并记 unresolved——01133 式的现金流量表块
 # 越界到乱码表时，损益/資產負債表本身是好的；没有经营现金流的 capex 单独也没用
 SOFT_REQUIRED_KINDS = frozenset({"cashflow"})
@@ -158,7 +168,9 @@ def build_statement_messages(
 
 
 def parse_statement_mapping(
-    content: str, statements: Dict[str, Sequence[str]]
+    content: str,
+    statements: Dict[str, Sequence[str]],
+    labels: Optional[Dict[str, Sequence[str]]] = None,
 ) -> Tuple[Dict[str, Dict[str, List[str]]], List[str]]:
     """校验映射 JSON → ({kind: {field: [row_id...]}}, unresolved)。
 
@@ -204,6 +216,14 @@ def parse_statement_mapping(
             continue
         resolved_fields = mapping.get(kind, {})
         if not any(all(field in resolved_fields for field in group) for group in groups):
+            if (
+                kind == "income"
+                and labels is not None
+                and not any(REVENUE_LABEL_RE.match((label or "").strip()) for label in labels.get(kind, ()))
+                and any(field in resolved_fields for field in PRE_REVENUE_FALLBACK_FIELDS)
+            ):
+                unresolved.append("income.total_revenue:no_revenue_line")
+                continue
             wanted = " 或 ".join("+".join(group) for group in groups)
             if kind in SOFT_REQUIRED_KINDS:
                 mapping[kind] = {}

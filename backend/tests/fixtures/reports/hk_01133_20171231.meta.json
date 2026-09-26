@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "01133",
+  "end_date": "20171231",
+  "report_type": "annual",
+  "title": "01133_20171231_annual",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(62, 84)]，其余页置空以保住页码。哈爾濱電氣 2017 年报：中国准则，利潤表/現金流量表列标题是「本期發生額 上期發生額」（不是「本期金額」），資產負債表是「期末餘額 期初餘額」；表头无年份；母公司报表紧随其后",
+  "pages": 266,
+  "kept_pages": [
+    [
+      62,
+      84
+    ]
+  ],
+  "chars": 18130
+}

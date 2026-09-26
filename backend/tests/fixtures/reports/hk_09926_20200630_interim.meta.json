@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "09926",
+  "end_date": "20200630",
+  "report_type": "interim",
+  "title": "09926_20200630_interim",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(44, 53)]，其余页置空以保住页码。康方生物 2020 中期報告：18A 未有收入的生物科技公司，損益表第一行即「其他收入及收益淨額」，没有收入行；另有「(6,47 1)」「58 2」式拆开的数字",
+  "pages": 80,
+  "kept_pages": [
+    [
+      44,
+      53
+    ]
+  ],
+  "chars": 6649
+}

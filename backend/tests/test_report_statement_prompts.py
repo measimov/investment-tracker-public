@@ -89,3 +89,31 @@ def test_required_balance_fields_accept_net_asset_format_components():
     content = json.dumps({"income": {"total_revenue": ["r1"]}, "balance": {"total_nca": ["r1"]}})
     with pytest.raises(ValueError, match="total_assets 或 total_nca\\+total_cur_assets"):
         parse_statement_mapping(content, rows)
+
+
+def test_pre_revenue_income_statement_is_accepted_without_revenue():
+    """09926 2020 中报（18A 未有收入）：損益表没有任何收入行，只有「其他收入及收益淨額」。
+    映射出净利即可接受，并记 unresolved；判据看行标签——有收入行却没映射仍是确定性失败。"""
+    content = json.dumps({"income": {"n_income_attr_p": ["r9"], "total_profit": ["r7"]}})
+    rows = {"income": ["r1", "r2", "r7", "r9"]}
+    labels = {"income": ["其他收入及收益淨額", "行政開支", "除稅前虧損", "期內虧損"]}
+    mapping, unresolved = prompts.parse_statement_mapping(content, rows, labels=labels)
+    assert mapping["income"] == {"n_income_attr_p": ["r9"], "total_profit": ["r7"]}
+    assert "income.total_revenue:no_revenue_line" in unresolved
+    # 有收入行（「收益」）却没映射：仍判失败
+    with pytest.raises(ValueError, match="total_revenue"):
+        prompts.parse_statement_mapping(content, rows, labels={"income": ["收益", "行政開支", "除稅前虧損", "期內虧損"]})
+    # 不给 labels（旧调用方）保持原行为
+    with pytest.raises(ValueError, match="total_revenue"):
+        prompts.parse_statement_mapping(content, rows)
+    # 连净利/税前利润都没映射出来：仍判失败
+    with pytest.raises(ValueError, match="total_revenue"):
+        prompts.parse_statement_mapping(json.dumps({"income": {}}), rows, labels=labels)
+
+
+@pytest.mark.parametrize("label, is_revenue", [
+    ("收益", True), ("收入", True), ("營業總收入", True), ("一. 營業總收入", True), ("營業額", True),
+    ("Revenue", True), ("其他收入及收益淨額", False), ("其他收益", False), ("利息收入", False),
+])
+def test_revenue_label_detection(label, is_revenue):
+    assert bool(prompts.REVENUE_LABEL_RE.match(label)) is is_revenue

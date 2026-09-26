@@ -27,7 +27,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # v4：币种+单位分开排版（「美元 千元」「RMB million」）算一个布局单元，且表头布局须与数据行吻合才采信
-STATEMENT_EXTRACTOR_VERSION = 7
+STATEMENT_EXTRACTOR_VERSION = 8
 STATEMENT_KINDS = ("income", "balance", "cashflow")
 
 # 报表标题核心（繁/简；港股「綜合」= A股「合并」）。income 同时覆盖损益表与全面收益表
@@ -78,7 +78,9 @@ _TERMINATOR_RE = re.compile(
 )
 _NOTES_HEADER_RE = re.compile(r"附註|附注|NOTES TO", re.I)
 _SUMMARY_HEADER_RE = re.compile(r"概要|摘要|Summary|Highlights", re.I)
-# 目录页：「28 簡明綜合損益表」这类带页码的目录行与编号标题同形，只能按页首「目錄」排除
+# 目录页：「28 簡明綜合損益表」这类带页码的目录行与编号标题同形，只能按页首「目錄」排除。
+# 页眉可能先占两行（01023 2023 中报：「1 時代集團控股有限公司 … PB」「2023中期報告」之后第三行
+# 才是「目錄」），所以看 _page_first_lines 取到的全部页首行（3 行），不只前两行
 _TOC_HEADER_RE = re.compile(r"目錄|目录|CONTENTS", re.I)
 
 # 字间空格的标题（00728：「合 併 綜 合 收 益 表」「合 併 權 益 變 動 表」）：连续 ≥3 个单字
@@ -642,7 +644,7 @@ def _structurally_ok(parsed: ParsedStatement, start_head: List[str], *, report_t
     续页（页首重复标题、不重复表头）也按这一条判。"""
     if start_head and _SUMMARY_HEADER_RE.search(start_head[0]):
         return False
-    if any(_TOC_HEADER_RE.search(line) for line in start_head[:2]):
+    if any(_TOC_HEADER_RE.search(line) for line in start_head):
         return False  # 目录页
     distinct_years = len(set(parsed.years))
     if distinct_years >= 5:
@@ -657,8 +659,11 @@ def _structurally_ok(parsed: ParsedStatement, start_head: List[str], *, report_t
     return True
 
 
-# 中国准则（H 股按 CAS 编报，01133）的列标题不写年份：「本期金額 上期金額」「期末餘額 期初餘額」
-_CAS_PERIOD_CAPTION_RE = re.compile(r"本期金額|上期金額|期末餘額|期初餘額|本期金额|上期金额|期末余额|期初余额")
+# 中国准则（H 股按 CAS 编报，01133）的列标题不写年份：「本期金額 上期金額」「期末餘額 期初餘額」；
+# 01133 2017-2021 年报的利潤表/現金流量表写作「本期發生額 上期發生額」（也有「本年發生額 上年發生額」）
+_CAS_PERIOD_CAPTION_RE = re.compile(
+    r"(?:本期|上期|本年|上年)(?:金額|金额|發生額|发生额)|期末餘額|期初餘額|期末余额|期初余额"
+)
 
 
 def _header_evidence(parsed: ParsedStatement) -> bool:

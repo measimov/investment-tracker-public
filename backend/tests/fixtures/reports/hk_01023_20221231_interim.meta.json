@@ -1,0 +1,21 @@
+{
+  "market": "港股",
+  "symbol": "01023",
+  "end_date": "20221231",
+  "report_type": "interim",
+  "title": "01023_20221231_interim",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(1, 3), (26, 36)]，其余页置空以保住页码。時代集團 2023 中期報告（6 月财年，期末 2022-12-31）：第 2 页目录的「目錄」在页眉两行之后的第三行，目录行「中期簡明綜合全面收益表 28」与带页码的标题同形",
+  "pages": 69,
+  "kept_pages": [
+    [
+      1,
+      3
+    ],
+    [
+      26,
+      36
+    ]
+  ],
+  "chars": 6002
+}

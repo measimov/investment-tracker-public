@@ -660,6 +660,7 @@ def ensure_report_statements(
             mapping, unresolved = parse_statement_mapping(
                 completion["content"],
                 {kind: [r.row_id for r in parsed.rows] for kind, parsed in located.items()},
+                labels={kind: [r.label for r in parsed.rows] for kind, parsed in located.items()},
             )
             period_rows = build_period_rows(located, mapping, target, fingerprint=fingerprint)
             written, suspect_periods = _write_period_rows(db, symbol, market, period_rows)

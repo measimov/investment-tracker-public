@@ -50,7 +50,14 @@ ANNUAL = {
     "hk_01995_20191231": ((83, 83), (84, 85), (88, 89), 1_000, "CNY", [2019, 2018]),
     "hk_01023_20230630": ((62, 64), (64, 65), (67, 69), 1_000, "HKD", [2023, 2022]),
     "hk_09618_20201231": ((254, 256), (251, 253), (257, 260), 1_000, "CNY", None),
+    # 第三轮（全量重抽后）补的版式：利潤表/現金流量表列标题「本期發生額 上期發生額」
+    "hk_01133_20171231": ((73, 75), (67, 69), (79, 81), 1, "CNY", []),
 }
+# 行在主导列数上的最低占比。中国准则报表把零值格留空（01133 2017 現金流量表 39 行里 6 行只有
+# 一期有数，33/39 = 84.6%）——纯文本里分不出空的是哪一列，单值行按本期列取；跨年比较列核对
+# （report_statement_checks）会抓住因此错期的关键科目。只对这份金样放宽，不降全局门槛
+ON_GRID_MIN = {"hk_01133_20171231": 0.8}
+
 INTERIM = {
     # name: (income_pages, balance_pages, cashflow_pages, unit, currency, years)
     "hk_00883_20250630_interim": ((39, 40), (41, 42), (44, 44), 1_000_000, "CNY", [2025, 2024]),
@@ -59,6 +66,9 @@ INTERIM = {
     "hk_02156_20250630_interim": ((6, 7), (8, 9), (12, 12), 1_000, "CNY", [2025, 2024]),
     "hk_01023_20260630_interim": ((27, 30), (30, 32), (34, 36), 1_000, "HKD", None),
     "hk_03900_20190630_interim": ((35, 35), (36, 37), (40, 42), 1_000, "CNY", [2019, 2018]),
+    # 第三轮：目录页的「目錄」在页眉两行之后（第 2 页不得被认成损益表）；未有收入的 18A 公司
+    "hk_01023_20221231_interim": ((27, 30), (30, 32), (34, 36), 1_000, "HKD", None),
+    "hk_09926_20200630_interim": ((46, 47), (48, 49), (52, 53), 1_000, "CNY", [2020, 2019]),
 }
 
 
@@ -92,7 +102,7 @@ def test_annual_reports_locate_all_three_statements(name):
             assert parsed.years == years
         # 主导列数下的行占绝对多数（附注号已剥离、年份行已剔除）
         on_grid = sum(1 for row in parsed.rows if len(row.values) == parsed.column_count)
-        assert on_grid >= len(parsed.rows) * 0.85, (name, kind)
+        assert on_grid >= len(parsed.rows) * ON_GRID_MIN.get(name, 0.85), (name, kind)
 
 
 def test_tencent_2025_values_and_note_splitting():
@@ -699,3 +709,22 @@ def test_note_column_plus_exact_columns_is_never_glued():
     assert parse_row("所得稅開支 12(a) (47,448) (45,018)", expected_columns=2)[2] == [
         Decimal("-47448"), Decimal("-45018"),
     ]
+
+
+def test_cas_occurred_amount_captions_are_period_evidence():
+    """01133 2017-2021：CAS 利潤表/現金流量表列标题写「本期發生額 上期發生額」，此前不算期间证据，
+    损益表整份定位失败（5 份年报封顶）。"""
+    assert rs._CAS_PERIOD_CAPTION_RE.search("項目 附註 本期發生額 上期發生額")
+    assert rs._CAS_PERIOD_CAPTION_RE.search("項目 本年發生額 上年發生額")
+    found = rs.locate_statements(_pages("hk_01133_20171231"), report_type="annual")
+    assert found["income"].title == "合併利潤表"
+    assert found["cashflow"].title == "合併現金流量表"
+
+
+def test_toc_page_with_masthead_lines_is_not_a_statement():
+    """01023 2023 中报第 2 页：页眉两行之后第三行才是「目錄」，目录行「中期簡明綜合全面收益表 28」
+    与带行尾页码的标题同形——此前被认成损益表（表头年份 [2023, 2023]，与报告期不符而封顶）。"""
+    pages = _pages("hk_01023_20221231_interim")
+    assert "目錄" in pages[1].splitlines()[2]
+    found = rs.locate_statements(pages, report_type="interim")
+    assert found["income"].page_start == 27 and found["income"].title == "中期簡明綜合損益表"
