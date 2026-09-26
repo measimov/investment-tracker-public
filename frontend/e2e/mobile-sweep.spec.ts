@@ -464,7 +464,8 @@ async function stubPopulatedSecurity(page: Page) {
             }
           }
         ],
-        digest_progress: { digested: 8, failed_capped: 1 }
+        digest_progress: { digested: 8, failed_capped: 1 },
+        statement_progress: null
       }
     })
   })

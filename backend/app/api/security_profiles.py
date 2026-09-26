@@ -271,6 +271,7 @@ def get_symbol_profile(
     单标的端点：允许查未持仓标的（见模块 docstring 的全局表读取口径）。
     """
     from ..services.report_digest_service import digest_progress, load_report_digests
+    from ..services.report_statement_service import STATEMENT_MARKETS, statement_progress
 
     from ..services.business_profile_service import load_business_profile
     from ..services.earnings_quality import compute_earnings_quality, market_statements
@@ -282,6 +283,10 @@ def get_symbol_profile(
     profile["capabilities"] = MARKET_CAPABILITIES.get(market, {})
     profile["report_digests"] = load_report_digests(db, symbol, market)
     profile["digest_progress"] = digest_progress(db, symbol, market)
+    # 港股三张报表抽取进度（其他市场 None）：与 capabilities.statements 配对
+    profile["statement_progress"] = (
+        statement_progress(db, symbol, market) if market in STATEMENT_MARKETS else None
+    )
     profile["business"] = load_business_profile(db, symbol, market)
     # 按市场取报表行（美股=EDGAR 透视、港股=Yahoo 透视），与分析输入同口径
     statements = market_statements(market, profile["datasets"])

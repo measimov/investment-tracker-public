@@ -17,6 +17,7 @@ from ..database import SessionLocal
 from .job_runtime import run_job_inline
 from .job_worker import register_runner
 from .report_digest_service import ensure_report_digests
+from .report_statement_service import STATEMENT_MARKETS, attach_statement_outcome
 from .security_analysis_jobs import AnalysisBusyError
 
 logger = get_app_logger(__name__)
@@ -62,6 +63,22 @@ def execute_report_backfill_job(claimed: Dict[str, Any]) -> None:
         # 无心跳会被 worker 当作 stale 接管重跑，重复下载与烧 token
         with job_heartbeat(job_id, JOB_TYPE, attempt_count=attempt):
             result = ensure_report_digests(db, symbol, market, max_new=BACKFILL_BATCH_SIZE)
+            # 港股顺带抽三张报表（与批量回填同一成本护栏）：此前单标的「补齐历史摘要」
+            # 不抽报表，详情页十年报表只能靠批量任务或分析任务顺带补
+            if market in STATEMENT_MARKETS and not result.get("fatal"):
+                attach_statement_outcome(db, symbol, market, result, max_new=BACKFILL_BATCH_SIZE)
+        fatal = result.get("fatal")
+        if fatal:
+            # 无效 Key / 欠费 / 限流（摘要或报表任一侧）：与批量回填一致判失败，不得弹绿色
+            # 「回填完成」——摘要全命中缓存、报表 401 一份没抽到时，成功结论就是假的。
+            # 已生成的结果照常保留在 data.result 里
+            message = str(fatal.get("message") or fatal.get("kind"))
+            update_job(
+                job_id, JOB_TYPE, status="failed", error=message[:300],
+                data_updates={"result": result},
+                required_status="running", required_attempt_count=attempt,
+            )
+            return
         update_job(
             job_id, JOB_TYPE, status="succeeded",
             data_updates={"result": result},

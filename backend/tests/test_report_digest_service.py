@@ -806,6 +806,67 @@ def test_backfill_job_runs_batch_and_reports_progress(db, monkeypatch):
     assert job2["id"] != job["id"] or job2["status"] in ("queued", "succeeded")
 
 
+def test_backfill_job_attaches_hk_statements_only(db, monkeypatch):
+    """单标的「补齐历史摘要」港股顺带抽报表（与批量同口径）；A 股不抽；摘要 fatal 时不抽。"""
+    seen: list = []
+
+    def fake_attach(db_, symbol, market, outcome, *, max_new):
+        seen.append((symbol, market, max_new))
+        outcome["statements"] = {"total": 2, "generated": 1}
+        outcome["gaps"] = list(outcome.get("gaps") or []) + ["[报表抽取] x"]
+
+    monkeypatch.setattr(backfill_jobs, "attach_statement_outcome", fake_attach)
+    monkeypatch.setattr(
+        backfill_jobs, "ensure_report_digests",
+        lambda db_, s, m, *, max_new: {"generated": 1, "remaining": 0, "gaps": [], "fatal": None},
+    )
+    job = backfill_jobs.start_report_backfill_job(1, "00700", "港股")
+    backfill_jobs.run_report_backfill_job(job["id"])
+    stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+    assert stored.status == "succeeded"
+    assert stored.data["result"]["statements"] == {"total": 2, "generated": 1}
+    assert stored.data["result"]["gaps"] == ["[报表抽取] x"]
+    assert seen == [("00700", "港股", backfill_jobs.BACKFILL_BATCH_SIZE)]
+
+    job = backfill_jobs.start_report_backfill_job(1, "600036", "A股")
+    backfill_jobs.run_report_backfill_job(job["id"])
+    stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+    assert stored.status == "succeeded" and "statements" not in stored.data["result"]
+    assert len(seen) == 1
+
+    monkeypatch.setattr(
+        backfill_jobs, "ensure_report_digests",
+        lambda db_, s, m, *, max_new: {"generated": 0, "gaps": [], "fatal": {"kind": "llm_auth", "message": "401"}},
+    )
+    job = backfill_jobs.start_report_backfill_job(1, "00700", "港股")
+    backfill_jobs.run_report_backfill_job(job["id"])
+    stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+    assert stored.data["result"]["fatal"]["kind"] == "llm_auth" and len(seen) == 1
+    assert stored.status == "failed" and "401" in (stored.error or "")
+
+
+def test_backfill_job_fails_when_statement_extraction_is_fatal(db, monkeypatch):
+    """评审 P1：摘要成功（缓存命中）、报表抽取返回 llm_auth → 单标的 job 必须 failed（前端
+    走失败提示而非绿色「回填完成」），已生成的摘要/报表结果保留在 data.result。"""
+    def fake_attach(db_, symbol, market, outcome, *, max_new):
+        outcome["statements"] = {"total": 3, "generated": 0, "failed": 1}
+        outcome["gaps"] = list(outcome.get("gaps") or []) + ["[报表抽取] 20251231 报表抽取失败"]
+        outcome["fatal"] = {"kind": "llm_auth", "message": "LLM 调用失败（HTTP 401）"}
+
+    monkeypatch.setattr(backfill_jobs, "attach_statement_outcome", fake_attach)
+    monkeypatch.setattr(
+        backfill_jobs, "ensure_report_digests",
+        lambda db_, s, m, *, max_new: {"generated": 0, "completed": 4, "remaining": 0, "gaps": [], "fatal": None},
+    )
+    job = backfill_jobs.start_report_backfill_job(1, "00700", "港股")
+    backfill_jobs.run_report_backfill_job(job["id"])
+    stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+    assert stored.status == "failed"
+    assert "HTTP 401" in (stored.error or "")
+    assert stored.data["result"]["completed"] == 4
+    assert stored.data["result"]["statements"]["failed"] == 1
+
+
 def test_backfill_job_rejects_other_symbol_while_active(db, monkeypatch):
     monkeypatch.setattr(svc, "cached_report_targets_detailed", lambda db, s, m, **kw: {"targets": [], "complete": True})
     first = backfill_jobs.start_report_backfill_job(1, "600036", "A股")

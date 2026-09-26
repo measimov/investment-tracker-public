@@ -387,19 +387,91 @@
           </el-table>
         </section>
 
+        <!-- 报表抽取进度（港股：披露易年报/中报三张表） -->
+        <section
+          v-if="capabilities.statements && statementProgress"
+          class="data-section"
+          data-testid="statement-progress-section"
+        >
+          <h3>
+            报表抽取（年报 {{ statementProgress.annual_periods?.length || 0 }} 期 · 中报
+            {{ statementProgress.interim_periods?.length || 0 }} 期<template
+              v-if="statementProgress.reports_failed"
+            >
+              · {{ statementProgress.reports_failed }} 份失败<template
+                v-if="statementProgress.reports_capped"
+                >（{{ statementProgress.reports_capped }} 份已封顶）</template
+              ></template
+            ><template v-if="statementProgress.reports_stale">
+              · {{ statementProgress.reports_stale }} 份待重抽</template
+            ><template v-if="statementProgress.suspect_count">
+              · {{ statementProgress.suspect_count }} 期校验存疑</template
+            >）
+          </h3>
+          <div class="statement-progress-meta">
+            <span v-if="statementProgress.last_extracted_at">
+              最近抽取 {{ formatDateTime(statementProgress.last_extracted_at) }}
+            </span>
+            <span v-else>尚未抽取；「补齐历史摘要」或生成分析时自动抽取</span>
+            <span v-if="statementProgress.suspect_periods?.length">
+              存疑期：{{ statementProgress.suspect_periods.join('、') }}
+            </span>
+            <el-link
+              v-if="failedReports.length"
+              type="primary"
+              :underline="false"
+              @click="showFailedReports = !showFailedReports"
+            >
+              {{ showFailedReports ? '收起失败清单' : '查看失败清单' }}
+            </el-link>
+          </div>
+          <el-table
+            v-if="showFailedReports && failedReports.length"
+            :data="failedReports"
+            size="small"
+          >
+            <el-table-column label="报告" width="160">
+              <template #default="{ row }">
+                {{ formatPeriod(row.end_date) }}
+                {{ row.report_type === 'interim' ? '中报' : '年报' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <el-tag :type="row.capped ? 'danger' : 'warning'" size="small" effect="plain">
+                  {{ row.capped ? '已封顶' : `可重试（${row.attempts} 次）` }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="原因">
+              <template #default="{ row }">{{ row.error || '—' }}</template>
+            </el-table-column>
+          </el-table>
+        </section>
+
         <!-- 年度报表（美股/港股：EDGAR/Yahoo 透视行） -->
         <section
           v-if="market !== 'A股'"
           class="data-section"
           data-testid="pivot-statements-section"
         >
-          <h3>
-            年度核心科目（{{
-              market === '美股' ? 'SEC XBRL' : '披露易年报/中报原文抽取 + 雅虎补缺'
-            }}，单位 {{ pivotCurrency || '原币' }} 亿<template v-if="market === '港股'"
-              >；生成分析时自动抽取年报三张表，覆盖可达十年，雅虎行仅补缺</template
-            >）
-          </h3>
+          <div class="section-header">
+            <h3>
+              年度核心科目（{{
+                market === '美股' ? 'SEC XBRL' : '披露易年报/中报原文抽取 + 雅虎补缺'
+              }}，单位 {{ pivotCurrency || '原币' }} 亿<template v-if="market === '港股'"
+                >；生成分析时自动抽取三张表，覆盖可达十年；雅虎补上的科目带「雅」上标，
+                存疑科目已置空</template
+              >）
+            </h3>
+            <el-switch
+              v-if="market === '港股'"
+              v-model="showInterim"
+              size="small"
+              active-text="显示中报"
+              data-testid="pivot-show-interim"
+            />
+          </div>
           <el-table :data="pivotRows" size="small" stripe>
             <template #empty>
               <el-empty description="暂无数据；生成分析时会自动同步" :image-size="60" />
@@ -407,23 +479,56 @@
             <el-table-column label="财年止" width="110">
               <template #default="{ row }">{{ formatPeriod(row.end_date) }}</template>
             </el-table-column>
+            <el-table-column v-if="market === '港股' && showInterim" label="期别" width="70">
+              <template #default="{ row }">{{ row.fp === 'H1' ? '中报' : '年报' }}</template>
+            </el-table-column>
             <el-table-column label="营业收入" align="right">
-              <template #default="{ row }">{{ formatYi(row.total_revenue) }}</template>
+              <template #default="{ row }"
+                >{{ formatYi(row.total_revenue)
+                }}<sup class="src-sup">{{ cellSup(row, 'total_revenue') }}</sup></template
+              >
             </el-table-column>
             <el-table-column label="净利润" align="right">
-              <template #default="{ row }">{{ formatYi(row.n_income_attr_p) }}</template>
+              <template #default="{ row }"
+                >{{ formatYi(row.n_income_attr_p)
+                }}<sup class="src-sup">{{ cellSup(row, 'n_income_attr_p') }}</sup></template
+              >
             </el-table-column>
             <el-table-column label="经营现金流" align="right">
-              <template #default="{ row }">{{ formatYi(row.n_cashflow_act) }}</template>
+              <template #default="{ row }"
+                >{{ formatYi(row.n_cashflow_act)
+                }}<sup class="src-sup">{{ cellSup(row, 'n_cashflow_act') }}</sup></template
+              >
             </el-table-column>
             <el-table-column label="总资产" align="right">
-              <template #default="{ row }">{{ formatYi(row.total_assets) }}</template>
+              <template #default="{ row }"
+                >{{ formatYi(row.total_assets)
+                }}<sup class="src-sup">{{ cellSup(row, 'total_assets') }}</sup></template
+              >
             </el-table-column>
             <el-table-column label="股东权益" align="right">
-              <template #default="{ row }">{{ formatYi(row.total_hldr_eqy_exc_min_int) }}</template>
+              <template #default="{ row }"
+                >{{ formatYi(row.total_hldr_eqy_exc_min_int)
+                }}<sup class="src-sup">{{
+                  cellSup(row, 'total_hldr_eqy_exc_min_int')
+                }}</sup></template
+              >
             </el-table-column>
             <el-table-column label="EPS" align="right">
-              <template #default="{ row }">{{ formatMaybe(row.basic_eps) }}</template>
+              <template #default="{ row }"
+                >{{ formatMaybe(row.basic_eps)
+                }}<sup class="src-sup">{{ cellSup(row, 'basic_eps') }}</sup></template
+              >
+            </el-table-column>
+            <el-table-column v-if="market === '港股'" label="来源" width="130">
+              <template #default="{ row }">
+                <span>{{ pivotSourceLabel(row) }}</span>
+                <el-tooltip v-if="row.__suspect" :content="suspectTooltip(row)" placement="top">
+                  <el-tag type="warning" size="small" effect="plain" class="suspect-tag"
+                    >存疑</el-tag
+                  >
+                </el-tooltip>
+              </template>
             </el-table-column>
           </el-table>
         </section>
@@ -571,6 +676,7 @@ import { getApiErrorMessage } from '../utils/apiErrors'
 import { renderMarkdown } from '@/utils/markdown'
 import { formatDateTime, formatNumber, toNumber } from '../utils/helpers'
 import { pollJobUntilDone } from '../utils/polling'
+import { mergeHkPivotRows, sourceLabel, type HkPivotRow } from '@/utils/hkStatements'
 
 interface AnalysisDetail {
   id: number
@@ -619,6 +725,10 @@ const digestProgress = ref<{ digested: number; failed_capped: number }>({
   digested: 0,
   failed_capped: 0
 })
+// 港股「报表抽取」进度（其他市场 null）；中报默认不进透视表
+const statementProgress = ref<ProfileRow | null>(null)
+const showInterim = ref(false)
+const showFailedReports = ref(false)
 const earningsQuality = ref<ProfileRow>({})
 
 // 观察状态三态：unknown（清单未加载完）期间不渲染按钮，防止先闪"加入观察"
@@ -752,34 +862,40 @@ const pivotRows = computed<ProfileRow[]>(() => {
     return (profileDatasets.value.edgar_companyfacts || []).filter((row) => row.fp === 'FY')
   }
   if (market.value === '港股') {
-    // 与后端 merge_hk_statement_rows 同口径：按**科目**合并——PDF 抽取行有值的科目优先，
-    // 雅虎补 PDF 没有的科目（只处理了中报时 FY 行可能只有资产负债表），同期不同币种不混
-    const byPeriod = new Map<string, ProfileRow>()
-    for (const row of (profileDatasets.value.report_statements || []).filter(
-      (r) => r.fp === 'FY'
-    )) {
-      byPeriod.set(String(row.end_date), { ...row })
-    }
-    for (const row of profileDatasets.value.yahoo_fundamentals || []) {
-      const key = String(row.end_date)
-      const pdf = byPeriod.get(key)
-      if (!pdf) {
-        byPeriod.set(key, { ...row })
-        continue
-      }
-      // 双方币种都已知且一致才逐科目补数；任一侧未知或不同 → PDF 行原样，不借金额也不贴币种
-      if (!pdf.currency || !row.currency || pdf.currency !== row.currency) continue
-      for (const [field, value] of Object.entries(row)) {
-        if (value != null && pdf[field] == null) pdf[field] = value
-      }
-    }
-    return [...byPeriod.values()].sort((a, b) =>
-      String(b.end_date).localeCompare(String(a.end_date))
+    // 规则在 utils/hkStatements（与后端 merge_hk_statement_rows 同口径，有 spec）：PDF 行优先、
+    // 存疑科目先置空、雅虎只补缺且币种须一致；行上带 __source/__suspect 供来源列与上标
+    return mergeHkPivotRows(
+      profileDatasets.value.report_statements || [],
+      profileDatasets.value.yahoo_fundamentals || [],
+      { includeInterim: showInterim.value }
     )
   }
   return []
 })
 const pivotCurrency = computed(() => pivotRows.value[0]?.currency || '')
+
+// 雅虎补上的科目打上标（PDF 值不打）；非港股行没有 __source
+function cellSup(row: ProfileRow, field: string): string {
+  return row.__source?.[field] === 'yahoo' ? '雅' : ''
+}
+
+function pivotSourceLabel(row: ProfileRow): string {
+  return row.__sourceKinds ? sourceLabel(row as HkPivotRow) : ''
+}
+
+function suspectTooltip(row: ProfileRow): string {
+  const checks = (row.__checks || []) as Array<Record<string, unknown>>
+  const reasons = checks.map((c) => String(c.detail || c.id)).filter(Boolean)
+  const fields = (row.__suspectFields || []) as string[]
+  const parts = []
+  if (fields.length) parts.push(`已置空：${fields.join('、')}`)
+  if (reasons.length) parts.push(reasons.join('；'))
+  return parts.join('。') || '校验存疑'
+}
+
+const failedReports = computed<ProfileRow[]>(
+  () => (statementProgress.value?.failed_reports as ProfileRow[]) || []
+)
 
 const qualityRows = computed(() => {
   const perYear = earningsQuality.value.per_year || {}
@@ -833,6 +949,13 @@ const backfillSummary = computed(() => {
     `本次生成 ${result.generated ?? 0} 份，累计 ${result.completed ?? 0}/${result.total ?? 0} 份`
   ]
   if (result.remaining) parts.push(`剩余 ${result.remaining} 份可继续点击补齐`)
+  const statements = result.statements as ProfileRow | undefined
+  if (statements) {
+    let line = `报表抽取：新抽 ${statements.generated ?? 0} 份，累计 ${statements.completed ?? 0}/${statements.total ?? 0} 份`
+    if (statements.suspect) line += `，${statements.suspect} 期校验存疑`
+    if (statements.remaining) line += `，剩余 ${statements.remaining} 份`
+    parts.push(line)
+  }
   if (result.gaps?.length) parts.push(`缺口：${result.gaps.join('；')}`)
   return parts.join('；')
 })
@@ -997,6 +1120,7 @@ async function loadProfile(generation: number) {
     business.value = response.data.business || { profile: null, peers: [], industry: null }
     reportDigests.value = response.data.report_digests || []
     digestProgress.value = response.data.digest_progress || { digested: 0, failed_capped: 0 }
+    statementProgress.value = response.data.statement_progress || null
     earningsQuality.value = response.data.earnings_quality || {}
     grahamScreen.value = response.data.graham_screen || {}
   } catch (error) {
@@ -1092,6 +1216,7 @@ watch(
     business.value = { profile: null, peers: [], industry: null }
     reportDigests.value = []
     digestProgress.value = { digested: 0, failed_capped: 0 }
+    statementProgress.value = null
     earningsQuality.value = {}
     grahamScreen.value = {} // 评审 P2：与其他 profile 派生态一起清空，防旧标的准则卡残留
     watchState.value = 'unknown'
@@ -1107,6 +1232,25 @@ watch(
 </script>
 
 <style scoped>
+.statement-progress-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 8px;
+}
+
+.src-sup {
+  font-size: 10px;
+  color: var(--el-color-info);
+  margin-left: 1px;
+}
+
+.suspect-tag {
+  margin-left: 6px;
+}
+
 .security-detail-page {
   width: 100%;
 }

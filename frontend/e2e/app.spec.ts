@@ -1381,6 +1381,7 @@ test('slow responses from a previous security never leak into the current one', 
     events: [],
     report_digests: [],
     digest_progress: { digested: 0, failed_capped: 0 },
+    statement_progress: null,
     business: {
       profile: {
         商业模式: `${symbol} 的商业模式说明`,
@@ -1472,6 +1473,7 @@ test('graham criteria card is cleared on peer navigation while the new profile i
     events: [],
     report_digests: [],
     digest_progress: { digested: 0, failed_capped: 0 },
+    statement_progress: null,
     business: {
       profile: null,
       peers: [{ symbol: 'GRMB', name: '同业标的B', industry: '银行' }],
@@ -1549,6 +1551,7 @@ test('watch state ignores an out-of-order response after peer navigation', async
     events: [],
     report_digests: [],
     digest_progress: { digested: 0, failed_capped: 0 },
+    statement_progress: null,
     business: {
       profile: null,
       peers: [{ symbol: 'WSB', name: '同业标的B', industry: '银行' }],
@@ -1610,6 +1613,7 @@ test('confirming the watch prompt after navigating away does not add the wrong s
     events: [],
     report_digests: [],
     digest_progress: { digested: 0, failed_capped: 0 },
+    statement_progress: null,
     business: {
       profile: null,
       // B 页挂 A 为同业：用客户端路由跳 A，history 里 B→A 都在同一 SPA 会话内，
@@ -1701,6 +1705,7 @@ test('an older request for the same security cannot overwrite a newer one (ABA)'
     events: [],
     report_digests: [],
     digest_progress: { digested: 0, failed_capped: 0 },
+    statement_progress: null,
     business: {
       profile: {
         商业模式: `${symbol} 的商业模式说明`,
@@ -1806,6 +1811,7 @@ test('shows staged progress while generating an AI analysis', async ({ page, req
     events: [],
     report_digests: [],
     digest_progress: { digested: 0, failed_capped: 0 },
+    statement_progress: null,
     business: { profile: null, peers: [], industry: null },
     earnings_quality: { status: 'no_data' }
   }
@@ -1881,6 +1887,7 @@ test('a failed analysis keeps the progress block with its error', async ({ page,
         events: [],
         report_digests: [],
         digest_progress: { digested: 0, failed_capped: 0 },
+        statement_progress: null,
         business: { profile: null, peers: [], industry: null },
         earnings_quality: { status: 'no_data' }
       })
@@ -1948,6 +1955,7 @@ test('analysis progress of a previous security never leaks into the current one'
     events: [],
     report_digests: [],
     digest_progress: { digested: 0, failed_capped: 0 },
+    statement_progress: null,
     business: {
       profile: null,
       peers: [{ symbol: peer, name: `同业${peer}`, industry: '银行' }],

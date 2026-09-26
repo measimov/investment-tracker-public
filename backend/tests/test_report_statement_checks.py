@@ -291,3 +291,22 @@ def test_validation_summary_lists_error_reasons_only():
         {"severity": "error", "status": "ok", "detail": ""},
     ]}}
     assert checks.validation_summary(payload) == "A"
+
+
+def test_total_equity_identity_is_one_sided():
+    """生产实测（03900 绿城 2017-2022、01133 2021）：权益总额比归母+少数多 5-24% 全是永久资本
+    证券等其他权益工具，不是映射错误——合计大于分项之和通过（detail 说明），小于才存疑。"""
+    excess = {"total_equity": 84_590_073_000.0, "total_hldr_eqy_exc_min_int": 60_000_000_000.0,
+              "minority_int": 3_971_757_000.0}
+    validation = checks.validate_period_row(excess)
+    check = next(c for c in validation["checks"] if c["id"] == "total_equity_identity")
+    assert check["status"] == "ok" and "永久资本证券" in check["detail"]
+    assert validation["status"] == "ok"
+    short = {"total_equity": 60_000_000_000.0, "total_hldr_eqy_exc_min_int": 60_000_000_000.0,
+             "minority_int": 3_971_757_000.0}
+    validation = checks.validate_period_row(short)
+    check = next(c for c in validation["checks"] if c["id"] == "total_equity_identity")
+    assert check["status"] == "suspect" and validation["status"] == "suspect"
+    # 其他恒等式仍是双边：总资产比分项多也存疑
+    assets = {"total_assets": 120.0, "total_nca": 60.0, "total_cur_assets": 40.0}
+    assert checks.validate_period_row(assets)["status"] == "suspect"

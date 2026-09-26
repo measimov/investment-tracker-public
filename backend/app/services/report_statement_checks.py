@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-STATEMENT_VALIDATION_VERSION = 2
+STATEMENT_VALIDATION_VERSION = 3
 
 IDENTITY_REL_TOL = 0.01
 CROSS_CHECK_REL_TOL = 0.01
@@ -90,8 +90,13 @@ def _identity(
     severity: str = "error",
     tol: float = IDENTITY_REL_TOL,
     skip_reason: Optional[str] = None,
+    allow_lhs_excess: bool = False,
 ) -> Dict[str, Any]:
-    """lhs == Σ sign·addend；任一项缺失 → skipped（缺失不是错误）。"""
+    """lhs == Σ sign·addend；任一项缺失 → skipped（缺失不是错误）。
+
+    `allow_lhs_excess`：合计**大于**分项之和不算错——权益总额里除了归母与少数股东还可能有
+    永久资本证券/其他权益工具（03900 绿城三期差 16-24%、01133 差 5% 都是这一类，生产实测
+    全是假阳性），这种恒等式只能单边校验：合计小于分项之和才是映射错误。"""
     fields = [lhs_field, *addends]
     lhs = _num(row, lhs_field)
     values = [_num(row, field) for field in addends]
@@ -104,10 +109,14 @@ def _identity(
     rhs = sum(sign * value for sign, value in zip(signs, values))
     rel = _rel_diff(lhs, rhs)
     status = "ok" if rel <= tol else "suspect"
+    detail = "" if status == "ok" else f"{lhs_field}={lhs:.0f} 与分项合计 {rhs:.0f} 相差 {rel:.1%}"
+    if status == "suspect" and allow_lhs_excess and lhs > rhs:
+        status = "ok"
+        detail = f"{lhs_field} 比分项合计多 {rel:.1%}（可能含永久资本证券等其他权益工具，单边校验通过）"
     return {
         "id": check_id, "severity": severity, "status": status, "fields": fields,
         "lhs": lhs, "rhs": rhs, "rel_diff": rel, "tol": tol,
-        "detail": "" if status == "ok" else f"{lhs_field}={lhs:.0f} 与分项合计 {rhs:.0f} 相差 {rel:.1%}",
+        "detail": detail,
     }
 
 
@@ -120,7 +129,7 @@ def identity_checks(row: Dict[str, Any]) -> List[Dict[str, Any]]:
         _identity("total_liab_identity", row, lhs_field="total_liab",
                   addends=("total_cur_liab", "total_ncl")),
         _identity("total_equity_identity", row, lhs_field="total_equity",
-                  addends=("total_hldr_eqy_exc_min_int", "minority_int")),
+                  addends=("total_hldr_eqy_exc_min_int", "minority_int"), allow_lhs_excess=True),
         # 资产 = 负债 + 权益总额（含少数股东）。没抽到权益总额时**不能**拿归母权益冒充——
         # 少数股东权益为负的公司（09926）会假阳性
         _identity("balance_sheet_identity", row, lhs_field="total_assets",

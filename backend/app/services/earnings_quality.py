@@ -86,7 +86,7 @@ def pivot_rows_to_statements(
 
     毛利率由 total_revenue/cost_of_revenue 计算；扣非占比无对应概念留空。
     港股（Yahoo）自 PR-F 起补齐成本/应收/存货/流动资产/固定资产/折旧/SGA，
-    毛利率、增速差与 Beneish M-score 全部可算；受数据源限制只有近 3-5 年，
+    毛利率、增速差与 Beneish M-score 全部可算；年度行由披露易 PDF 抽取可达十年，雅虎补缺仅近 3-5 年，
     M-score 需要上一年做基期，因此最早那一年天然留空。
     """
     income, balance, cashflow, fina = [], [], [], []

@@ -62,6 +62,10 @@ export interface DigestBatchJob {
   digests_generated?: number
   digests_blocked?: number
   symbols_with_remaining?: number
+  // 港股顺带的三张报表抽取（其他市场不计）
+  statements_generated?: number
+  statements_blocked?: number
+  statements_suspect?: number
   current_symbol?: string | null
   current_market?: string | null
   cancelled?: boolean

@@ -52,10 +52,18 @@ export function useDigestBackfill({ isUnmounted }: { isUnmounted: () => boolean 
       const blocked = Number(job.digests_blocked || 0)
       const remaining = Number(job.symbols_with_remaining || 0)
       const failed = Number(job.failed_count || 0)
+      const statementsGenerated = Number(job.statements_generated || 0)
+      const statementsBlocked = Number(job.statements_blocked || 0)
+      const statementsSuspect = Number(job.statements_suspect || 0)
       let summary = `财报摘要回填完成：新生成 ${generated} 份`
       if (remaining) summary += `；${remaining} 只标的还有更早年份可补，再次点击可继续加深`
       if (blocked) summary += `；${blocked} 份报告已永久失败（多次重试仍无法下载或摘要）`
       if (failed) summary += `；${failed} 只标的失败`
+      if (statementsGenerated || statementsBlocked || statementsSuspect) {
+        summary += `；港股报表新抽 ${statementsGenerated} 份`
+        if (statementsBlocked) summary += `、${statementsBlocked} 份永久失败`
+        if (statementsSuspect) summary += `、${statementsSuspect} 期校验存疑`
+      }
       // 有永久失败也不能弹绿：绿色 + "新生成 0 份" 会让用户以为一切正常
       if (!failed && !blocked) ElMessage.success(summary)
       else ElMessage.warning(summary)

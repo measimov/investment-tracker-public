@@ -39,7 +39,11 @@ from .report_digest_service import (
     digest_versions_current,
     ensure_report_digests,
 )
-from .report_statement_service import STATEMENT_MARKETS, ensure_report_statements
+from .report_statement_service import (
+    STATEMENT_MARKETS,
+    attach_statement_outcome,
+    ensure_report_statements,
+)
 from .security_analysis_batch_jobs import (
     MAX_CONSECUTIVE_FAILURES,
     RESULTS_KEPT,
@@ -52,28 +56,28 @@ JOB_TYPE = "report_digest_batch"
 
 
 def _attach_statement_outcome(db, target: Dict[str, Any], outcome: Dict[str, Any]) -> None:
-    """港股顺带抽三张报表（同一成本护栏）：结果挂在 outcome["statements"]，缺口并入 gaps，
-    fatal 与摘要同词汇表向上传递。报表管线自身的意外异常不拖垮本标的的摘要结果。"""
-    try:
-        statements = ensure_report_statements(
-            db, target["symbol"], target["market"], max_new=DIGEST_BATCH_PER_SYMBOL,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "批量回填报表抽取意外失败 %s/%s: %s",
-            target["market"], target["symbol"], str(exc)[:200],
-        )
-        outcome["gaps"] = list(outcome.get("gaps") or []) + ["[报表抽取] 管线异常，本轮未抽取报表"]
-        return
-    outcome["statements"] = {
-        key: statements.get(key)
-        for key in ("total", "completed", "generated", "failed", "permanently_failed")
+    """港股顺带抽三张报表：实现在 report_statement_service.attach_statement_outcome（与单标的
+    回填共用）；这里只把本模块命名空间里的 ensure_report_statements 传进去，保住测试的
+    monkeypatch 口径。"""
+    attach_statement_outcome(
+        db, target["symbol"], target["market"], outcome,
+        max_new=DIGEST_BATCH_PER_SYMBOL, ensure=ensure_report_statements,
+    )
+
+
+def _statement_counts(outcome: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    statements = (outcome or {}).get("statements") or {}
+    return {
+        "statements_generated": int(statements.get("generated") or 0),
+        "statements_blocked": int(statements.get("permanently_failed") or 0),
+        "statements_suspect": int(statements.get("suspect") or 0),
     }
-    outcome["gaps"] = list(outcome.get("gaps") or []) + [
-        f"[报表抽取] {gap}" for gap in statements.get("gaps", [])
-    ]
-    if statements.get("fatal"):
-        outcome["fatal"] = statements["fatal"]
+
+
+def _bump_statement_counters(counters: Dict[str, int], outcome: Optional[Dict[str, Any]]) -> None:
+    for key, value in _statement_counts(outcome).items():
+        counters[key] += value
+
 
 # 每标的每轮最多补几份（与单标的回填 BACKFILL_BATCH_SIZE 一致）。
 # 33 标的 × 4 份 ≈ 130 份/轮：单轮 2-4 小时、约 6-7 元，商业画像与财报要点
@@ -159,6 +163,10 @@ def start_digest_batch_job(db: Session, user_id: int) -> Dict[str, Any]:
             # 但这个数必须在最终结果里可见——完成提示据此发警告而非绿色
             "digests_blocked": 0,
             "symbols_with_remaining": 0,
+            # 港股顺带的三张报表抽取：新抽份数 / 永久失败份数 / 校验存疑的会计期数
+            "statements_generated": 0,
+            "statements_blocked": 0,
+            "statements_suspect": 0,
             "current_symbol": None,
             "current_market": None,
             "results": [],
@@ -199,6 +207,9 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
             "digests_generated": int(data.get("digests_generated") or 0),
             "digests_blocked": int(data.get("digests_blocked") or 0),
             "symbols_with_remaining": int(data.get("symbols_with_remaining") or 0),
+            "statements_generated": int(data.get("statements_generated") or 0),
+            "statements_blocked": int(data.get("statements_blocked") or 0),
+            "statements_suspect": int(data.get("statements_suspect") or 0),
         }
         results: List[Dict[str, Any]] = list(data.get("results") or [])
         consecutive = 0
@@ -264,9 +275,12 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                     counters["failed_count"] += 1
                     counters["digests_generated"] += generated
                     counters["digests_blocked"] += blocked
+                    _bump_statement_counters(counters, outcome)
                     results.append({
                         **target, "status": "failed", "error": message[:200],
                         "generated": generated, "blocked": blocked,
+                        "gap_count": len(gaps), "gaps_preview": gaps[:3],
+                        "statements": outcome.get("statements"),
                         "elapsed_seconds": elapsed,
                     })
                     done.add(key)
@@ -295,6 +309,7 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                     counters["failed_count"] += 1
                     counters["digests_generated"] += generated
                     counters["digests_blocked"] += blocked
+                    _bump_statement_counters(counters, outcome)
                     consecutive += 1
                     results.append({
                         **target, "status": "failed",
@@ -303,7 +318,9 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                             + (f"；本轮已生成 {generated} 份仍保留" if generated else "")
                         ),
                         "generated": generated, "blocked": blocked,
-                        "gap_count": len(gaps), "elapsed_seconds": elapsed,
+                        "gap_count": len(gaps), "gaps_preview": gaps[:3],
+                        "statements": outcome.get("statements"),
+                        "elapsed_seconds": elapsed,
                     })
                 elif generated == 0 and failed_count > 0:
                     counters["failed_count"] += 1
@@ -311,12 +328,15 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                     # 再处理后续，failed>0 与 permanently_failed>0 完全可能
                     # 同时出现——本分支漏加的话前端就少报已知的永久失败
                     counters["digests_blocked"] += blocked
+                    _bump_statement_counters(counters, outcome)
                     consecutive += 1
                     results.append({
                         **target, "status": "failed",
                         "error": f"本轮 {failed_count} 份摘要全部生成失败",
                         "blocked": blocked,
-                        "gap_count": len(gaps), "elapsed_seconds": elapsed,
+                        "gap_count": len(gaps), "gaps_preview": gaps[:3],
+                        "statements": outcome.get("statements"),
+                        "elapsed_seconds": elapsed,
                     })
                 elif (
                     generated == 0 and completed_count == 0 and blocked > 0
@@ -328,16 +348,20 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                     # 后面所有仍可正常回填的持仓。早停只看本轮真实尝试的
                     # 失败；consecutive 保持原值（也不清零：它没提供任何
                     # "环境恢复了"的证据）
+                    _bump_statement_counters(counters, outcome)
                     results.append({
                         **target, "status": "failed",
                         "error": f"{blocked} 份报告均已永久失败（下载/抽取或摘要封顶）",
                         "blocked": blocked,
-                        "gap_count": len(gaps), "elapsed_seconds": elapsed,
+                        "gap_count": len(gaps), "gaps_preview": gaps[:3],
+                        "statements": outcome.get("statements"),
+                        "elapsed_seconds": elapsed,
                     })
                 else:
                     counters["success_count"] += 1
                     counters["digests_generated"] += generated
                     counters["digests_blocked"] += blocked
+                    _bump_statement_counters(counters, outcome)
                     if int(outcome.get("remaining") or 0) > 0:
                         counters["symbols_with_remaining"] += 1
                     consecutive = 0
@@ -350,6 +374,8 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                         "blocked": blocked,
                         "remaining": outcome.get("remaining"),
                         "gap_count": len(gaps),
+                        # 缺口前三条原文：只给计数的话"缺什么"在结果卡片里看不到
+                        "gaps_preview": gaps[:3],
                         # 港股顺带的三张报表抽取结果（其他市场为 None）
                         "statements": outcome.get("statements"),
                         "elapsed_seconds": elapsed,

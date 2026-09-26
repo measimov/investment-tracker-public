@@ -256,8 +256,13 @@ def test_ensure_extracts_annual_and_interim_and_keeps_primary_rows_authoritative
 
     progress = svc.statement_progress(db, SYMBOL, MARKET)
     assert progress["reports_ok"] == 2 and progress["reports_failed"] == 0
+    assert progress["reports_stale"] == 0 and progress["reports_capped"] == 0
     assert progress["annual_periods"] == ["20251231", "20241231"]
     assert progress["interim_periods"] == ["20260630", "20250630"]
+    assert progress["suspect_periods"] == [] and progress["suspect_count"] == 0
+    assert progress["failed_reports"] == []
+    assert progress["last_extracted_at"] is not None
+    assert progress["validation_version"] == checks.STATEMENT_VALIDATION_VERSION
 
 
 def test_budget_caps_reports_per_run_and_reports_pending(db, monkeypatch):
@@ -614,6 +619,8 @@ def test_stale_version_rows_are_invisible_until_recomputed(db, monkeypatch):
     assert profile_svc.load_graham_inputs(db, SYMBOL, MARKET) is None  # 无 Yahoo 行 → 无任何有效报表
     progress = svc.statement_progress(db, SYMBOL, MARKET)
     assert progress["reports_ok"] == 0 and progress["annual_periods"] == []
+    # 版本过期的成功行是"待重抽"，不是失败（此前被算进 reports_failed）
+    assert progress["reports_stale"] == 2 and progress["reports_failed"] == 0
     summaries = profile_svc.graham_summaries_for(db, [(SYMBOL, MARKET)])
     assert summaries.get((SYMBOL, MARKET)) is None
 
@@ -773,6 +780,8 @@ def test_write_cross_checks_primary_rows_against_yahoo(db, monkeypatch):
     extract = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
     assert extract["suspect_periods"] == ["20251231|FY"]
     assert calls["llm"] == 1
+    progress = svc.statement_progress(db, SYMBOL, MARKET)
+    assert progress["suspect_periods"] == ["20251231|FY"] and progress["suspect_count"] == 1
 
 
 def test_suspect_fields_are_scrubbed_for_analysis_and_filled_by_yahoo(db, monkeypatch):
@@ -908,3 +917,55 @@ def test_revalidate_keeps_comparative_evidence_when_no_yahoo_row(db, monkeypatch
     fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
     assert fy2024["comparative_evidence"]["source_period_key"] == "20251231|annual"
     assert fy2024["validation"]["status"] == "suspect"
+
+
+def test_progress_lists_failed_reports_with_reason_and_cap(db):
+    from app.services.security_profile_service import upsert_profile_row
+
+    upsert_profile_row(db, SYMBOL, MARKET, svc.EXTRACT_DATASET, "20201231|annual", {
+        "status": "failed", "error": "报表校验失败: 总资产 9000 不足归母权益一半", "attempts": svc.MAX_ATTEMPTS,
+        "end_date": "20201231", "report_type": "annual",
+    })
+    upsert_profile_row(db, SYMBOL, MARKET, svc.EXTRACT_DATASET, "20210630|interim", {
+        "status": "failed", "error": "LLM 调用失败（HTTP 503）", "attempts": 0,
+        "end_date": "20210630", "report_type": "interim",
+    })
+    db.commit()
+    progress = svc.statement_progress(db, SYMBOL, MARKET)
+    assert progress["reports_failed"] == 2 and progress["reports_capped"] == 1
+    assert [r["period_key"] for r in progress["failed_reports"]] == ["20210630|interim", "20201231|annual"]
+    capped = progress["failed_reports"][1]
+    assert capped["capped"] is True and "一半" in capped["error"] and capped["report_type"] == "annual"
+    assert progress["failed_reports"][0]["capped"] is False
+
+
+def test_attach_statement_outcome_shape_gaps_fatal_and_isolation(db):
+    outcome = {"gaps": ["摘要缺口"]}
+    svc.attach_statement_outcome(
+        db, SYMBOL, MARKET, outcome, max_new=4,
+        ensure=lambda db_, s, m, *, max_new: {
+            "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
+            "suspect": 1, "remaining": 5, "gaps": ["20161231 报表抽取失败（已封顶）"], "fatal": None,
+        },
+    )
+    assert outcome["statements"] == {
+        "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
+        "suspect": 1, "remaining": 5,
+    }
+    assert outcome["gaps"] == ["摘要缺口", "[报表抽取] 20161231 报表抽取失败（已封顶）"]
+    assert "fatal" not in outcome
+
+    fatal = {"kind": "llm_auth", "message": "LLM 调用失败（HTTP 401）"}
+    outcome = {}
+    svc.attach_statement_outcome(
+        db, SYMBOL, MARKET, outcome, max_new=4,
+        ensure=lambda *a, **k: {"total": 1, "gaps": [], "fatal": fatal},
+    )
+    assert outcome["fatal"] == fatal
+
+    outcome = {"gaps": []}
+    svc.attach_statement_outcome(
+        db, SYMBOL, MARKET, outcome, max_new=4,
+        ensure=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("披露易 503")),
+    )
+    assert "statements" not in outcome and outcome["gaps"] == ["[报表抽取] 管线异常，本轮未抽取报表"]

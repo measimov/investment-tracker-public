@@ -562,8 +562,10 @@ def sync_symbol_profile(db: Session, symbol: str, market: str) -> Dict[str, Any]
     return result
 
 
-# 供 LLM 输入与详情面板使用的每数据集行数上限（按 period_key 倒序取最新）
-PROFILE_CAPS: Dict[str, int] = {
+# 供 LLM 输入与详情面板使用的每数据集行数上限（按 period_key 倒序取最新）。
+# 值可以是整数，也可以是按 fp 的字典（`{"FY": 12, "H1": 6}`）：report_statements 混着年度与
+# 中报行，单一上限按 period_key 截断会让近几年的中报把十年年度行挤出窗口（16 期只剩约 8 年）
+PROFILE_CAPS: Dict[str, Any] = {
     "fina_indicator": 12,
     "forecast": 8,
     "express": 8,
@@ -577,8 +579,8 @@ PROFILE_CAPS: Dict[str, int] = {
     "cashflow": 8,
     "edgar_companyfacts": EDGAR_ANNUAL_KEEP + EDGAR_QUARTERLY_KEEP,
     "yahoo_fundamentals": 8,
-    # 年报/中报 PDF 抽取行：十年年度 + 近几期中报
-    "report_statements": 16,
+    # 年报/中报 PDF 抽取行：年度十二期（十年 + 比较列多出的年份）+ 近六期中报，分开封顶
+    "report_statements": {"FY": 12, "H1": 6},
     "xueqiu_income": 8,
     "xueqiu_capital_flow": 20,
     # 十行一期，取两期便于看变动
@@ -779,8 +781,28 @@ def graham_summary_for(db: Session, symbol: str, market: str) -> Optional[Dict[s
     }
 
 
+def _cap_rows(rows: List[Any], cap: Any) -> List[Any]:
+    """按上限截断（rows 已按 period_key 倒序）。cap 为字典时按行 payload 的 fp 分桶各自封顶
+    （缺 fp 视为 FY），字典里没有的 fp 不保留。"""
+    if not isinstance(cap, dict):
+        return rows[: int(cap)]
+    kept: List[Any] = []
+    seen: Dict[str, int] = {}
+    for row in rows:
+        payload = row.payload if hasattr(row, "payload") else row
+        fp = str((payload or {}).get("fp") or "FY")
+        limit = cap.get(fp)
+        if limit is None:
+            continue
+        if seen.get(fp, 0) >= int(limit):
+            continue
+        seen[fp] = seen.get(fp, 0) + 1
+        kept.append(row)
+    return kept
+
+
 def load_symbol_profile(
-    db: Session, symbol: str, market: str, *, caps: Optional[Dict[str, int]] = None
+    db: Session, symbol: str, market: str, *, caps: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """按数据集分组读取（period_key 倒序、逐集封顶），附数据截止信息。"""
     caps = caps or PROFILE_CAPS
@@ -801,9 +823,12 @@ def load_symbol_profile(
         if dataset in job_datasets:
             # 版本过滤后再截断：旧版本行不占 caps 名额也不进结果
             current = _job_dataset_current(dataset)
-            rows = [row for row in query.all() if current(row.payload or {})][: caps.get(dataset, 10)]
+            rows = _cap_rows(
+                [row for row in query.all() if current(row.payload or {})], caps.get(dataset, 10)
+            )
         else:
-            rows = query.limit(caps.get(dataset, 10)).all()
+            cap = caps.get(dataset, 10)
+            rows = query.limit(cap).all() if not isinstance(cap, dict) else _cap_rows(query.all(), cap)
         grouped[dataset] = [row.payload for row in rows]
         for row in rows:
             if row.fetched_at and (latest_fetch is None or row.fetched_at > latest_fetch):

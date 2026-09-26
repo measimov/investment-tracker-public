@@ -127,6 +127,12 @@
         <template #detail>
           已生成摘要 {{ digest.job.digests_generated || 0 }} 份 · 标的成功
           {{ digest.job.success_count || 0 }} · 失败 {{ digest.job.failed_count || 0 }}
+          <template v-if="digest.job.statements_generated || digest.job.statements_suspect">
+            · 港股报表新抽 {{ digest.job.statements_generated || 0 }} 份<template
+              v-if="digest.job.statements_suspect"
+              >、{{ digest.job.statements_suspect }} 期存疑</template
+            >
+          </template>
         </template>
       </JobProgressCard>
 

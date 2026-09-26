@@ -678,6 +678,20 @@ def test_profile_api_quality_uses_market_statements(db):
     body = get_symbol_profile("美股", "AAPL", None, db)
     assert body["capabilities"]["report_digest"] is True
     assert body["earnings_quality"]["per_year"]["2025"]["cfo_ni_ratio"] == 1.5
+    assert body["statement_progress"] is None  # 报表抽取只有港股有
+
+
+def test_profile_api_hk_carries_statement_progress(db):
+    """港股档案带「报表抽取」进度（与 capabilities.statements 配对），零行时也是完整形状。"""
+    from app.api.security_profiles import get_symbol_profile
+
+    body = get_symbol_profile("港股", "00700", None, db)
+    assert body["capabilities"]["statements"] == "report_pdf"
+    progress = body["statement_progress"]
+    assert progress["reports_ok"] == 0 and progress["reports_failed"] == 0
+    assert progress["annual_periods"] == [] and progress["failed_reports"] == []
+    assert progress["last_extracted_at"] is None
+    assert get_symbol_profile("A股", "600036", None, db)["statement_progress"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1400,3 +1414,54 @@ def test_graham_inputs_take_annual_rows_not_recent_periods(db_session=None):
         db.commit()
         db.close()
 
+
+
+# ---------------------------------------------------------------------------
+# 港股报表行按 fp 分开封顶（C3 十年口径）
+# ---------------------------------------------------------------------------
+
+
+def _seed_statement_rows(db, *, annual: int, interim: int):
+    from app.services.report_statement_prompts import STATEMENT_PROMPT_VERSION
+    from app.services.report_statements import STATEMENT_EXTRACTOR_VERSION
+
+    for i in range(annual):
+        end = f"{2025 - i}1231"
+        svc.upsert_profile_row(db, "00700", "港股", "report_statements", f"{end}|FY", {
+            "end_date": end, "fp": "FY", "currency": "CNY", "total_revenue": 100.0 + i,
+            "extractor_version": STATEMENT_EXTRACTOR_VERSION, "prompt_version": STATEMENT_PROMPT_VERSION,
+        })
+    for i in range(interim):
+        end = f"{2025 - i}0630"
+        svc.upsert_profile_row(db, "00700", "港股", "report_statements", f"{end}|H1", {
+            "end_date": end, "fp": "H1", "currency": "CNY", "total_revenue": 50.0 + i,
+            "extractor_version": STATEMENT_EXTRACTOR_VERSION, "prompt_version": STATEMENT_PROMPT_VERSION,
+        })
+    db.commit()
+
+
+def test_report_statement_caps_are_per_fp(db):
+    """16 期年度 + 6 期中报：单一上限 16 会让中报把十年年度行挤出窗口；按 fp 封顶后
+    档案取 12 FY + 6 H1，分析输入取 12 FY + 2 H1（中报只送最新一期及其比较列）。"""
+    _seed_statement_rows(db, annual=16, interim=6)
+    rows = svc.load_symbol_profile(db, "00700", "港股")["datasets"]["report_statements"]
+    fy = [r["end_date"] for r in rows if r["fp"] == "FY"]
+    h1 = [r["end_date"] for r in rows if r["fp"] == "H1"]
+    assert len(fy) == 12 and fy[0] == "20251231" and fy[-1] == "20141231"
+    assert len(h1) == 6
+    analysis = svc.load_symbol_profile(db, "00700", "港股", caps=jobs.ANALYSIS_CAPS)["datasets"]["report_statements"]
+    assert sum(1 for r in analysis if r["fp"] == "FY") == 12
+    assert [r["end_date"] for r in analysis if r["fp"] == "H1"] == ["20250630", "20240630"]
+    # 一级收缩：字典逐项减半
+    assert jobs.SHRUNK_CAPS["report_statements"] == {"FY": 6, "H1": 2}
+    assert jobs.SHRUNK_CAPS["fina_indicator"] == max(2, svc.PROFILE_CAPS["fina_indicator"] // 2)
+    shrunk = svc.load_symbol_profile(db, "00700", "港股", caps=jobs.SHRUNK_CAPS)["datasets"]["report_statements"]
+    assert sum(1 for r in shrunk if r["fp"] == "FY") == 6
+
+
+def test_cap_rows_helper_handles_int_and_missing_fp():
+    rows = [{"fp": "FY", "n": 1}, {"n": 2}, {"fp": "H1", "n": 3}, {"fp": "Q3", "n": 4}]
+    assert [r["n"] for r in svc._cap_rows(rows, 2)] == [1, 2]
+    # 缺 fp 视为 FY；字典里没有的 fp（Q3）不保留
+    assert [r["n"] for r in svc._cap_rows(rows, {"FY": 1, "H1": 5})] == [1, 3]
+    assert [r["n"] for r in svc._cap_rows(rows, {"FY": 2})] == [1, 2]

@@ -102,8 +102,9 @@ def build_system_prompt(market: str) -> str:
         对应标签：利润质量存疑/现金流背离/依赖非经常损益）
      ## 格雷厄姆准则解读（graham_screen.criteria 已给出逐项 verdict 与依据，
         **禁止自行心算任何比率**——只做解读：pass 项说明该防御性来源、fail 项
-        说明缺口大小与含义、indeterminate 项如实说明数据边界（如港股仅 3-5 年
-        科目、非 A股 无估值快照），绝不把"不可判定"说成"达标"或"不达标"；
+        说明缺口大小与含义、indeterminate 项如实说明数据边界（如港股 PDF 抽取
+        覆盖不足十年、雅虎补缺仅近 3-5 年、非 A股 无估值快照），绝不把"不可判定"
+        说成"达标"或"不达标"；
         综合 passed/failed 计数给出"防御型标准下的安全边际"总体评述；
         **仅当 pe、pb_or_product、current_ratio、lt_debt_vs_net_current_assets
         四项均为 pass** 才可用"安全边际充足"标签（服务端按 graham_screen 实际
@@ -154,8 +155,10 @@ MARKET_BANNED_TAGS: Dict[str, frozenset] = {
 }
 
 # 风险等级下限：数据边界决定"无明显风险信号"这个判断本身不成立的市场。
-# 港股已有披露易年报全文摘要，但结构化科目仍只覆盖近 3-5 年（Yahoo 限制），
-# 更长周期的趋势无从验证，low 仍属无依据的乐观——下限保留。
+# 港股结构化科目已可由披露易年报/中报 PDF 抽取覆盖至十年（雅虎只补缺、仅近 3-5 年），
+# 但覆盖仍不均（实测 02313 0 行、02156 3 行、09618 6 行），且本市场没有审计意见/质押/
+# 增减持这类客观风险信号源——"无明显风险信号"这个判断本身仍不成立，low 属无依据的
+# 乐观，下限保留。
 MARKET_MIN_RISK_LEVEL: Dict[str, str] = {"港股": "medium"}
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 

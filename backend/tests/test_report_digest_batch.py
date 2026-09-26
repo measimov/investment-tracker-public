@@ -715,6 +715,7 @@ def test_hk_targets_attach_statement_outcome(db, monkeypatch):
         seen.append((symbol, market, max_new))
         return {
             "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
+            "suspect": 1, "remaining": 5,
             "gaps": ["20161231 报表抽取失败（已封顶）"], "fatal": None,
         }
 
@@ -725,9 +726,13 @@ def test_hk_targets_attach_statement_outcome(db, monkeypatch):
     by_symbol = {row["symbol"]: row for row in job["results"]}
     assert by_symbol["00700"]["statements"] == {
         "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
+        "suspect": 1, "remaining": 5,
     }
     assert by_symbol["00700"]["gap_count"] == 1  # 摘要零缺口 + 报表 1 条
+    assert by_symbol["00700"]["gaps_preview"] == ["[报表抽取] 20161231 报表抽取失败（已封顶）"]
     assert by_symbol["600036"]["statements"] is None
+    # job 级计数：报表新抽 / 永久失败 / 存疑期
+    assert (job["statements_generated"], job["statements_blocked"], job["statements_suspect"]) == (2, 1, 1)
 
 
 def test_hk_statement_fatal_aborts_batch_and_pipeline_error_is_isolated(db, monkeypatch):
@@ -742,6 +747,9 @@ def test_hk_statement_fatal_aborts_batch_and_pipeline_error_is_isolated(db, monk
     job, _calls = _run(db, monkeypatch)
     assert job["status"] == "failed"
     assert "HTTP 401" in (job.get("abort_reason") or "")
+    # fatal 分支同样带 statements（此前只有成功分支带）
+    assert job["results"][0]["statements"]["failed"] == 1
+    assert job["results"][0]["gaps_preview"] == ["[报表抽取] x"]
 
     # 报表管线自身意外异常：不拖垮本标的的摘要结果，只记一条缺口（持仓沿用上面那条）
     monkeypatch.setattr(

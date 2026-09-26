@@ -98,7 +98,24 @@ class AnalysisBusyError(Exception):
 
 # 输入字符预算：单标的档案远小于全组合复盘，30k 足够且省 token
 CHAR_BUDGET = 40_000  # 含十年财报摘要后上调（原 30k）
-SHRUNK_CAPS = {dataset: max(2, cap // 2) for dataset, cap in PROFILE_CAPS.items()}
+# 分析输入的港股报表行窗口：年度十二期（十年 + 比较列多出的年份）；中报只送最新一期及其
+# 比较列——中报科目与年度同名，多送几期只会让模型把半年数与全年数混算
+ANALYSIS_STATEMENT_CAPS: Dict[str, int] = {"FY": 12, "H1": 2}
+ANALYSIS_CAPS: Dict[str, Any] = {**PROFILE_CAPS, "report_statements": ANALYSIS_STATEMENT_CAPS}
+
+
+def shrink_caps(caps: Dict[str, Any]) -> Dict[str, Any]:
+    """超预算一级收缩：每集封顶减半（按 fp 的字典逐项减半），下限 2。"""
+    shrunk: Dict[str, Any] = {}
+    for dataset, cap in caps.items():
+        if isinstance(cap, dict):
+            shrunk[dataset] = {fp: max(2, int(value) // 2) for fp, value in cap.items()}
+        else:
+            shrunk[dataset] = max(2, int(cap) // 2)
+    return shrunk
+
+
+SHRUNK_CAPS = shrink_caps(ANALYSIS_CAPS)
 
 # 三大报表 85-152 列/行，全字段会撑爆预算且多为空值——LLM 输入只取核心科目
 # （库内保留全量行供详情面板与追溯）
@@ -183,7 +200,7 @@ def build_analysis_input(
     from .report_digest_service import load_report_digests, serialize_digest_for_analysis
     from .security_profile_service import compute_graham_for
 
-    profile = load_symbol_profile(db, symbol, market)
+    profile = load_symbol_profile(db, symbol, market, caps=ANALYSIS_CAPS)
     events = load_security_events_for(db, symbol, market)
     digests = serialize_digest_for_analysis(load_report_digests(db, symbol, market))
     business = load_business_profile(db, symbol, market)
@@ -221,10 +238,14 @@ def build_analysis_input(
             "(外国私人发行人)；本市场无审计意见/质押/增减持/分红预案事件数据源；"
         ),
         "港股": (
-            "yahoo_fundamentals=雅虎年度核心科目(报告币种见行内 currency 字段，"
-            "公司间不一致；非官方接口、**仅近 3-5 年**)；report_digests=披露易"
-            "年报全文的 AI 摘要；本市场无审计意见/质押/增减持/解禁数据源，风险"
-            "只能来自年报摘要——年报未设「主要風險」章节时该项为空，须如实说明；"
+            "report_statements=披露易年报/中报 PDF 原文抽取的三张报表核心科目(官方一手，"
+            "**可达十年**；fp=FY 年度、fp=H1 中报——中报只送最新一期及其比较列；"
+            "is_comparative=true 是下一期报告的比较列而非本期权威行；"
+            "validation_status=suspect 表示该期科目校验存疑、存疑科目已置空由雅虎补缺，"
+            "对应期见 profile_data_gaps)；yahoo_fundamentals=雅虎年度核心科目(报告币种见"
+            "行内 currency 字段，公司间不一致；非官方接口、仅近 3-5 年，只作补缺)；"
+            "report_digests=披露易年报全文的 AI 摘要；本市场无审计意见/质押/增减持/解禁"
+            "数据源，风险只能来自年报摘要——年报未设「主要風險」章节时该项为空，须如实说明；"
         ),
     }
     payload = {
@@ -255,6 +276,22 @@ def build_analysis_input(
             payload["report_digest_gaps"].append(
                 f"（另有 {len(digest_gaps) - MAX_DIGEST_GAPS} 条摘要缺口未列出）"
             )
+    suspect_periods = sorted(
+        {
+            f"{row.get('end_date')}|{row.get('fp') or 'FY'}"
+            for row in profile["datasets"].get("report_statements") or []
+            if (row.get("validation") or {}).get("status") == "suspect"
+        },
+        reverse=True,
+    )
+    if suspect_periods:
+        # 校验存疑的会计期：存疑科目已置空由雅虎补缺（_compact_statement_rows），但"这些期
+        # 被清洗过"本身要进缺口，否则模型会把空值读成"公司没披露"
+        data_gaps = list(data_gaps or []) + [
+            "港股报表科目校验存疑（存疑科目已置空，雅虎能补的已补）: "
+            + "、".join(suspect_periods[:6])
+            + (f"（另 {len(suspect_periods) - 6} 期）" if len(suspect_periods) > 6 else "")
+        ]
     if data_gaps:
         # 数据集本次未取到（接口冷却/同步失败）。必须显式告知模型，否则"没数据"
         # 会被当成"没有质押/无风险信号"——把限流伪装成利好，比整体失败更危险。

@@ -27,7 +27,7 @@ from __future__ import annotations
 import io
 from datetime import date
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Callable, Any, Dict, List, Optional, Tuple
 
 import pdfplumber
 from sqlalchemy.orm import Session
@@ -49,6 +49,7 @@ from .report_digest_service import (
 from .report_fetchers import download_report_pdf, hkex_reports
 from .report_statement_checks import (
     CROSS_CHECK_FIELDS,
+    STATEMENT_VALIDATION_VERSION,
     cross_check_row,
     finalize_validation,
     hard_failures,
@@ -774,7 +775,11 @@ def load_report_statement_rows(
 
 
 def statement_progress(db: Session, symbol: str, market: str) -> Dict[str, Any]:
-    """详情页展示：已抽取报告数、覆盖的会计期、失败/封顶数。零外呼。"""
+    """详情页「报表抽取」面板：零外呼。
+
+    四类报告：ok（当前版本成功）/ stale（成功但版本过期，待重抽——**不是失败**，此前被算进
+    失败数）/ failed（可重试）/ capped（attempts 封顶，永久跳过）；会计期按年报/中报分列，
+    存疑期来自科目行的 validation；失败清单带原因，让用户看到"哪份、为什么"。"""
     extracts = (
         db.query(SecurityProfileData)
         .filter(
@@ -784,22 +789,84 @@ def statement_progress(db: Session, symbol: str, market: str) -> Dict[str, Any]:
         )
         .all()
     )
-    # 旧版本的 ok 行不算完成（重算前不可用），与 ensure_report_statements 的判缺口径一致
-    ok = [
-        row for row in extracts
-        if (row.payload or {}).get("status") == "ok" and statement_row_current(row.payload or {})
-    ]
-    failed = [row for row in extracts if row not in ok]
+    ok: List[SecurityProfileData] = []
+    stale: List[SecurityProfileData] = []
+    failed: List[SecurityProfileData] = []
+    for row in extracts:
+        payload = row.payload or {}
+        if payload.get("status") == "ok":
+            (ok if statement_row_current(payload) else stale).append(row)
+        else:
+            failed.append(row)
+    failed_reports = sorted(
+        (
+            {
+                "period_key": row.period_key,
+                "end_date": (row.payload or {}).get("end_date"),
+                "report_type": (row.payload or {}).get("report_type"),
+                "error": (row.payload or {}).get("error"),
+                "attempts": int((row.payload or {}).get("attempts") or 0),
+                "capped": int((row.payload or {}).get("attempts") or 0) >= MAX_ATTEMPTS,
+            }
+            for row in failed
+        ),
+        key=lambda item: str(item["end_date"] or ""),
+        reverse=True,
+    )
     periods = load_report_statement_rows(db, symbol, market, limit=60)
     annual = sorted({p["end_date"] for p in periods if p.get("fp") == "FY"}, reverse=True)
     interim = sorted({p["end_date"] for p in periods if p.get("fp") == "H1"}, reverse=True)
+    suspect_periods = sorted(
+        {
+            f"{p['end_date']}|{p.get('fp') or 'FY'}"
+            for p in periods
+            if (p.get("validation") or {}).get("status") == "suspect"
+        },
+        reverse=True,
+    )
+    fetched = [row.fetched_at for row in extracts if row.fetched_at is not None]
     return {
         "reports_ok": len(ok),
+        "reports_stale": len(stale),
         "reports_failed": len(failed),
-        "reports_capped": sum(
-            1 for row in failed if int((row.payload or {}).get("attempts") or 0) >= MAX_ATTEMPTS
-        ),
+        "reports_capped": sum(1 for item in failed_reports if item["capped"]),
         "annual_periods": annual,
         "interim_periods": interim,
+        "suspect_periods": suspect_periods,
+        "suspect_count": len(suspect_periods),
+        "failed_reports": failed_reports,
+        "last_extracted_at": max(fetched).isoformat() if fetched else None,
+        "validation_version": STATEMENT_VALIDATION_VERSION,
         "as_of": date.today().isoformat(),
     }
+
+
+STATEMENT_OUTCOME_KEYS = (
+    "total", "completed", "generated", "failed", "permanently_failed", "suspect", "remaining",
+)
+
+
+def attach_statement_outcome(
+    db: Session, symbol: str, market: str, outcome: Dict[str, Any], *, max_new: int,
+    ensure: Optional[Callable[..., Dict[str, Any]]] = None,
+) -> None:
+    """财报摘要之后顺带抽三张报表（同一成本护栏）：结果挂在 outcome["statements"]，缺口以
+    「[报表抽取]」前缀并入 gaps，fatal 与摘要同词汇表向上传递。报表管线自身的意外异常不
+    拖垮本标的的摘要结果。单标的回填与批量回填共用（此前只有批量做，单标的「补齐历史摘要」
+    不抽报表）。`ensure` 供批量侧注入自己模块命名空间里的 ensure_report_statements（测试
+    monkeypatch 该名字）。"""
+    runner = ensure or ensure_report_statements
+    try:
+        statements = runner(db, symbol, market, max_new=max_new)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("报表抽取意外失败 %s/%s: %s", market, symbol, str(exc)[:200])
+        outcome["gaps"] = list(outcome.get("gaps") or []) + ["[报表抽取] 管线异常，本轮未抽取报表"]
+        return
+    outcome["statements"] = {key: statements.get(key) for key in STATEMENT_OUTCOME_KEYS}
+    outcome["gaps"] = list(outcome.get("gaps") or []) + [
+        f"[报表抽取] {gap}" for gap in statements.get("gaps", [])
+    ]
+    if statements.get("fatal"):
+        outcome["fatal"] = statements["fatal"]
+
+

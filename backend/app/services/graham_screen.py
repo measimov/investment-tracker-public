@@ -7,7 +7,8 @@ LLM 自行心算估值/财务比率不可靠：与 earnings_quality 同模式，
 七项准则出自《聪明的投资者》防御型投资者标准，阈值集中在
 GRAHAM_DEFENSIVE_THRESHOLDS（原著口径注释在旁，个别按市场现实调低）。
 每项输出 verdict=pass/fail/indeterminate + reason：**数据不足绝不冒充判定**
-——港股仅 3-5 年科目，"十年盈利稳定"这类准则只能给 indeterminate 并注明
+——港股年度科目由披露易年报 PDF 抽取可达十年（雅虎只补近 3-5 年），覆盖不足十年的标的
+"十年盈利稳定"这类准则只能给 indeterminate 并注明
 覆盖年限；反过来有亏损年即可确定 fail，与覆盖年限无关。
 
 塔勒布侧输出脆弱性信号（fragility）：杠杆、净债务、利息覆盖——识别
