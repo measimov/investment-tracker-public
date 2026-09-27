@@ -16,7 +16,8 @@ class LLMNotConfiguredError(Exception):
 
 class LLMClientError(Exception):
     """LLM 调用失败；status_code 供调用方区分确定性失败（4xx）与可重试失败。
-    finish_reason 只在「200 但 content 为空」时有值（length = 推理耗尽输出额度）。"""
+    finish_reason 只在「200 但输出不可用」时有值：content 为空，或 finish_reason=length
+    （推理/输出耗尽额度，content 为空或半截）。length 用 `is_output_truncated` 判定。"""
 
     def __init__(
         self, message: str, status_code: int | None = None, finish_reason: str | None = None
@@ -24,6 +25,12 @@ class LLMClientError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.finish_reason = finish_reason
+
+
+def is_output_truncated(exc: BaseException) -> bool:
+    """输出额度耗尽（finish_reason=length，空或半截输出）：同样的输入重试结果相同，
+    调用方一律按确定性失败处理（status_code 为 None，不能落进「5xx/超时→重试」分支）。"""
+    return isinstance(exc, LLMClientError) and exc.finish_reason == "length"
 
 
 def is_llm_configured() -> bool:
@@ -84,16 +91,30 @@ def chat_completion(
     except (ValueError, KeyError, IndexError) as exc:
         raise LLMClientError(f"LLM 响应格式异常: {response.text[:300]}") from exc
 
+    finish_reason = choice.get("finish_reason")
+    if content and finish_reason == "length":
+        # 非空但被截断：半截内容绝不能当结果返回——JSON mode 调用方会报一个误导性的
+        # 「不是合法 JSON」（00799 港股分析），Markdown 调用方会把半篇报告当成品落库
+        logger.warning(
+            "LLM 输出被截断（finish_reason=length，已输出 %s 字符，max_tokens=%s）",
+            len(content), payload["max_tokens"],
+        )
+        raise LLMClientError(
+            f"LLM 输出被截断（finish_reason=length，max_tokens={payload['max_tokens']}），"
+            "可调大输出额度（标的分析 SECURITY_ANALYSIS_MAX_OUTPUT_TOKENS，"
+            "报表映射 STATEMENT_MAX_OUTPUT_TOKENS，其余 LLM_REPORT_MAX_OUTPUT_TOKENS）",
+            finish_reason=finish_reason,
+        )
+
     if not content:
         # 推理模型（deepseek-flash / 此前的 deepseek-v4-pro）会先产生 reasoning_content；
         # 输出配额被推理耗尽时 content 为空（finish_reason=length）——同样的输入重试结果相同。
-        # status_code 为 None，`_is_transient` 默认按瞬时处理；需要把它当确定性失败的调用方
-        # （报表科目映射：statement_max_output_tokens）按 finish_reason 自行判定。
-        finish_reason = choice.get("finish_reason")
+        # status_code 为 None：调用方用 `is_output_truncated` 判定 length 并按确定性失败处理。
         raise LLMClientError(
             f"LLM 输出为空（finish_reason={finish_reason}），"
-            "可能是 max_tokens 配额被推理消耗，可调大输出额度"
-            "（复盘/分析 llm_report_max_output_tokens，报表映射 statement_max_output_tokens）",
+            "可能是 max_tokens 配额被推理消耗，可调大输出额度（标的分析 "
+            "SECURITY_ANALYSIS_MAX_OUTPUT_TOKENS，报表映射 STATEMENT_MAX_OUTPUT_TOKENS，"
+            "其余 LLM_REPORT_MAX_OUTPUT_TOKENS）",
             finish_reason=finish_reason,
         )
 

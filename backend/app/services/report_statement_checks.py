@@ -32,7 +32,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-STATEMENT_VALIDATION_VERSION = 4
+# v5：EPS 与雅虎相差 >20% 且更晚报告比较列解释不了 → error（基本与摊薄各一条）
+STATEMENT_VALIDATION_VERSION = 5
 
 IDENTITY_REL_TOL = 0.01
 CROSS_CHECK_REL_TOL = 0.01
@@ -45,6 +46,10 @@ HARD_MAGNITUDE_RATIO = 0.5
 DEFINITION_MATCH_TOL = 0.005
 # EPS 与雅虎的比值落在这个区间 = 单位差 100 倍（仙当元），判 error
 EPS_CENTS_RATIO_RANGE = (90.0, 110.0)
+# EPS 与雅虎相差超过这个比例且更晚报告的比较列解释不了 → error（v5）。20% 容得下雅虎对
+# 摊薄/加权股数口径的小差异，容不下附注号（13.0 vs 1.471）这类映射错误
+EPS_MISMATCH_TOL = 0.20
+EPS_CHECK_FIELDS = ("basic_eps", "diluted_eps")
 
 # 表头的重列标记（生产表头实测的全部变体）：「（重新表述）」02669、「（經重述）」00148/00799/00883、
 # 「（經重列）」「经重列」、「（重列）」00728、「（已重述）」02333、「(Restated)」00148；另收「重新呈列」
@@ -56,6 +61,7 @@ _CHECK_FIELD_KIND = {
     "total_revenue": "income",
     "n_income_attr_p": "income",
     "basic_eps": "income",
+    "diluted_eps": "income",
     "total_assets": "balance",
     "n_cashflow_act": "cashflow",
 }
@@ -314,14 +320,24 @@ def _explain_yahoo_diff(
     return None
 
 
-def _eps_check(row: Dict[str, Any], yahoo_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """EPS 与雅虎：比值≈100 是「仙当元」的单位错误（error，#223 同类问题以后能被抓住）；其余
-    差异只记 info（雅虎 EPS 口径与报表不总一致）。"""
-    ours, theirs = _num(row, "basic_eps"), _num(yahoo_row, "basic_eps")
+def _eps_check(
+    row: Dict[str, Any],
+    yahoo_row: Dict[str, Any],
+    field: str,
+    comparative: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """每股盈利与雅虎同财年同科目比对（v5 起基本与摊薄各一条）：
+
+    - 比值≈100：「仙当元」的单位错误（error `eps_unit_100x`，#223）；
+    - 差 ≤1%：ok；1%–20%：info（雅虎 EPS 口径与报表不总一致，只记不判）；
+    - 差 >20%：error `eps_mismatch`，**除非**更晚报告的比较列能解释（与我们一致 → 雅虎口径不同；
+      标注重列且与雅虎一致 → 雅虎取了重列数），此时仍是 info。v4 之前大差异只记 info，附注号
+      被当成 EPS（00148 2024「13.0」vs 雅虎 1.471）也照样当官方数送进格雷厄姆。"""
+    ours, theirs = _num(row, field), _num(yahoo_row, field)
     if ours is None or theirs is None or not _same_currency(row, yahoo_row):
         return None
     base: Dict[str, Any] = {
-        "id": "yahoo_basic_eps", "fields": ["basic_eps"], "source": "yahoo_fundamentals",
+        "id": f"yahoo_{field}", "fields": [field], "source": "yahoo_fundamentals",
         "ours": ours, "theirs": theirs,
     }
     if theirs != 0:
@@ -330,14 +346,22 @@ def _eps_check(row: Dict[str, Any], yahoo_row: Dict[str, Any]) -> Optional[Dict[
         if low <= ratio <= high:
             return {
                 **base, "severity": "error", "status": "suspect", "reason": "eps_unit_100x",
-                "detail": f"basic_eps {ours:g} 是雅虎 {theirs:g} 的 {ratio:.0f} 倍，疑似以仙列示未折元",
+                "detail": f"{field} {ours:g} 是雅虎 {theirs:g} 的 {ratio:.0f} 倍，疑似以仙列示未折元",
             }
     rel = _rel_diff(ours, theirs)
     if rel <= CROSS_CHECK_REL_TOL:
         return {**base, "severity": "info", "status": "ok", "rel_diff": rel, "detail": ""}
+    if rel <= EPS_MISMATCH_TOL:
+        return {
+            **base, "severity": "info", "status": "suspect", "rel_diff": rel,
+            "detail": f"{field} 与雅虎相差 {rel:.1%}",
+        }
+    explained = _explain_yahoo_diff(row, comparative, field, ours, theirs)
+    if explained:
+        return {**base, "severity": "info", "status": "suspect", "rel_diff": rel, **explained}
     return {
-        **base, "severity": "info", "status": "suspect", "rel_diff": rel,
-        "detail": f"basic_eps 与雅虎相差 {rel:.1%}",
+        **base, "severity": "error", "status": "suspect", "rel_diff": rel, "reason": "eps_mismatch",
+        "detail": f"{field} {ours:g} 与雅虎 {theirs:g} 相差 {rel:.1%}，疑似映射到非每股盈利行",
     }
 
 
@@ -412,9 +436,10 @@ def cross_check_row(
                 )
             checks.append(check)
         if is_yahoo:
-            eps = _eps_check(row, other)
-            if eps:
-                checks.append(eps)
+            for eps_field in EPS_CHECK_FIELDS:
+                eps = _eps_check(row, other, eps_field, comparative_row)
+                if eps:
+                    checks.append(eps)
     return checks
 
 

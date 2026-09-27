@@ -13,7 +13,12 @@ from .background_job_store import (
 )
 from .job_runtime import run_job_inline
 from .job_worker import register_periodic_task, register_runner
-from .llm_client import LLMClientError, LLMNotConfiguredError, chat_completion
+from .llm_client import (
+    LLMClientError,
+    LLMNotConfiguredError,
+    chat_completion,
+    is_output_truncated,
+)
 from .llm_report_input import build_llm_report_input
 from .llm_report_prompts import build_report_messages
 
@@ -50,7 +55,11 @@ def execute_llm_report_job(claimed: Dict[str, Any]) -> None:
             )
             return
         except LLMClientError as exc:
-            if exc.status_code is not None and 400 <= exc.status_code < 500:
+            # 4xx 与输出额度耗尽（finish_reason=length：半截报告不落库，重试结果相同）
+            # 均为确定性失败
+            if is_output_truncated(exc) or (
+                exc.status_code is not None and 400 <= exc.status_code < 500
+            ):
                 update_job(
                     claimed["id"], JOB_TYPE,
                     status="failed",

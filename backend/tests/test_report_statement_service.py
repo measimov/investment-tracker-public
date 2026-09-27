@@ -296,13 +296,28 @@ def test_prompt_bump_remaps_without_downloading(db, monkeypatch):
 
 
 def test_extractor_bump_or_new_fingerprint_re_downloads(db, monkeypatch):
-    calls = _patch_pipeline(
-        monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES},
-    )
+    pages_by_url = {ANNUAL_TARGET["url"]: ANNUAL_PAGES}
+    calls = _patch_pipeline(monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url=pages_by_url)
     svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
-    monkeypatch.setattr(svc, "STATEMENT_EXTRACTOR_VERSION", svc.STATEMENT_EXTRACTOR_VERSION + 1)
-    svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
-    assert calls == {"llm": 2, "download": 2}
+    original = svc.STATEMENT_EXTRACTOR_VERSION
+    before = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+    # 抽取器升版：重下载重定位；解析结果与存量逐字节相同 → 沿用旧映射，不调 LLM
+    monkeypatch.setattr(svc, "STATEMENT_EXTRACTOR_VERSION", original + 1)
+    result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert calls == {"llm": 1, "download": 2}
+    assert result["generated"] == 1 and result["mapping_reused"] == 1
+    extract = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+    assert extract["extractor_version"] == original + 1 and extract["status"] == "ok"
+    assert extract["mapping"] == before["mapping"] and extract["mapping_from_extractor"] == original
+    assert _rows(db, svc.STATEMENT_DATASET)["20251231|FY"]["extractor_version"] == original + 1
+    # 再升版且这份报告的解析结果变了（任一数值不同）→ 重新映射
+    pages_by_url[ANNUAL_TARGET["url"]] = [page.replace("751,766", "751,767") for page in ANNUAL_PAGES]
+    monkeypatch.setattr(svc, "STATEMENT_EXTRACTOR_VERSION", original + 2)
+    result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert calls == {"llm": 2, "download": 3}
+    assert result["mapping_reused"] == 0
+    assert _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]["mapping_from_extractor"] == original + 2
+    pages_by_url[ANNUAL_TARGET["url"]] = ANNUAL_PAGES
     # 报告出了修订版（新 URL）：指纹变化 → 重抽
     revised = {**ANNUAL_TARGET, "url": "https://www1.hkexnews.hk/a/2025-rev.pdf", "ann_date": "20/04/2026 16:30"}
     _patch_pipeline(

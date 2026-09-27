@@ -1,0 +1,945 @@
+{
+ "extracts": {
+  "20171231|annual": {
+   "ann_date": "26/04/2018 20:46",
+   "attempts": 1,
+   "end_date": "20171231",
+   "mapping": {
+    "income": {
+     "basic_eps": [
+      "r33"
+     ],
+     "cost_of_revenue": [
+      "r2"
+     ],
+     "diluted_eps": [
+      "r33"
+     ],
+     "gross_profit": [
+      "r3"
+     ],
+     "income_tax": [
+      "r22"
+     ],
+     "int_exp": [
+      "r8"
+     ],
+     "n_income_attr_p": [
+      "r27"
+     ],
+     "sga_exp": [
+      "r6",
+      "r7"
+     ],
+     "total_profit": [
+      "r21"
+     ],
+     "total_revenue": [
+      "r1"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2018/0426/ltn201804262516_c.pdf|26/04/2018 20:46",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2018/0426/ltn201804262516_c.pdf",
+   "statements": {
+    "income": {
+     "column_count": 2,
+     "currency": "CNY",
+     "header": [
+      "綜合損益及其他全面收益表",
+      "截至2017年12月31日止年度",
+      "2017年 2016年",
+      "附註 人民幣千元 人民幣千元",
+      "收入 5 41,952,752 28,975,603",
+      "銷售成本 (33,877,152) (22,953,628)",
+      "毛利 8,075,600 6,021,975",
+      "其他收入 6 1,223,089 977,400",
+      "其他收益及虧損 7 121,698 574,819",
+      "銷售開支 (1,616,716) (1,347,245)",
+      "行政開支 (2,859,701) (2,860,501)",
+      "財務費用 8 (1,476,671) (1,037,480)"
+     ],
+     "interim_four_columns": false,
+     "kind": "income",
+     "page_end": 118,
+     "page_start": 118,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "收入",
+       "note": "5",
+       "values": [
+        "41952752",
+        "28975603"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "銷售成本",
+       "note": "",
+       "values": [
+        "-33877152",
+        "-22953628"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "毛利",
+       "note": "",
+       "values": [
+        "8075600",
+        "6021975"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "其他收入",
+       "note": "6",
+       "values": [
+        "1223089",
+        "977400"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "其他收益及虧損",
+       "note": "7",
+       "values": [
+        "121698",
+        "574819"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "銷售開支",
+       "note": "",
+       "values": [
+        "-1616716",
+        "-1347245"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "行政開支",
+       "note": "",
+       "values": [
+        "-2859701",
+        "-2860501"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "財務費用",
+       "note": "8",
+       "values": [
+        "-1476671",
+        "-1037480"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "物業、廠房及設備減值虧損撥回",
+       "note": "14",
+       "values": [
+        "19680",
+        "37649"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "已竣工可出售物業減值虧損",
+       "note": "",
+       "values": [
+        "-352348",
+        "-68593"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "貿易及其他應收款項減值虧損",
+       "note": "",
+       "values": [
+        "-216226",
+        "-25783"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "應收一家聯營公司及一家合營企業款項減值虧損",
+       "note": "",
+       "values": [
+        "-431099",
+        "-81787"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "投資物業公平值變動收益",
+       "note": "15",
+       "values": [
+        "253400",
+        "50000"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "交叉貨幣掉期公平值改變",
+       "note": "",
+       "values": [
+        null,
+        "55547"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "優先票據提早贖回權的公平值改變",
+       "note": "28",
+       "values": [
+        "-156700",
+        "-101294"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "就分階段達成業務合併時重新計算聯營公司及一家合營企業至收購日期公平值的收益",
+       "note": "33",
+       "values": [
+        "1623535",
+        "51689"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "收購附屬公司收益",
+       "note": "33",
+       "values": [
+        "13806",
+        "2325"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "出售附屬公司淨收益",
+       "note": "34",
+       "values": [
+        "1619765",
+        "74461"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "分佔聯營公司業績",
+       "note": "",
+       "values": [
+        "557962",
+        "1255767"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "分佔合營企業業績",
+       "note": "",
+       "values": [
+        "-8306",
+        "169280"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "除稅前利潤",
+       "note": "9",
+       "values": [
+        "6390768",
+        "3748229"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "稅項",
+       "note": "11",
+       "values": [
+        "-3719803",
+        "-1525686"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "年內利潤",
+       "note": "",
+       "values": [
+        "2670965",
+        "2222543"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "可供出售投資的公平值收益",
+       "note": "",
+       "values": [
+        "383776",
+        "86498"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "年內其他全面收益，扣除所得稅",
+       "note": "",
+       "values": [
+        "383776",
+        "86498"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r26",
+       "label": "年內全面收益總額",
+       "note": "",
+       "values": [
+        "3054741",
+        "2309041"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r27",
+       "label": "本公司股東",
+       "note": "",
+       "values": [
+        "2189598",
+        "1917096"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r28",
+       "label": "非控股股東權益",
+       "note": "",
+       "values": [
+        "481367",
+        "305447"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r29",
+       "label": "",
+       "note": "",
+       "values": [
+        "2670965",
+        "2222543"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r30",
+       "label": "本公司股東",
+       "note": "",
+       "values": [
+        "2573374",
+        "2003594"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r31",
+       "label": "非控股股東權益",
+       "note": "",
+       "values": [
+        "481367",
+        "305447"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r32",
+       "label": "",
+       "note": "",
+       "values": [
+        "3054741",
+        "2309041"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r33",
+       "label": "每股盈利",
+       "note": "",
+       "values": [
+        "13"
+       ]
+      }
+     ],
+     "title": "綜合損益及其他全面收益表",
+     "unit_multiplier": 1000,
+     "years": [
+      2017,
+      2016
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "二零一七年年報"
+  },
+  "20181231|annual": {
+   "ann_date": "26/04/2019 21:20",
+   "attempts": 1,
+   "end_date": "20181231",
+   "mapping": {
+    "income": {
+     "basic_eps": [
+      "r33"
+     ],
+     "cost_of_revenue": [
+      "r4"
+     ],
+     "gross_profit": [
+      "r5"
+     ],
+     "income_tax": [
+      "r21"
+     ],
+     "int_exp": [
+      "r10"
+     ],
+     "n_income_attr_p": [
+      "r27"
+     ],
+     "sga_exp": [
+      "r8",
+      "r9"
+     ],
+     "total_profit": [
+      "r20"
+     ],
+     "total_revenue": [
+      "r3"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2019/0426/ltn201904262580_c.pdf|26/04/2019 21:20",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2019/0426/ltn201904262580_c.pdf",
+   "statements": {
+    "income": {
+     "column_count": 2,
+     "currency": "CNY",
+     "header": [
+      "綜合損益及其他全面收益表",
+      "截至2018年12月31日止年度",
+      "2018年 2017年",
+      "附註 人民幣千元 人民幣千元",
+      "收入",
+      "貨品及服務 5 60,217,014 41,883,043",
+      "租金 85,496 69,709",
+      "總收入 5 60,302,510 41,952,752",
+      "銷售成本 (46,550,157) (33,877,152)",
+      "毛利 13,752,353 8,075,600",
+      "其他收入 6 1,860,271 711,902",
+      "其他收益及虧損 7 (509,950) 632,885"
+     ],
+     "interim_four_columns": false,
+     "kind": "income",
+     "page_end": 125,
+     "page_start": 125,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "貨品及服務",
+       "note": "5",
+       "values": [
+        "60217014",
+        "41883043"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "租金",
+       "note": "",
+       "values": [
+        "85496",
+        "69709"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "總收入",
+       "note": "5",
+       "values": [
+        "60302510",
+        "41952752"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "銷售成本",
+       "note": "",
+       "values": [
+        "-46550157",
+        "-33877152"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "毛利",
+       "note": "",
+       "values": [
+        "13752353",
+        "8075600"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "其他收入",
+       "note": "6",
+       "values": [
+        "1860271",
+        "711902"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "其他收益及虧損",
+       "note": "7",
+       "values": [
+        "-509950",
+        "632885"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "銷售開支",
+       "note": "",
+       "values": [
+        "-1844396",
+        "-1616716"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "行政開支",
+       "note": "",
+       "values": [
+        "-3895426",
+        "-2859701"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "財務費用",
+       "note": "8",
+       "values": [
+        "-1551663",
+        "-1476671"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "金融資產減值及撥回淨值",
+       "note": "9",
+       "values": [
+        "-1282734",
+        "-647325"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "非金融資產減值及撥回淨值",
+       "note": "9",
+       "values": [
+        "-452100",
+        "-332668"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "投資物業公平值變動收益",
+       "note": "16",
+       "values": [
+        "132128",
+        "253400"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "優先票據提早贖回權的公平值變動",
+       "note": "32",
+       "values": [
+        null,
+        "-156700"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "就分階段達成業務合併時重新計量聯營公司及合營企業至收購日期公平值的收益",
+       "note": "37",
+       "values": [
+        "686352",
+        "1623535"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "收購附屬公司收益",
+       "note": "37",
+       "values": [
+        null,
+        "13806"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "出售附屬公司淨收益",
+       "note": "38",
+       "values": [
+        "509040",
+        "1619765"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "分佔聯營公司業績",
+       "note": "",
+       "values": [
+        "325582",
+        "557962"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "分佔合營企業業績",
+       "note": "",
+       "values": [
+        "174515",
+        "-8306"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "除稅前利潤",
+       "note": "10",
+       "values": [
+        "7903972",
+        "6390768"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "稅項",
+       "note": "12",
+       "values": [
+        "-5528742",
+        "-3719803"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "年內利潤",
+       "note": "",
+       "values": [
+        "2375230",
+        "2670965"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "按公平值計入其他全面收益的權益工具的公平值收益",
+       "note": "",
+       "values": [
+        "178192",
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "可供出售投資的公平值收益",
+       "note": "",
+       "values": [
+        null,
+        "383776"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "年內其他全面收益（除稅後）",
+       "note": "",
+       "values": [
+        "178192",
+        "383776"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r26",
+       "label": "年內全面收益總額",
+       "note": "",
+       "values": [
+        "2553422",
+        "3054741"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r27",
+       "label": "本公司股東",
+       "note": "",
+       "values": [
+        "1003285",
+        "2189598"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r28",
+       "label": "非控股股東權益",
+       "note": "",
+       "values": [
+        "1371945",
+        "481367"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r29",
+       "label": "",
+       "note": "",
+       "values": [
+        "2375230",
+        "2670965"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r30",
+       "label": "本公司股東",
+       "note": "",
+       "values": [
+        "1181477",
+        "2573374"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r31",
+       "label": "非控股股東權益",
+       "note": "",
+       "values": [
+        "1371945",
+        "481367"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r32",
+       "label": "",
+       "note": "",
+       "values": [
+        "2553422",
+        "3054741"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r33",
+       "label": "每股盈利",
+       "note": "",
+       "values": [
+        "14"
+       ]
+      }
+     ],
+     "title": "綜合損益及其他全面收益表",
+     "unit_multiplier": 1000,
+     "years": [
+      2018,
+      2017
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "二零一八年年報"
+  }
+ },
+ "market": "港股",
+ "symbol": "03900",
+ "yahoo_fundamentals": {
+  "20221231": {
+   "accounts_receiv": 1620878000.0,
+   "basic_eps": 1.03,
+   "capex": -393686000.0,
+   "cost_of_revenue": 105132324000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 762896000.0,
+   "diluted_eps": 1.02,
+   "div_paid_owners": 1154944000.0,
+   "ebitda": 16747846000.0,
+   "end_date": "20221231",
+   "fix_assets": 10649289000.0,
+   "fp": "FY",
+   "free_cashflow": 14199396000.0,
+   "gross_profit": 22020747000.0,
+   "income_tax": 4361353000.0,
+   "int_exp": 2728633000.0,
+   "inventories": 284677587000.0,
+   "money_cap": 66312335000.0,
+   "n_cashflow_act": 14593082000.0,
+   "n_income_attr_p": 2756100000.0,
+   "operating_income": 13803039000.0,
+   "sga_exp": 8289319000.0,
+   "total_assets": 535076992000.0,
+   "total_cur_assets": 462371250000.0,
+   "total_cur_liab": 304754486000.0,
+   "total_debt": 137884503000.0,
+   "total_hldr_eqy_exc_min_int": 37550556000.0,
+   "total_liab": 423664074000.0,
+   "total_profit": 13256317000.0,
+   "total_revenue": 127153071000.0
+  },
+  "20231231": {
+   "accounts_receiv": 2011882000.0,
+   "basic_eps": 1.22,
+   "capex": -359530000.0,
+   "cost_of_revenue": 114310289000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 779663000.0,
+   "diluted_eps": 1.22,
+   "div_paid_owners": 1265999000.0,
+   "ebitda": 13420356000.0,
+   "end_date": "20231231",
+   "fix_assets": 11906346000.0,
+   "fp": "FY",
+   "free_cashflow": 22614140000.0,
+   "gross_profit": 17072861000.0,
+   "income_tax": 3046507000.0,
+   "int_exp": 2916047000.0,
+   "inventories": 286513096000.0,
+   "money_cap": 69758363000.0,
+   "n_cashflow_act": 22973670000.0,
+   "n_income_attr_p": 3117684000.0,
+   "operating_income": 9267609000.0,
+   "sga_exp": 7867225000.0,
+   "total_assets": 535536974000.0,
+   "total_cur_assets": 463725472000.0,
+   "total_cur_liab": 303248079000.0,
+   "total_debt": 146724454000.0,
+   "total_hldr_eqy_exc_min_int": 36130383000.0,
+   "total_liab": 421601866000.0,
+   "total_profit": 9724646000.0,
+   "total_revenue": 131383150000.0
+  },
+  "20241231": {
+   "accounts_receiv": 2637572000.0,
+   "basic_eps": 0.63,
+   "capex": -356437000.0,
+   "cost_of_revenue": 138320873000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 736083000.0,
+   "diluted_eps": 0.63,
+   "div_paid_owners": 1088759000.0,
+   "ebitda": 10388550000.0,
+   "end_date": "20241231",
+   "fix_assets": 12041080000.0,
+   "fp": "FY",
+   "free_cashflow": 28474269000.0,
+   "gross_profit": 20225297000.0,
+   "income_tax": 2927724000.0,
+   "int_exp": 2578615000.0,
+   "inventories": 252015763000.0,
+   "money_cap": 68861730000.0,
+   "n_cashflow_act": 28830706000.0,
+   "n_income_attr_p": 1596426000.0,
+   "operating_income": 11464255000.0,
+   "sga_exp": 7764366000.0,
+   "total_assets": 507784971000.0,
+   "total_cur_assets": 437690728000.0,
+   "total_cur_liab": 285505028000.0,
+   "total_debt": 137695610000.0,
+   "total_hldr_eqy_exc_min_int": 36327605000.0,
+   "total_liab": 394300788000.0,
+   "total_profit": 7073852000.0,
+   "total_revenue": 158546170000.0
+  },
+  "20251231": {
+   "accounts_receiv": 2172515000.0,
+   "basic_eps": 0.03,
+   "capex": -346887000.0,
+   "cost_of_revenue": 136494953000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 666874000.0,
+   "diluted_eps": 0.03,
+   "div_paid_owners": 761880000.0,
+   "ebitda": 7782044000.0,
+   "end_date": "20251231",
+   "fix_assets": 12676945000.0,
+   "fp": "FY",
+   "free_cashflow": 5272565000.0,
+   "gross_profit": 18471224000.0,
+   "income_tax": 2603023000.0,
+   "int_exp": 2225815000.0,
+   "inventories": 214822704000.0,
+   "money_cap": 59160399000.0,
+   "n_cashflow_act": 5619452000.0,
+   "n_income_attr_p": 70989000.0,
+   "operating_income": 9424869000.0,
+   "sga_exp": 7064142000.0,
+   "total_assets": 449861221000.0,
+   "total_cur_assets": 374437474000.0,
+   "total_cur_liab": 233503105000.0,
+   "total_debt": 133848831000.0,
+   "total_hldr_eqy_exc_min_int": 35184133000.0,
+   "total_liab": 344146974000.0,
+   "total_profit": 4889355000.0,
+   "total_revenue": 154966177000.0
+  }
+ }
+}

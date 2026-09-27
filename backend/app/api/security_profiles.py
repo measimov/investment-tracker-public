@@ -69,6 +69,7 @@ def _analysis_summary(analysis: SecurityAnalysis) -> Dict[str, Any]:
         "name": analysis.name,
         "tags": analysis.tags,
         "risk_level": analysis.risk_level,
+        "risk_level_adjusted": analysis.risk_level_adjusted,
         "summary": analysis.summary,
         "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
         "data_fetched_at": analysis.data_fetched_at.isoformat() if analysis.data_fetched_at else None,

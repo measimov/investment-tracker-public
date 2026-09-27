@@ -144,6 +144,10 @@ class Settings(BaseSettings):
     # 港股报表科目映射（report_statement_service）单独的输出额度：03900 这类大报表推理会吃穿
     # 16384（finish_reason=length、content 为空）；映射输出本身很短，额度只是给推理留余量
     statement_max_output_tokens: int = 32768
+    # 标的分析（security_analysis_jobs，单只与批量共用）单独的输出额度：港股输入含十年 PDF
+    # 报表行 + 摘要，JSON 结构化产物 + 全文报告在 16384 里被截断（00799，finish_reason=length、
+    # content 是半截 JSON）
+    security_analysis_max_output_tokens: int = 32768
 
     # Security settings
     #

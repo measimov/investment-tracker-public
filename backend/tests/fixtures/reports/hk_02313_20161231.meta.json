@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "02313",
+  "end_date": "20161231",
+  "report_type": "annual",
+  "title": "02313_20161231",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(126, 138)]，其余页置空以保住页码。申洲國際 2016 年報（中英双语）：「－年度利潤 – For profit for the year 人民幣2.11元 人民幣1.68元」下一行「RMB2.11 RMB1.68」，摊薄行前缀后缀不齐「人民幣2.02 人民幣1.62元」；「基本 Basic」「攤薄 Diluted」独占一行；小标题跨四行，末行「COMPANY 13」",
+  "pages": 239,
+  "kept_pages": [
+    [
+      126,
+      138
+    ]
+  ],
+  "chars": 22507
+}

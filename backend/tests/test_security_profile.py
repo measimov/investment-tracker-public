@@ -334,7 +334,7 @@ VALID_LLM_OUTPUT = (
 
 def _run_job(db, monkeypatch, *, llm_content=VALID_LLM_OUTPUT, market="A股",
              symbol="600036", public_name="招商银行", digest_result=None,
-             datasets=None):
+             datasets=None, chat=None):
     _patch_fetch(monkeypatch, datasets or {
         "fina_indicator": [{"end_date": "20251231", "roe": 15.0}],
     })
@@ -351,11 +351,11 @@ def _run_job(db, monkeypatch, *, llm_content=VALID_LLM_OUTPUT, market="A股",
     monkeypatch.setattr(bp_svc, "ensure_business_profile", lambda db_, s, m: None)
     monkeypatch.setattr(
         jobs, "chat_completion",
-        lambda messages, **kw: {
+        chat or (lambda messages, **kw: {
             "content": llm_content,
             "model": "deepseek-v4-pro",
             "usage": {"prompt_tokens": 100, "completion_tokens": 200, "total_tokens": 300},
-        },
+        }),
     )
     monkeypatch.setattr(jobs, "resolve_public_security_name", lambda s, m: public_name)
     job = jobs.start_security_analysis_job(1, symbol, market)
@@ -1210,26 +1210,48 @@ def test_parse_enforces_hk_market_constraints():
                 '"report_markdown":"r"}',
                 market="港股",
             )
-    # risk_level 下限：港股不得 low
-    with pytest.raises(ValueError, match="不得低于 medium"):
-        parse_analysis_output(
-            '{"tags":["业绩增长"],"risk_level":"low","summary":"s","report_markdown":"r"}',
-            market="港股",
-        )
-    # medium/high 正常通过；同一输出在 A股 市场不受这两条约束
+    # risk_level 下限：港股 low 上调为 medium 并留痕（不再整份拒绝，02313 生产回归）
+    clamped = parse_analysis_output(
+        '{"tags":["业绩增长"],"risk_level":"low","summary":"s","report_markdown":"r"}',
+        market="港股",
+    )
+    assert clamped["risk_level"] == "medium"
+    assert clamped["risk_level_adjusted"]["from"] == "low"
+    assert clamped["risk_level_adjusted"]["to"] == "medium"
+    assert "港股" in clamped["risk_level_adjusted"]["reason"]
+    assert clamped["report_markdown"].startswith("r")
+    assert "上调为「中」" in clamped["report_markdown"]
+    # 上调发生在「数据不足 + low」校验之前：港股 数据不足 + low 同样上调而非拒绝
+    assert parse_analysis_output(
+        '{"tags":["数据不足"],"risk_level":"low","summary":"s","report_markdown":"r"}',
+        market="港股",
+    )["risk_level"] == "medium"
+    # medium/high 正常通过、不留痕；同一输出在 A股 市场不受这两条约束
     ok = parse_analysis_output(
         '{"tags":["业绩增长"],"risk_level":"medium","summary":"s","report_markdown":"r"}',
         market="港股",
     )
     assert ok["risk_level"] == "medium"
-    assert parse_analysis_output(
+    assert ok["risk_level_adjusted"] is None
+    assert ok["report_markdown"] == "r"
+    a_share = parse_analysis_output(
         '{"tags":["高质押"],"risk_level":"low","summary":"s","report_markdown":"r"}',
         market="A股",
-    )["risk_level"] == "low"
+    )
+    assert a_share["risk_level"] == "low"
+    assert a_share["risk_level_adjusted"] is None
+    assert a_share["report_markdown"] == "r"
+    # A股 的「数据不足 + low」仍是确定性拒绝
+    with pytest.raises(ValueError, match="数据不足"):
+        parse_analysis_output(
+            '{"tags":["数据不足"],"risk_level":"low","summary":"s","report_markdown":"r"}',
+            market="A股",
+        )
 
 
-def test_analysis_job_hk_low_risk_is_deterministic_failure(db, monkeypatch):
-    """job 层贯通：港股返回 risk_level=low → 确定性失败，不落分析行。"""
+def test_analysis_job_hk_low_risk_is_clamped_and_recorded(db, monkeypatch):
+    """job 层贯通：港股返回 risk_level=low → 上调为 medium 落库并记录上调，
+    详情端点带出 risk_level_adjusted（此前整份拒绝，02313 连续两次失败）。"""
     job = _run_job(
         db, monkeypatch, market="港股", symbol="00700", public_name="腾讯控股",
         llm_content=(
@@ -1241,10 +1263,60 @@ def test_analysis_job_hk_low_risk_is_deterministic_failure(db, monkeypatch):
              "total_revenue": 720.0}
         ]},
     )
+    assert job.status == "succeeded"
+    analysis = db.query(SecurityAnalysis).one()
+    assert analysis.risk_level == "medium"
+    assert analysis.risk_level_adjusted["from"] == "low"
+    assert analysis.risk_level_adjusted["to"] == "medium"
+    assert "上调" in analysis.content
+
+    from app.api.security_profiles import _analysis_summary
+
+    assert _analysis_summary(analysis)["risk_level_adjusted"] == analysis.risk_level_adjusted
+
+
+def test_analysis_job_passes_dedicated_output_budget(db, monkeypatch):
+    """分析调用的 max_tokens 来自 security_analysis_max_output_tokens（默认 32768），
+    不再落到复盘默认的 16384（00799 港股分析在那里被截断）。"""
+    from app.config import settings
+
+    assert settings.security_analysis_max_output_tokens == 32768
+    monkeypatch.setattr(settings, "security_analysis_max_output_tokens", 40000)
+    seen = {}
+
+    def fake_chat(messages, **kw):
+        seen.update(kw)
+        return {"content": VALID_LLM_OUTPUT, "model": "m", "usage": {}}
+
+    job = _run_job(db, monkeypatch, chat=fake_chat)
+    assert job.status == "succeeded"
+    assert seen["max_tokens"] == 40000
+    assert seen["response_format"] == {"type": "json_object"}
+
+
+def test_analysis_job_truncated_output_is_deterministic_failure(db, monkeypatch):
+    """输出额度耗尽（finish_reason=length）→ error_kind=truncated 的确定性失败：
+    一次尝试即终态、不落分析行，错误文案指向可调的额度（而非误导性的「不是合法 JSON」）。"""
+    from app.services.llm_client import LLMClientError
+
+    def truncated_chat(messages, **kw):
+        raise LLMClientError(
+            "LLM 输出被截断（finish_reason=length，max_tokens=32768），"
+            "可调大输出额度（标的分析 SECURITY_ANALYSIS_MAX_OUTPUT_TOKENS）",
+            finish_reason="length",
+        )
+
+    job = _run_job(db, monkeypatch, chat=truncated_chat)
     assert job.status == "failed"
-    assert "不得低于 medium" in (job.error or "")
+    assert "截断" in (job.error or "")
     assert job.attempt_count == 1
     assert db.query(SecurityAnalysis).count() == 0
+
+    # analyze_one 层（批量共用）：失败类型为 truncated，且不是整批等价的致命类型
+    outcome = jobs.analyze_one(db, "600036", "A股")
+    assert outcome["status"] == "failed"
+    assert outcome["error_kind"] == "truncated"
+    assert "truncated" not in jobs.FATAL_ANALYSIS_ERROR_KINDS
 
 
 def test_edgar_concept_fallback_applies_per_period(monkeypatch):
@@ -1510,3 +1582,99 @@ def test_cap_rows_helper_handles_int_and_missing_fp():
     # 缺 fp 视为 FY；字典里没有的 fp（Q3）不保留
     assert [r["n"] for r in svc._cap_rows(rows, {"FY": 1, "H1": 5})] == [1, 3]
     assert [r["n"] for r in svc._cap_rows(rows, {"FY": 2})] == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# 正文用语：格雷厄姆准则中文名 / 中文判定词（2026-09-27 生产：约三分之二的报告把
+# current_ratio、graham_screen.status=ok、passed 7 / failed 0 原样写进正文）
+# ---------------------------------------------------------------------------
+
+_GRAHAM_OK = {
+    "status": "ok",
+    "as_of_year": "2025",
+    "passed": 5,
+    "failed": 1,
+    "indeterminate": 1,
+    "criteria": [
+        {"criterion": "current_ratio", "verdict": "pass", "value": 2.24, "reason": "r"},
+        {"criterion": "lt_debt_vs_net_current_assets", "verdict": "pass", "reason": "r"},
+        {"criterion": "earnings_stability", "verdict": "pass", "reason": "r"},
+        {"criterion": "dividend_record", "verdict": "pass", "reason": "r"},
+        {"criterion": "earnings_growth", "verdict": "indeterminate", "reason": "r"},
+        {"criterion": "pe", "verdict": "pass", "reason": "r"},
+        {"criterion": "pb_or_product", "verdict": "fail", "reason": "r"},
+    ],
+    "criteria_semantics": {"current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2"},
+}
+
+
+def test_build_system_prompt_wording_rule_all_markets():
+    """全市场 system prompt 都要求正文用中文准则名与达标/不达标/不可判定，
+    禁止字段名/JSON 路径/英文判定词；格雷厄姆章节本身不再用英文 key 与 pass/fail 措辞
+    （prompt 自己满篇 pass 就是在教模型照抄）。"""
+    from app.services.graham_screen import GRAHAM_CRITERIA_NAMES_ZH
+
+    for market in ("A股", "港股", "美股"):
+        prompt = build_system_prompt(market)
+        assert "正文用语" in prompt
+        for name in GRAHAM_CRITERIA_NAMES_ZH.values():
+            assert name in prompt
+        assert "达标/不达标/不可判定" in prompt
+        assert "不得使用英文判定词" in prompt
+        assert "不得出现输入 JSON 的字段名" in prompt
+        section = prompt.split("## 格雷厄姆准则解读", 1)[1].split("## 非对称性", 1)[0]
+        for raw in ("pass", "fail", "indeterminate", "current_ratio", "pb_or_product",
+                    "lt_debt_vs_net_current_assets", "verdict"):
+            assert raw not in section, (market, raw)
+        # JSON 输出契约不变
+        assert '"tags"' in prompt and '"risk_level"' in prompt
+        assert '"report_markdown"' in prompt
+
+
+def test_graham_for_llm_adds_chinese_labels_without_touching_contract():
+    from app.services.security_analysis_prompts import (
+        graham_for_llm,
+        margin_of_safety_allowed,
+    )
+
+    annotated = graham_for_llm(_GRAHAM_OK)
+    names = {c["criterion"]: (c["name_zh"], c["verdict_zh"]) for c in annotated["criteria"]}
+    assert names["current_ratio"] == ("流动比率", "达标")
+    assert names["lt_debt_vs_net_current_assets"] == ("长期债务", "达标")
+    assert names["earnings_growth"] == ("盈利增长", "不可判定")
+    assert names["pb_or_product"] == ("市净率", "不达标")
+    assert annotated["counts_zh"] == "达标 5 项、不达标 1 项、不可判定 1 项"
+    assert annotated["criteria_semantics"]["current_ratio"].startswith("流动比率：")
+    # 原结构（criterion/verdict）保留：服务端安全边际校验照旧读它；原对象不被修改
+    assert [c["verdict"] for c in annotated["criteria"]] == [
+        c["verdict"] for c in _GRAHAM_OK["criteria"]
+    ]
+    assert "name_zh" not in _GRAHAM_OK["criteria"][0]
+    assert margin_of_safety_allowed(annotated, "A股") == margin_of_safety_allowed(
+        _GRAHAM_OK, "A股"
+    )
+    # 无数据 / 非 dict 原样通过
+    assert graham_for_llm({"status": "no_data"}) == {"status": "no_data"}
+    assert graham_for_llm(None) is None
+
+
+def test_analysis_job_input_carries_chinese_graham_labels(db, monkeypatch):
+    """分析 job 送给模型的 graham_screen 带 name_zh / verdict_zh / counts_zh。"""
+    import json as _json
+
+    monkeypatch.setattr(svc, "compute_graham_for", lambda *a, **kw: _GRAHAM_OK)
+    seen = {}
+
+    def fake_chat(messages, **kw):
+        seen["messages"] = messages
+        return {"content": VALID_LLM_OUTPUT, "model": "m", "usage": {}}
+
+    job = _run_job(db, monkeypatch, chat=fake_chat)
+    assert job.status == "succeeded"
+    user = seen["messages"][1]["content"]
+    payload = _json.loads(user.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    graham = payload["graham_screen"]
+    assert graham["counts_zh"] == "达标 5 项、不达标 1 项、不可判定 1 项"
+    assert graham["criteria"][0]["name_zh"] == "流动比率"
+    assert graham["criteria"][0]["verdict_zh"] == "达标"
+    assert "正文用语" in seen["messages"][0]["content"]

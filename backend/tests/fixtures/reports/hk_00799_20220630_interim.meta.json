@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "00799",
+  "end_date": "20220630",
+  "report_type": "interim",
+  "title": "00799_20220630_interim",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(51, 62)]，其余页置空以保住页码。IGG 2022 中期報告：亏损期每股盈利「(0.1481)港元 0.4901港元」（括号负数 + 币种后缀）；v9 下 EPS 行丢失、basic_eps 未映射",
+  "pages": 91,
+  "kept_pages": [
+    [
+      51,
+      62
+    ]
+  ],
+  "chars": 7792
+}

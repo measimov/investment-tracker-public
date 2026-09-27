@@ -41,7 +41,12 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..core.logging import get_app_logger
 from ..models.security_profile import SecurityProfileData
-from .llm_client import LLMClientError, LLMNotConfiguredError, chat_completion
+from .llm_client import (
+    LLMClientError,
+    LLMNotConfiguredError,
+    chat_completion,
+    is_output_truncated,
+)
 from .report_digest_service import (
     MAX_ATTEMPTS,
     _extract_report_year,
@@ -57,6 +62,7 @@ from .report_fetchers import download_report_pdf, hkex_reports
 from .report_statement_checks import (
     CROSS_CHECK_FIELDS,
     EPS_CENTS_RATIO_RANGE,
+    EPS_CHECK_FIELDS,
     IDENTITY_REL_TOL,
     STATEMENT_VALIDATION_VERSION,
     cross_check_row,
@@ -340,6 +346,93 @@ def per_share_divisor(statement: ParsedStatement, row_ids: Sequence[str]) -> int
     return 100 if any(CENTS_RE.search(text or "") for text in texts) else 1
 
 
+# ---------------------------------------------------------------------------- 构建：EPS 附注号守卫（build v2）
+
+# 「每股盈利 13」「母公司普通股股權持有人應佔每股盈利 14」「OF THE COMPANY 10」这类小标题行的
+# 唯一数值是**附注号**：抽取器 v9 之前币种包裹的「HK$4.889港元」不认，基本/摊薄行整行丢失，
+# 模型只能把小标题映射成 EPS（00148/00799/02313/03900/09926 共 33 份报告，basic_eps = 13.0）。
+# 判据全部确定性：映射行只有**一个 token**（多列报表里单 token 行不可能同时是本期与比较期）、
+# 是 1-2 位不带小数点的整数（附注号形态）、标签不含基本/摊薄；行名或上下文是每股盈利小标题。
+# 其后几行里有基本（摊薄）行则改指向它，否则丢弃该科目交给雅虎补缺——宁缺毋滥
+EPS_HEADING_RE = re.compile(r"每股(?:盈利|收益|虧損|亏损|（虧損）|（亏损）)|per\s+share|\bEPS\b", re.I)
+_EPS_KIND_RE = {
+    "basic_eps": re.compile(r"基本|basic", re.I),
+    # 「攤簿」是 03900 2017 中报的原文错字
+    "diluted_eps": re.compile(r"攤薄|摊薄|攤簿|diluted", re.I),
+}
+EPS_REDIRECT_ROWS = 4
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", text or "")
+
+
+def _is_eps_note_row(statement: ParsedStatement, row) -> bool:
+    if statement.column_count < 2 or len(row.values) != 1:
+        return False
+    value = row.values[0]
+    if value is None or value.as_tuple().exponent != 0 or not 1 <= value <= 99:
+        return False
+    if any(pattern.search(_squash(row.label)) for pattern in _EPS_KIND_RE.values()):
+        return False
+    return bool(EPS_HEADING_RE.search(" ".join([row.label, *row.context])))
+
+
+def _eps_redirect_target(statement: ParsedStatement, index: int, field: str) -> Optional[str]:
+    """小标题之后（同一块内，最多 EPS_REDIRECT_ROWS 行）第一条标签或上下文写明该类别、且至少两个
+    数值的行。「基本及攤薄」同时满足两类。上下文里的类别只认独占一行的「基本 Basic」提示，
+    所以这里看的是 _EPS_KIND_RE 能否在 标签 或 context 中命中。"""
+    pattern = _EPS_KIND_RE[field]
+    for candidate in statement.rows[index + 1:index + 1 + EPS_REDIRECT_ROWS]:
+        if sum(1 for v in candidate.values if v is not None) < 2:
+            continue
+        texts = [_squash(candidate.label), *(_squash(c) for c in candidate.context)]
+        if any(pattern.search(text) for text in texts):
+            return candidate.row_id
+    return None
+
+
+def repair_eps_note_mapping(
+    income: Optional[ParsedStatement], income_mapping: Dict[str, List[str]]
+) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
+    """basic/diluted_eps 映射到附注号小标题 → 改指向其后的基本（摊薄）行或丢弃。
+    返回 (修复后的损益表映射, {field: 修复记录})；不需要修复原样返回、记录为空。"""
+    if income is None or not income_mapping:
+        return income_mapping, {}
+    index = {row.row_id: i for i, row in enumerate(income.rows)}
+    fixed = dict(income_mapping)
+    repairs: Dict[str, Dict[str, Any]] = {}
+    for field in ("basic_eps", "diluted_eps"):
+        ids = list(income_mapping.get(field) or [])
+        if len(ids) != 1 or ids[0] not in index:
+            continue
+        i = index[ids[0]]
+        row = income.rows[i]
+        if not _is_eps_note_row(income, row):
+            continue
+        target = _eps_redirect_target(income, i, field)
+        if target:
+            fixed[field] = [target]
+        else:
+            fixed.pop(field, None)
+        repairs[field] = {
+            "reason": "eps_note_number", "from_row": ids[0], "to_row": target,
+            "note_number": str(row.values[0]),
+        }
+    return fixed, repairs
+
+
+def effective_mapping(
+    located: Dict[str, ParsedStatement], mapping: Dict[str, Dict[str, List[str]]]
+) -> Tuple[Dict[str, Dict[str, List[str]]], Dict[str, Dict[str, Any]]]:
+    """存储的 LLM 映射 → 构建时实际使用的映射（确定性修复在这里统一生效：EPS 单位证据与
+    会计期行取数看到的是同一份映射）。"""
+    income_mapping, repairs = repair_eps_note_mapping(located.get("income"), mapping.get("income") or {})
+    if not repairs:
+        return mapping, {}
+    return {**mapping, "income": income_mapping}, repairs
+
+
 def _eps_row_ids(mapping: Dict[str, Dict[str, List[str]]]) -> List[str]:
     income = mapping.get("income") or {}
     return list(income.get("basic_eps") or income.get("diluted_eps") or [])
@@ -361,6 +454,7 @@ def eps_unit_evidence(
     原文 EPS 恰是雅虎同财年 EPS 的约 100 倍（币种一致）——01579 的「以人民幣分列示」是表内纯文本
     行，解析层（v8）没收进上下文，行名只写「基本」，雅虎是唯一的单位证据。"""
     income = located.get("income")
+    mapping = effective_mapping(located, mapping)[0]
     row_ids = _eps_row_ids(mapping)
     if income is None or not row_ids:
         return None
@@ -599,8 +693,9 @@ def build_period_rows(
     """映射 + 解析行 → 各会计期的科目行（本期 is_comparative=False，比较期 True）。
 
     `eps_unit`：`propagate_eps_units` 给这份报告的 EPS 单位；缺省时只看本报告自己的标注。
-    构建步骤（`STATEMENT_BUILD_VERSION` 覆盖的全部口径）：取数 → 每股指标按单位折元 → 夹层权益
-    按行名取值 → 分项合计推导 → 资产小计修复 → FCF → 硬失败 → 校验。"""
+    构建步骤（`STATEMENT_BUILD_VERSION` 覆盖的全部口径）：EPS 附注号守卫（映射修复）→ 取数 →
+    每股指标按单位折元 → 夹层权益按行名取值 → 分项合计推导 → 资产小计修复 → FCF → 硬失败 → 校验。"""
+    mapping, eps_repairs = effective_mapping(located, mapping)
     if eps_unit is None:
         income = located.get("income")
         row_ids = _eps_row_ids(mapping)
@@ -660,6 +755,11 @@ def build_period_rows(
                         "source_unit": "cents", "divisor": eps_divisor, "basis": eps_unit.get("basis"),
                     }
                 row[field] = _decimal_to_number(value)
+            if kind == "income" and eps_repairs:
+                # 附注号守卫：映射修复对本表每一列都生效，各会计期行都记一笔（比较期按表合并时随损益表走）
+                row.setdefault("repaired_fields", {}).update({
+                    field: {**repair, "to_value": row.get(field)} for field, repair in eps_repairs.items()
+                })
             if kind == "balance":
                 balance_column[key] = col.column
                 mezz = resolve_value(parsed, mezzanine_row_ids(parsed), col.column, scale=True)
@@ -703,8 +803,26 @@ def build_period_rows(
     return rows
 
 
-# 行上按表归属的构建元数据：比较期按表合并时随该表的来源一起取舍
-_KIND_META = {"eps_unit": "income", "repaired_fields": "balance"}
+# 行上按表归属的构建元数据：比较期按表合并时随该表的来源一起取舍。`repaired_fields` 的条目
+# 按科目所属报表逐条取舍（资产小计修复属资产负债表、EPS 附注号守卫属损益表）
+_KIND_META = {"eps_unit": "income"}
+
+
+def _merge_repaired_fields(
+    merged: Dict[str, Any], incoming: Dict[str, Any], kind: str
+) -> None:
+    repaired = {
+        field: item for field, item in (merged.get("repaired_fields") or {}).items()
+        if FIELD_KIND.get(field) != kind
+    }
+    repaired.update({
+        field: item for field, item in (incoming.get("repaired_fields") or {}).items()
+        if FIELD_KIND.get(field) == kind
+    })
+    if repaired:
+        merged["repaired_fields"] = repaired
+    else:
+        merged.pop("repaired_fields", None)
 
 
 def _source_rank(source: Optional[Dict[str, Any]]) -> tuple:
@@ -777,6 +895,7 @@ def merge_comparative_row(
                     merged[meta] = incoming[meta]
                 else:
                     merged.pop(meta, None)
+            _merge_repaired_fields(merged, incoming, kind)
     merged["source_by_kind"] = merged_sources
     merged["source_pages"] = merged_pages
     if merged_restated:
@@ -819,7 +938,8 @@ def comparative_evidence(comparative: Dict[str, Any]) -> Dict[str, Any]:
         "source_end_date": comparative.get("source_end_date"),
         "currency": comparative.get("currency"),
     }
-    for field in CROSS_CHECK_FIELDS:
+    # 每股盈利也存下（v5）：雅虎 EPS 大差异要靠更晚报告的比较列判断是口径不同还是映射错误
+    for field in (*CROSS_CHECK_FIELDS, *EPS_CHECK_FIELDS):
         if comparative.get(field) is not None:
             evidence[field] = comparative[field]
     restated = {kind: True for kind, flag in (comparative.get("restated_by_kind") or {}).items() if flag}
@@ -1121,8 +1241,8 @@ def _extract_row_current(payload: Dict[str, Any], fingerprint: str) -> bool:
 
 
 def _output_exhausted(exc: Exception) -> bool:
-    """LLM 推理耗尽输出额度、content 为空（finish_reason=length）：同样的输入重试结果相同。"""
-    return isinstance(exc, LLMClientError) and getattr(exc, "finish_reason", None) == "length"
+    """LLM 输出额度耗尽（finish_reason=length，content 为空或半截）：同样的输入重试结果相同。"""
+    return is_output_truncated(exc)
 
 
 def _safe_rebuild(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
@@ -1151,12 +1271,13 @@ def ensure_report_statements(
 ) -> Dict[str, Any]:
     """判缺 → 下载 → 定位 → 映射 → 写行，单次最多处理 max_new 份报告（成本护栏）。
     返回结构与 ensure_report_digests 同形：{total, completed, generated, attempted, failed,
-    remaining, pending_periods, gaps, permanently_failed, plan_incomplete, fatal}。"""
+    remaining, pending_periods, gaps, permanently_failed, plan_incomplete, fatal}；另有
+    `mapping_reused`：抽取器升版后重定位结果与存量逐字节相同、沿用旧映射（零 LLM）的份数。"""
     result: Dict[str, Any] = {
         "total": 0, "completed": 0, "generated": 0, "attempted": 0, "failed": 0,
         "remaining": 0, "pending_periods": [], "gaps": [], "permanently_failed": 0,
         "plan_incomplete": False, "fatal": None, "suspect": 0, "suspect_periods": [],
-        "rebuilt": 0,
+        "rebuilt": 0, "mapping_reused": 0,
     }
     if market not in STATEMENT_MARKETS:
         return result
@@ -1206,6 +1327,20 @@ def ensure_report_statements(
                 }
                 if payload.get("status") == "ok" and not prompt_current:
                     attempts = 0
+        # 抽取器升版而报告本身没变（同一源指纹、已成功、prompt 为当前版本）：重下载重定位后若解析
+        # 结果与存量**逐字节相同**，沿用已存映射不再调用 LLM——抽取器修复通常只影响少数版式，
+        # 其余报告重跑 LLM 只会引入映射抖动（已被交叉核对验证过的映射被随机改写）与成本
+        prior = (
+            payload
+            if payload
+            and not reusable
+            and payload.get("status") == "ok"
+            and payload.get("source_fingerprint") == fingerprint
+            and int(payload.get("prompt_version") or 1) == STATEMENT_PROMPT_VERSION
+            and payload.get("statements")
+            and isinstance(payload.get("mapping"), dict)
+            else None
+        )
         if result["attempted"] >= max_new:
             result["pending_periods"].append(target["end_date"])
             result["remaining"] += 1
@@ -1223,21 +1358,32 @@ def ensure_report_statements(
                 located = _locate(_extract_pages(pdf_bytes), target)
             # period_key 是清单里这份报告的身份，不变；end_date 改按表头声明的期末日
             target = {**target, "end_date": actual_period_end(located, target)}
-            prompt_payload = _prompt_statements(located, target)
-            completion = chat_completion(
-                build_statement_messages(
-                    symbol=symbol, market=market, report_type=target["report_type"],
-                    end_date=target["end_date"], statements=prompt_payload,
-                ),
-                # 大报表（03900 三份）推理会吃穿复盘报告的 16384 额度：报表映射单独配额
-                max_tokens=settings.statement_max_output_tokens,
-                response_format={"type": "json_object"},
-            )
-            mapping, unresolved = parse_statement_mapping(
-                completion["content"],
-                {kind: [r.row_id for r in parsed.rows] for kind, parsed in located.items()},
-                labels={kind: [r.label for r in parsed.rows] for kind, parsed in located.items()},
-            )
+            statements_payload = {kind: parsed.to_payload() for kind, parsed in located.items()}
+            if prior is not None and statements_payload == prior.get("statements"):
+                mapping = prior["mapping"]
+                unresolved = list(prior.get("unresolved") or [])
+                completion = {
+                    "model": prior.get("model"),
+                    "usage": {"prompt_tokens": prior.get("prompt_tokens"),
+                              "completion_tokens": prior.get("completion_tokens")},
+                }
+                result["mapping_reused"] += 1
+            else:
+                prior = None
+                completion = chat_completion(
+                    build_statement_messages(
+                        symbol=symbol, market=market, report_type=target["report_type"],
+                        end_date=target["end_date"], statements=_prompt_statements(located, target),
+                    ),
+                    # 大报表（03900 三份）推理会吃穿复盘报告的 16384 额度：报表映射单独配额
+                    max_tokens=settings.statement_max_output_tokens,
+                    response_format={"type": "json_object"},
+                )
+                mapping, unresolved = parse_statement_mapping(
+                    completion["content"],
+                    {kind: [r.row_id for r in parsed.rows] for kind, parsed in located.items()},
+                    labels={kind: [r.label for r in parsed.rows] for kind, parsed in located.items()},
+                )
             # EPS 单位：本报告的证据 + 库里其他报告的证据一起传播（链与隐含股数跨报告）
             evidence = _stored_eps_evidence(db, symbol, market, exclude=period_key)
             own = eps_unit_evidence(
@@ -1273,11 +1419,16 @@ def ensure_report_statements(
                 "title": target["title"],
                 "ann_date": target["ann_date"],
                 "source_url": target["url"],
-                "statements": {kind: parsed.to_payload() for kind, parsed in located.items()},
+                "statements": statements_payload,
                 "mapping": mapping,
                 "unresolved": unresolved,
                 "periods_written": written,
                 "suspect_periods": suspect_periods,
+                # 沿用旧映射时记下它来自哪个抽取器版本（解析结果逐字节相同才会沿用）
+                "mapping_from_extractor": (
+                    int(prior.get("mapping_from_extractor") or prior.get("extractor_version") or 1)
+                    if prior is not None else STATEMENT_EXTRACTOR_VERSION
+                ),
                 "model": completion.get("model"),
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
@@ -1296,8 +1447,8 @@ def ensure_report_statements(
             break
         except Exception as exc:  # noqa: BLE001 - 分类后落库，与摘要管线同语义
             db.rollback()
-            # 推理吃光输出额度的空输出（finish_reason=length）重试也一样：确定性失败，两次封顶，
-            # 不再每轮占用配额（status_code=None 在 _is_transient 里默认算瞬时）
+            # 推理吃光输出额度的空/半截输出（finish_reason=length）重试也一样：确定性失败，两次封顶，
+            # 不再每轮占用配额（_is_transient 现已同样判定；此处显式保留，不依赖摘要侧的实现）
             transient = _is_transient(exc) and not _output_exhausted(exc)
             logger.warning(
                 "报表抽取失败 %s %s（%s）: %s",

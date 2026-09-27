@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "02313",
+  "end_date": "20200630",
+  "report_type": "interim",
+  "title": "02313_20200630_interim",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(25, 37)]，其余页置空以保住页码。申洲國際 2020 中期報告：双语前缀「人民幣RMB1.67元 人民幣RMB1.61元」，摊薄为「不適用 N/A」；v9 下模型把「THE PARENT 10」的附注号映射成 EPS",
+  "pages": 74,
+  "kept_pages": [
+    [
+      25,
+      37
+    ]
+  ],
+  "chars": 24977
+}

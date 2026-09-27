@@ -61,6 +61,24 @@ CRITERIA_SEMANTICS = {
     "港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
 }
 
+# 准则与判定的中文名：页面准则卡（前端 views/security-detail/analysisGlossary.ts 同名常量）
+# 与 AI 分析正文共用同一套叫法。分析输入把它们挂在每条准则上（name_zh / verdict_zh），
+# prompt 要求正文只用中文名——否则模型会把 current_ratio、pass 这类字段名原样抄进正文。
+GRAHAM_CRITERIA_NAMES_ZH: Dict[str, str] = {
+    "current_ratio": "流动比率",
+    "lt_debt_vs_net_current_assets": "长期债务",
+    "earnings_stability": "盈利稳定性",
+    "dividend_record": "分红记录",
+    "earnings_growth": "盈利增长",
+    "pe": "市盈率",
+    "pb_or_product": "市净率",
+}
+GRAHAM_VERDICT_LABELS_ZH: Dict[str, str] = {
+    "pass": "达标",
+    "fail": "不达标",
+    "indeterminate": "不可判定",
+}
+
 # 隐含股数 = 归母净利 / 基本每股盈利：EPS 只披露到 2 位小数，绝对值太小时股数误差可达两位数百分比
 SMALL_EPS_WARN = 0.05
 # 同一公司各期隐含股数的容许倍数（与 report_statement_service.EPS_SHARES_RATIO 同量级）：

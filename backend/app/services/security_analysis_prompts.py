@@ -7,8 +7,10 @@ guardrail 与复盘报告同一哲学并更严格：分析对象是具体上市�
 
 import json
 
-from .prompt_guardrails import NO_PRIOR_KNOWLEDGE_CLAUSE
 from typing import Any, Dict, List
+
+from .graham_screen import GRAHAM_CRITERIA_NAMES_ZH, GRAHAM_VERDICT_LABELS_ZH
+from .prompt_guardrails import NO_PRIOR_KNOWLEDGE_CLAUSE
 
 ANALYSIS_DISCLAIMER = "本分析由 AI 基于公开结构化数据自动生成，仅供参考，不构成投资建议。"
 
@@ -37,8 +39,8 @@ _MARKET_RISK_SOURCES = {
         "中年报（本土发行人 10-K / 外国私人发行人 **20-F**，中概股几乎全是"
         "后者）风险因素摘要与 earnings_quality 指标；以下标签**禁止使用**："
         "高质押、大股东减持、大股东增持、解禁临近、审计非标。"
-        "「安全边际充足」只在格雷厄姆四项（pe、pb_or_product、current_ratio、"
-        "lt_debt_vs_net_current_assets）全部 pass 且估值数据充足（价格不陈旧、"
+        "「安全边际充足」只在格雷厄姆四项（市盈率、市净率、流动比率、长期债务）"
+        "全部达标且估值数据充足（价格不陈旧、"
         "每股盈利为最近一年内的 TTM/年报、无估算告警）时可用，服务端强制校验。"
     ),
     "港股": (
@@ -46,7 +48,7 @@ _MARKET_RISK_SOURCES = {
         "与 earnings_quality 指标；**港股年报未必设有「主要風險」章节**"
         "（实测多数没有），摘要里没有风险内容时如实写'年报未披露专门风险章节'，"
         "不得推测。以下标签**禁止使用**：高质押、大股东减持、大股东增持、"
-        "解禁临近、审计非标。「安全边际充足」只在格雷厄姆四项全部 pass 且估值数据充足"
+        "解禁临近、审计非标。「安全边际充足」只在格雷厄姆四项全部达标且估值数据充足"
         "（价格不陈旧、每股盈利为最近一年内的 TTM/年报、无估算告警）时可用，服务端强制校验。"
         "结构化科目来自披露易年报/中报原文抽取（report_statements，可达十年，"
         "is_comparative=true 为比较期列）并以雅虎数据补缺；输入里年度行仍稀少时须"
@@ -69,6 +71,28 @@ _MARKET_RISK_SECTION = {
 }
 
 
+def _graham_label_list() -> str:
+    return "、".join(GRAHAM_CRITERIA_NAMES_ZH.values())
+
+
+# 正文用语守则（全市场）：2026-09 生产扫描，最新一份分析里约三分之二把输入字段名与英文
+# 判定词原样写进正文（`current_ratio 2.24 → pass`、`graham_screen.status=ok`、
+# `passed 7 / failed 0`），且每只标的写法各异。输入侧给了 name_zh / verdict_zh，这里再
+# 把「正文只用中文名」写成硬性要求。
+REPORT_WORDING_RULE = (
+    "**正文用语**：report_markdown 与 summary 面向普通投资者，引用输入数据一律用中文说法"
+    "（如 财报摘要、商业画像、利润质量指标、格雷厄姆准则、脆弱性信号、依据、补充口径），"
+    "**不得出现输入 JSON 的字段名、JSON 路径或字段取值**（如 graham_screen、criteria[].basis、"
+    "supplement、status=ok、current_ratio、basic_eps、as_of_year、price_stale=false）。"
+    "格雷厄姆各准则只用中文名（即 criteria[].name_zh："
+    f"{_graham_label_list()}），判定只写"
+    f"{'/'.join(GRAHAM_VERDICT_LABELS_ZH.values())}（即 criteria[].verdict_zh），"
+    "计数写成「达标 N 项、不达标 N 项、不可判定 N 项」；"
+    "**不得使用英文判定词**（pass、fail、indeterminate、passed、failed、verdict）。"
+    "PE、PB、TTM、EPS、ROE 等通用财务缩写可以使用。"
+)
+
+
 def build_system_prompt(market: str) -> str:
     """按市场组装 system prompt：共享守则骨架 + 市场差异段。"""
     risk_sources = _MARKET_RISK_SOURCES.get(market, _MARKET_RISK_SOURCES["A股"])
@@ -89,6 +113,7 @@ def build_system_prompt(market: str) -> str:
    - risk_level：low（无明显风险信号）/ medium（存在需关注信号或数据不足）/
      high（审计非标、质押比例高企、密集减持、业绩预警等任一硬信号）
    - summary：一句话（≤80 字）概括财务质量与主要风险
+   - {REPORT_WORDING_RULE}
    - report_markdown：Markdown 全文，包含且仅包含以下章节：
      ## 商业模式与产业链（基于 business_profile：分部占比 → 上游成本因子 →
         下游需求因子的传导链评述 + 估值观察因子清单；可提及 peers 中的可比公司
@@ -103,20 +128,21 @@ def build_system_prompt(market: str) -> str:
         逐项评述：CFO/净利润、应计率、应收/存货增速差、扣非占比、Beneish M-score
         ——指标触红旗阈值时明确指出并解释；数据不足的指标如实注明；
         对应标签：利润质量存疑/现金流背离/依赖非经常损益）
-     ## 格雷厄姆准则解读（graham_screen.criteria 已给出逐项 verdict 与依据，
-        **禁止自行心算任何比率**——只做解读：pass 项说明该防御性来源、fail 项
-        说明缺口大小与含义、indeterminate 项如实说明数据边界（如港股 PDF 抽取
-        覆盖不足十年、雅虎补缺仅近 3-5 年、披露历史不足十年），绝不把"不可判定"
-        说成"达标"或"不达标"；估值两项的判定口径是 TTM（港股/美股 = 行情收盘价 ÷
-        报表推算的 TTM 每股盈利、MRQ 每股净资产为隐含股数估算，构成与价格日期见
-        criteria[].basis，价格陈旧时须提示）；criteria[].supplement 里的年报静态 PE
-        与原著三年平均 PE 仅作参考对照，不得据此改写 verdict；
-        综合 passed/failed 计数给出"防御型标准下的安全边际"总体评述；
-        **仅当 pe、pb_or_product、current_ratio、lt_debt_vs_net_current_assets
-        四项均为 pass** 才可用"安全边际充足"标签（服务端按 graham_screen 实际
-        结果强制校验，不满足会被拒绝）；估值或财务强度 fail 用"安全边际不足"）
+     ## 格雷厄姆准则解读（graham_screen.criteria 已给出逐项判定与依据，
+        **禁止自行心算任何比率**——只做解读，准则名与判定词按上方「正文用语」：
+        达标项说明该防御性来源、不达标项说明缺口大小与含义、不可判定项如实说明
+        数据边界（如港股 PDF 抽取覆盖不足十年、雅虎补缺仅近 3-5 年、披露历史不足
+        十年），绝不把"不可判定"说成"达标"或"不达标"；估值两项的判定口径是 TTM
+        （港股/美股 = 行情收盘价 ÷ 报表推算的 TTM 每股盈利、MRQ 每股净资产为隐含
+        股数估算，构成与价格日期见 criteria[].basis（正文称「依据」），价格陈旧时
+        须提示）；criteria[].supplement（正文称「补充口径」）里的年报静态 PE 与原著
+        三年平均 PE 仅作参考对照，不得据此改写判定；按 counts_zh 的达标/不达标/
+        不可判定计数给出"防御型标准下的安全边际"总体评述；
+        **仅当市盈率、市净率、流动比率、长期债务四项均达标** 才可用"安全边际充足"
+        标签（服务端按 graham_screen 实际结果强制校验，不满足会被拒绝）；估值或
+        财务强度不达标用"安全边际不足"）
      ## 非对称性与脆弱性（塔勒布视角，只依据输入数据定性评估：
-        下行保护——净现金/硬资产/股息底，引用 fragility 信号数值；
+        下行保护——净现金/硬资产/股息底，引用脆弱性信号（graham_screen.fragility）的数值；
         上行开放性——业务中的期权性来源（新业务、产能、渠道扩张等，
         只从 business_profile 与 report_digests 中找依据）；
         脆弱结构——高杠杆+薄利息覆盖、单一客户/供应商/产品依赖、
@@ -127,6 +153,43 @@ def build_system_prompt(market: str) -> str:
      ## 未来事件提醒（events 中的未来事件，无则明说）
      ## 待关注问题（2-4 个具体问题，只提问题与权衡，不给指令性买卖建议）
      结尾附一行：{ANALYSIS_DISCLAIMER}"""
+
+
+def graham_for_llm(graham: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    """分析输入里的格雷厄姆结果：原结构不变（服务端校验仍按 criterion/verdict 读），每条
+    准则附中文名 name_zh 与中文判定 verdict_zh，顶层附 counts_zh——模型照着中文写，
+    不必把 current_ratio / pass 这类取值翻译或原样照抄。"""
+    if not isinstance(graham, dict):
+        return graham
+    annotated = dict(graham)
+    criteria = []
+    for item in graham.get("criteria") or []:
+        if not isinstance(item, dict):
+            criteria.append(item)
+            continue
+        key = str(item.get("criterion") or "")
+        verdict = str(item.get("verdict") or "")
+        criteria.append(
+            {
+                **item,
+                "name_zh": GRAHAM_CRITERIA_NAMES_ZH.get(key, key),
+                "verdict_zh": GRAHAM_VERDICT_LABELS_ZH.get(verdict, verdict),
+            }
+        )
+    if "criteria" in graham:
+        annotated["criteria"] = criteria
+    if graham.get("status") == "ok":
+        annotated["counts_zh"] = (
+            f"达标 {graham.get('passed', 0)} 项、不达标 {graham.get('failed', 0)} 项、"
+            f"不可判定 {graham.get('indeterminate', 0)} 项"
+        )
+    semantics = graham.get("criteria_semantics")
+    if isinstance(semantics, dict):
+        annotated["criteria_semantics"] = {
+            key: f"{GRAHAM_CRITERIA_NAMES_ZH.get(key, key)}：{text}"
+            for key, text in semantics.items()
+        }
+    return annotated
 
 
 def build_analysis_messages(input_payload: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -166,8 +229,16 @@ VALUATION_MAX_FY_AGE_DAYS = 460
 # 但覆盖仍不均（实测 02313 0 行、02156 3 行、09618 6 行），且本市场没有审计意见/质押/
 # 增减持这类客观风险信号源——"无明显风险信号"这个判断本身仍不成立，low 属无依据的
 # 乐观，下限保留。
+#
+# 低于下限时**上调而不是拒绝**（2026-09-27 生产：02313 连续两次因 low 被整份丢弃，重试
+# 结果相同）：下限表达的是数据边界而不是模型看错了数据，其余内容仍然有效。上调记录落
+# `risk_level_adjusted` 并在全文末尾加注，前端风险标签旁提示——不静默改写模型的判断。
 MARKET_MIN_RISK_LEVEL: Dict[str, str] = {"港股": "medium"}
+MARKET_RISK_FLOOR_REASON: Dict[str, str] = {
+    "港股": "港股数据边界：无审计意见/质押/增减持等客观风险信号源，「无明显风险信号」不成立",
+}
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+_RISK_LABELS = {"low": "低", "medium": "中", "high": "高"}
 
 
 # 「安全边际充足」的服务端判定条件（评审 P1 二轮）：prompt 里写的"估值两项
@@ -264,8 +335,9 @@ def parse_analysis_output(
 ) -> Dict[str, Any]:
     """解析 JSON mode 输出并做结构校验；非法输出抛 ValueError（确定性失败）。
 
-    market 非空时额外执行该市场的硬约束（禁用标签、风险等级下限）；
-    graham_screen 传入时按实际准则 verdict 硬校验"安全边际充足"。
+    market 非空时额外执行该市场的硬约束（禁用标签拒绝；风险等级低于下限时上调并记录在
+    `risk_level_adjusted`，报告末尾加注）；graham_screen 传入时按实际准则 verdict 硬校验
+    "安全边际充足"。
     """
     try:
         data = json.loads(content)
@@ -298,20 +370,32 @@ def parse_analysis_output(
         )
     if risk_level not in ("low", "medium", "high"):
         raise ValueError(f"risk_level 非法: {risk_level!r}")
-    floor = MARKET_MIN_RISK_LEVEL.get(str(market or ""))
-    if floor and _RISK_ORDER[risk_level] < _RISK_ORDER[floor]:
-        raise ValueError(
-            f"{market} 数据边界有限，risk_level 不得低于 {floor}，收到 {risk_level}"
-        )
-    if "数据不足" in tags and risk_level == "low":
-        raise ValueError('标注"数据不足"时 risk_level 不得为 low')
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("summary 缺失")
     if not isinstance(report, str) or not report.strip():
         raise ValueError("report_markdown 缺失")
+    report_markdown = report.strip()
+    adjusted = None
+    floor = MARKET_MIN_RISK_LEVEL.get(str(market or ""))
+    if floor and _RISK_ORDER[risk_level] < _RISK_ORDER[floor]:
+        adjusted = {
+            "from": risk_level,
+            "to": floor,
+            "reason": MARKET_RISK_FLOOR_REASON.get(
+                str(market), f"{market} 数据边界有限，风险等级下限为 {floor}"
+            ),
+        }
+        risk_level = floor
+        report_markdown += (
+            f"\n\n---\n\n> 注：模型给出的风险等级为「{_RISK_LABELS[adjusted['from']]}」，"
+            f"按{market}风险等级下限上调为「{_RISK_LABELS[floor]}」（{adjusted['reason']}）。"
+        )
+    if "数据不足" in tags and risk_level == "low":
+        raise ValueError('标注"数据不足"时 risk_level 不得为 low')
     return {
         "tags": tags,
         "risk_level": risk_level,
+        "risk_level_adjusted": adjusted,
         "summary": summary.strip()[:300],
-        "report_markdown": report.strip(),
+        "report_markdown": report_markdown,
     }

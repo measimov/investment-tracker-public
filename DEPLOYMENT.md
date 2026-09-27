@@ -158,6 +158,7 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `LLM_REPORT_TIMEOUT_SECONDS` | `120` | 单次调用超时 |
 | `LLM_REPORT_MAX_OUTPUT_TOKENS` | `16384` | 输出额度（推理 token 与输出共享）；长报告被截断或为空时调大 |
 | `STATEMENT_MAX_OUTPUT_TOKENS` | `32768` | 港股报表科目映射单独的输出额度；`finish_reason=length`、内容为空时调大 |
+| `SECURITY_ANALYSIS_MAX_OUTPUT_TOKENS` | `32768` | 标的分析（单只/批量）单独的输出额度；任务报「LLM 输出被截断（finish_reason=length）」时调大 |
 | `REPORT_TARGET_PLAN_TTL_HOURS` | `24` | 年报清单缓存 TTL |
 | `SECURITY_ANALYSIS_FRESHNESS_HOURS` | `24` | 批量分析跳过该时长内已分析过的标的 |
 | `SECURITY_ANALYSIS_BATCH_PAUSE_SECONDS` | `5` | 批量分析标的之间的停顿 |
@@ -683,7 +684,7 @@ docker compose up -d --remove-orphans
 
 | 改动（5.1 的 grep 结果） | 所在文件 | 跑什么 | 成本 |
 | --- | --- | --- | --- |
-| `STATEMENT_EXTRACTOR_VERSION` 或 `STATEMENT_PROMPT_VERSION` | `report_statements.py` / `report_statement_prompts.py` | `scripts/rerun_report_statements.py --all`（先 `--dry-run` 看份数） | 港股年报/中报 PDF 下载 + 每份一次 LLM；几十只港股约数小时。可按标的分组并行、中断后重跑即续跑；披露易 504/超时是瞬时错误，重跑即可 |
+| `STATEMENT_EXTRACTOR_VERSION` 或 `STATEMENT_PROMPT_VERSION` | `report_statements.py` / `report_statement_prompts.py` | `scripts/rerun_report_statements.py --all`（先 `--dry-run` 看份数）；同时升了构建/校验版本也只跑这一条（重抽时按当前构建与校验口径写行） | prompt 升版：零下载、每份一次 LLM。抽取器升版：每份都重下载重定位（约 15–20 秒/份，约 300 份 ≈ 1.5 小时），但**解析结果与存量逐字节相同的沿用旧映射、不调 LLM**（输出 `mapping_reused`），只有解析真的变了的报告才重新映射（每份约 5k 输入 + 4k 输出 token）。跑完前该版本的全部港股报表行都隐藏（页面显示「待重抽」、分析回退雅虎），部署后立即跑。可按标的分组并行、中断后重跑即续跑；披露易 504/超时是瞬时错误，重跑即可 |
 | `STATEMENT_BUILD_VERSION` | `report_statement_prompts.py` | `scripts/rebuild_report_statements.py --all --report`（可先加 `--dry-run`） | 零下载零 LLM，分钟级；`--report` 按标的输出前后对比 |
 | `STATEMENT_VALIDATION_VERSION` | `report_statement_checks.py` | `scripts/revalidate_report_statements.py --all` | 零下载零 LLM，分钟级 |
 | `SECTION_EXTRACTOR_VERSION` 或 `DIGEST_PROMPT_VERSION` | `report_sections.py` / `report_digest_prompts.py` | 先确认 `scripts/report_extraction_audit.py --fixtures` 的 boilerplate 归零（在开发检出里跑：固件在 `backend/tests/fixtures/`，镜像不带 tests；容器里可用 `--live` 抽查库内节选），再 `scripts/rerun_report_digests.py --all`（先 `--dry-run`） | 最贵：A股/港股/美股年报重下载 + 每份一次 LLM。商业画像按输入指纹自动重算，不用单独跑 |
@@ -1135,10 +1136,12 @@ SEC 拒绝了不合规的 User-Agent。在 `.env` 设置 `EDGAR_USER_AGENT="your
 披露易（及其 CDN 边缘节点）的瞬时错误。下载有墙钟上限（单份 180 秒、宽限期后最低速率），超限按
 瞬时失败处理，不计入确定性失败次数。稍后原样重跑同一条命令即可续跑。
 
-### LLM 输出为空（日志里 `finish_reason=length`）
+### LLM 输出为空或被截断（日志里 `finish_reason=length`）
 
-推理 token 与输出共享额度，大报表或长分析会把额度吃穿，返回空内容。港股报表映射调大
-`STATEMENT_MAX_OUTPUT_TOKENS`，分析/复盘调大 `LLM_REPORT_MAX_OUTPUT_TOKENS`，然后
+推理 token 与输出共享额度，大报表或长分析会把额度吃穿，返回空内容或半截输出（半截内容不会被
+当成结果使用，一律报「LLM 输出被截断」失败）。港股报表映射调大 `STATEMENT_MAX_OUTPUT_TOKENS`，
+标的分析调大 `SECURITY_ANALYSIS_MAX_OUTPUT_TOKENS`，复盘/财报摘要/观点摘要调大
+`LLM_REPORT_MAX_OUTPUT_TOKENS`，然后
 `docker compose up -d backend`（`restart` 不会重读环境变量）。
 
 ### 雪球采集器反复命中 WAF（`scan_runs` 状态为 `waf`、卡片显示冷却中）

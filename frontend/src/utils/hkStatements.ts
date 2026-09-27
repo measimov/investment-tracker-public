@@ -204,13 +204,21 @@ function fieldsWithReason(row: StatementRow, reasons: Set<string>): string[] {
 }
 
 /**
- * 构建层标注：EPS 以仙列示已折元（eps_unit）、资产小计修复（repaired_fields）、已重列与雅虎
- * 口径不同（validation.checks[].reason，校验 v4）。都是 info——不置空、不算存疑，只供展示。
+ * 构建层标注：EPS 以仙列示已折元（eps_unit）、映射修复（repaired_fields：资产小计 / EPS 附注号）、
+ * 已重列与雅虎口径不同（validation.checks[].reason，校验 v4）。都是 info——不置空、不算存疑，只供展示。
  */
 export function buildNotes(row: StatementRow): BuildNotes {
   const epsUnit = row.eps_unit as Record<string, unknown> | undefined
   const repairedRaw = (row.repaired_fields || {}) as Record<string, Record<string, unknown>>
   const repaired = Object.entries(repairedRaw).map(([field, item]) => {
+    if (item.reason === 'eps_note_number') {
+      // 构建 v2：映射指向「每股盈利 13」小标题（13 是附注号）→ 改指其后的基本/摊薄行，或弃用交雅虎补缺
+      const to = item.to_row ? `行 ${item.to_row}` : '弃用（由雅虎补缺）'
+      return {
+        field,
+        text: `${fieldLabel(field)}：行 ${item.from_row}（附注号 ${item.note_number}）→ ${to}`
+      }
+    }
     const from = item.from_row ? `行 ${item.from_row}` : '未映射'
     const to = item.to_row ? `行 ${item.to_row}` : '分项合计推导'
     return { field, text: `${fieldLabel(field)}：${from} → ${to}` }
@@ -251,7 +259,7 @@ export function buildNotesText(notes: BuildNotes): string {
     )
   }
   if (notes.repaired.length) {
-    parts.push(`资产小计已修正：${notes.repaired.map((item) => item.text).join('；')}`)
+    parts.push(`映射已修正：${notes.repaired.map((item) => item.text).join('；')}`)
   }
   if (notes.yahooDefinitionDiff.length) {
     parts.push(

@@ -94,6 +94,63 @@ def test_client_parses_success_and_errors(monkeypatch):
     assert exc_info.value.status_code is None  # 非 4xx：可重试
 
 
+def test_client_rejects_truncated_partial_content(monkeypatch):
+    """finish_reason=length 且 content 非空（半截输出）→ LLMClientError(finish_reason=length)，
+    绝不把半截内容当结果返回（00799：半截 JSON 被报成「不是合法 JSON」）。"""
+    monkeypatch.setattr(llm_client.settings, "llm_report_api_key", "sk-test")
+    seen = {}
+
+    def truncated_post(url, **kwargs):
+        seen.update(kwargs["json"])
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-flash",
+                "choices": [{
+                    "message": {"content": '{"tags":["估值偏低"],"risk_level":"medium"'},
+                    "finish_reason": "length",
+                }],
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(llm_client.httpx, "post", truncated_post)
+    with pytest.raises(llm_client.LLMClientError) as exc_info:
+        llm_client.chat_completion([{"role": "user", "content": "hi"}], max_tokens=1234)
+    exc = exc_info.value
+    assert exc.finish_reason == "length"
+    assert exc.status_code is None
+    assert llm_client.is_output_truncated(exc)
+    assert "截断" in str(exc) and "max_tokens=1234" in str(exc)
+    assert seen["max_tokens"] == 1234
+
+    # 空内容 + length 同样判定为额度耗尽；正常结束（stop）的内容照常返回
+    def empty_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(llm_client.httpx, "post", empty_post)
+    with pytest.raises(llm_client.LLMClientError) as exc_info:
+        llm_client.chat_completion([{"role": "user", "content": "hi"}])
+    assert llm_client.is_output_truncated(exc_info.value)
+
+    def stop_post(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "完整"}, "finish_reason": "stop"}]},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(llm_client.httpx, "post", stop_post)
+    assert llm_client.chat_completion([{"role": "user", "content": "hi"}])["content"] == "完整"
+    # 其他错误不算截断
+    assert not llm_client.is_output_truncated(llm_client.LLMClientError("x", status_code=500))
+    assert not llm_client.is_output_truncated(ValueError("x"))
+
+
 # ---------------------------------------------------------------------------
 # 后台任务
 # ---------------------------------------------------------------------------
@@ -143,6 +200,23 @@ def test_job_4xx_is_deterministic_failure_without_retry(monkeypatch, llm_user):
     try:
         row = db.get(BackgroundJob, job["id"])
         assert row.attempt_count == 1  # 不烧重试
+        assert db.query(LlmReport).count() == 0
+    finally:
+        db.close()
+
+
+def test_job_truncated_output_is_deterministic_failure(monkeypatch, llm_user):
+    """输出被截断（finish_reason=length）：半截报告不落库，也不走 5xx 重试路径。"""
+    job = _run_job(
+        monkeypatch, llm_user,
+        error=llm_client.LLMClientError("LLM 输出被截断", finish_reason="length"),
+    )
+    assert job["status"] == "failed"
+    assert "截断" in (job.get("error") or "")
+    db = SessionLocal()
+    try:
+        row = db.get(BackgroundJob, job["id"])
+        assert row.attempt_count == 1
         assert db.query(LlmReport).count() == 0
     finally:
         db.close()

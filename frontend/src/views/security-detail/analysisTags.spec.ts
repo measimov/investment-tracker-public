@@ -4,6 +4,7 @@ import {
   POSITIVE_ANALYSIS_TAGS,
   analysisTagTone,
   analysisTagType,
+  riskAdjustmentText,
   riskLabel,
   riskTagType
 } from './analysisTags'
@@ -62,5 +63,25 @@ describe('riskTagType', () => {
     expect(riskTagType(null)).toBe('info')
     expect(riskLabel('medium')).toBe('中')
     expect(riskLabel(undefined)).toBe('未知')
+  })
+})
+
+describe('riskAdjustmentText', () => {
+  it('有上调记录时给出一句话提示（含原因）', () => {
+    expect(riskAdjustmentText({ from: 'low', to: 'medium', reason: '港股数据边界' })).toBe(
+      '模型给出「低」，按市场下限上调为「中」：港股数据边界'
+    )
+  })
+
+  it('无原因时省略冒号部分', () => {
+    expect(riskAdjustmentText({ from: 'low', to: 'medium' })).toBe(
+      '模型给出「低」，按市场下限上调为「中」'
+    )
+  })
+
+  it('无记录或字段不全返回 null（不显示提示）', () => {
+    expect(riskAdjustmentText(null)).toBeNull()
+    expect(riskAdjustmentText(undefined)).toBeNull()
+    expect(riskAdjustmentText({ from: '', to: 'medium' })).toBeNull()
   })
 })

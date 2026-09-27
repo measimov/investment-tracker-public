@@ -2,6 +2,8 @@
 
 版本号已承担失效判定：`ensure_report_statements` 把 extractor/prompt 版本不符的抽取行
 视同未抽取并重跑，所以本脚本**不删任何行**——只是按 max_new 驱动重跑并报告进度。
+只升了抽取器版本时，每份报告都要重下载重定位，但解析结果与存量逐字节相同的报告沿用旧映射、
+不调 LLM（输出里的 `mapping_reused`）；只有解析结果真的变了的报告才重新映射。
 失败行保留 attempts 语义（确定性失败两次即封顶）。校验规则升版（validation_version）
 不必走本脚本，用 revalidate_report_statements.py 零下载零 LLM 重算即可；构建逻辑升版
 （STATEMENT_BUILD_VERSION）用 rebuild_report_statements.py。滚出十年窗口的旧报告不计入。
@@ -84,7 +86,8 @@ def main() -> int:
             result = ensure_report_statements(db, symbol, "港股", max_new=args.max_new)
             print(
                 f"  total={result['total']} completed={result['completed']}"
-                f" generated={result['generated']} failed={result['failed']}"
+                f" generated={result['generated']} mapping_reused={result.get('mapping_reused', 0)}"
+                f" failed={result['failed']}"
                 f" suspect={result['suspect']} remaining={result['remaining']}"
             )
             for gap in result["gaps"]:

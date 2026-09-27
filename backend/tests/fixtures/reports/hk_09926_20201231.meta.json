@@ -1,0 +1,17 @@
+{
+  "market": "港股",
+  "symbol": "09926",
+  "end_date": "20201231",
+  "report_type": "annual",
+  "title": "09926_20201231",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(119, 131)]，其余页置空以保住页码。康方生物 2020 年報：每股虧損「基本及攤薄 12 人民幣(1.65)元 人民幣(2.74)元」（附注号 + 前缀 + 括号负数 + 后缀）",
+  "pages": 202,
+  "kept_pages": [
+    [
+      119,
+      131
+    ]
+  ],
+  "chars": 9260
+}

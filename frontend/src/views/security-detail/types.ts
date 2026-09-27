@@ -1,5 +1,6 @@
 // 标的详情页页内类型（跨页共享形状见 types/index.ts）
 import type { OpinionAuthorStance } from '@/types'
+import type { RiskLevelAdjustment } from './analysisTags'
 
 export interface OpinionSummaryDetail {
   id: number
@@ -26,6 +27,8 @@ export interface AnalysisDetail {
   name?: string | null
   tags: string[]
   risk_level: string
+  /** 风险等级按市场下限上调的记录（港股 low→medium）；未上调或旧分析行为 null */
+  risk_level_adjusted?: RiskLevelAdjustment | null
   summary: string
   content: string
   model?: string

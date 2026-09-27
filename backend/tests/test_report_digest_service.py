@@ -193,6 +193,22 @@ def test_transient_llm_failure_does_not_count_attempts(db, monkeypatch):
     assert row.payload["attempts"] == 0  # 瞬时失败不计，下次可重试
 
 
+def test_truncated_llm_output_counts_attempts(db, monkeypatch):
+    """输出额度耗尽（finish_reason=length，空或半截）是确定性失败：计 attempts 两次封顶，
+    不能因 status_code=None 被当成瞬时而每轮重烧一次。"""
+    def truncated(messages, **kw):
+        raise LLMClientError("LLM 输出被截断", finish_reason="length")
+
+    monkeypatch.setattr(
+        svc, "cached_report_targets_detailed", lambda db, s, m, **kw: {"targets": _targets([2025]), "complete": True}
+    )
+    monkeypatch.setattr(svc, "_ensure_section", lambda db, s, m, t: {"mdna": "内容"})
+    monkeypatch.setattr(svc, "chat_completion", truncated)
+    svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    row = db.query(SecurityProfileData).filter_by(dataset="report_digest").one()
+    assert row.payload["attempts"] == 1
+
+
 @pytest.mark.parametrize(
     ("status_code", "kind"),
     [(401, "llm_auth"), (402, "llm_auth"), (403, "llm_auth"), (429, "llm_rate_limited")],

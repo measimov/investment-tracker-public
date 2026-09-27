@@ -29,7 +29,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 # v4：币种+单位分开排版（「美元 千元」「RMB million」）算一个布局单元，且表头布局须与数据行吻合才采信
 # v9：括号负数内侧空格、列期末日/重复年份、每股单位提示进 context
-STATEMENT_EXTRACTOR_VERSION = 9
+# v10：币种包裹的每股金额（「HK$4.889港元」「人民幣0.67元」「(0.1481)港元」）解析为数值、币种进
+#      context；独占一行的「基本 Basic」「攤薄」附到其后数值行的 context；页边报告名排进数据行
+#      （「二零二零年年報 基 本 …」）时剥掉报告名
+STATEMENT_EXTRACTOR_VERSION = 10
 STATEMENT_KINDS = ("income", "balance", "cashflow")
 
 # 报表标题核心（繁/简；港股「綜合」= A股「合并」）。income 同时覆盖损益表与全面收益表
@@ -286,6 +289,57 @@ def normalize_paren_spaces(line: str) -> str:
     return _PAREN_CLOSE_SPACE_RE.sub(")", _PAREN_OPEN_SPACE_RE.sub("(", line))
 
 
+# 币种包裹的每股金额（v10）：港股損益表的每股盈利常把币种写进每个数值格——「HK$4.889港元」「HK$5.692
+# 港元」（00148 全部年报）、「人民幣0.67元」（03900）、「人民幣2.02 人民幣1.62元」「RMB2.11 RMB1.68」（02313
+# 双语年报，前后缀不齐）、「0.0537美元」「(0.1481)港元」（00799）、「US$0.1084」（00799 2020 中报）。
+# `_NUM` 不认这些 token，整行被当成纯文本丢掉，基本/摊薄行消失，模型只能把上方「每股盈利 13」小标题
+# 的附注号映射成 EPS。只在**行尾数值串里至少两个 token 带币种**时才解包（每股盈利两期都带），单个
+# 「每股面值 HK$0.10」之类的正文不动；币种/单位不丢，写进该行 context（「仙」由构建层 ÷100）
+# 「人民幣RMB1.67元」：02313 2020-2023 中报的双语前缀
+_WRAP_PREFIX = r"(?:人民幣|人民币)RMB|HK\$|US\$|RMB|人民幣|人民币"
+_WRAP_SUFFIX = r"港元|美元|元|港仙|仙"
+_WRAP_NUM = r"\(?-?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\d+(?:\.\d+)?\)?"
+_WRAPPED_TOKEN_RE = re.compile(
+    rf"^(?P<pre>{_WRAP_PREFIX})?(?P<num>{_WRAP_NUM})(?P<suf>{_WRAP_SUFFIX})?$"
+)
+# 与数字分开排版的前后缀（「HK$5.692 港元」「人民幣 0.67 元」）先贴回数字；前缀与标签粘连的
+# （03900 2020 年报字间空格压缩后的「基本人民幣1.05元」）在前缀前断开
+_WRAP_SUFFIX_SPACE_RE = re.compile(rf"(?<=[\d)])[ 　]+(?={_WRAP_SUFFIX}(?:[ 　]|$))")
+_WRAP_PREFIX_SPACE_RE = re.compile(rf"(?:^|(?<=[ 　]))({_WRAP_PREFIX})[ 　]+(?=\(?-?\d)")
+_WRAP_PREFIX_GLUED_RE = re.compile(rf"(?<=[^\s(（])(?<!人民幣)(?<!人民币)({_WRAP_PREFIX})(?=\(?-?\d)")
+MIN_WRAPPED_TOKENS = 2
+
+
+def unwrap_currency_amounts(line: str) -> Tuple[str, List[str]]:
+    """行尾数值串里的币种包裹 token → 纯数字；返回 (新行, 币种/单位标记)。条件不满足原样返回。"""
+    if not re.search(rf"{_WRAP_PREFIX}|{_WRAP_SUFFIX}", line):
+        return line, []
+    compact = _WRAP_PREFIX_SPACE_RE.sub(r"\1", _WRAP_SUFFIX_SPACE_RE.sub("", line))
+    compact = _WRAP_PREFIX_GLUED_RE.sub(r" \1", compact)
+    tokens = compact.split()
+    plain: List[str] = []
+    markers: List[str] = []
+    wrapped = 0
+    i = len(tokens)
+    while i > 0:
+        token = tokens[i - 1]
+        found = _WRAPPED_TOKEN_RE.match(token)
+        if found and (found.group("pre") or found.group("suf")):
+            wrapped += 1
+            marker = f"{found.group('pre') or ''}…{found.group('suf') or ''}"
+            if marker not in markers:
+                markers.insert(0, marker)
+            plain.insert(0, found.group("num"))
+        elif _NUM_TOKEN_RE.match(token):
+            plain.insert(0, token)
+        else:
+            break
+        i -= 1
+    if wrapped < MIN_WRAPPED_TOKENS:
+        return line, []
+    return " ".join(tokens[:i] + plain), markers
+
+
 def glue_split_digits(line: str) -> str:
     """只粘有明确断字证据的形态（畸形两位千分组）。"""
     previous = None
@@ -314,7 +368,7 @@ def glue_decimal_tail(tokens: List[str], expected: int) -> List[str]:
 def _parse_row_tokens(line: str) -> Optional[Tuple[str, str, List[str]]]:
     """数字行 → (label, note, value_tokens)；非数字行返回 None。
     无标签的合计行（`6 751,766 660,257` / `229,801 196,467`）标签为空。"""
-    line = glue_split_digits(normalize_paren_spaces(line))
+    line = glue_split_digits(unwrap_currency_amounts(normalize_paren_spaces(line))[0])
     only = _VALUES_ONLY_RE.match(line)
     if only:
         tokens = only.group("values").split()
@@ -593,12 +647,44 @@ _TABLE_UNIT_RE = re.compile(r"百萬|百万|千元|千港元|千美元|million|t
 UNIT_HINT_MAX_CHARS = 40
 
 
+# 独占一行的每股盈利类别（00799 2016 年报、02313 双语年报：「基本 Basic」一行，下一行才是
+# 「－年度利潤 – For profit for the year 人民幣2.11元 人民幣1.68元」——基本与摊薄两行标签完全相同，
+# 只有这一行说明它是哪一类）。附到其后各行的 context，直到下一条类别行或回到千分位金额行
+_EPS_KIND_LINE_RE = re.compile(
+    r"^(?=.*(?:基本|攤薄|摊薄|basic|diluted))[\s\-–—－]*(?:基本|攤薄|摊薄|基本及攤薄|基本及摊薄)?\s*"
+    r"(?:(?<![A-Za-z])(?:Basic|Diluted|Basic and diluted))?\s*[:：]?\s*$",
+    re.I,
+)
+# 币种包裹 token 解包后留在 context 里的原文币种/单位（「HK$…港元」「…港仙」）
+WRAPPED_UNIT_CONTEXT = "數值原文帶幣種單位："
+
+
 def _is_unit_hint(text: str) -> bool:
     return (
         len(text) <= UNIT_HINT_MAX_CHARS
         and bool(_UNIT_HINT_RE.search(text))
         and not _TABLE_UNIT_RE.search(text)
     )
+
+
+# 页边的报告名排进了数据行（03900 2020 年报：「二零二零年年報 基 本 人民幣1.05元 人民幣0.55元」，
+# 字间空格压缩后是「二零二零年年報基本 …」）：
+# 中文数字年份让 `_is_header_like` 把整行当表头噪音丢掉，基本 EPS 行就此消失。只在剥掉报告名后
+# 剩下的是**带标签、至少两个数值**的数据行时才剥——页脚「二零一九年中期報告 033」不动
+_RUNNING_TITLE_RE = re.compile(
+    r"^[一二三四五六七八九零〇]{4}\s*年\s*(?:年報|年报|年度報告|年度报告|中期報告|中期报告)\s*"
+)
+
+
+def strip_running_title(line: str) -> str:
+    found = _RUNNING_TITLE_RE.match(line)
+    if not found:
+        return line
+    rest = line[found.end():]
+    parsed = _parse_row_tokens(rest)
+    if parsed and parsed[0] and len(parsed[2]) >= 2:
+        return rest
+    return line
 
 
 def _is_data_row(text: str) -> bool:
@@ -634,11 +720,13 @@ def _parse_block(block: _Block) -> ParsedStatement:
     raw_rows: List[Tuple[str, str, List[str], List[str], int]] = []
     context: List[str] = []
     unit_hints: List[str] = []  # 每股单位提示（「人民幣仙 人民幣仙」「每股盈利（以每股港仙列示）」）
+    eps_kind: Optional[str] = None  # 独占一行的「基本 Basic」「攤薄」：其后的数值行才是那一类每股盈利
     counts: Dict[int, int] = {}
     first_tokens: Dict[int, List[str]] = {}
     for offset, text in enumerate(texts):
         if offset == 0:
             continue
+        text = strip_running_title(text)
         if _is_header_like(text, years):
             continue
         parsed = _parse_row_tokens(text)
@@ -647,14 +735,23 @@ def _parse_block(block: _Block) -> ParsedStatement:
             context = context[-2:]
             if _is_unit_hint(text) and text not in unit_hints:
                 unit_hints.append(text)
+            if _EPS_KIND_LINE_RE.match(text):
+                eps_kind = text
             continue
         label, note, tokens = parsed
         if not tokens:
             continue
         if any(_GROUPED_AMOUNT_RE.search(token) for token in tokens):
             unit_hints = []  # 回到金额区：每股单位提示到此为止，不附到金额行上
+            eps_kind = None
         row_context = list(context) if not label else []
-        row_context = list(unit_hints) + [c for c in row_context if c not in unit_hints]
+        hints = list(unit_hints)
+        if eps_kind and eps_kind not in hints:
+            hints.append(eps_kind)
+        markers = unwrap_currency_amounts(normalize_paren_spaces(text))[1]
+        if markers:
+            hints.append(WRAPPED_UNIT_CONTEXT + "、".join(markers))
+        row_context = hints + [c for c in row_context if c not in hints]
         raw_rows.append((label, note, tokens, row_context, offset))
         counts[len(tokens)] = counts.get(len(tokens), 0) + 1
         first_tokens.setdefault(len(tokens), []).append(tokens[0])

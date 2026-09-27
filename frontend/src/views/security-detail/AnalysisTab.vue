@@ -7,8 +7,13 @@ import { useRouter } from 'vue-router'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { EMPTY, formatDateTime } from '@/utils/helpers'
-import { analysisTagType, riskLabel, riskTagType } from './analysisTags'
+import { analysisTagType, riskAdjustmentText, riskLabel, riskTagType } from './analysisTags'
 import { daysAgoText, isAnalysisOutdated } from './format'
+import {
+  GRAHAM_VERDICT_LABELS,
+  grahamCriterionLabel,
+  humanizeAnalysisMarkdown
+} from './analysisGlossary'
 import { grahamBasisText, grahamSupplementText, grahamSupplementTitle } from './grahamFormat'
 import type { GrahamCriterion, ProfileRow, SecurityProfileState } from './types'
 
@@ -20,6 +25,8 @@ const analysis = computed(() => props.state.analysis)
 const outdated = computed(() =>
   isAnalysisOutdated(analysis.value?.created_at, props.state.latestDataAt)
 )
+// 风险等级按市场下限上调（港股 low→medium）时在风险标签旁提示，不静默改写模型判断
+const riskAdjustment = computed(() => riskAdjustmentText(analysis.value?.risk_level_adjusted))
 
 const businessProfile = computed<ProfileRow | null>(() => props.state.business?.profile || null)
 const peers = computed<ProfileRow[]>(() => props.state.business?.peers || [])
@@ -41,21 +48,7 @@ function goToPeer(peer: ProfileRow) {
   })
 }
 
-// 格雷厄姆防御型准则 × 塔勒布脆弱性信号（graham_screen 预计算）
-const GRAHAM_CRITERIA_NAMES: Record<string, string> = {
-  current_ratio: '流动比率 ≥ 2',
-  lt_debt_vs_net_current_assets: '长期债务 ≤ 净流动资产',
-  earnings_stability: '盈利稳定（十年为正）',
-  dividend_record: '连续分红记录',
-  earnings_growth: '盈利增长 ≥ 1/3',
-  pe: '市盈率 ≤ 15',
-  pb_or_product: '市净率 ≤ 1.5（或 PE×PB ≤ 22.5）'
-}
-const GRAHAM_VERDICT_LABELS: Record<string, string> = {
-  pass: '达标',
-  fail: '不达标',
-  indeterminate: '不可判定'
-}
+// 格雷厄姆防御型准则 × 塔勒布脆弱性信号（graham_screen 预计算）；准则名/判定词与 AI 正文共用
 function grahamVerdictTag(verdict: string) {
   if (verdict === 'pass') return 'success'
   if (verdict === 'fail') return 'danger'
@@ -108,6 +101,11 @@ const fragilityParts = computed(() => {
         >
           风险 {{ riskLabel(analysis.risk_level) }}
         </el-tag>
+        <el-tooltip v-if="riskAdjustment" :content="riskAdjustment" placement="top">
+          <el-tag type="info" size="small" effect="plain" data-testid="risk-level-adjusted">
+            已上调
+          </el-tag>
+        </el-tooltip>
         <el-tag
           v-for="tag in analysis.tags"
           :key="tag"
@@ -134,8 +132,12 @@ const fragilityParts = computed(() => {
         </el-tooltip>
         <p class="sd-meta-summary">{{ analysis.summary }}</p>
       </div>
-      <!-- LLM Markdown 必须过 renderMarkdown（marked + DOMPurify 消毒）后才可 v-html -->
-      <div class="markdown-body" v-html="renderMarkdown(analysis.content)" />
+      <!-- LLM Markdown 必须过 renderMarkdown（marked + DOMPurify 消毒）后才可 v-html；
+           humanizeAnalysisMarkdown 先把存量报告里的字段名/英文判定词换成中文（只改展示） -->
+      <div
+        class="markdown-body"
+        v-html="renderMarkdown(humanizeAnalysisMarkdown(analysis.content))"
+      />
       <div class="sd-footnote">
         {{ analysis.model || EMPTY }} · {{ analysis.total_tokens || EMPTY }} tokens
         <template v-if="analysis.data_fetched_at">
@@ -164,7 +166,7 @@ const fragilityParts = computed(() => {
     <el-table :data="grahamCriteria" size="small" stripe>
       <el-table-column label="准则" min-width="150">
         <template #default="{ row }">
-          {{ GRAHAM_CRITERIA_NAMES[row.criterion] || row.criterion }}
+          {{ grahamCriterionLabel(row.criterion) }}
         </template>
       </el-table-column>
       <el-table-column label="判定" width="90">

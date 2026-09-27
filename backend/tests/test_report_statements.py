@@ -13,6 +13,11 @@
 单位元）、09618 2023（亏损年份「…綜合收益╱（損失）表」）、02669 2026 中报（目录页带页码的
 「28 簡明綜合損益表」）、02313 2025 中报（「中期簡明綜合損益表」+ 独立全面收益表）、02156 2025
 中报（标题当页眉印在业绩公告首页）、01023 2026 中报（6 月财年：期末实为 2025-12-31）。
+
+抽取器 v10（生产 33 份报告 basic_eps = 小标题附注号）补的币种包裹每股盈利版式：00799 2016 年报
+（「0.0537美元」+ 独占一行的「基本」「攤薄」）与 2022 中报（「(0.1481)港元」）、02313 2016 年报（双语，
+「人民幣2.02 人民幣1.62元」+「RMB2.11 RMB1.68」）与 2020 中报（「人民幣RMB1.67元」）、03900 2020 年报
+（页边报告名排进基本 EPS 行）、09926 2020 年报（「人民幣(1.65)元」）。
 """
 
 import gzip
@@ -55,6 +60,11 @@ ANNUAL = {
     # 抽取器 v9：括号负数内侧空格（01023 2024）、中英双语标题日期不是列年份（00148 2017）
     "hk_01023_20240630": ((63, 65), (65, 66), (68, 70), 1_000, "HKD", [2024, 2023]),
     "hk_00148_20171231": ((67, 69), (69, 71), (74, 77), 1_000, "HKD", [2017, 2016]),
+    # 抽取器 v10：币种包裹的每股盈利（附注号被当成 EPS 的 33 份报告的版式）
+    "hk_00799_20161231": ((80, 81), (82, 83), (86, 87), 1_000, "USD", [2016, 2015]),
+    "hk_02313_20161231": ((128, 129), (130, 131), (133, 135), 1_000, "CNY", [2016, 2015]),
+    "hk_03900_20201231": ((131, 131), (132, 134), (137, 139), 1_000, "CNY", [2020, 2019]),
+    "hk_09926_20201231": ((121, 122), (123, 124), (127, 128), 1_000, "CNY", [2020, 2019]),
 }
 # 行在主导列数上的最低占比。中国准则报表把零值格留空（01133 2017 現金流量表 39 行里 6 行只有
 # 一期有数，33/39 = 84.6%）——纯文本里分不出空的是哪一列，单值行按本期列取；跨年比较列核对
@@ -72,6 +82,9 @@ INTERIM = {
     # 第三轮：目录页的「目錄」在页眉两行之后（第 2 页不得被认成损益表）；未有收入的 18A 公司
     "hk_01023_20221231_interim": ((27, 30), (30, 32), (34, 36), 1_000, "HKD", None),
     "hk_09926_20200630_interim": ((46, 47), (48, 49), (52, 53), 1_000, "CNY", [2020, 2019]),
+    # 抽取器 v10：币种包裹的每股盈利
+    "hk_00799_20220630_interim": ((53, 54), (55, 56), (59, 59), 1_000, "HKD", [2022, 2021]),
+    "hk_02313_20200630_interim": ((27, 28), (29, 30), (32, 34), 1_000, "CNY", [2020, 2019]),
 }
 
 
@@ -893,3 +906,104 @@ def test_unit_hint_scope_ends_at_the_next_amount_row():
     assert not rs._is_unit_hint("（以百萬元計，股份及每股數據除外）")
     assert not rs._is_unit_hint("普通股（每股面值0.00002美元；")
     assert rs._is_unit_hint("每股盈利（以每股港仙列示）") and rs._is_unit_hint("HK cents HK cents")
+
+
+# ---------------------------------------------------------------------------- 抽取器 v10：币种包裹的每股盈利
+
+# (固件, 报告类型, 基本 EPS 两列, 摊薄 EPS 两列 | None, 原文币种标记)：v9 下这些行全部丢失，
+# 模型只能把其上「每股盈利 13」这类小标题的附注号映射成 EPS（生产 33 份报告 basic_eps = 附注号）
+WRAPPED_EPS = [
+    ("hk_00148_20171231", "annual", ("5.363", "4.889"), ("5.314", "4.875"), "HK$…港元"),
+    ("hk_00799_20161231", "annual", ("0.0537", "0.0300"), ("0.0522", "0.0290"), "…美元"),
+    ("hk_00799_20220630_interim", "interim", ("-0.1481", "0.4901"), ("-0.1471", "0.4847"), "…港元"),
+    ("hk_02313_20161231", "annual", ("2.11", "1.68"), ("2.02", "1.62"), "人民幣…元"),
+    ("hk_02313_20200630_interim", "interim", ("1.67", "1.61"), None, "人民幣RMB…元"),
+    ("hk_02313_20250630_interim", "interim", ("2.11", "1.95"), None, "人民幣…元"),
+    ("hk_03900_20190630_interim", "interim", ("0.67", "0.94"), ("0.67", "0.93"), "人民幣…元"),
+    ("hk_03900_20201231", "annual", ("1.05", "0.55"), ("1.04", "0.55"), "人民幣…元"),
+    ("hk_09926_20201231", "annual", ("-1.65", "-2.74"), None, "人民幣…元"),
+    ("hk_09926_20200630_interim", "interim", ("-1.13", "-1320.61"), None, "…元"),
+]
+
+
+def _eps_row(income, values):
+    wanted = [Decimal(v) for v in values]
+    return next((r for r in income.rows if r.values == wanted), None)
+
+
+@pytest.mark.parametrize("name, report_type, basic, diluted, marker", WRAPPED_EPS)
+def test_currency_wrapped_eps_rows_parse_as_numbers(name, report_type, basic, diluted, marker):
+    income = rs.locate_statements(_pages(name), report_type=report_type)["income"]
+    row = _eps_row(income, basic)
+    assert row is not None, f"{name} 基本 EPS 行缺失"
+    # 币种/单位不丢：原文标记进 context（「仙」由构建层读 context ÷100）
+    assert any(c.startswith(rs.WRAPPED_UNIT_CONTEXT) and marker in c for c in row.context), row.context
+    if diluted:
+        assert _eps_row(income, diluted) is not None, f"{name} 摊薄 EPS 行缺失"
+
+
+def test_wrapped_eps_keeps_note_numbers_and_kind_lines():
+    # 附注号在币种包裹的数值前（02313 中报「基本及攤薄期內利潤 9 人民幣2.11元 人民幣1.95元」）
+    income = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")["income"]
+    row = _eps_row(income, ("2.11", "1.95"))
+    assert (row.label, row.note) == ("基本及攤薄期內利潤", "9")
+    income = rs.locate_statements(_pages("hk_09926_20201231"), report_type="annual")["income"]
+    assert _eps_row(income, ("-1.65", "-2.74")).note == "12"
+    # 「基本」「攤薄」独占一行、其下两行标签相同（00799 2016「－年內溢利」）：类别行进 context
+    income = rs.locate_statements(_pages("hk_00799_20161231"), report_type="annual")["income"]
+    basic, diluted = _eps_row(income, ("0.0537", "0.0300")), _eps_row(income, ("0.0522", "0.0290"))
+    assert basic.label == diluted.label == "－年內溢利"
+    assert "基本" in basic.context and "攤薄" not in basic.context
+    assert "攤薄" in diluted.context and "基本" not in diluted.context
+    # 小标题行保持原样（附注号仍是它唯一的数值——由构建层的附注号守卫兜底）
+    heading = next(r for r in income.rows if r.label == "母公司普通權益持有人應佔每股盈利")
+    assert heading.values == [Decimal("13")]
+    # 双语：「基本 Basic」一行、「－年度利潤 – For profit for the year 人民幣…」一行、「RMB… RMB…」一行
+    income = rs.locate_statements(_pages("hk_02313_20161231"), report_type="annual")["income"]
+    labelled = next(r for r in income.rows if r.label == "－年度利潤 – For profit for the year")
+    assert labelled.values == [Decimal("2.11"), Decimal("1.68")] and "基本 Basic" in labelled.context
+
+
+@pytest.mark.parametrize("line, expected, markers", [
+    ("– Basic －基本 HK$4.889港元 HK$1.609港元", "– Basic －基本 4.889 1.609", ["HK$…港元"]),
+    ("– Basic －基本 HK$5.692 港元 HK$5.363 港元", "– Basic －基本 5.692 5.363", ["HK$…港元"]),
+    ("基本 (0.1481)港元 0.4901港元", "基本 (0.1481) 0.4901", ["…港元"]),
+    ("基本 US$0.1084 US$0.0562", "基本 0.1084 0.0562", ["US$…"]),
+    ("RMB2.11 RMB1.68", "2.11 1.68", ["RMB…"]),
+    ("－年度利潤 – For profit for the year 人民幣2.02 人民幣1.62元",
+     "－年度利潤 – For profit for the year 2.02 1.62", ["人民幣…", "人民幣…元"]),
+    ("基本及攤薄 12 人民幣(1.65)元 人民幣(2.74)元", "基本及攤薄 12 (1.65) (2.74)", ["人民幣…元"]),
+    ("－期內利潤 – For profit for the period 人民幣RMB1.67元 人民幣RMB1.61元",
+     "－期內利潤 – For profit for the period 1.67 1.61", ["人民幣RMB…元"]),
+    ("基本人民幣1.05元 人民幣0.55元", "基本 1.05 0.55", ["人民幣…元"]),
+])
+def test_unwrap_currency_amounts_real_lines(line, expected, markers):
+    assert rs.unwrap_currency_amounts(line) == (expected, markers)
+
+
+@pytest.mark.parametrize("line", [
+    "每股面值 HK$0.10 的普通股",  # 只有一个包裹 token：正文，不动
+    "攤薄 Diluted 不適用 人民幣1.22元",  # 02313 2018 中报：一列不適用，只剩一个包裹 token
+    "附註 人民幣千元 人民幣千元",  # 表头单位行
+    "股本 1,234 2,345",
+    "末期股息每股 HK$0.3 港元 已派付 120,000 110,000",  # 包裹 token 不在行尾数值串里
+])
+def test_unwrap_currency_amounts_leaves_other_lines(line):
+    assert rs.unwrap_currency_amounts(line) == (line, [])
+
+
+def test_running_report_title_glued_into_a_data_row_is_stripped():
+    # 03900 2020 年报：页边报告名排进基本 EPS 行，中文年份曾让整行被当成表头噪音
+    assert rs.strip_running_title("二零二零年年報基本人民幣1.05元 人民幣0.55元") == "基本人民幣1.05元 人民幣0.55元"
+    # 页脚（报告名 + 页码）不是数据行，不动
+    assert rs.strip_running_title("二零一九年中期報告 033") == "二零一九年中期報告 033"
+    assert rs.strip_running_title("二零二零年年報") == "二零二零年年報"
+
+
+@pytest.mark.parametrize("line, kind", [
+    ("基本", True), ("攤薄", True), ("基本 Basic", True), ("攤薄 Diluted", True),
+    ("基本及攤薄 Basic and diluted", True), ("基本及攤薄", True),
+    ("每股盈利", False), ("基本每股盈利", False), ("－", False), ("基本 Basic RMB RMB", False),
+])
+def test_eps_kind_line(line, kind):
+    assert bool(rs._EPS_KIND_LINE_RE.match(line)) is kind

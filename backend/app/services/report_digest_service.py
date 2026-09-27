@@ -21,7 +21,12 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..core.logging import get_app_logger
 from ..models.security_profile import SecurityProfileData
-from .llm_client import LLMClientError, LLMNotConfiguredError, chat_completion
+from .llm_client import (
+    LLMClientError,
+    LLMNotConfiguredError,
+    chat_completion,
+    is_output_truncated,
+)
 from .report_digest_prompts import (
     DEFAULT_TIER as DEFAULT_DIGEST_TIER,
     DIGEST_PROMPT_VERSION,
@@ -362,6 +367,10 @@ def _is_transient(exc: Exception) -> bool:
         status = getattr(exc.response, "status_code", None)
         return status is None or status >= 500 or status == 429
     if isinstance(exc, LLMClientError):
+        if is_output_truncated(exc):
+            # 输出额度耗尽（空或半截，finish_reason=length）：同样输入重试结果相同，
+            # 计 attempts 两次封顶——否则 status_code=None 被当瞬时，每轮都重烧一次
+            return False
         # LLM 走 httpx 而非 requests，上面两条一条都拦不住：不认的话一次
         # DeepSeek 5xx 就烧掉一次永久额度，两次之后该报告期永久跳过
         status = exc.status_code

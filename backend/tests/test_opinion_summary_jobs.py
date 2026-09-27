@@ -315,6 +315,20 @@ def test_single_job_parse_failure_is_deterministic(db, monkeypatch):
     assert stored.attempt_count == 1  # 确定性失败不烧重试
 
 
+def test_single_job_truncated_output_is_deterministic(db, monkeypatch):
+    """输出额度耗尽（finish_reason=length）→ error_kind=truncated，确定性失败不烧重试。"""
+    from app.services.llm_client import LLMClientError
+
+    def truncated(messages, **kwargs):
+        raise LLMClientError("LLM 输出被截断（finish_reason=length）", finish_reason="length")
+
+    monkeypatch.setattr(jobs, "chat_completion", truncated)
+    outcome = jobs.summarize_one(db, "600519", "A股", matched=[_utt()])
+    assert outcome["status"] == "failed"
+    assert outcome["error_kind"] == "truncated"
+    assert "truncated" not in jobs.FATAL_OPINION_ERROR_KINDS
+
+
 def test_single_job_source_unavailable(db, monkeypatch):
     def raise_unavailable(db_, wanted, *, since):
         raise jobs.OpinionSourceUnavailable("数据源未接入")

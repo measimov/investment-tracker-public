@@ -9,6 +9,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from ..database import Base
@@ -71,6 +72,10 @@ class SecurityAnalysis(Base):
 
     tags = Column(JSON, nullable=False, comment="结构化标签数组")
     risk_level = Column(String(10), nullable=False, comment="low / medium / high")
+    risk_level_adjusted = Column(
+        JSONB,
+        comment="风险等级按市场下限上调的记录 {from,to,reason}；未上调为 NULL",
+    )
     summary = Column(String(300), nullable=False, comment="一句话摘要")
     content = Column(Text, nullable=False, comment="Markdown 全文分析")
 

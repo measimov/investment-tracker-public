@@ -5,6 +5,7 @@
 （结构化行 + 模型映射，抽取器 v8 / prompt v4）按需裁掉无关报表，数字全部来自真实年报/中报。
 """
 
+import gzip
 import importlib.util
 import json
 from decimal import Decimal
@@ -18,7 +19,12 @@ from app.services import report_statement_checks as checks
 from app.services import report_statement_prompts as prompts
 from app.services import report_statement_service as svc
 from app.services.llm_client import LLMClientError
-from app.services.report_statements import STATEMENT_EXTRACTOR_VERSION, ParsedStatement, StatementRow
+from app.services.report_statements import (
+    STATEMENT_EXTRACTOR_VERSION,
+    ParsedStatement,
+    StatementRow,
+    locate_statements,
+)
 from app.services.security_profile_service import upsert_profile_row
 
 from .helpers import reset_tables
@@ -175,6 +181,126 @@ def test_yahoo_eps_ratio_near_100_is_error_other_differences_info():
     [eps] = [c for c in checks.cross_check_row({**row, "basic_eps": 0.80}, yahoo_row={"currency": "CNY", "basic_eps": 0.762})
              if c["id"] == "yahoo_basic_eps"]
     assert eps["severity"] == "info"
+
+
+# ---------------------------------------------------------------------------
+# build v2：EPS 附注号守卫 / 校验 v5：EPS 大差异
+# ---------------------------------------------------------------------------
+
+
+def _real_income(name, report_type="annual"):
+    pages_path = Path(__file__).parent / "fixtures" / "reports" / f"{name}.pages.txt.gz"
+    with gzip.open(pages_path, "rt", encoding="utf-8") as handle:
+        pages = handle.read().split("\x0c")
+    return locate_statements(pages, report_type=report_type)["income"]
+
+
+def test_eps_note_guard_redirects_to_following_basic_row_on_real_parse():
+    """00148 2017：生产映射把 basic_eps 指向「Earnings per share 每股盈利 13」（附注号）。抽取器
+    v10 解析出其后的 HK$…港元 行后，构建层把映射改指基本/摊薄行，比较期同样取到值。"""
+    income = _real_income("hk_00148_20171231")
+    heading = next(r for r in income.rows if r.label == "Earnings per share 每股盈利")
+    basic = next(r for r in income.rows if r.label.startswith("– Basic"))
+    diluted = next(r for r in income.rows if r.label.startswith("– Diluted"))
+    owners = next(r for r in income.rows if r.label.startswith("Owners of the Company"))
+    mapping = {"income": {"n_income_attr_p": [owners.row_id], "basic_eps": [heading.row_id],
+                          "diluted_eps": [heading.row_id]}}
+    fixed, repairs = svc.effective_mapping({"income": income}, mapping)
+    assert fixed["income"]["basic_eps"] == [basic.row_id]
+    assert fixed["income"]["diluted_eps"] == [diluted.row_id]
+    assert mapping["income"]["basic_eps"] == [heading.row_id]  # 存储的 LLM 映射不被改写
+    target = {"period_key": "20171231|annual", "report_type": "annual", "end_date": "20171231",
+              "url": "u", "ann_date": "01/04/2018 16:30", "title": "2017 年報"}
+    rows = {f"{r['end_date']}|{r['fp']}": r
+            for r in svc.build_period_rows({"income": income}, mapping, target, fingerprint="f")}
+    assert rows["20171231|FY"]["basic_eps"] == pytest.approx(5.363)
+    assert rows["20171231|FY"]["diluted_eps"] == pytest.approx(5.314)
+    assert rows["20161231|FY"]["basic_eps"] == pytest.approx(4.889)
+    record = rows["20171231|FY"]["repaired_fields"]["basic_eps"]
+    assert record == {"reason": "eps_note_number", "from_row": heading.row_id, "to_row": basic.row_id,
+                      "note_number": "13", "to_value": pytest.approx(5.363)}
+    # 正确的映射不动
+    assert svc.effective_mapping({"income": income}, {"income": {"basic_eps": [basic.row_id]}})[1] == {}
+
+
+def test_eps_note_guard_drops_when_no_basic_row_follows(db, monkeypatch):
+    """03900 2017/2018 年报的已存抽取行（v9 解析：「人民幣0.77元」行整行丢失，小标题「每股盈利 13/14」
+    是损益表最后一行）：零下载零 LLM 重建后 basic/diluted_eps 丢弃交给雅虎，不再是 13.0/14.0。"""
+    _no_network(monkeypatch)
+    data = _seed(db, "03900")
+    assert data["extracts"]["20181231|annual"]["mapping"]["income"]["basic_eps"] == ["r33"]
+    result = svc.rebuild_report_statements(db, "03900", MARKET)
+    assert result["rebuilt"] == 2 and result["failed"] == 0
+    rows = _rows(db, "03900")
+    for period, note in (("20181231|FY", "14"), ("20171231|FY", "13")):
+        row = rows[period]
+        assert row.get("basic_eps") is None, period
+        assert row["repaired_fields"]["basic_eps"] == {
+            "reason": "eps_note_number", "from_row": "r33", "to_row": None, "note_number": note,
+            "to_value": None,
+        }
+        assert row["n_income_attr_p"] is not None  # 其他科目照常
+    # 2017 年报的 diluted_eps 也被映射到同一行
+    assert rows["20171231|FY"].get("diluted_eps") is None
+    assert rows["20171231|FY"]["repaired_fields"]["diluted_eps"]["to_row"] is None
+    assert rows["20181231|FY"].get("diluted_eps") is None
+
+
+def test_eps_note_guard_ignores_real_multi_column_rows():
+    """「－就期內溢利╱（虧損）而言（港仙）」（01023，无「基本」字样但两列都有值）与带小数的单值行
+    都不是附注号；页脚公司名行（「建滔集團有限公司 2」）没有每股盈利字样也不动。"""
+    def statement(rows):
+        return ParsedStatement(
+            kind="income", page_start=1, page_end=1, title="綜合損益表", header=[],
+            unit_multiplier=1000, currency="HKD", years=[2025, 2024], column_count=2,
+            interim_four_columns=False,
+            rows=[StatementRow(row_id=f"r{i}", label=label, note="", values=[Decimal(v) for v in values],
+                               context=list(ctx)) for i, (label, values, ctx) in enumerate(rows, start=1)],
+        )
+
+    parsed = statement([
+        ("應佔每股盈利╱（虧損）", ["8"], []),
+        ("－就期內溢利╱（虧損）而言（港仙）", ["1.45", "-6.96"], ["應佔每股盈利╱（虧損）"]),
+        ("時代集團控股有限公司", ["28"], []),
+        ("每股股息", ["0.5"], []),
+    ])
+    for row_id in ("r2", "r3", "r4"):
+        assert svc.repair_eps_note_mapping(parsed, {"basic_eps": [row_id]})[1] == {}, row_id
+    # 附注号小标题其后没有「基本」字样的行 → 丢弃（不猜「－就期內溢利」是基本还是摊薄）
+    fixed, repairs = svc.repair_eps_note_mapping(parsed, {"basic_eps": ["r1"]})
+    assert "basic_eps" not in fixed and repairs["basic_eps"]["to_row"] is None
+
+
+def test_yahoo_eps_large_mismatch_is_error_unless_later_report_agrees():
+    # 00148 2024：附注号 13 当成 EPS，雅虎 1.471 → error，分析路径清洗后由雅虎补缺
+    row = {"currency": "HKD", "basic_eps": 13.0, "end_date": "20241231", "source_end_date": "20241231"}
+    yahoo = {"currency": "HKD", "basic_eps": 1.471, "diluted_eps": 1.471}
+    found = {c["id"]: c for c in checks.cross_check_row(row, yahoo_row=yahoo)}
+    assert found["yahoo_basic_eps"]["severity"] == "error"
+    assert found["yahoo_basic_eps"]["reason"] == "eps_mismatch"
+    validation = checks.validate_period_row(row, extra_checks=list(found.values()))
+    assert validation["suspect_fields"] == ["basic_eps"]
+    assert checks.scrub_suspect_fields({**row, "validation": validation})["basic_eps"] is None
+    # 06049 2021：雅虎 2021 行的 EPS 2.01 其实是 2022 年的数；2022 年报比较列 1.53 与我们一致 → info
+    row = {"currency": "CNY", "basic_eps": 1.53, "diluted_eps": 1.53, "end_date": "20211231",
+           "source_end_date": "20211231"}
+    yahoo = {"currency": "CNY", "basic_eps": 2.01, "diluted_eps": 2.01}
+    later = {"source_period_key": "20221231|annual", "source_end_date": "20221231", "currency": "CNY",
+             "basic_eps": 1.53, "diluted_eps": 1.53}
+    found = {c["id"]: c for c in checks.cross_check_row(row, yahoo_row=yahoo, comparative_row=later)}
+    assert found["yahoo_basic_eps"]["severity"] == "info"
+    assert found["yahoo_basic_eps"]["reason"] == "yahoo_definition_diff"
+    assert found["yahoo_diluted_eps"]["reason"] == "yahoo_definition_diff"
+    assert checks.validate_period_row(row, extra_checks=list(found.values()))["suspect_fields"] == []
+    # 没有更晚报告可对照时同样的差异判 error（宁可交给雅虎，也不让附注号混进去）
+    found = {c["id"]: c for c in checks.cross_check_row(row, yahoo_row=yahoo)}
+    assert found["yahoo_basic_eps"]["severity"] == "error"
+    # 20% 以内仍只记 info（雅虎摊薄/加权股数口径差异）
+    found = {c["id"]: c for c in checks.cross_check_row({**row, "basic_eps": 1.80}, yahoo_row=yahoo)}
+    assert found["yahoo_basic_eps"]["severity"] == "info"
+    # 比较列证据里存下每股盈利，revalidate 重放时同样可解释
+    evidence = svc.comparative_evidence({**later, "total_revenue": 1.0})
+    assert evidence["basic_eps"] == 1.53 and evidence["diluted_eps"] == 1.53
 
 
 # ---------------------------------------------------------------------------
@@ -550,4 +676,12 @@ def test_comparative_merge_carries_per_statement_build_metadata():
     assert "eps_unit" not in merged  # 损益表换成了新来源（未以仙列示）
     assert merged["restated_by_kind"] == {"balance": True}
     assert merged["repaired_fields"] == {"total_assets": {"to_row": "r9"}}  # 资产负债表来源未变
+    # repaired_fields 按科目所属报表逐条取舍：损益表换来源时 EPS 附注号修复随之替换，资产小计修复保留
+    older_with_eps = {**older, "repaired_fields": {"total_assets": {"to_row": "r9"},
+                                                   "basic_eps": {"to_row": None}}}
+    merged = svc.merge_comparative_row(older_with_eps, newer)
+    assert merged["repaired_fields"] == {"total_assets": {"to_row": "r9"}}
+    newer_with_eps = {**newer, "repaired_fields": {"basic_eps": {"to_row": "r21"}}}
+    merged = svc.merge_comparative_row(older, newer_with_eps)
+    assert merged["repaired_fields"] == {"total_assets": {"to_row": "r9"}, "basic_eps": {"to_row": "r21"}}
     assert merged["build_version"] == prompts.STATEMENT_BUILD_VERSION

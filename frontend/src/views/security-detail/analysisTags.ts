@@ -70,3 +70,22 @@ const RISK_LABELS: Record<string, string> = { low: '低', medium: '中', high: '
 export function riskLabel(level: string | null | undefined): string {
   return RISK_LABELS[String(level || '')] || String(level || '未知')
 }
+
+/** 后端 `security_analyses.risk_level_adjusted`：风险等级按市场下限上调的记录 */
+export interface RiskLevelAdjustment {
+  from: string
+  to: string
+  reason?: string | null
+}
+
+/**
+ * 风险标签旁的上调提示：模型给出的等级低于市场下限（港股 medium）时后端上调并留痕，
+ * 这里把记录转成一句话；无记录（未上调 / 旧分析行）返回 null，不显示提示。
+ */
+export function riskAdjustmentText(
+  adjustment: RiskLevelAdjustment | null | undefined
+): string | null {
+  if (!adjustment || !adjustment.from || !adjustment.to) return null
+  const base = `模型给出「${riskLabel(adjustment.from)}」，按市场下限上调为「${riskLabel(adjustment.to)}」`
+  return adjustment.reason ? `${base}：${adjustment.reason}` : base
+}

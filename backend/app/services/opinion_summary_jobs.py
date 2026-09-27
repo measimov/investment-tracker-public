@@ -25,7 +25,12 @@ from .background_job_store import (
 )
 from .job_runtime import run_job_inline
 from .job_worker import register_runner
-from .llm_client import LLMClientError, LLMNotConfiguredError, chat_completion
+from .llm_client import (
+    LLMClientError,
+    LLMNotConfiguredError,
+    chat_completion,
+    is_output_truncated,
+)
 from .opinion_summary_prompts import build_opinion_messages, parse_opinion_output
 from .security_analysis_jobs import (
     LLM_FATAL_STATUS_CODES,
@@ -276,6 +281,8 @@ def summarize_one(
     except ValueError as exc:  # 输出解析失败：确定性失败不烧重试
         return failure(f"LLM 输出解析失败：{exc}", "parse")
     except LLMClientError as exc:
+        if is_output_truncated(exc):  # 输出额度耗尽：重试结果相同，确定性失败
+            return failure(str(exc), "truncated")
         if exc.status_code in LLM_FATAL_STATUS_CODES:
             return failure(str(exc), "llm_auth")
         if exc.status_code is not None and 400 <= exc.status_code < 500:

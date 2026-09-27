@@ -12,6 +12,7 @@ token 成本高，由用户在详情页显式触发。
 import json
 from typing import Any, Callable, Dict, Optional
 
+from ..config import settings
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from ..models.security_profile import SecurityAnalysis
@@ -24,8 +25,17 @@ from .background_job_store import (
 )
 from .job_runtime import run_job_inline
 from .job_worker import register_runner
-from .llm_client import LLMClientError, LLMNotConfiguredError, chat_completion
-from .security_analysis_prompts import build_analysis_messages, parse_analysis_output
+from .llm_client import (
+    LLMClientError,
+    LLMNotConfiguredError,
+    chat_completion,
+    is_output_truncated,
+)
+from .security_analysis_prompts import (
+    build_analysis_messages,
+    graham_for_llm,
+    parse_analysis_output,
+)
 from .security_profile_service import (
     PROFILE_CAPS,
     SUPPORTED_MARKETS,
@@ -228,8 +238,9 @@ def build_analysis_input(
         "估值因子)；peers=同行业名单(仅供提及可比公司，禁止对同业展开分析——"
         "同业数据不在输入中)；earnings_quality=预计算利润质量指标"
         "(红旗阈值见 metric_semantics)；graham_screen=预计算格雷厄姆防御型"
-        "准则与脆弱性信号(逐项 verdict 与依据见 criteria_semantics/"
-        "fragility_semantics，禁止自行心算比率)"
+        "准则与脆弱性信号(逐项判定与依据见 criteria_semantics/"
+        "fragility_semantics，禁止自行心算比率；正文用 criteria[].name_zh 与 "
+        "verdict_zh 的中文说法)"
     )
     market_semantics = {
         "A股": (
@@ -276,7 +287,7 @@ def build_analysis_input(
             ],
         },
         "earnings_quality": earnings_quality,
-        "graham_screen": graham,
+        "graham_screen": graham_for_llm(graham),
     }
     if digest_gaps:
         # 截断本身也要可见：只留 6 条而不说"还有几条"，模型会把这 6 条当成
@@ -480,6 +491,9 @@ def analyze_one(
     try:
         completion = chat_completion(
             build_analysis_messages(input_payload),
+            # 单独的输出额度：港股十年 PDF 报表行 + 摘要的输入让 JSON 结构化产物 + 全文
+            # 报告在 16384（复盘默认）里被截断（00799）
+            max_tokens=settings.security_analysis_max_output_tokens,
             response_format={"type": "json_object"},
         )
         parsed = parse_analysis_output(
@@ -492,6 +506,10 @@ def analyze_one(
     except ValueError as exc:  # 输出解析失败：确定性失败不烧重试
         return failure(f"LLM 输出解析失败：{exc}", "parse")
     except LLMClientError as exc:
+        if is_output_truncated(exc):
+            # 输出额度耗尽（空或半截）：同样的输入重试结果相同，确定性失败不烧重试；
+            # 不是整批等价（输入长短因标的而异），批量继续下一只
+            return failure(str(exc), "truncated")
         if exc.status_code in LLM_FATAL_STATUS_CODES:
             # 鉴权/欠费/限流：换个标的重试同样会失败，批量必须立即中止
             return failure(str(exc), "llm_auth")
@@ -510,6 +528,7 @@ def analyze_one(
         name=resolve_public_security_name(symbol, market),
         tags=parsed["tags"],
         risk_level=parsed["risk_level"],
+        risk_level_adjusted=parsed.get("risk_level_adjusted"),
         summary=parsed["summary"],
         content=parsed["report_markdown"],
         model=completion.get("model", ""),

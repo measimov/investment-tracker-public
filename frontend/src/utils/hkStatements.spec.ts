@@ -314,6 +314,7 @@ describe('构建层标注（PR-A：EPS 折元 / 小计修复 / 已重列）', ()
     expect(text).toContain('已被后续报告重列：经营现金流（显示与分析均保留首次披露值）')
     expect(text).toContain('流动资产：行 r21 → 行 r23')
     expect(text).toContain('总资产：未映射 → 分项合计推导')
+    expect(text).toContain('映射已修正：')
     expect(text).toContain('与雅虎口径不同：营业收入')
     expect(epsNoteText(notes)).toBe(
       '原文以「仙」列示，已 ÷100 折为元（依据：与相邻报告的比较列首尾相接）'
@@ -321,5 +322,28 @@ describe('构建层标注（PR-A：EPS 折元 / 小计修复 / 已重列）', ()
     const plain = buildNotes(pdf2025)
     expect(buildNotesText(plain)).toBe('')
     expect(epsNoteText(plain)).toBe('')
+  })
+
+  it('EPS 附注号守卫（构建 v2）：改指基本行或弃用交雅虎', () => {
+    const redirected = buildNotes({
+      ...pdf2025,
+      repaired_fields: {
+        basic_eps: {
+          reason: 'eps_note_number',
+          from_row: 'r20',
+          to_row: 'r21',
+          note_number: '13',
+          to_value: 5.363
+        }
+      }
+    })
+    expect(buildNotesText(redirected)).toBe('映射已修正：基本每股收益：行 r20（附注号 13）→ 行 r21')
+    const dropped = buildNotes({
+      ...pdf2025,
+      repaired_fields: {
+        basic_eps: { reason: 'eps_note_number', from_row: 'r33', to_row: null, note_number: '14' }
+      }
+    })
+    expect(buildNotesText(dropped)).toContain('行 r33（附注号 14）→ 弃用（由雅虎补缺）')
   })
 })

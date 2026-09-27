@@ -21,7 +21,8 @@ STATEMENT_PROMPT_VERSION = 5
 # 构建版本：抽取行（结构化行 + 映射）→ 会计期科目行这一步的代码口径（EPS 单位折算、资产小计
 # 修复、夹层权益、重列标记）。与抽取器/prompt 解耦——改构建逻辑只需
 # `rebuild_report_statements` 零下载零 LLM 从已存抽取行重建，不必重抽 PDF 或重跑映射
-STATEMENT_BUILD_VERSION = 1
+# v2：EPS 附注号守卫（basic/diluted_eps 映射到「每股盈利 13」小标题 → 改指基本/摊薄行或丢弃）
+STATEMENT_BUILD_VERSION = 2
 
 # 目标科目：与 report_fetchers.YAHOO_HK_FIELD_MAP / earnings_quality.pivot_rows_to_statements
 # 对齐（同名 = 同口径），下游利润质量/格雷厄姆/分析输入零改动即可消费
