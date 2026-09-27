@@ -48,7 +48,7 @@
               <div class="card-sub">
                 收益率 {{ formatPercent(performance.total_return_rate) }}
                 <template v-if="performance.annualized_rate !== null">
-                  · 年化 {{ formatPercent(performance.annualized_rate) }}
+                  · 年化（XIRR） {{ formatPercent(performance.annualized_rate) }}
                 </template>
               </div>
             </div>
@@ -78,11 +78,69 @@
               <el-icon class="card-icon"><Coin /></el-icon>
             </div>
             <div class="card-info">
-              <div class="card-title">已实现收益</div>
+              <div class="card-title">已实现收益（含股息）</div>
               <div class="card-value" :style="{ color: profitColor(performance.realized_return) }">
                 {{ formatCurrency(performance.realized_return) }}
               </div>
               <div class="card-sub">含税后股息 {{ formatCurrency(performance.net_dividends) }}</div>
+            </div>
+          </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 当日 / 本月 / 本年损益（权益仓口径，与收益曲线同一算法） -->
+    <el-row v-if="periodPnl" :gutter="20" class="period-pnl-row" data-testid="period-pnl-row">
+      <el-col v-for="key in PERIOD_KEYS" :key="key" :xs="24" :sm="8">
+        <el-card
+          class="summary-card period-card"
+          :class="
+            toneClass(
+              periodPnl.periods[key].status === 'unavailable'
+                ? null
+                : periodPnl.periods[key].pnl_cny
+            )
+          "
+        >
+          <div class="card-info">
+            <div class="card-title">
+              {{ periodPnl.periods[key].label }}损益
+              <el-tooltip :content="periodTooltip(key)" placement="top">
+                <el-icon class="period-help"><InfoFilled /></el-icon>
+              </el-tooltip>
+            </div>
+            <div
+              v-if="periodPnl.periods[key].status === 'unavailable'"
+              class="card-value period-unavailable"
+              :data-testid="`period-pnl-${key}`"
+            >
+              无法计算
+            </div>
+            <div
+              v-else
+              class="card-value"
+              :style="{ color: profitColor(periodPnl.periods[key].pnl_cny ?? 0) }"
+              :data-testid="`period-pnl-${key}`"
+            >
+              {{ formatCurrency(periodPnl.periods[key].pnl_cny ?? 0) }}
+              <el-tag
+                v-if="periodIsEstimated(periodPnl.periods[key])"
+                type="warning"
+                size="small"
+                effect="plain"
+                class="period-estimated-tag"
+              >
+                估算
+              </el-tag>
+            </div>
+            <div class="card-sub">
+              <template v-if="periodPnl.periods[key].return_rate !== null">
+                收益率 {{ formatPercent(periodPnl.periods[key].return_rate) }}
+              </template>
+              <template v-else>收益率 —</template>
+              <template v-if="periodPnl.periods[key].dividend_income_cny">
+                · 含股息 {{ formatCurrency(periodPnl.periods[key].dividend_income_cny) }}
+              </template>
             </div>
           </div>
         </el-card>
@@ -133,7 +191,7 @@
         <el-card class="panel-card">
           <template #header>
             <div class="card-header">
-              <span>市场分布</span>
+              <span>市场分布（按成本）</span>
             </div>
           </template>
           <div v-if="initialLoading" class="chart-skeleton">
@@ -185,7 +243,12 @@
                   {{ formatDate(row.transaction_date) }}
                 </template>
               </el-table-column>
-              <el-table-column prop="symbol" label="代码" min-width="90" />
+              <el-table-column label="标的" min-width="140">
+                <template #default="{ row }">
+                  <div class="txn-name">{{ row.name || row.symbol }}</div>
+                  <div class="txn-sub">{{ row.symbol }} · {{ row.market }}</div>
+                </template>
+              </el-table-column>
               <el-table-column prop="transaction_type" label="类型" width="80">
                 <template #default="{ row }">
                   <el-tag :type="typeTagKind(row.transaction_type)" size="small">
@@ -195,12 +258,12 @@
               </el-table-column>
               <el-table-column prop="quantity" label="数量" min-width="110" align="right">
                 <template #default="{ row }">
-                  {{ formatNumber(row.quantity, 2) }}
+                  {{ formatQuantity(row.quantity) }}
                 </template>
               </el-table-column>
               <el-table-column prop="price" label="价格" min-width="100" align="right">
                 <template #default="{ row }">
-                  {{ formatNumber(row.price, 2) }}
+                  {{ formatCurrency(row.price, row.currency) }}
                 </template>
               </el-table-column>
             </el-table>
@@ -210,30 +273,31 @@
     </el-row>
 
     <p class="methodology-note">
-      总收益与年化为权益仓口径（仅证券投入，闲置现金与外部出入金不计入、不稀释收益率）；详情见统计分析页。
+      总收益与年化（XIRR）为权益仓口径（仅证券投入，闲置现金与外部出入金不计入、不稀释收益率）；市场分布按持仓成本（非市值）；详情见统计分析页。
     </p>
   </div>
 </template>
 
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
+import { transactionTypeLabel, transactionTypeTag } from '@/utils/labels'
 import { ref, onMounted, computed } from 'vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { PieChart as EChartsPieChart } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
-import { ElMessage } from 'element-plus'
-import { Wallet, TrendCharts, DataLine, Coin } from '@element-plus/icons-vue'
+import { Wallet, TrendCharts, DataLine, Coin, InfoFilled } from '@element-plus/icons-vue'
 import api from '../api'
-import { getApiErrorMessage } from '../utils/apiErrors'
-import type { MarketStat } from '../types'
+import type { MarketStat, PeriodPnlKey, PeriodPnlResponse } from '../types'
 import {
   profitColor,
-  formatNumber,
   formatPercent,
   formatDate,
-  formatCurrency
+  formatCurrency,
+  formatQuantity
 } from '../utils/helpers'
+import { cardTone, mergeDashboardWarnings, periodIsEstimated } from './dashboard/helpers'
 import { CHART_FONT_FAMILY, CHART_PALETTE, chartTooltipCurrency } from '@/styles/tokens'
 
 use([CanvasRenderer, EChartsPieChart, TitleComponent, TooltipComponent, LegendComponent])
@@ -269,6 +333,7 @@ interface PortfolioSnapshot {
       net_dividend_income_cny: number
     }
   } | null
+  prices?: { missing_keys?: string[]; stale_keys?: string[] }
   markets?: MarketStat[]
   recent_transactions?: Array<Record<string, unknown>>
   accounts?: AccountBadge[]
@@ -277,6 +342,37 @@ interface PortfolioSnapshot {
 }
 
 const snapshot = ref<PortfolioSnapshot | null>(null)
+// 区间损益单独请求：失败不影响看板主体（只是不显示这一行）
+const periodPnl = ref<PeriodPnlResponse | null>(null)
+const PERIOD_KEYS: PeriodPnlKey[] = ['daily', 'mtd', 'ytd']
+
+function periodTooltip(key: PeriodPnlKey): string {
+  const period = periodPnl.value?.periods[key]
+  if (!period) return ''
+  let text =
+    `${period.start_date} 至 ${period.end_date}：期末市值 + 卖出与分红流出 − 期初市值 − 买入流入。` +
+    '期初按区间起点前最近收盘价估值；权益仓口径（不含闲置现金与出入金），收益率为时间加权（实验）。'
+  if (period.status === 'unavailable') {
+    const names = period.opening_unpriced_positions.map((p) => p.symbol).join('、')
+    text += `无法计算：${names} 在区间起点前没有任何价格，期初市值无从估值。`
+    return text
+  }
+  if ((period.estimated_inflow_events ?? 0) > 0) {
+    text +=
+      `估算：区间内有 ${period.estimated_inflow_events} 笔成本未知的实物转入，` +
+      '按估值价补记为投入，损益随估值价浮动。'
+  }
+  if (period.status === 'estimated') {
+    const bases = period.stale_opening_basis
+      .map(
+        (p) =>
+          `${p.symbol}（${p.basis_date}${p.basis_source === 'transaction' ? '成交价' : '收盘'}）`
+      )
+      .join('、')
+    text += `估算：以下持仓的期初价早于区间起点，损益含此前累积涨跌：${bases}。`
+  }
+  return text
+}
 const loading = ref(false)
 const hasLoaded = ref(false)
 
@@ -313,25 +409,20 @@ const performance = computed(() => {
 const marketStats = computed(() => snapshot.value?.markets || [])
 const recentTransactions = computed(() => snapshot.value?.recent_transactions || [])
 const accounts = computed(() => snapshot.value?.accounts || [])
-const warnings = computed(() => snapshot.value?.data_quality?.warnings || [])
+// 两个端点都会报缺价，同一批标的只留一条（去重规则见 dashboard/helpers.ts）
+const warnings = computed(() =>
+  mergeDashboardWarnings({
+    snapshotWarnings: snapshot.value?.data_quality?.warnings,
+    snapshotMissingKeys: snapshot.value?.prices?.missing_keys,
+    periodWarnings: periodPnl.value?.data_quality?.warnings,
+    periodUnpriced: periodPnl.value?.periods?.daily?.unpriced_positions
+  })
+)
 
-const TYPE_LABELS: Record<string, string> = {
-  BUY: '买入',
-  SELL: '卖出',
-  TRANSFER_OUT: '转出',
-  TRANSFER_IN: '转入'
-}
-const TYPE_TAG_KINDS: Record<string, 'success' | 'danger' | 'warning' | 'info'> = {
-  BUY: 'success',
-  SELL: 'danger',
-  TRANSFER_OUT: 'warning',
-  TRANSFER_IN: 'info'
-}
-const typeLabel = (type: string) => TYPE_LABELS[type] || type
-const typeTagKind = (type: string) => TYPE_TAG_KINDS[type] || 'info'
+const typeLabel = transactionTypeLabel
+const typeTagKind = transactionTypeTag
 
-const toneClass = (value: number | string | null | undefined) =>
-  Number(value) >= 0 ? 'summary-card-success' : 'summary-card-danger'
+const toneClass = cardTone
 
 const reconciliationLabel = (latest: ReconciliationBadge | null | undefined) => {
   if (!latest) return '未对账'
@@ -377,10 +468,14 @@ const marketChartOption = computed(() => ({
 async function loadData() {
   loading.value = true
   try {
-    const response = await api.getPortfolioSnapshot()
+    const [response, periodResponse] = await Promise.all([
+      api.getPortfolioSnapshot(),
+      api.getPeriodPnl().catch(() => null)
+    ])
     snapshot.value = response.data
+    periodPnl.value = periodResponse?.data ?? null
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '加载仪表盘失败'))
+    showApiError(error, '加载仪表盘失败')
   } finally {
     loading.value = false
     hasLoaded.value = true
@@ -397,63 +492,55 @@ onMounted(() => {
   width: 100%;
 }
 
+.period-pnl-row {
+  margin-top: 4px;
+}
+
+.period-card .card-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.period-unavailable {
+  color: var(--el-text-color-secondary);
+}
+
+.period-estimated-tag {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.period-help {
+  cursor: help;
+  color: var(--el-text-color-secondary);
+}
+
 .summary-card {
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   overflow: hidden;
-  background:
-    linear-gradient(135deg, var(--card-tint), transparent 62%), var(--app-surface) !important;
-  transition:
-    box-shadow var(--app-duration) var(--apple-ease),
-    transform var(--app-duration) var(--apple-ease);
-  animation: cardIn 0.5s var(--apple-spring) both;
-}
-
-.el-col:nth-child(1) .summary-card {
-  animation-delay: 0.02s;
-}
-
-.el-col:nth-child(2) .summary-card {
-  animation-delay: 0.08s;
-}
-
-.el-col:nth-child(3) .summary-card {
-  animation-delay: 0.14s;
-}
-
-.el-col:nth-child(4) .summary-card {
-  animation-delay: 0.2s;
-}
-
-@keyframes cardIn {
-  from {
-    opacity: 0;
-    transform: translateY(12px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 
 .summary-card-primary {
   --card-accent: var(--app-primary);
   --card-tint: var(--app-primary-soft);
-  --card-chip: var(--app-chip-gradient-primary);
-  --card-chip-shadow: rgba(79, 70, 229, 0.35);
 }
 
 .summary-card-success {
   --card-accent: var(--app-success);
   --card-tint: var(--app-success-soft);
-  --card-chip: var(--app-chip-gradient-success);
-  --card-chip-shadow: rgba(16, 185, 129, 0.32);
 }
 
 .summary-card-danger {
   --card-accent: var(--app-danger);
   --card-tint: var(--app-danger-soft);
-  --card-chip: var(--app-chip-gradient-danger);
-  --card-chip-shadow: rgba(244, 63, 94, 0.32);
+}
+
+.summary-card-neutral {
+  --card-accent: var(--app-border);
+  --card-tint: var(--app-surface-secondary);
+  --card-chip: var(--app-surface-secondary);
+  --card-chip-shadow: transparent;
 }
 
 .summary-card-skeleton {
@@ -461,37 +548,31 @@ onMounted(() => {
   --card-tint: var(--app-surface-secondary);
 }
 
-.summary-card:hover {
-  box-shadow: var(--app-shadow-md);
-  transform: translateY(-3px);
-}
-
 .card-content {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
 }
 
 .card-icon-wrap {
   display: grid;
   place-items: center;
-  width: 48px;
-  height: 48px;
-  color: #fff;
-  background: var(--card-chip, var(--app-surface-secondary));
-  border-radius: 14px;
-  box-shadow: 0 6px 14px -4px var(--card-chip-shadow, transparent);
+  width: 40px;
+  height: 40px;
+  color: var(--card-accent, var(--app-text-muted));
+  background: var(--card-tint, var(--app-surface-secondary));
+  border-radius: var(--app-radius-inner);
   flex-shrink: 0;
 }
 
 .card-icon {
-  font-size: 24px;
+  font-size: 20px;
 }
 
 .summary-icon-skeleton {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--app-radius-inner);
 }
 
 .summary-title-skeleton {
@@ -534,6 +615,17 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
+.txn-name {
+  color: var(--app-text);
+  line-height: 1.3;
+}
+
+.txn-sub {
+  color: var(--app-text-soft);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
 .quality-alert {
   margin-bottom: 12px;
 }
@@ -555,7 +647,7 @@ onMounted(() => {
   padding: 6px 12px;
   background: var(--app-surface-muted);
   border: 1px solid var(--app-border-soft);
-  border-radius: 8px;
+  border-radius: var(--app-radius-sm);
 }
 
 .account-name {

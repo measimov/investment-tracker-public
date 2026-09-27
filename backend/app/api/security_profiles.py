@@ -10,6 +10,7 @@
 （A股/美股/港股），其他市场显式 409。
 """
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -259,6 +260,23 @@ def get_latest_analysis(
     }
 
 
+def _latest_report_data_at(
+    digests: List[Dict[str, Any]], statement_progress: Optional[Dict[str, Any]]
+) -> Optional[str]:
+    """最新一次「报告类数据」落库时间（财报摘要生成 / 港股报表抽取），ISO 串。
+
+    详情页拿它与分析的 created_at 比较：分析早于它 = 分析没吃到最新的摘要/报表，
+    标「可能过期」。只看报告类产物，不看 fetched_at（行情/指标的例行同步不意味着
+    分析过期）。展示字段，零外呼。
+    """
+    candidates = [str(item["fetched_at"]) for item in digests if item.get("fetched_at")]
+    if statement_progress and statement_progress.get("last_extracted_at"):
+        candidates.append(str(statement_progress["last_extracted_at"]))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda text: datetime.fromisoformat(text))
+
+
 @router.get("/{market}/{symbol}/profile")
 def get_symbol_profile(
     market: str,
@@ -287,6 +305,9 @@ def get_symbol_profile(
     profile["statement_progress"] = (
         statement_progress(db, symbol, market) if market in STATEMENT_MARKETS else None
     )
+    profile["latest_data_at"] = _latest_report_data_at(
+        profile["report_digests"], profile["statement_progress"]
+    )
     profile["business"] = load_business_profile(db, symbol, market)
     # 按市场取报表行（美股=EDGAR 透视、港股=Yahoo 透视），与分析输入同口径
     statements = market_statements(market, profile["datasets"])
@@ -298,7 +319,10 @@ def get_symbol_profile(
     )
     # 准则取数走年度行专取口径（caps 窗口的季报会挤掉年度行，见
     # load_graham_inputs 注释），与分析输入一致
-    profile["graham_screen"] = compute_graham_for(db, symbol, market) or {
+    # 美股 ADS 换算比：当前用户的 ADS_RATIO 规则优先于 20-F 封面解析值
+    profile["graham_screen"] = compute_graham_for(
+        db, symbol, market, user_id=current_user.id
+    ) or {
         "status": "no_data"
     }
     return profile
@@ -470,7 +494,7 @@ def get_report_backfill_status(
 
 
 # --------------------------------------------------------------------------- #
-# 雪球观点摘要（数据源 = xueqiu-timeline-archiver 写入同库的关注用户发言）。
+# 雪球观点摘要（数据源 = 本仓雪球采集器写入的关注作者发言）。
 # 全局产物读取口径与 /analyses 一致：列表端点按持仓∪自选收敛，单标的端点
 # 按请求标的返回。全部新路由首段独立（opinion-*），不与 /{market}/{symbol}
 # 通配互吞。
@@ -612,7 +636,7 @@ def get_opinion_feed(
 
     截断按**逐作者**封顶（per_author），不做全局截断：全局截断会让高产作者
     挤掉其他人的整段历史——实测 30 天窗口一位作者 187 条、全局 200 条上限时
-    其余作者几乎整体消失（2026-09-03 反馈的"只有管我财"一半根因；另一半是
+    其余作者几乎整体消失（2026-09-03 反馈的"只有某作者"一半根因；另一半是
     前端整块堆叠的展示埋没）。每组返回 total 供前端展示"另有 N 条未显示"。
     作者按各自最新发言时间倒序排列。
     """

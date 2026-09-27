@@ -5,6 +5,7 @@ import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { formatDate, formatNumber } from '@/utils/helpers'
+import { CASH_EVENT_TYPE_LABELS, optionsOf } from '@/utils/labels'
 import {
   type AccountRow,
   type CashEventRow,
@@ -12,6 +13,8 @@ import {
   accountLabelIn,
   accountName,
   currencyOptions,
+  isAtListLimit,
+  LIST_LIMIT,
   makeRemover,
   makeSaver,
   today
@@ -27,18 +30,7 @@ const props = defineProps<{
 const isMobileView = useMediaQuery('(max-width: 640px)')
 const accountLabel = (id: unknown) => accountLabelIn(props.accounts, id)
 
-const cashTypeOptions = [
-  { label: '入金', value: 'DEPOSIT' },
-  { label: '出金', value: 'WITHDRAWAL' },
-  { label: '利息', value: 'INTEREST' },
-  { label: '费用', value: 'FEE' },
-  { label: '税费', value: 'TAX' },
-  { label: '转入', value: 'TRANSFER_IN' },
-  { label: '转出', value: 'TRANSFER_OUT' },
-  { label: '换汇转入', value: 'FX_IN' },
-  { label: '换汇转出', value: 'FX_OUT' },
-  { label: '其他', value: 'OTHER' }
-]
+const cashTypeOptions = optionsOf(CASH_EVENT_TYPE_LABELS)
 
 const cashFilters = reactive<{ accountId: number | null; eventType: string }>({
   accountId: null,
@@ -170,6 +162,15 @@ const amountClass = (row: CashEventRow) => ({
         </el-select>
       </el-form-item>
     </el-form>
+
+    <el-alert
+      v-if="isAtListLimit(cashEvents)"
+      type="info"
+      :closable="false"
+      show-icon
+      class="list-limit-alert"
+      :title="`仅显示最近 ${LIST_LIMIT} 条现金事件，筛选只在这些记录内进行`"
+    />
 
     <div v-if="!isMobileView" class="responsive-table desktop-data-table">
       <el-table :data="filteredCashEvents" v-loading="loading" stripe row-key="id">
@@ -323,3 +324,9 @@ const amountClass = (row: CashEventRow) => ({
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.list-limit-alert {
+  margin-bottom: 12px;
+}
+</style>

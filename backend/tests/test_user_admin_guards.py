@@ -326,3 +326,55 @@ def test_admin_guard_serializes_two_interleaved_transactions(admin_client_state)
         db.commit()
     finally:
         db.close()
+
+
+@pytest.mark.anyio
+async def test_user_admin_errors_are_chinese_and_email_is_clearable(admin_client_state):
+    """#219：用户管理与登录的错误文案直出到界面，必须是中文；邮箱非必填，显式传 null 即清空。"""
+    admin_id = admin_client_state
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        headers = await _login_admin(client)
+
+        created = await client.post(
+            "/api/users",
+            json={
+                "username": "guard-tmp-mail",
+                "email": "guard-tmp-mail@example.com",
+                "password": "x" * 12,
+            },
+            headers=headers,
+        )
+        assert created.status_code == 201
+        user_id = created.json()["id"]
+
+        duplicate = await client.post(
+            "/api/users",
+            json={"username": "guard-tmp-mail", "password": "x" * 12},
+            headers=headers,
+        )
+        assert duplicate.status_code == 400
+        assert duplicate.json()["detail"] == "用户名已被注册"
+
+        # 不传 email：保持原值
+        kept = await client.put(f"/api/users/{user_id}", json={"is_active": True}, headers=headers)
+        assert kept.json()["email"] == "guard-tmp-mail@example.com"
+
+        # 显式 null：清空
+        cleared = await client.put(f"/api/users/{user_id}", json={"email": None}, headers=headers)
+        assert cleared.status_code == 200
+        assert cleared.json()["email"] is None
+
+        missing = await client.put("/api/users/99999999", json={}, headers=headers)
+        assert missing.status_code == 404
+        assert missing.json()["detail"] == "用户不存在"
+
+        self_delete = await client.delete(f"/api/users/{admin_id}", headers=headers)
+        assert self_delete.status_code == 400
+        assert self_delete.json()["detail"] == "不能删除自己的账户"
+
+        bad_login = await client.post(
+            "/api/auth/login", json={"username": "admin", "password": "wrong-password"}
+        )
+        assert bad_login.status_code == 401
+        assert bad_login.json()["detail"] == "用户名或密码错误"

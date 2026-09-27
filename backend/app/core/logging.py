@@ -6,7 +6,11 @@ from logging.config import dictConfig
 LOGGER_NAMESPACE = "investment_tracker"
 
 
-def configure_logging(log_dir: str = "logs", level: str = "INFO") -> None:
+def configure_logging(
+    log_dir: str = "logs", level: str = "INFO", app_log_name: str = "app.log"
+) -> None:
+    """`app_log_name`：与 Web 进程共用日志目录的独立进程（xueqiu-collector）必须用
+    自己的文件——两个进程各持一个 RotatingFileHandler 写同一文件，轮转时互相截断。"""
     os.makedirs(log_dir, exist_ok=True)
 
     dictConfig(
@@ -24,7 +28,7 @@ def configure_logging(log_dir: str = "logs", level: str = "INFO") -> None:
                 },
                 "app_file": {
                     "class": "logging.handlers.RotatingFileHandler",
-                    "filename": os.path.join(log_dir, "app.log"),
+                    "filename": os.path.join(log_dir, app_log_name),
                     "maxBytes": 10_485_760,
                     "backupCount": 10,
                     "formatter": "standard",

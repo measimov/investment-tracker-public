@@ -1,12 +1,15 @@
 :root {
-  /* ── Modern fintech palette (slate neutrals + indigo/violet accent) ── */
-  --app-bg: #f3f5fa;
+  /* ── Flat, data-dense palette (slate neutrals + solid indigo accent) ──
+     无渐变、无玻璃、无装饰阴影：层次只靠底色差 + 1px 描边。
+     改这里的 hex 必须同步 styles/tokens.ts（画布侧无法读 CSS 变量）。 */
+  --app-bg: #f5f6f8;
   --app-surface: #ffffff;
-  --app-surface-muted: #fafbfe;
-  --app-surface-secondary: #f3f5fa;
-  --app-border: rgba(15, 23, 42, 0.08);
-  --app-border-soft: rgba(15, 23, 42, 0.05);
-  --app-separator: rgba(15, 23, 42, 0.07);
+  --app-surface-muted: #f8f9fb;
+  --app-surface-secondary: #f1f3f6;
+  --app-border: #dcdfe5;
+  --app-border-soft: #e5e7eb;
+  --app-separator: #eceef1;
+  --app-hover: #f1f3f6;
 
   --app-text: #0f172a;
   --app-text-muted: #475569;
@@ -15,30 +18,27 @@
 
   --app-primary: #4f46e5;
   --app-primary-strong: #4338ca;
+  --app-primary-pressed: #3730a3;
   --app-primary-soft: rgba(79, 70, 229, 0.08);
   --app-primary-tint: rgba(79, 70, 229, 0.14);
-  --app-primary-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-  --app-primary-shadow: rgba(79, 70, 229, 0.35);
+  --app-on-primary: #ffffff;
 
   --app-success: #059669;
-  --app-success-bright: #10b981;
-  --app-success-soft: rgba(16, 185, 129, 0.12);
+  --app-success-soft: rgba(5, 150, 105, 0.1);
 
   --app-danger: #e11d48;
-  --app-danger-bright: #f43f5e;
-  --app-danger-soft: rgba(244, 63, 94, 0.12);
+  --app-danger-soft: rgba(225, 29, 72, 0.1);
+  --app-danger-text: #9f1239;
+  --app-danger-border: #fecdd3;
+  --app-danger-surface: #fff1f2;
 
   --app-warning: #d97706;
-  --app-warning-bright: #f59e0b;
-  --app-warning-soft: rgba(245, 158, 11, 0.14);
+  --app-warning-soft: rgba(217, 119, 6, 0.12);
 
-  --app-info: #7c3aed;
+  --app-info: #0ea5e9;
 
-  /* ── Soft layered shadows ─────────────────────────────────────── */
-  --app-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
-  --app-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 16px -2px rgba(15, 23, 42, 0.06);
-  --app-shadow-md: 0 2px 4px rgba(15, 23, 42, 0.04), 0 12px 32px -6px rgba(15, 23, 42, 0.1);
-  --app-shadow-lg: 0 4px 8px rgba(15, 23, 42, 0.05), 0 24px 56px -12px rgba(15, 23, 42, 0.18);
+  /* ── Shadows：只留浮层（下拉/对话框/消息）的功能性阴影 ─────── */
+  --app-shadow-popover: 0 6px 16px rgba(15, 23, 42, 0.12);
 
   /* ── Geometry ───────────────────────────────────────────────── */
   /* 间距 scale：视图层禁止再发明新的间距值 */
@@ -47,19 +47,15 @@
   --app-space-md: 16px;
   --app-space-lg: 20px;
   --app-space-xl: 24px;
-  --app-chip-gradient-primary: linear-gradient(135deg, #6366f1, #8b5cf6);
-  --app-chip-gradient-success: linear-gradient(135deg, #10b981, #34d399);
-  --app-chip-gradient-danger: linear-gradient(135deg, #f43f5e, #fb7185);
   --app-header-height: 52px;
 
-  --app-radius: 16px;
-  --app-radius-inner: 10px;
-  --app-radius-sm: 8px;
+  --app-radius: 6px;
+  --app-radius-inner: 4px;
+  --app-radius-sm: 4px;
 
-  /* ── Motion ─────────────────────────────────────────────────── */
+  /* ── Motion：只做颜色过渡，不做位移/缩放 ───────────────────── */
   --apple-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
-  --apple-spring: cubic-bezier(0.22, 1, 0.36, 1);
-  --app-duration: 0.3s;
+  --app-duration: 0.15s;
 
   /* ── Element Plus palette sync ──────────────────────────────── */
   --el-color-primary: #4f46e5;
@@ -70,13 +66,14 @@
   --el-color-primary-light-9: #efeefd;
   --el-color-primary-dark-2: #4338ca;
 
-  --el-color-success: #10b981;
-  --el-color-success-light-3: #4fd1a5;
-  --el-color-success-light-5: #87e2c2;
-  --el-color-success-light-7: #bbf0dd;
-  --el-color-success-light-8: #d2f5e7;
-  --el-color-success-light-9: #e8faf2;
-  --el-color-success-dark-2: #059669;
+  /* success/danger 与 --app-success/--app-danger 同色：标签绿 = 盈亏文字绿 */
+  --el-color-success: #059669;
+  --el-color-success-light-3: #50b696;
+  --el-color-success-light-5: #82cab4;
+  --el-color-success-light-7: #b4e0d2;
+  --el-color-success-light-8: #cdeae1;
+  --el-color-success-light-9: #e6f4f0;
+  --el-color-success-dark-2: #047854;
 
   --el-color-warning: #f59e0b;
   --el-color-warning-light-3: #f8bc4e;
@@ -86,16 +83,20 @@
   --el-color-warning-light-9: #fef5e7;
   --el-color-warning-dark-2: #d97706;
 
-  --el-color-danger: #f43f5e;
-  --el-color-danger-light-3: #f7728a;
-  --el-color-danger-light-5: #fa9faf;
-  --el-color-danger-light-7: #fcc7cf;
-  --el-color-danger-light-8: #fdd9de;
-  --el-color-danger-light-9: #feecef;
-  --el-color-danger-dark-2: #e11d48;
+  --el-color-danger: #e11d48;
+  --el-color-danger-light-3: #ea617f;
+  --el-color-danger-light-5: #f08ea4;
+  --el-color-danger-light-7: #f6bbc8;
+  --el-color-danger-light-8: #f9d2da;
+  --el-color-danger-light-9: #fce8ed;
+  --el-color-danger-dark-2: #b4173a;
 
-  --el-border-radius-base: 8px;
-  --el-border-radius-small: 6px;
+  --el-border-color: var(--app-border);
+  --el-border-color-light: var(--app-border-soft);
+  --el-border-color-lighter: var(--app-separator);
+  --el-border-radius-base: 4px;
+  --el-border-radius-small: 3px;
+  --el-border-radius-round: 4px;
 }
 
 /* ── Reset & Base ─────────────────────────────────────────────── */
@@ -116,18 +117,13 @@ body {
 
 body {
   margin: 0;
-  background:
-    radial-gradient(960px 480px at 88% -12%, rgba(99, 102, 241, 0.09), transparent 60%),
-    radial-gradient(760px 420px at -12% 22%, rgba(16, 185, 129, 0.06), transparent 55%),
-    radial-gradient(680px 500px at 110% 78%, rgba(139, 92, 246, 0.06), transparent 55%),
-    var(--app-bg);
-  background-attachment: fixed;
+  background: var(--app-bg);
   color: var(--app-text);
   font-family:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Inter', 'Segoe UI', Roboto,
     'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
-  font-size: 15px;
-  line-height: 1.47;
+  font-size: 14px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -150,7 +146,7 @@ body {
 
 ::-webkit-scrollbar-thumb {
   background: rgba(15, 23, 42, 0.16);
-  border-radius: 100px;
+  border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -161,115 +157,70 @@ body {
   background-clip: padding-box;
 }
 
-/* ── Cards — hairline border, soft elevation, hover lift ──────── */
+/* ── Cards — flat surface + 1px border, no elevation ─────────── */
 .el-card {
+  --el-card-border-radius: var(--app-radius);
   border: 1px solid var(--app-border-soft);
   border-radius: var(--app-radius);
-  box-shadow: var(--app-shadow);
+  box-shadow: none;
   background: var(--app-surface);
-  transition:
-    box-shadow var(--app-duration) var(--apple-ease),
-    transform var(--app-duration) var(--apple-ease);
 }
 
-.el-card:hover {
-  box-shadow: var(--app-shadow-md);
+/* 组件 CSS 懒加载可能排在本文件之后，双写 .el-card 提权压过它的阴影 */
+.el-card.el-card.is-always-shadow,
+.el-card.el-card.is-hover-shadow:hover {
+  box-shadow: none;
 }
 
 .el-card__header {
-  padding: 18px 24px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--app-separator);
   font-weight: 600;
-  font-size: 15px;
+  font-size: 14px;
   color: var(--app-text);
   background: none;
 }
 
 .el-card__body {
-  padding: 24px;
+  padding: 16px;
 }
 
-/* ── Buttons — gradient primary, tactile press ────────────────── */
+/* ── Buttons — solid fills, colour-only hover (no lift/press/glow) ─
+   Element Plus 的按钮样式按组件懒加载，可能排在本文件之后；覆写一律
+   走组件变量 + 双类选择器，不直接写 background 以免被后加载的同权重规则盖掉。 */
 .el-button {
   border-radius: var(--app-radius-inner);
   font-weight: 500;
-  padding: 8px 16px;
+  padding: 7px 14px;
   transition:
-    filter 0.2s var(--apple-ease),
-    transform 0.15s var(--apple-ease),
     background-color var(--app-duration) var(--apple-ease),
     color var(--app-duration) var(--apple-ease),
-    border-color var(--app-duration) var(--apple-ease),
-    box-shadow var(--app-duration) var(--apple-ease);
+    border-color var(--app-duration) var(--apple-ease);
 }
 
-.el-button:active {
-  transform: scale(0.97);
+.el-button.el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-hover-bg-color: var(--app-primary-strong);
+  --el-button-hover-border-color: var(--app-primary-strong);
+  --el-button-active-bg-color: var(--app-primary-pressed);
+  --el-button-active-border-color: var(--app-primary-pressed);
 }
 
-.el-button--primary {
-  background: var(--app-primary-gradient);
-  border: none;
-  box-shadow: 0 4px 12px -4px var(--app-primary-shadow);
+.el-button.el-button--success:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-hover-bg-color: var(--el-color-success-dark-2);
+  --el-button-hover-border-color: var(--el-color-success-dark-2);
 }
 
-.el-button--primary:hover,
-.el-button--primary:focus {
-  background: var(--app-primary-gradient);
-  border: none;
-  filter: brightness(1.07);
-  box-shadow: 0 8px 20px -6px var(--app-primary-shadow);
-  transform: translateY(-1px);
+.el-button.el-button--danger:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-hover-bg-color: var(--el-color-danger-dark-2);
+  --el-button-hover-border-color: var(--el-color-danger-dark-2);
 }
 
-.el-button--primary.is-disabled,
-.el-button--primary.is-loading {
-  background: var(--app-primary-gradient);
-  border: none;
-  opacity: 0.6;
-  transform: none;
-  box-shadow: none;
+.el-button.el-button--warning:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-hover-bg-color: var(--el-color-warning-dark-2);
+  --el-button-hover-border-color: var(--el-color-warning-dark-2);
 }
 
-.el-button--success {
-  background: var(--el-color-success);
-  border-color: var(--el-color-success);
-}
-
-.el-button--success:hover,
-.el-button--success:focus {
-  background: var(--app-success-bright);
-  border-color: var(--app-success-bright);
-  filter: brightness(1.05);
-}
-
-.el-button--danger {
-  background: var(--el-color-danger);
-  border-color: var(--el-color-danger);
-}
-
-.el-button--danger:hover,
-.el-button--danger:focus {
-  background: var(--app-danger-bright);
-  border-color: var(--app-danger-bright);
-  filter: brightness(1.05);
-}
-
-.el-button--warning {
-  background: var(--el-color-warning);
-  border-color: var(--el-color-warning);
-}
-
-.el-button--warning:hover,
-.el-button--warning:focus {
-  background: var(--app-warning-bright);
-  border-color: var(--app-warning-bright);
-  filter: brightness(1.05);
-}
-
-/* Text & link button variants — transparent bg, readable colored text.
-   Without this, the gradient/solid fills above bleed through
-   background-image while the text keeps the same hue. */
+/* Text & link button variants — transparent bg, readable colored text. */
 .el-button.is-text,
 .el-button.is-link {
   background: none;
@@ -281,11 +232,9 @@ body {
 .el-button.is-text:focus,
 .el-button.is-link:hover,
 .el-button.is-link:focus {
-  background-color: var(--app-surface-muted);
+  background-color: var(--app-hover);
   border-color: transparent;
   box-shadow: none;
-  filter: none;
-  transform: none;
 }
 
 .el-button--primary.is-text:hover,
@@ -320,7 +269,7 @@ body {
   color: var(--app-warning);
 }
 
-/* ── Form Elements — soft inset fields, indigo focus ring ─────── */
+/* ── Form Elements — 1px hairline fields, 1px indigo focus ────── */
 .el-input__wrapper,
 .el-select__wrapper,
 .el-textarea__inner,
@@ -334,17 +283,15 @@ body {
 .el-input__wrapper:hover,
 .el-select__wrapper:hover,
 .el-textarea__inner:hover {
-  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.16) inset;
+  box-shadow: 0 0 0 1px var(--app-text-tertiary) inset;
 }
 
 .el-input__wrapper.is-focus,
 .el-select__wrapper.is-focus {
-  box-shadow:
-    0 0 0 3px var(--app-primary-tint),
-    0 0 0 1px var(--app-primary) inset !important;
+  box-shadow: 0 0 0 1px var(--app-primary) inset !important;
 }
 
-/* ── Tables — quiet headers, tabular numbers ──────────────────── */
+/* ── Tables — dense rows (~36px), grey header, tabular numbers ── */
 /* 数值单元格禁换行：金额/数量折行是最刺眼的表格破损。只作用于
    右对齐（数值）列——长文本列保持可换行/由 show-overflow-tooltip
    截断，账户名、导入结果等信息不因全局 nowrap 被裁剪（评审实测）。 */
@@ -354,44 +301,56 @@ body {
 }
 
 .el-table {
-  --el-table-header-bg-color: var(--app-surface-muted);
+  --el-table-header-bg-color: var(--app-surface-secondary);
   --el-table-header-text-color: var(--app-text-muted);
   --el-table-border-color: var(--app-separator);
-  --el-table-row-hover-bg-color: var(--app-primary-soft);
+  --el-table-row-hover-bg-color: var(--app-hover);
   border-radius: var(--app-radius-inner);
   overflow: hidden;
-  font-size: 14px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
 .el-table th.el-table__cell {
   font-weight: 600;
   font-size: 12px;
-  letter-spacing: 0.02em;
   color: var(--app-text-muted);
 }
 
+/* 13px × 1.5 行高 ≈ 20px + 上下 8px ≈ 36px 行高 */
 .el-table .el-table__cell {
-  padding: 12px 0;
-  transition: background-color var(--app-duration) var(--apple-ease);
+  padding: 8px 0;
 }
 
-.el-table tr {
-  transition: background-color var(--app-duration) var(--apple-ease);
+.el-table th.el-table__cell {
+  padding: 7px 0;
+}
+
+.el-table .cell {
+  padding: 0 10px;
+  line-height: 20px;
+}
+
+.el-table--small .el-table__cell {
+  padding: 5px 0;
 }
 
 .el-table__row:hover td.el-table__cell {
   background-color: var(--el-table-row-hover-bg-color) !important;
 }
 
-/* ── Tags — capsule with soft fills ───────────────────────────── */
+/* ── Tags — small squared labels; default (primary) is neutral ──
+   Element Plus 默认 type 就是 primary，未指定 type 的市场/来源标签
+   占绝大多数，因此 primary 走中性灰；语义色（success/warning/danger/
+   info）保持不变。 */
 .el-tag {
-  border-radius: 980px;
+  border-radius: var(--el-border-radius-small);
   font-weight: 500;
   font-size: 12px;
-  padding: 2px 10px;
+  padding: 1px 6px;
   height: auto;
-  border: none;
+  line-height: 18px;
+  border: 1px solid transparent;
 }
 
 .el-tag--success {
@@ -410,41 +369,45 @@ body {
 }
 
 .el-tag--info {
-  background-color: rgba(15, 23, 42, 0.06);
-  color: var(--app-text-muted);
+  background-color: var(--app-surface-secondary);
+  color: var(--app-text-soft);
 }
 
 .el-tag--primary {
-  background-color: var(--app-primary-soft);
-  color: var(--app-primary);
+  background-color: var(--app-surface-secondary);
+  color: var(--app-text-muted);
 }
 
-/* ── Dialogs — floating sheets ────────────────────────────────── */
+.el-tag.el-tag--plain {
+  background-color: var(--app-surface);
+  border-color: var(--app-border);
+}
+
+/* ── Dialogs — flat sheet; the only elevation is the overlay shadow ── */
 .el-dialog {
-  border-radius: 18px;
-  box-shadow: var(--app-shadow-lg);
+  border-radius: var(--app-radius);
+  box-shadow: var(--app-shadow-popover);
   border: 1px solid var(--app-border-soft);
   overflow: hidden;
 }
 
 .el-dialog__header {
-  padding: 20px 24px 14px;
+  padding: 14px 20px 12px;
   margin-right: 0;
   border-bottom: 1px solid var(--app-separator);
 }
 
 .el-dialog__title {
   font-weight: 600;
-  font-size: 17px;
-  letter-spacing: -0.02em;
+  font-size: 16px;
 }
 
 .el-dialog__body {
-  padding: 24px;
+  padding: 20px;
 }
 
 .el-dialog__footer {
-  padding: 14px 24px 20px;
+  padding: 12px 20px;
   border-top: 1px solid var(--app-separator);
   background: var(--app-surface-muted);
 }
@@ -488,7 +451,6 @@ body {
   background: var(--app-surface);
   border: 1px solid var(--app-border-soft);
   border-radius: var(--app-radius);
-  box-shadow: var(--app-shadow-sm);
 }
 
 .filter-form .el-form-item {
@@ -594,8 +556,7 @@ body {
     padding: 14px;
     background: var(--app-surface);
     border: 1px solid var(--app-border-soft);
-    border-radius: var(--app-radius-inner);
-    box-shadow: var(--app-shadow-sm);
+    border-radius: var(--app-radius);
   }
 
   .mobile-card-head {
@@ -801,6 +762,47 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── LLM Markdown 正文（renderMarkdown 输出）──────────────────────
+   Reports / SecurityDetail / 雪球观点共用；此前只在 Reports 的 scoped 块里，
+   其余两处的表格没有边框、宽表会把页面撑宽。宽表在自身容器内横向滚动。 */
+.markdown-body h2 {
+  margin: 18px 0 10px;
+  font-size: 18px;
+  border-bottom: 1px solid var(--app-border-soft);
+  padding-bottom: 6px;
+}
+
+.markdown-body h3 {
+  margin: 14px 0 8px;
+  font-size: 15px;
+}
+
+.markdown-body p,
+.markdown-body li {
+  line-height: 1.7;
+  font-size: 14px;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--app-border-soft);
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.markdown-body th {
+  background: var(--app-surface-secondary);
+}
+
 /* ── Pagination ───────────────────────────────────────────────── */
 .el-pagination {
   --el-pagination-button-bg-color: var(--app-surface);
@@ -812,14 +814,14 @@ body {
 }
 
 .el-pagination .el-pager li.is-active {
-  background: var(--app-primary-gradient);
-  box-shadow: 0 2px 8px -2px var(--app-primary-shadow);
+  background: var(--app-primary);
+  color: var(--app-on-primary);
 }
 
 /* ── Dropdown Menu ────────────────────────────────────────────── */
 .el-dropdown-menu {
   border-radius: var(--app-radius);
-  box-shadow: var(--app-shadow-lg);
+  box-shadow: var(--app-shadow-popover);
   border: 1px solid var(--app-border);
   padding: 4px;
 }
@@ -831,8 +833,8 @@ body {
 
 /* ── Message / Notification ───────────────────────────────────── */
 .el-message {
-  border-radius: var(--app-radius-inner);
-  box-shadow: var(--app-shadow-lg);
+  border-radius: var(--app-radius);
+  box-shadow: var(--app-shadow-popover);
   border: 1px solid var(--app-border-soft);
 }
 
@@ -850,11 +852,11 @@ body {
 /* ── Mobile & Tablet ──────────────────────────────────────────── */
 @media (max-width: 900px) {
   .el-card__header {
-    padding: 16px 20px;
+    padding: 12px 16px;
   }
 
   .el-card__body {
-    padding: 20px;
+    padding: 16px;
   }
 
   .page-header,
@@ -956,16 +958,12 @@ body {
     font-size: 14px;
   }
 
-  .el-card {
-    border-radius: 14px;
-  }
-
   .el-card__header {
-    padding: 14px 16px;
+    padding: 12px;
   }
 
   .el-card__body {
-    padding: 16px;
+    padding: 12px;
   }
 
   /* Prevent iOS auto-zoom on focus (needs >= 16px input text) */
@@ -1006,7 +1004,7 @@ body {
     max-width: 100%;
     max-height: 92vh;
     margin: 0 !important;
-    border-radius: 20px 20px 0 0;
+    border-radius: var(--app-radius) var(--app-radius) 0 0;
     display: flex;
     flex-direction: column;
   }

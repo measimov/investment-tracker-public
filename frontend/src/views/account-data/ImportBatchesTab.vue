@@ -2,7 +2,13 @@
 import { ref } from 'vue'
 import api from '@/api'
 import { formatDateTime } from '@/utils/helpers'
-import { type AccountRow, type ImportBatchRow, accountLabelIn } from './shared'
+import {
+  type AccountRow,
+  type ImportBatchRow,
+  LIST_LIMIT,
+  accountLabelIn,
+  isAtListLimit
+} from './shared'
 
 const props = defineProps<{
   importBatches: ImportBatchRow[]
@@ -60,9 +66,18 @@ const batchStatusTag = (status: string | undefined) => {
     <div class="section-toolbar">
       <div>
         <h2>导入批次</h2>
-        <p>这里是只读来源记录；成交文件仍从“交易记录”页面导入。</p>
+        <p>每次券商导入留下的来源记录（只读）；对账单从「交易记录」页的「导入」上传。</p>
       </div>
     </div>
+
+    <el-alert
+      v-if="isAtListLimit(importBatches)"
+      type="info"
+      :closable="false"
+      show-icon
+      class="list-limit-alert"
+      :title="`仅显示最近 ${LIST_LIMIT} 个导入批次`"
+    />
 
     <div class="responsive-table">
       <el-table :data="importBatches" v-loading="loading" stripe row-key="id">
@@ -95,11 +110,23 @@ const batchStatusTag = (status: string | undefined) => {
             {{ row.skipped_count ?? row.rows_skipped ?? 0 }} 未入账
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="110">
           <template #default="{ row }">
-            <el-tag :type="batchStatusTag(row.status)" size="small">
-              {{ batchStatusLabel(row.status) }}
-            </el-tag>
+            <!-- 部分完成/失败的原因在 error_message：悬停即可看到，不必打开抽屉 -->
+            <el-tooltip
+              :disabled="!row.error_message"
+              :content="row.error_message || ''"
+              placement="top"
+              popper-class="batch-status-tooltip"
+            >
+              <el-tag
+                :type="batchStatusTag(row.status)"
+                size="small"
+                :class="{ 'status-with-reason': row.error_message }"
+              >
+                {{ batchStatusLabel(row.status) }}
+              </el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
@@ -153,11 +180,11 @@ const batchStatusTag = (status: string | undefined) => {
         <el-descriptions-item label="未入账">{{
           selectedBatch.skipped_count ?? 0
         }}</el-descriptions-item>
-        <el-descriptions-item label="错误">{{
+        <el-descriptions-item label="待处理行">{{
           selectedBatch.error_count ?? 0
         }}</el-descriptions-item>
-        <el-descriptions-item label="错误信息">{{
-          selectedBatch.error_message || '-'
+        <el-descriptions-item label="状态说明">{{
+          selectedBatch.error_message || '—'
         }}</el-descriptions-item>
       </el-descriptions>
     </el-drawer>
@@ -167,5 +194,22 @@ const batchStatusTag = (status: string | undefined) => {
 <style scoped>
 .hash-value {
   word-break: break-all;
+}
+
+.list-limit-alert {
+  margin-bottom: 12px;
+}
+
+.status-with-reason {
+  cursor: help;
+  text-decoration: underline dotted;
+}
+</style>
+
+<style>
+/* tooltip 挂在 body 上，scoped 样式够不到；长原因按视口宽度折行 */
+.batch-status-tooltip {
+  max-width: min(420px, 90vw);
+  line-height: 1.5;
 }
 </style>

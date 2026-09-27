@@ -22,6 +22,19 @@ export interface PollJobOptions {
   timeoutMessage?: string
   /** Fallback error message when the job fails */
   failureMessage?: string
+  /**
+   * 连续几次**取状态请求本身**失败（断网、部署窗口的 502/503/504）才放弃。
+   * 任务在后台照跑；此前一次抖动就让数小时批量任务的进度卡报错停更（#219）。
+   */
+  maxConsecutiveFetchErrors?: number
+}
+
+/** 取状态请求的失败是否值得重试：无响应/超时/5xx 是暂态，4xx（任务不存在、无权限）不是 */
+function isTransientFetchError(error: unknown): boolean {
+  const err = error as { response?: { status?: number }; code?: string } | null
+  const status = err?.response?.status
+  if (status === undefined) return true
+  return status >= 500
 }
 
 /**
@@ -37,13 +50,27 @@ export async function pollJobUntilDone(
     isCancelled = () => false,
     onUpdate = null,
     timeoutMessage = '任务仍在后台运行，请稍后查看',
-    failureMessage = '后台任务失败'
+    failureMessage = '后台任务失败',
+    maxConsecutiveFetchErrors = 5
   } = options
+
+  let consecutiveFetchErrors = 0
 
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (isCancelled()) return null
 
-    const response = await fetchJob()
+    let response: { data: BackgroundJob }
+    try {
+      response = await fetchJob()
+      consecutiveFetchErrors = 0
+    } catch (error) {
+      consecutiveFetchErrors += 1
+      if (!isTransientFetchError(error) || consecutiveFetchErrors >= maxConsecutiveFetchErrors) {
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      continue
+    }
     const job = response.data
     onUpdate?.(job)
 

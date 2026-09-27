@@ -2,14 +2,18 @@
  * 价格 what-if feature（issue #140：五件事之"价格输入弹窗"）：
  * 持仓价格行装载、当前价映射与批量保存。计算编排留在页面层
  * （calculate 同时驱动摘要与 analytics 两个 feature）。
+ *
+ * 行按 `symbol:market` 合并各账户持仓、价格映射的键也是 `symbol:market`
+ * （#218：此前按裸代码写键，多账户行/同码跨市场互相覆盖）。纯函数在 priceRows.ts。
  */
 
 import { reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useHoldingsStore } from '@/stores/holdings'
 import { getApiErrorMessage } from '@/utils/apiErrors'
-import { toNumber } from '@/utils/helpers'
 import type { PriceInputRow } from './types'
+import { showApiError } from '@/utils/showApiError'
+import { collectPrices, fillMissingPrices, mergePriceRows } from './priceRows'
 
 export function usePriceInputs() {
   const holdingsStore = useHoldingsStore()
@@ -27,29 +31,20 @@ export function usePriceInputs() {
           force: options?.force === true
         }
       )
-      state.rows = holdings.map((h) => ({
-        symbol: h.symbol,
-        name: h.name,
-        market: h.market,
-        avg_cost: toNumber(h.avg_cost),
-        // Use the database price if available; missing prices should stay empty.
-        current_price:
-          h.current_price && toNumber(h.current_price) > 0 ? toNumber(h.current_price) : null,
-        quantity: toNumber(h.quantity)
-      }))
+      state.rows = mergePriceRows(holdings)
     } catch (error) {
-      ElMessage.error(getApiErrorMessage(error, '加载持仓失败'))
+      showApiError(error, '加载持仓失败')
     }
   }
 
+  /** 空价行用服务端估值价（含历史收盘兜底）补齐，再打开弹窗 */
+  function openDialog(serverPrices: Record<string, number>) {
+    state.rows = fillMissingPrices(state.rows, serverPrices)
+    state.dialogVisible = true
+  }
+
   function getCurrentPrices() {
-    const prices: Record<string, number> = {}
-    state.rows.forEach((item) => {
-      if (item.current_price && item.current_price > 0) {
-        prices[item.symbol] = item.current_price
-      }
-    })
-    return prices
+    return collectPrices(state.rows)
   }
 
   async function savePrices() {
@@ -87,7 +82,7 @@ export function usePriceInputs() {
     }
   }
 
-  return reactive({ state, loadHoldingsForPrice, getCurrentPrices, savePrices })
+  return reactive({ state, loadHoldingsForPrice, openDialog, getCurrentPrices, savePrices })
 }
 
 export type PriceInputsFeature = ReturnType<typeof usePriceInputs>

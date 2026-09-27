@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict
 from decimal import Decimal
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 
@@ -24,6 +24,12 @@ class HoldingResponse(BaseModel):
     currency: str = Field(..., description="Currency")
     current_price: Optional[Decimal] = Field(None, description="Current stock price")
     price_updated_at: Optional[datetime] = Field(None, description="Price update timestamp")
+    price_as_of: Optional[date] = Field(
+        None, description="行情所属交易日（报价源给出）；null = 未知或手工价"
+    )
+    price_source: Optional[str] = Field(
+        None, description="报价来源（tencent-quote / tushare-daily / manual …）；null = 未知"
+    )
     updated_at: datetime
 
 

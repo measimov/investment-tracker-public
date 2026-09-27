@@ -45,7 +45,12 @@
               :key="report.id"
               class="report-item"
               :class="{ active: report.id === selectedId }"
+              role="button"
+              tabindex="0"
+              :aria-current="report.id === selectedId ? 'true' : undefined"
               @click="selectReport(report.id)"
+              @keydown.enter.prevent="selectReport(report.id)"
+              @keydown.space.prevent="selectReport(report.id)"
             >
               <div class="report-item-title">{{ report.title }}</div>
               <div class="report-item-meta">
@@ -66,7 +71,7 @@
             <template v-if="detail">
               <div class="detail-toolbar">
                 <span class="detail-meta">
-                  {{ detail.model }}
+                  生成于 {{ formatDateTime(detail.created_at) }} · {{ detail.model }}
                   <template v-if="detail.total_tokens">
                     · {{ detail.total_tokens }} tokens
                   </template>
@@ -86,12 +91,15 @@
                   :class="message.role"
                 >
                   <div class="chat-role">{{ message.role === 'user' ? '我' : 'AI' }}</div>
-                  <div
-                    v-if="message.role === 'assistant'"
-                    class="chat-bubble markdown-body"
-                    v-html="renderMarkdown(message.content)"
-                  />
-                  <div v-else class="chat-bubble">{{ message.content }}</div>
+                  <div class="chat-body">
+                    <div
+                      v-if="message.role === 'assistant'"
+                      class="chat-bubble markdown-body"
+                      v-html="renderMarkdown(message.content)"
+                    />
+                    <div v-else class="chat-bubble">{{ message.content }}</div>
+                    <div class="chat-time">{{ formatDateTime(message.created_at) }}</div>
+                  </div>
                 </div>
               </div>
               <div class="chat-input">
@@ -125,11 +133,11 @@
 </template>
 
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MagicStick } from '@element-plus/icons-vue'
 import api from '@/api'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { formatDateTime } from '@/utils/helpers'
 import { renderMarkdown } from '@/utils/markdown'
 import { pollJobUntilDone } from '@/utils/polling'
@@ -162,7 +170,7 @@ async function loadReports({ selectFirst = false } = {}) {
     reports.value = response.data
     firstId = reports.value[0]?.id ?? null
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '报告列表加载失败'))
+    showApiError(error, '报告列表加载失败')
   } finally {
     // 列表到手即解除蒙层：详情加载（可能较慢）不应挡住列表点击
     loadingList.value = false
@@ -183,7 +191,7 @@ async function selectReport(id: number) {
     }
   } catch (error) {
     if (selectedId.value === id) {
-      ElMessage.error(getApiErrorMessage(error, '报告加载失败'))
+      showApiError(error, '报告加载失败')
     }
   } finally {
     if (selectedId.value === id) {
@@ -211,7 +219,7 @@ async function generateReport() {
       await selectReport(reportId)
     }
   } catch (error) {
-    if (!isUnmounted()) ElMessage.error(getApiErrorMessage(error, '报告生成失败'))
+    if (!isUnmounted()) showApiError(error, '报告生成失败')
   } finally {
     if (!isUnmounted()) generating.value = false
   }
@@ -237,7 +245,7 @@ async function ask() {
       // 已切到其他报告：清掉 A 的草稿，避免残留在 B 的输入框被误提交
       question.value = ''
     } else {
-      ElMessage.error(getApiErrorMessage(error, '追问失败'))
+      showApiError(error, '追问失败')
     }
   } finally {
     asking.value = false
@@ -259,7 +267,7 @@ async function removeReport(id: number) {
     selectedId.value = null
     await loadReports({ selectFirst: true })
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '删除失败'))
+    showApiError(error, '删除失败')
   }
 }
 
@@ -281,7 +289,7 @@ async function saveSchedule(cadence: string) {
         : `已设置${cadence === 'weekly' ? '每周' : '每月'}自动生成`
     )
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '调度设置失败'))
+    showApiError(error, '调度设置失败')
     await loadSchedule()
   }
 }
@@ -320,8 +328,8 @@ onMounted(async () => {
 
 .report-item {
   padding: 10px 12px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius-sm);
   cursor: pointer;
   transition: border-color 0.2s;
 }
@@ -364,39 +372,6 @@ onMounted(async () => {
   font-size: 12px;
 }
 
-.markdown-body :deep(h2) {
-  margin: 18px 0 10px;
-  font-size: 18px;
-  border-bottom: 1px solid var(--el-border-color-light);
-  padding-bottom: 6px;
-}
-
-.markdown-body :deep(h3) {
-  margin: 14px 0 8px;
-  font-size: 15px;
-}
-
-.markdown-body :deep(p),
-.markdown-body :deep(li) {
-  line-height: 1.7;
-  font-size: 14px;
-}
-
-.markdown-body :deep(table) {
-  border-collapse: collapse;
-  margin: 10px 0;
-  max-width: 100%;
-  display: block;
-  overflow-x: auto;
-}
-
-.markdown-body :deep(th),
-.markdown-body :deep(td) {
-  border: 1px solid var(--el-border-color-light);
-  padding: 6px 10px;
-  font-size: 13px;
-}
-
 .chat-messages {
   display: flex;
   flex-direction: column;
@@ -430,11 +405,30 @@ onMounted(async () => {
   background: var(--el-color-primary-light-8);
 }
 
-.chat-bubble {
+.chat-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   max-width: 85%;
+  min-width: 0;
+}
+
+.chat-message.user .chat-body {
+  align-items: flex-end;
+}
+
+.chat-time {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--app-text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-bubble {
+  max-width: 100%;
   padding: 8px 12px;
-  border-radius: 10px;
-  background: var(--el-fill-color-light);
+  border-radius: var(--app-radius);
+  background: var(--app-surface-secondary);
   font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -467,8 +461,11 @@ onMounted(async () => {
 }
 
 @media (max-width: 900px) {
+  /* 手机端列表在详情之上：限高内部滚动，报告多了也不会把详情推到几屏之外 */
   .report-list {
     margin-bottom: 16px;
+    max-height: 240px;
+    overflow-y: auto;
   }
 }
 </style>

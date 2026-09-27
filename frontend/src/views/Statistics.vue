@@ -76,6 +76,16 @@
         class="summary-warning"
       />
 
+      <!-- 手工价试算中：摘要与 TTWR 曲线都按弹窗里的价格计算，直到退出 -->
+      <div v-if="whatIfActive" class="what-if-bar" data-testid="what-if-bar">
+        <el-tag type="warning" effect="dark" size="small">手工价试算中</el-tag>
+        <span class="what-if-text">
+          当前业绩、TTWR 与风险指标按「输入价格」里的价格估值（{{ whatIfCount }}
+          个标的），不是服务端最新价；切换区间/基准仍沿用这组价格。
+        </span>
+        <el-button size="small" :loading="loading" @click="exitWhatIf">退出试算</el-button>
+      </div>
+
       <EquityReturnCard :account-return="summary.state.accountReturn" />
 
       <AnalyticsCard :analytics="analytics" />
@@ -84,10 +94,9 @@
         :current-performance="summary.state.currentPerformance"
         :realized-pn-l="summary.state.realizedPnL"
         :total-realized-return="summary.state.totalRealizedReturn"
-        :summary-stats="dist.state.summaryStats"
         :refreshing="refreshing"
         @refresh-prices="refreshPricesAndCalculate"
-        @open-price-dialog="prices.state.dialogVisible = true"
+        @open-price-dialog="prices.openDialog(summary.pricing.serverPrices)"
       />
 
       <DividendSummaryCard :dividend-summary="summary.state.dividendSummary" />
@@ -116,6 +125,7 @@ import { useAnalytics } from './statistics/useAnalytics'
 import { useDistributionStats } from './statistics/useDistributionStats'
 import { usePerformanceSummary } from './statistics/usePerformanceSummary'
 import { usePriceInputs } from './statistics/usePriceInputs'
+import { buildSummaryWarnings } from './statistics/warnings'
 
 // 壳层职责（issue #140）：骨架屏 + 顶层警示 + 五个 feature 的编排。
 // script 里原先的五件事（业绩摘要 / analytics 曲线+基准+历史同步 /
@@ -142,6 +152,7 @@ const missingRateCurrencies = computed(() => {
     dist.state.summaryStats?.missing_rate_currencies,
     summary.state.dividendSummary?.missing_rate_currencies,
     summary.state.currentPerformance?.missing_rate_currencies,
+    summary.state.realizedPnL?.missing_rate_currencies,
     ...(dist.state.marketStats || []).map((row) => row?.missing_rate_currencies)
   ]
   for (const list of sources) {
@@ -150,21 +161,19 @@ const missingRateCurrencies = computed(() => {
   return Array.from(collected).sort()
 })
 
-const summaryWarnings = computed(() => {
-  const warnings = [...(summary.state.realizedPnL.data_quality?.warnings || [])]
-  const currencies = missingRateCurrencies.value
-  // realized 那条已含币种名，避免同一批币种重复提示两遍
-  const alreadyMentioned = warnings.some((text) =>
-    currencies.every((currency) => text.includes(currency))
-  )
-  if (currencies.length && !alreadyMentioned) {
-    warnings.push(
-      `缺少 ${currencies.join('/')} 对 CNY 的汇率，这些币种的金额未计入 CNY 汇总（不会按原值混入）。` +
-        '请在「汇率管理」补录后重新查看。'
-    )
-  }
-  return warnings
-})
+// #218：持仓表现的数据质量与服务端定价的陈价/缺价也要进顶部警告（仪表盘对
+// 同一份数据会报警，统计页此前只取了已实现那一块）；合成与去重在 warnings.ts
+const summaryWarnings = computed(() =>
+  buildSummaryWarnings({
+    realizedWarnings: summary.state.realizedPnL.data_quality?.warnings,
+    currentWarnings: summary.state.currentPerformance.data_quality?.warnings,
+    missingRateCurrencies: missingRateCurrencies.value,
+    priceFreshness: summary.pricing.priceFreshness
+  })
+)
+
+const whatIfActive = computed(() => analytics.state.whatIfPrices !== null)
+const whatIfCount = computed(() => Object.keys(analytics.state.whatIfPrices || {}).length)
 
 async function loadAllData() {
   initialLoading.value = true
@@ -188,19 +197,35 @@ async function loadAllData() {
   }
 }
 
-async function calculatePerformance(showSuccess = true) {
+async function calculatePerformance() {
   loading.value = true
   try {
-    // Dialog what-if: value using the (possibly unsaved) dialog prices.
+    // Dialog what-if: value using the (possibly unsaved) dialog prices. 价格存进
+    // analytics 状态，之后切区间/基准的重算都沿用，直到「退出试算」
     const currentPrices = prices.getCurrentPrices()
-    await summary.load(currentPrices)
-    await analytics.load({ prices: currentPrices })
+    analytics.state.whatIfPrices = currentPrices
+    await Promise.all([summary.load(currentPrices), analytics.load()])
     prices.state.dialogVisible = false
-    if (showSuccess) {
-      ElMessage.success('计算完成')
-    }
+    ElMessage.success('计算完成')
   } catch (error) {
     ElMessage.error('计算失败：' + getApiErrorMessage(error))
+  } finally {
+    loading.value = false
+  }
+}
+
+// 回到服务端定价（GET：Holding 现价优先、历史收盘兜底，附陈价/缺价标记）
+async function reloadServerPriced() {
+  analytics.state.whatIfPrices = null
+  await Promise.all([summary.load(), analytics.load()])
+}
+
+async function exitWhatIf() {
+  loading.value = true
+  try {
+    await reloadServerPriced()
+  } catch (error) {
+    ElMessage.error('重新计算失败：' + getApiErrorMessage(error))
   } finally {
     loading.value = false
   }
@@ -214,11 +239,15 @@ async function refreshPricesAndCalculate() {
     const refreshResult = await runPriceRefresh()
     if (!refreshResult || isUnmounted()) return
 
-    // Step 2: Reload holdings with updated prices
-    await prices.loadHoldingsForPrice({ force: true })
-
-    // Step 3: Auto-calculate performance
-    await calculatePerformance(false)
+    // Step 2: 刷新后走服务端定价重算（GET）——不能再把弹窗里的 Holding 现价当
+    // what-if 价 POST 上去：那会丢掉服务端的历史收盘兜底，只靠历史收盘定价的
+    // 持仓会被当成「无价」剔除（#218）。刷新即退出手工价试算。
+    loading.value = true
+    try {
+      await Promise.all([prices.loadHoldingsForPrice({ force: true }), reloadServerPriced()])
+    } finally {
+      loading.value = false
+    }
 
     notifyRefreshResult(refreshResult, '，并完成计算')
   } catch (error) {
@@ -279,5 +308,24 @@ onMounted(() => {
 
 .summary-warning {
   margin-bottom: 16px;
+}
+
+.what-if-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 8px;
+  background: var(--el-color-warning-light-9);
+}
+
+.what-if-text {
+  flex: 1;
+  min-width: 200px;
+  color: var(--app-text-muted);
+  font-size: 13px;
 }
 </style>

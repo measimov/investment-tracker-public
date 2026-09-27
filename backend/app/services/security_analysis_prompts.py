@@ -36,15 +36,18 @@ _MARKET_RISK_SOURCES = {
         "美股无审计意见/质押/增减持数据源——风险判断只能来自 report_digests "
         "中年报（本土发行人 10-K / 外国私人发行人 **20-F**，中概股几乎全是"
         "后者）风险因素摘要与 earnings_quality 指标；以下标签**禁止使用**："
-        "高质押、大股东减持、大股东增持、解禁临近、审计非标、安全边际充足"
-        "（本市场无估值数据源）。"
+        "高质押、大股东减持、大股东增持、解禁临近、审计非标。"
+        "「安全边际充足」只在格雷厄姆四项（pe、pb_or_product、current_ratio、"
+        "lt_debt_vs_net_current_assets）全部 pass 且估值数据充足（价格不陈旧、"
+        "每股盈利为最近一年内的 TTM/年报、无估算告警）时可用，服务端强制校验。"
     ),
     "港股": (
         "港股无审计意见/质押/增减持数据源——风险判断只能来自 report_digests "
         "与 earnings_quality 指标；**港股年报未必设有「主要風險」章节**"
         "（实测多数没有），摘要里没有风险内容时如实写'年报未披露专门风险章节'，"
         "不得推测。以下标签**禁止使用**：高质押、大股东减持、大股东增持、"
-        "解禁临近、审计非标、安全边际充足（本市场无估值数据源）。"
+        "解禁临近、审计非标。「安全边际充足」只在格雷厄姆四项全部 pass 且估值数据充足"
+        "（价格不陈旧、每股盈利为最近一年内的 TTM/年报、无估算告警）时可用，服务端强制校验。"
         "结构化科目来自披露易年报/中报原文抽取（report_statements，可达十年，"
         "is_comparative=true 为比较期列）并以雅虎数据补缺；输入里年度行仍稀少时须"
         "据实收敛口径；risk_level 不得为 low，数据严重不足时 tags 应含'数据不足'。"
@@ -103,8 +106,11 @@ def build_system_prompt(market: str) -> str:
      ## 格雷厄姆准则解读（graham_screen.criteria 已给出逐项 verdict 与依据，
         **禁止自行心算任何比率**——只做解读：pass 项说明该防御性来源、fail 项
         说明缺口大小与含义、indeterminate 项如实说明数据边界（如港股 PDF 抽取
-        覆盖不足十年、雅虎补缺仅近 3-5 年、非 A股 无估值快照），绝不把"不可判定"
-        说成"达标"或"不达标"；
+        覆盖不足十年、雅虎补缺仅近 3-5 年、披露历史不足十年），绝不把"不可判定"
+        说成"达标"或"不达标"；估值两项的判定口径是 TTM（港股/美股 = 行情收盘价 ÷
+        报表推算的 TTM 每股盈利、MRQ 每股净资产为隐含股数估算，构成与价格日期见
+        criteria[].basis，价格陈旧时须提示）；criteria[].supplement 里的年报静态 PE
+        与原著三年平均 PE 仅作参考对照，不得据此改写 verdict；
         综合 passed/failed 计数给出"防御型标准下的安全边际"总体评述；
         **仅当 pe、pb_or_product、current_ratio、lt_debt_vs_net_current_assets
         四项均为 pass** 才可用"安全边际充足"标签（服务端按 graham_screen 实际
@@ -144,15 +150,16 @@ def build_analysis_messages(input_payload: Dict[str, Any]) -> List[Dict[str, str
 _A_SHARE_ONLY_TAGS = frozenset(
     {"高质押", "大股东减持", "大股东增持", "解禁临近", "审计非标"}
 )
-# 安全边际充足要求估值两项 pass（见 system prompt 的准则章节），而美股/港股
-# 没有估值数据源、估值准则恒为 indeterminate——该标签在这两个市场确定性
-# 不可用，与其余 A股 专属标签同样在解析层强制（安全边际不足不禁：财务
-# 强度 fail 单独可触发）。
-_NO_VALUATION_TAGS = _A_SHARE_ONLY_TAGS | {"安全边际充足"}
+# 美股/港股没有审计意见/质押/增减持/解禁数据源，这些标签在解析层确定性拒绝。
+# 「安全边际充足」不再整体禁用（PR #232，用户确认「数据充足即可放开」）：估值两项已由
+# 行情价 ÷ 报表推算可判定，是否放行交给 margin_of_safety_allowed——四项 pass 之外，
+# 估算型估值还要求数据充足（valuation_data_sufficient）。
 MARKET_BANNED_TAGS: Dict[str, frozenset] = {
-    "美股": _NO_VALUATION_TAGS,  # 无审计意见/质押/增减持/解禁/估值数据源
-    "港股": _NO_VALUATION_TAGS,  # 同上
+    "美股": _A_SHARE_ONLY_TAGS,
+    "港股": _A_SHARE_ONLY_TAGS,
 }
+# 估算型估值（港股/美股）的「数据充足」：最新年报期末距价格日不超过此天数
+VALUATION_MAX_FY_AGE_DAYS = 460
 
 # 风险等级下限：数据边界决定"无明显风险信号"这个判断本身不成立的市场。
 # 港股结构化科目已可由披露易年报/中报 PDF 抽取覆盖至十年（雅虎只补缺、仅近 3-5 年），
@@ -176,15 +183,78 @@ _MARGIN_OF_SAFETY_CRITERIA = (
 )
 
 
-def margin_of_safety_allowed(graham_screen: Dict[str, Any] | None) -> bool:
-    """估值两项 + 财务强度两项全部 pass 才允许"安全边际充足"；无 graham 结果视为不允许。"""
+# 估值方法按**市场**确定（不靠 basis 里有没有某个字段猜）：A股 = Tushare 快照；港股/美股 =
+# 行情价 ÷ 报表推算的估计值。graham_screen 也在 basis 里写了 `valuation_method`，市场未知
+# （调用方没传 market）时才用它。PR #232 评审：此前按「basis 有没有 price」区分，而 A股
+# 快照的 basis 也带 price（快照收盘价），A股 的安全边际充足被全部误拒
+VALUATION_METHOD_BY_MARKET: Dict[str, str] = {
+    "A股": "snapshot", "港股": "estimated", "美股": "estimated",
+}
+
+
+def valuation_method(criterion: Dict[str, Any] | None, market: str | None = None) -> str:
+    """snapshot（数据源直接给出 PE/PB）或 estimated（行情价 ÷ 报表推算）。"""
+    by_market = VALUATION_METHOD_BY_MARKET.get(str(market or ""))
+    if by_market:
+        return by_market
+    basis = (criterion or {}).get("basis") or {}
+    method = basis.get("valuation_method")
+    if method in ("snapshot", "estimated"):
+        return method
+    return "snapshot"  # 无 basis 的旧结果只可能来自 A股 快照（港股/美股此前恒为 indeterminate）
+
+
+def valuation_data_sufficient(
+    criterion: Dict[str, Any] | None, market: str | None = None
+) -> bool:
+    """估值准则的输入是否足以支撑「安全边际充足」这个结论。
+
+    A股 的 pe/pb 来自 Tushare 估值快照，视为充足（原准入逻辑）。港股/美股是行情价 ÷
+    报表推算的估计值，要求：价格不陈旧；basis 无估算告警（note：未滚动/期间不衔接/隐含
+    股数偏离等）；每股盈利所用最新年报期末距价格日不超过 VALUATION_MAX_FY_AGE_DAYS。
+    """
+    if not criterion:
+        return False
+    if valuation_method(criterion, market) == "snapshot":
+        return True
+    basis = criterion.get("basis") or {}
+    if basis.get("price") is None:
+        return False
+    if basis.get("price_stale") or basis.get("note"):
+        return False
+    price_date = str(basis.get("price_date") or "")[:10]
+    components = basis.get("components") or []
+    fy_period = str((components[0] or {}).get("period") or "") if components else ""
+    fy_end = fy_period.split("|")[0]
+    if criterion.get("criterion") == "pe":
+        if not (price_date and len(fy_end) == 8):
+            return False
+        from datetime import date as _date
+
+        try:
+            price_day = _date.fromisoformat(price_date)
+            fy_day = _date(int(fy_end[:4]), int(fy_end[4:6]), int(fy_end[6:]))
+        except ValueError:
+            return False
+        return (price_day - fy_day).days <= VALUATION_MAX_FY_AGE_DAYS
+    return True
+
+
+def margin_of_safety_allowed(
+    graham_screen: Dict[str, Any] | None, market: str | None = None
+) -> bool:
+    """估值两项 + 财务强度两项全部 pass，且估值数据充足，才允许"安全边际充足"；
+    无 graham 结果视为不允许。market 决定估值方法（A股 快照 / 港股美股 估算）。"""
     if not graham_screen or graham_screen.get("status") != "ok":
         return False
-    verdicts = {
-        item.get("criterion"): item.get("verdict")
-        for item in graham_screen.get("criteria") or []
+    items = {
+        item.get("criterion"): item for item in graham_screen.get("criteria") or []
     }
-    return all(verdicts.get(key) == "pass" for key in _MARGIN_OF_SAFETY_CRITERIA)
+    if not all((items.get(key) or {}).get("verdict") == "pass" for key in _MARGIN_OF_SAFETY_CRITERIA):
+        return False
+    return all(
+        valuation_data_sufficient(items.get(key), market) for key in ("pe", "pb_or_product")
+    )
 
 
 def parse_analysis_output(
@@ -221,7 +291,7 @@ def parse_analysis_output(
     used_banned = [tag for tag in tags if tag in banned]
     if used_banned:
         raise ValueError(f"{market} 无对应数据源，禁用标签: {used_banned}")
-    if MARGIN_OF_SAFETY_TAG in tags and not margin_of_safety_allowed(graham_screen):
+    if MARGIN_OF_SAFETY_TAG in tags and not margin_of_safety_allowed(graham_screen, market):
         raise ValueError(
             f"'{MARGIN_OF_SAFETY_TAG}' 要求 graham_screen 的 pe/pb_or_product/"
             "current_ratio/lt_debt_vs_net_current_assets 全部 pass，与预计算结果矛盾"

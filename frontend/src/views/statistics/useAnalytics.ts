@@ -12,10 +12,14 @@ import { ElMessage } from 'element-plus'
 import api from '@/api'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import { presetRangeParams } from '@/utils/dateRange'
-import { formatNumber } from '@/utils/helpers'
+import { EMPTY, formatNumber } from '@/utils/helpers'
 import { pollJobUntilDone, type BackgroundJob } from '@/utils/polling'
 import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR } from '@/styles/tokens'
 import type { HistorySyncJob, PerformanceAnalytics } from './types'
+import { isShortRange, rangeSpanDays } from './format'
+
+// 夏普/索提诺的无风险利率：固定 0（界面上注明，#218）
+export const RISK_FREE_RATE = 0
 
 // 基准对比：选择持久化 localStorage；无数据基准降级为标签提示
 const BENCHMARK_STORAGE_KEY = 'statistics.benchmarks'
@@ -58,7 +62,11 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
     benchmarkOptions: [] as { code: string; name: string; currency: string }[],
     selectedBenchmarks: storedBenchmarks(),
     historyRefreshing: false,
-    syncJob: null as HistorySyncJob | null
+    syncJob: null as HistorySyncJob | null,
+    // 手工价试算（#218）：非 null 时每次 load（切区间/基准/同步历史后重算）都带着
+    // 这组价格走 POST——此前只有点「计算」那一次用手工价，之后静默回到服务端价，
+    // TTWR 卡与上方摘要卡用的不是同一组价格
+    whatIfPrices: null as Record<string, number> | null
   })
 
   function rangeParams() {
@@ -75,15 +83,13 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
   // 清除 loading 或弹错误——较慢的旧响应直接丢弃。
   let requestSeq = 0
 
-  async function load(
-    options: { prices?: Record<string, number> | null; refresh_history?: boolean } = {}
-  ) {
+  async function load(options: { refresh_history?: boolean } = {}) {
     const seq = ++requestSeq
     state.loading = options.refresh_history !== true
     try {
-      const response = await api.getPerformanceAnalytics(options.prices || null, {
+      const response = await api.getPerformanceAnalytics(state.whatIfPrices, {
         refresh_history: options.refresh_history === true,
-        risk_free_rate: 0,
+        risk_free_rate: RISK_FREE_RATE,
         benchmarks: state.selectedBenchmarks.join(','),
         ...rangeParams()
       })
@@ -194,6 +200,16 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
     return { name: first.name, excess_return_rate: first.comparison.excess_return_rate ?? null }
   })
 
+  // 区间不足半年：年化（TTWR 与 XIRR）只标注「仅供参考」，数值照常显示
+  const rangeDays = computed(() => {
+    const range = state.data.date_range
+    const fromRange = rangeSpanDays(range?.start_date, range?.end_date)
+    if (fromRange !== null) return fromRange
+    const span = state.data.metrics?.observation_span_days
+    return typeof span === 'number' ? span : null
+  })
+  const shortRange = computed(() => isShortRange(rangeDays.value))
+
   const effectiveRangeLabel = computed(() => {
     const range = state.data.date_range
     if (!range) return ''
@@ -252,7 +268,11 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
       textStyle: { fontFamily: CHART_FONT_FAMILY },
       tooltip: {
         trigger: 'axis',
-        valueFormatter: (value: number | string) => `${formatNumber(value, 2)}%`
+        // 基准线头部空洞（null）显示占位符，不拼成「—%」
+        valueFormatter: (value: number | string | null | undefined) => {
+          const text = formatNumber(value, 2)
+          return text === EMPTY ? EMPTY : `${text}%`
+        }
       },
       legend: {
         data: ['累计TTWR收益率', '回撤', ...benchmarkSeries.map((series) => series.name)]
@@ -332,6 +352,7 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
     unavailableBenchmarks,
     partialBenchmarks,
     primaryBenchmarkComparison,
+    shortRange,
     effectiveRangeLabel,
     syncPercent,
     syncProgressStatus,

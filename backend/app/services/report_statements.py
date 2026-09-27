@@ -21,13 +21,15 @@
 
 from __future__ import annotations
 
+import calendar
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Optional, Sequence, Tuple
 
 # v4：币种+单位分开排版（「美元 千元」「RMB million」）算一个布局单元，且表头布局须与数据行吻合才采信
-STATEMENT_EXTRACTOR_VERSION = 8
+# v9：括号负数内侧空格、列期末日/重复年份、每股单位提示进 context
+STATEMENT_EXTRACTOR_VERSION = 9
 STATEMENT_KINDS = ("income", "balance", "cashflow")
 
 # 报表标题核心（繁/简；港股「綜合」= A股「合并」）。income 同时覆盖损益表与全面收益表
@@ -250,6 +252,9 @@ def parse_number(token: str) -> Optional[Decimal]:
     text = token.strip()
     if text in {"–", "—", "-", ""}:
         return None
+    if text.count("(") != text.count(")"):
+        # 括号不配对（「(1,034,206」）：负号是否成立说不清，宁可缺值也不静默丢负号
+        return None
     negative = text.startswith("(") and text.endswith(")")
     text = text.strip("()").replace(",", "")
     try:
@@ -268,6 +273,17 @@ def parse_number(token: str) -> Optional[Decimal]:
 #   `_parse_row_tokens` 不知道列数，所以这一步放在 parse_row 里按列数做
 _SPLIT_THOUSANDS_RE = re.compile(r"(\d,\d{2}) (\d)(?![\d,.])")
 _SPLIT_DECIMAL_RE = re.compile(r"(\d{1,3}(?:,\d{3})+\.\d) (\d)(?![\d,.])")
+
+
+# 括号负数的内侧空格（01023 2024「銷售 成本 ( 1,034,206) ( 1,222,076)」）：`_NUM` 的括号不能带
+# 空格，不规范化时三种变体都会错——「( 1,034,206)」本期数被吞进标签、上期顶到本期；
+# 「(1,034,206 )」同样错列；「( 1,034,206 )」整行不是数字行被丢掉。只收紧紧贴数字的那一侧
+_PAREN_OPEN_SPACE_RE = re.compile(r"\([ 　]+(?=-?\d)")
+_PAREN_CLOSE_SPACE_RE = re.compile(r"(?<=\d)[ 　]+\)")
+
+
+def normalize_paren_spaces(line: str) -> str:
+    return _PAREN_CLOSE_SPACE_RE.sub(")", _PAREN_OPEN_SPACE_RE.sub("(", line))
 
 
 def glue_split_digits(line: str) -> str:
@@ -298,7 +314,7 @@ def glue_decimal_tail(tokens: List[str], expected: int) -> List[str]:
 def _parse_row_tokens(line: str) -> Optional[Tuple[str, str, List[str]]]:
     """数字行 → (label, note, value_tokens)；非数字行返回 None。
     无标签的合计行（`6 751,766 660,257` / `229,801 196,467`）标签为空。"""
-    line = glue_split_digits(line)
+    line = glue_split_digits(normalize_paren_spaces(line))
     only = _VALUES_ONLY_RE.match(line)
     if only:
         tokens = only.group("values").split()
@@ -370,13 +386,27 @@ def _detect_currency(header: Sequence[str]) -> Optional[str]:
     return None
 
 
-def _header_years(header: Sequence[str]) -> List[int]:
-    """表头里第一条含 ≥2 个年份的行决定列年份（「2025年 2024年」/「二零二五年 二零二四年」）。"""
-    for line in header:
-        years = _years_in(line)
+def _column_year_line(header: Sequence[str]) -> Tuple[Optional[int], List[int]]:
+    """表头里第一条含 ≥2 个年份的行 = 列年份行（「2025年 2024年」/「二零二五年 二零二四年」）。
+
+    标题日期行不算：00148 全部年报的「For the year ended 31 December 2016 截至二零一六年十二月
+    三十一日止年度」是同一个日期的中英双语，裸年份抽出来是 [2016, 2016]，此前把它当列年份，
+    上期列（2015）找不到，比较列与比较期行全部缺失。行内的完整日期若都是同一天，就是标题
+    日期：去掉后再看剩下的年份；两个不同的完整日期（「2023年6月30日 2023年1月1日」）才是列。"""
+    for index, line in enumerate(header):
+        text = line
+        dates = _full_dates(line)
+        if dates and len({value for _, _, value in dates}) == 1:
+            for start, end, _ in reversed(dates):
+                text = text[:start] + " " + text[end:]
+        years = _years_in(text)
         if len(years) >= 2:
-            return years
-    return []
+            return index, years
+    return None, []
+
+
+def _header_years(header: Sequence[str]) -> List[int]:
+    return _column_year_line(header)[1]
 
 
 def _is_header_like(line: str, years: List[int]) -> bool:
@@ -553,6 +583,22 @@ def _expected_columns(
 
 
 _GROUPED_AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})+")
+# 每股指标的单位提示（#223：EPS 以「仙」列示却按元入库）。表内的纯文本行「人民幣仙 人民幣仙」
+# （02669 中报 EPS 小表的列单位）、「每股盈利（以每股人民幣列示）」此前只在无标签行的上下文里
+# 保留，其后的「基本及攤薄 21.33 23.45」有标签，提示就丢了——现在附到其后各行的 context，
+# 直到回到带千分位的金额行为止。标签不改；单位折算由 report_statement_service 读 context 做
+_UNIT_HINT_RE = re.compile(r"仙|每股(?!面值)|cents?\b|per share", re.I)
+# 整表的金额单位行（京东「（以百萬元計，股份及每股數據除外）」）不是每股单位提示
+_TABLE_UNIT_RE = re.compile(r"百萬|百万|千元|千港元|千美元|million|thousand|['’]000", re.I)
+UNIT_HINT_MAX_CHARS = 40
+
+
+def _is_unit_hint(text: str) -> bool:
+    return (
+        len(text) <= UNIT_HINT_MAX_CHARS
+        and bool(_UNIT_HINT_RE.search(text))
+        and not _TABLE_UNIT_RE.search(text)
+    )
 
 
 def _is_data_row(text: str) -> bool:
@@ -587,6 +633,7 @@ def _parse_block(block: _Block) -> ParsedStatement:
     # 第一遍：解析全部数字行，拿主导列数（附注号粘列的行会多一列，是少数）
     raw_rows: List[Tuple[str, str, List[str], List[str], int]] = []
     context: List[str] = []
+    unit_hints: List[str] = []  # 每股单位提示（「人民幣仙 人民幣仙」「每股盈利（以每股港仙列示）」）
     counts: Dict[int, int] = {}
     first_tokens: Dict[int, List[str]] = {}
     for offset, text in enumerate(texts):
@@ -598,13 +645,22 @@ def _parse_block(block: _Block) -> ParsedStatement:
         if parsed is None:
             context.append(text)
             context = context[-2:]
+            if _is_unit_hint(text) and text not in unit_hints:
+                unit_hints.append(text)
             continue
         label, note, tokens = parsed
         if not tokens:
             continue
-        raw_rows.append((label, note, tokens, list(context) if not label else [], offset))
+        if any(_GROUPED_AMOUNT_RE.search(token) for token in tokens):
+            unit_hints = []  # 回到金额区：每股单位提示到此为止，不附到金额行上
+        row_context = list(context) if not label else []
+        row_context = list(unit_hints) + [c for c in row_context if c not in unit_hints]
+        raw_rows.append((label, note, tokens, row_context, offset))
         counts[len(tokens)] = counts.get(len(tokens), 0) + 1
         first_tokens.setdefault(len(tokens), []).append(tokens[0])
+        if label and len(tokens) == 1 and _is_unit_hint(label) and label not in unit_hints:
+            # 「本公司普通股權持有人應佔每股盈利（港仙） 11」：小标题带附注号，其后的「基本及攤薄」才是数值行
+            unit_hints.append(label)
         if label:
             context = []
     expected = _expected_columns(header, years, counts, first_tokens)
@@ -819,15 +875,45 @@ def _year_columns(parsed: ParsedStatement, *, end_date: str) -> Optional[Tuple[i
     return current, prior
 
 
+def _date_columns(
+    parsed: ParsedStatement, *, report_type: str, end_date: str
+) -> Optional[Tuple[int, Optional[int]]]:
+    """按列期末日定位本期列与上期列（`column_dates`）；列日期不全或本期日期对不上 → None。
+    上期列只认日期**恰好**是预期比较期的那一列：年报/中报损益 = 上年同日，中报资产负债表 =
+    上财年末。「2020年1月1日」这类期初（新准则调整后的重列余额）不冒充上年末。"""
+    if parsed.interim_four_columns:
+        return None
+    dates = column_dates(parsed)
+    if not dates or any(value is None for value in dates) or end_date not in dates:
+        return None
+    current = dates.index(end_date)
+    if report_type == "interim" and parsed.kind == "balance":
+        expected = _prior_fiscal_year_end(end_date)
+    else:
+        expected = _shift_year(end_date, -1)
+    prior = dates.index(expected) if expected in dates else None
+    return current, prior
+
+
 def period_columns(
     parsed: ParsedStatement, *, report_type: str, end_date: str
 ) -> List[PeriodColumn]:
     """按报表类型与报告期决定各数值列对应的 (end_date, fp)。
     年报：本期 FY + 上期 FY；中报损益/现金流：本期 H1 + 上年同期 H1（四列取六个月两列）；
-    中报资产负债表：期末 H1 + 上财年末 FY。列位置优先按表头年份，其次按 0/1。"""
-    by_year = _year_columns(parsed, end_date=end_date)
+    中报资产负债表：期末 H1 + 上财年末 FY。列位置依次按表头的列期末日、列年份、位置 0/1。
+
+    列年份重复且读不出列日期时（年报 [2016, 2016] 这类），年报按位置取本期 = 第 0 列、
+    上期 = 第 1 列——重复的裸年份不能决定列。"""
+    by_date = _date_columns(parsed, report_type=report_type, end_date=end_date)
+    by_year = by_date if by_date is not None else _year_columns(parsed, end_date=end_date)
     if by_year is not None:
         current, prior = by_year
+        duplicated = len(set(parsed.years)) < len(parsed.years)
+        if (
+            by_date is None and prior is None and duplicated and report_type == "annual"
+            and parsed.column_count >= 2
+        ):
+            current, prior = 0, 1
     else:
         current, prior = 0, (1 if parsed.column_count >= 2 else None)
         if report_type == "interim" and parsed.kind != "balance" and parsed.interim_four_columns \
@@ -836,9 +922,11 @@ def period_columns(
     if report_type == "interim":
         if parsed.kind == "balance":
             cols = [PeriodColumn(current, end_date, "H1", True)]
-            if prior is not None or parsed.column_count >= 2:
-                prior_col = prior if prior is not None else 1
-                cols.append(PeriodColumn(prior_col, _prior_fiscal_year_end(end_date), "FY", False))
+            if prior is None and parsed.column_count >= 2:
+                # 读不出上财年末那一列：沿用「另一列即上财年末」（中报资产负债表只有两列）
+                prior = next((c for c in range(parsed.column_count) if c != current), None)
+            if prior is not None:
+                cols.append(PeriodColumn(prior, _prior_fiscal_year_end(end_date), "FY", False))
             return cols
         cols = [PeriodColumn(current, end_date, "H1", True)]
         if prior is not None:
@@ -881,6 +969,95 @@ def _cjk_int(text: str) -> Optional[int]:
             return None
         value += _CJK_SMALL[ones]
     return value
+
+
+_MONTH_NAMES = "|".join(_MONTHS_EN)
+_FULL_DATE_CJK_RE = re.compile(_DATE_CJK)
+_FULL_DATE_EN_RE = re.compile(rf"(?<!\d)(?P<d>\d{{1,2}})\s+(?P<mon>{_MONTH_NAMES})\s*,?\s*(?P<y>\d{{4}})(?!\d)", re.I)
+_FULL_DATE_EN_US_RE = re.compile(rf"(?P<mon>{_MONTH_NAMES})\s+(?P<d>\d{{1,2}}),?\s+(?P<y>\d{{4}})(?!\d)", re.I)
+# 拆成两行的列日期：年份行「二零一七年 二零一六年」/「於二零一九年 於二零一九年」+ 月日行「六月三十日
+# 十二月三十一日」/「十二月 六月」（01023 只写月份）/「30 June 31 December」
+_CJK_MD = r"[〇零一二三四五六七八九十]{1,3}|\d{1,2}"
+_MONTH_DAY_CJK_RE = re.compile(rf"(?P<m>{_CJK_MD})\s*月(?:\s*(?P<d>{_CJK_MD})\s*日)?")
+_MONTH_DAY_EN_RE = re.compile(
+    rf"(?<!\d)(?P<d>\d{{1,2}})\s+(?P<mon>{_MONTH_NAMES})\b|\b(?P<mon2>{_MONTH_NAMES})\s+(?P<d2>\d{{1,2}})(?!\d)",
+    re.I,
+)
+_PERIOD_CAPTION_RE = re.compile(r"止|ended|ending", re.I)
+
+
+def _compose_date(year: Optional[int], month: Optional[int], day: Optional[int]) -> Optional[str]:
+    if not year or not month or not (1990 <= year <= 2100 and 1 <= month <= 12):
+        return None
+    last = calendar.monthrange(year, month)[1]
+    day = last if day is None else day
+    if not 1 <= day <= last:
+        return None
+    return f"{year}{month:02d}{day:02d}"
+
+
+def _full_dates(line: str) -> List[Tuple[int, int, str]]:
+    """行内的完整日期（年月日）→ [(start, end, YYYYMMDD)]，按位置排序、去重叠。"""
+    found: List[Tuple[int, int, str]] = []
+    for match in _FULL_DATE_CJK_RE.finditer(line):
+        value = _compose_date(*(_cjk_int(match.group(k)) for k in ("y", "m", "d")))
+        if value:
+            found.append((match.start(), match.end(), value))
+    for pattern in (_FULL_DATE_EN_RE, _FULL_DATE_EN_US_RE):
+        for match in pattern.finditer(line):
+            month = _MONTHS_EN.get(match.group("mon").upper())
+            value = _compose_date(int(match.group("y")), month, int(match.group("d")))
+            if value:
+                found.append((match.start(), match.end(), value))
+    found.sort()
+    out: List[Tuple[int, int, str]] = []
+    for item in found:
+        if not out or item[0] >= out[-1][1]:
+            out.append(item)
+    return out
+
+
+def _month_days(line: str) -> List[Tuple[int, Optional[int]]]:
+    """只有月（日）、没有年份的列日期行 → [(month, day|None)]；标题（「截至六月三十日止六個月」）
+    与带年份的行返回空。"""
+    if _years_in(line) or _PERIOD_CAPTION_RE.search(line):
+        return []
+    out: List[Tuple[int, Optional[int]]] = []
+    for match in _MONTH_DAY_CJK_RE.finditer(line):
+        month = _cjk_int(match.group("m"))
+        day = _cjk_int(match.group("d")) if match.group("d") else None
+        if month and 1 <= month <= 12:
+            out.append((month, day))
+    if out:
+        return out
+    for match in _MONTH_DAY_EN_RE.finditer(line):
+        month = _MONTHS_EN.get((match.group("mon") or match.group("mon2")).upper())
+        day = int(match.group("d") or match.group("d2"))
+        if month:
+            out.append((month, day))
+    return out
+
+
+def column_dates(parsed: ParsedStatement) -> List[Optional[str]]:
+    """各列期末日（与 `parsed.years` 等长、同序）；读不出返回空列表。
+
+    列年份可以合法地重复——非日历财年中报的资产负债表（01023：「於二零二一年 於二零二一年」
+    +「十二月 六月」= 2021-12-31 与 2021-06-30），中国准则的期初列（「2020年12月31日 2020年1月1日」）
+    ——这时只有列日期能区分本期列与比较列。来源两种：列年份行自带完整日期，或紧邻的月日行。"""
+    index, years = _column_year_line(parsed.header)
+    if index is None:
+        return []
+    dates = [value for _, _, value in _full_dates(parsed.header[index])]
+    if len(dates) == len(years) and len(set(dates)) >= 2:
+        return list(dates)
+    for offset in (1, 2, -1, -2):
+        j = index + offset
+        if not 0 <= j < len(parsed.header):
+            continue
+        month_days = _month_days(parsed.header[j])
+        if month_days and len(month_days) == len(years):
+            return [_compose_date(year, month, day) for year, (month, day) in zip(years, month_days)]
+    return []
 
 
 def detect_period_end(parsed: ParsedStatement) -> Optional[str]:

@@ -1,11 +1,46 @@
 import { COLOR } from '@/styles/tokens'
 import { formatLocalDate } from './dateRange'
+import { CURRENCIES } from './currency'
+
+/** 空值占位符：全站统一（此前 '-' / '--' / '—' 三种并存，#219） */
+export const EMPTY = '—'
+
+function isMissing(value: unknown): boolean {
+  return (
+    value === null ||
+    value === undefined ||
+    value === '' ||
+    Number.isNaN(Number(value as number | string))
+  )
+}
 
 export function formatNumber(num: number | string | null | undefined, decimals = 2): string {
-  if (num === null || num === undefined) return '-'
+  if (isMissing(num)) return EMPTY
   return Number(num).toLocaleString('zh-CN', {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals
+  })
+}
+
+/** 数量：整数不带小数（5,000 而不是 5,000.0000），碎股最多 4 位且去掉尾随 0 */
+export function formatQuantity(value: number | string | null | undefined): string {
+  if (isMissing(value)) return EMPTY
+  return Number(value).toLocaleString('zh-CN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 4
+  })
+}
+
+/**
+ * 价格：至少 2 位、最多 4 位小数，去掉 2 位之后的尾随 0——
+ * A 股 97.45、ETF 1.409、港股 2.545、仙股 0.0850 各自显示到有效位，
+ * 不再一律 97.4500。
+ */
+export function formatPrice(value: number | string | null | undefined): string {
+  if (isMissing(value)) return EMPTY
+  return Number(value).toLocaleString('zh-CN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4
   })
 }
 
@@ -22,7 +57,7 @@ export function todayLocalISODate(): string {
 }
 
 export function formatDate(date: string | number | Date | null | undefined): string {
-  if (!date) return '-'
+  if (!date) return EMPTY
   // 补零格式（2026/01/05）：与 formatDateTime 一致，日期列在 tabular-nums 下可对齐
   return new Date(date).toLocaleDateString('zh-CN', {
     year: 'numeric',
@@ -31,8 +66,10 @@ export function formatDate(date: string | number | Date | null | undefined): str
   })
 }
 
+// 带时区的 ISO 时间串必须走这里（转成浏览器本地时区）；不要对它做 slice——
+// 后端 timestamptz 以 UTC 输出，切片会让北京时间 0-8 点显示成前一天（#221）
 export function formatDateTime(date: string | number | Date | null | undefined): string {
-  if (!date) return '-'
+  if (!date) return EMPTY
   return new Date(date).toLocaleString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
@@ -43,22 +80,28 @@ export function formatDateTime(date: string | number | Date | null | undefined):
 }
 
 export function formatPercent(value: number | string | null | undefined, precision = 2): string {
-  if (value === null || value === undefined || Number.isNaN(Number(value)))
-    return `${(0).toFixed(precision)}%`
+  // 缺数据显示占位符而不是 0.00%——后者看起来像「真的是 0」（#218/#219）
+  if (isMissing(value)) return EMPTY
   return `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(precision)}%`
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = Object.fromEntries(
+  CURRENCIES.map((item) => [item.code, item.symbol])
+)
+
+/** 金额：负号在币种符号之前（-¥1.00，不是 ¥-1.00）；缺值为占位符 */
 export function formatCurrency(
   amount: number | string | null | undefined,
-  currency = 'CNY'
+  currency = 'CNY',
+  decimals = 2
 ): string {
-  const symbols: Record<string, string> = {
-    CNY: '¥',
-    USD: '$',
-    HKD: 'HK$',
-    SGD: 'S$'
-  }
-  return `${symbols[currency] || ''}${formatNumber(amount)}`
+  if (isMissing(amount)) return EMPTY
+  const value = Number(amount)
+  const symbol = CURRENCY_SYMBOLS[currency] ?? ''
+  const body = formatNumber(Math.abs(value), decimals)
+  // -0.004 四舍五入后是 0.00，不应带负号
+  const negative = value < 0 && body !== formatNumber(0, decimals)
+  return `${negative ? '-' : ''}${symbol}${body}`
 }
 
 export function downloadFile(blob: Blob, filename: string): void {

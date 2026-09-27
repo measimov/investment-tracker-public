@@ -27,22 +27,24 @@ def get_latest_rates(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """获取最新汇率（相对于基准货币CNY）"""
-    rates = exchange_rate_service.get_all_latest_rates(db, "CNY")
+    """获取最新汇率（相对于基准货币CNY）
 
-    # 获取最新日期
-    latest_record = db.query(ExchangeRate).order_by(
-        ExchangeRate.effective_date.desc()
-    ).first()
+    `details` 按币种给出各自的生效日期与来源；顶层 `effective_date`/`source`
+    保留兼容，取各币种中最新的那条（无汇率时为今天 · system）。
+    """
+    details = exchange_rate_service.get_latest_rate_details(db, "CNY")
+    rates = {"CNY": 1.0, **{k: float(v["rate"]) for k, v in details.items()}}
 
-    effective_date = latest_record.effective_date if latest_record else date.today()
-    source = latest_record.source if latest_record else "system"
+    newest = max(details.values(), key=lambda item: item["effective_date"], default=None)
+    effective_date = newest["effective_date"] if newest else date.today()
+    source = newest["source"] if newest else "system"
 
     return {
         "base_currency": "CNY",
-        "rates": {k: float(v) for k, v in rates.items()},
+        "rates": rates,
         "effective_date": effective_date,
-        "source": source
+        "source": source,
+        "details": details,
     }
 
 

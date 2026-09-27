@@ -35,11 +35,14 @@ INTERIM_PAGES = _pages("hk_00700_20260630_interim")
 
 
 def _shift_years_back(pages):
-    """2026 中报固件 → 合成 2025 中报（年份整体前移一年，先占位再替换避免连锁）。"""
+    """2026 中报固件 → 合成 2025 中报（年份整体前移一年，先占位再替换避免连锁）。
+    2024 也要前移（2025 年报固件 → 合成 2024 年报）：此前漏了这一步，合成年报的列年份是重复的
+    [2024, 2024]，抽取器 v9 对重复年份按位置取比较列后这份固件才暴露出来。"""
     out = []
     for page in pages:
         text = (
-            page.replace("二零二五年", "\x00PREV\x00").replace("二零二六年", "二零二五年")
+            page.replace("二零二四年", "二零二三年").replace("2024", "2023")
+            .replace("二零二五年", "\x00PREV\x00").replace("二零二六年", "二零二五年")
             .replace("\x00PREV\x00", "二零二四年").replace("2025", "\x00P\x00")
             .replace("2026", "2025").replace("\x00P\x00", "2024")
         )
@@ -384,6 +387,28 @@ def test_llm_failures_map_to_fatal_kinds_and_keep_statements_for_retry(db, monke
     assert extract  # 之前的 00700 数据未受影响
 
 
+def test_mapping_failure_after_fresh_download_keeps_located_statements(db, monkeypatch):
+    """B4：本轮新下载并定位成功、LLM 映射失败——失败载荷也要存下已定位的报表（此前只存从上次
+    复用来的），下次重试直接重映射，不再重新下载 PDF。"""
+    def bad_output(messages):
+        return {"content": '{"income": {}}', "model": "fake", "usage": {}}
+
+    pages = {ANNUAL_TARGET["url"]: ANNUAL_PAGES}
+    calls = _patch_pipeline(monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url=pages, llm=bad_output)
+    result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert result["failed"] == 1 and calls["download"] == 1
+    failed = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+    assert failed["status"] == "failed" and failed["attempts"] == 1
+    assert {"income", "balance", "cashflow"} <= set(failed["statements"])
+    assert failed["extractor_version"] == STATEMENT_EXTRACTOR_VERSION
+
+    _patch_pipeline(monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url=pages)
+    monkeypatch.setattr(svc, "download_report_pdf", lambda *a, **k: pytest.fail("映射失败后的重试不得重下载"))
+    result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert result["generated"] == 1
+    assert _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]["status"] == "ok"
+
+
 def test_comparative_rows_fill_gaps_but_never_overwrite_primary(db, monkeypatch):
     """先处理 2025 年报（写 2025 本期 + 2024 比较期）；再处理 2024 年报，其本期行接管 2024；
     之后 2025 年报重映射（prompt bump）时，它的 2024 比较期行不得覆盖 2024 年报的本期行。"""
@@ -498,6 +523,7 @@ def test_comparative_merge_is_per_statement_and_prefers_newer_source():
         "source_by_kind": {"balance": {"period_key": "20250630|interim", "end_date": "20250630", "report_type": "interim"}},
         "total_assets": 1.0, "money_cap": 2.0, "inventories": 9.0,
         "extractor_version": STATEMENT_EXTRACTOR_VERSION, "prompt_version": prompts.STATEMENT_PROMPT_VERSION,
+            "build_version": prompts.STATEMENT_BUILD_VERSION,
     }
     newer_annual = {
         "end_date": "20241231", "fp": "FY", "currency": "CNY", "is_comparative": True,
@@ -510,6 +536,7 @@ def test_comparative_merge_is_per_statement_and_prefers_newer_source():
         },
         "total_revenue": 100.0, "total_assets": 5.0, "money_cap": None,
         "extractor_version": STATEMENT_EXTRACTOR_VERSION, "prompt_version": prompts.STATEMENT_PROMPT_VERSION,
+            "build_version": prompts.STATEMENT_BUILD_VERSION,
     }
     # 旧（中报、只有资产负债表）在库，新（年报）来：年报覆盖资产负债表科目，年报没给的科目保留
     merged = svc.merge_comparative_row(older_balance_only, newer_annual)
@@ -541,6 +568,7 @@ def test_comparative_merge_requires_matching_known_currency():
                                    "report_type": report_type} for k in kinds},
             "extractor_version": STATEMENT_EXTRACTOR_VERSION,
             "prompt_version": prompts.STATEMENT_PROMPT_VERSION,
+            "build_version": prompts.STATEMENT_BUILD_VERSION,
             **fields,
         }
 
@@ -898,7 +926,8 @@ def test_revalidate_keeps_comparative_evidence_when_no_yahoo_row(db, monkeypatch
     db.commit()
     assert _rows(db, "yahoo_fundamentals") == {}
     outcome = svc.revalidate_report_statements(db, SYMBOL, MARKET)
-    assert outcome["revalidated"] == 2 and outcome["suspect"] >= 1
+    # 2025/2024 两个主行 + 2024 年报比较列写出的 2023 比较期行
+    assert outcome["revalidated"] == 3 and outcome["suspect"] >= 1
     fy2024 = _rows(db, svc.STATEMENT_DATASET)["20241231|FY"]
     assert fy2024["validation"]["status"] == "suspect"
     assert "total_revenue" in fy2024["validation"]["suspect_fields"]

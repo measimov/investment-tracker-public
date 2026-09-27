@@ -33,10 +33,9 @@
 </template>
 
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
 import api from '../api'
-import { getApiErrorMessage } from '../utils/apiErrors'
 import type { BrokerAccount } from '../types'
 import RecordsTab from './corporate-actions/RecordsTab.vue'
 import SuggestionsTab from './corporate-actions/SuggestionsTab.vue'
@@ -55,7 +54,7 @@ async function loadBrokerAccounts() {
     const response = await api.getBrokerAccounts({ limit: 1000 })
     brokerAccounts.value = response.data
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '加载券商账户失败'))
+    showApiError(error, '加载券商账户失败')
   }
 }
 

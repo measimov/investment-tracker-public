@@ -5,13 +5,22 @@
         <div class="page-header">
           <span>当前持仓</span>
           <div class="header-actions">
+            <el-radio-group
+              :model-value="table.state.viewMode"
+              size="default"
+              data-testid="holdings-view-mode"
+              @update:model-value="(mode) => table.setViewMode(mode as HoldingsViewMode)"
+            >
+              <el-radio-button value="merged">按标的</el-radio-button>
+              <el-radio-button value="account">按账户</el-radio-button>
+            </el-radio-group>
             <el-button
               type="success"
               :icon="Refresh"
               @click="table.refreshPrices"
               :loading="table.state.refreshing"
             >
-              一键刷新股价
+              刷新股价
             </el-button>
             <el-tooltip
               :disabled="batch.analyzableCount > 0"
@@ -26,7 +35,7 @@
                   data-testid="analyze-all-button"
                   @click="batch.analyzeAll"
                 >
-                  一键分析所有持仓
+                  AI 分析全部
                 </el-button>
               </span>
             </el-tooltip>
@@ -42,7 +51,7 @@
                   data-testid="digest-backfill-button"
                   @click="digest.backfillAll"
                 >
-                  补齐财报摘要
+                  补财报摘要
                 </el-button>
               </span>
             </el-tooltip>
@@ -136,11 +145,10 @@
         </template>
       </JobProgressCard>
 
-      <HoldingsTable :table="table" :badges="badges" @transfer="transfer.openDialog" />
-
-      <!-- Summary -->
-      <el-divider />
+      <!-- 汇总放在表格上方：持仓一多，表格下方的汇总要滚到底才看得到 -->
       <HoldingsSummary :table="table" />
+
+      <HoldingsTable :table="table" :badges="badges" @transfer="transfer.openDialog" />
     </el-card>
 
     <TransferDialog :transfer="transfer" />
@@ -164,6 +172,7 @@ import { useTransfer } from './holdings/useTransfer'
 import { useBatchAnalysis } from './holdings/useBatchAnalysis'
 import { useDigestBackfill } from './holdings/useDigestBackfill'
 import type { AnalysisBatchJob, DigestBatchJob } from './holdings/types'
+import type { HoldingsViewMode } from './holdings/useHoldingsTable'
 
 // 壳层职责（issue #140）：页头（刷新/批量按钮 + 账户/市场过滤）、两个批量
 // job 的进度块、以及五个 feature 的编排。持仓数据/角标/转仓/批量分析/财报

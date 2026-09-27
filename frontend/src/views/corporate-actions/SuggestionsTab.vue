@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { ref, reactive, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { BrokerAccount, DividendSuggestion } from '@/types'
-import { formatNumber, formatDate, toNumber } from '@/utils/helpers'
+import { formatNumber, formatDate, formatQuantity, toNumber } from '@/utils/helpers'
 import { pollJobUntilDone } from '@/utils/polling'
+import { UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
 import { useAliveGuard } from '@/composables/useAliveGuard'
 import {
   brokerAccountLabel,
@@ -25,7 +26,10 @@ const emit = defineEmits<{ 'counts-changed': []; accepted: [] }>()
 
 const suggestions = ref<SuggestionRow[]>([])
 const suggestionsLoading = ref(false)
-const suggestionStatusFilter = ref('')
+// 默认只看「新建议」：与 tab 徽标（NEW 计数）同一口径——已匹配的建议账本里已有记录，
+// 不需要处理；需要核对时切到「新建议+已匹配」或「仅已匹配」
+const suggestionStatusFilter = ref('NEW')
+const SUGGESTION_LIMIT = 200
 const { isUnmounted } = useAliveGuard()
 const syncing = ref(false)
 const accepting = ref(false)
@@ -63,12 +67,12 @@ function suggestionStatusTag(status: string) {
 async function loadSuggestions() {
   suggestionsLoading.value = true
   try {
-    const params: Record<string, unknown> = { limit: 200 }
+    const params: Record<string, unknown> = { limit: SUGGESTION_LIMIT }
     if (suggestionStatusFilter.value) params.status = suggestionStatusFilter.value
     const response = await api.listDividendSuggestions(params)
     suggestions.value = response.data
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '加载分红建议失败'))
+    showApiError(error, '加载分红建议失败')
   } finally {
     suggestionsLoading.value = false
   }
@@ -98,7 +102,7 @@ async function syncDividends() {
     await loadSuggestions()
     emit('counts-changed')
   } catch (error) {
-    if (!isUnmounted()) ElMessage.error(getApiErrorMessage(error, '分红公告同步失败'))
+    if (!isUnmounted()) showApiError(error, '分红公告同步失败')
   } finally {
     if (!isUnmounted()) syncing.value = false
   }
@@ -136,7 +140,7 @@ async function submitAccept() {
     emit('counts-changed')
     emit('accepted')
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '接受建议失败'))
+    showApiError(error, '接受建议失败')
     // 后端可能已在拒绝时把建议转为 MATCHED（迟到入账重判重）：刷新列表
     // 反映真实状态；若该行已不再是 NEW，关闭弹窗防止对旧状态重试。
     const failedId = acceptDialog.row?.id
@@ -155,7 +159,7 @@ async function ignoreSuggestion(row: SuggestionRow) {
     await loadSuggestions()
     emit('counts-changed')
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '忽略建议失败'))
+    showApiError(error, '忽略建议失败')
   }
 }
 
@@ -165,7 +169,7 @@ async function restoreSuggestion(row: SuggestionRow) {
     await loadSuggestions()
     emit('counts-changed')
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '恢复建议失败'))
+    showApiError(error, '恢复建议失败')
   }
 }
 
@@ -189,10 +193,10 @@ watch(
             class="suggestion-status-filter"
             @change="loadSuggestions"
           >
-            <el-option label="待处理（新建议+已匹配）" value="" />
-            <el-option label="仅新建议" value="NEW" />
+            <el-option label="待处理（新建议）" value="NEW" />
+            <el-option label="新建议+已匹配" value="" />
             <el-option label="仅已匹配" value="MATCHED" />
-            <el-option label="已接受" value="ACCEPTED" />
+            <el-option label="已入账" value="ACCEPTED" />
             <el-option label="已忽略" value="IGNORED" />
           </el-select>
           <el-button
@@ -214,124 +218,134 @@ watch(
       show-icon
       class="suggestions-note"
     />
+    <el-alert
+      v-if="suggestions.length >= SUGGESTION_LIMIT"
+      type="info"
+      :closable="false"
+      show-icon
+      class="suggestions-note"
+      :title="`仅显示最近 ${SUGGESTION_LIMIT} 条建议（按除权日倒序）`"
+    />
 
-    <el-table v-loading="suggestionsLoading" :data="suggestions" stripe>
-      <el-table-column label="代码/名称" min-width="130">
-        <template #default="{ row }">
-          <span class="suggestion-symbol">{{ row.symbol }}</span>
-          <span v-if="row.name" class="suggestion-name">{{ row.name }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="类型" width="100">
-        <template #default="{ row }">
-          <el-tag :type="getActionTypeTag(row.action_type)" size="small">
-            {{ getActionTypeName(row.action_type) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="账户" min-width="110" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span :class="{ 'account-unassigned': !row.broker_account_id }">
-            {{
-              row.broker_account_id
-                ? brokerAccountLabelById(row.broker_account_id)
-                : row.action_type === 'STOCK_DIVIDEND'
-                  ? '全部账户'
-                  : '未指定'
-            }}
-          </span>
-        </template>
-      </el-table-column>
-      <el-table-column label="除权日" width="110">
-        <template #default="{ row }">{{ formatDate(row.ex_date) }}</template>
-      </el-table-column>
-      <el-table-column label="派息日" width="110">
-        <template #default="{ row }">{{ row.pay_date ? formatDate(row.pay_date) : '—' }}</template>
-      </el-table-column>
-      <el-table-column label="每股税前(税后)" min-width="130" align="right">
-        <template #default="{ row }">
-          <template v-if="row.action_type === 'CASH_DIVIDEND'">
-            {{ formatNumber(toNumber(row.cash_div_pre_tax), 4) }}
-            <span v-if="row.cash_div_after_tax" class="after-tax">
-              ({{ formatNumber(toNumber(row.cash_div_after_tax), 4) }})
+    <div class="responsive-table">
+      <el-table v-loading="suggestionsLoading" :data="suggestions" stripe>
+        <el-table-column label="代码/名称" min-width="130">
+          <template #default="{ row }">
+            <span class="suggestion-symbol">{{ row.symbol }}</span>
+            <span v-if="row.name" class="suggestion-name">{{ row.name }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="100">
+          <template #default="{ row }">
+            <el-tag :type="getActionTypeTag(row.action_type)" size="small">
+              {{ getActionTypeName(row.action_type) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="账户" min-width="110" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span :class="{ 'account-unassigned': !row.broker_account_id }">
+              {{
+                row.broker_account_id
+                  ? brokerAccountLabelById(row.broker_account_id)
+                  : row.action_type === 'STOCK_DIVIDEND'
+                    ? '全部账户'
+                    : UNASSIGNED_ACCOUNT_LABEL
+              }}
             </span>
           </template>
-          <template v-else
-            >每股送转 {{ formatNumber(toNumber(row.stk_div_per_share), 4) }}</template
-          >
-        </template>
-      </el-table-column>
-      <el-table-column label="登记日持仓" min-width="110" align="right">
-        <template #default="{ row }">
-          <span>{{ formatNumber(toNumber(row.record_date_quantity), 0) }}</span>
-          <el-tooltip
-            v-if="row.quantity_basis === 'merged'"
-            content="账户归属存在矛盾，按合并口径推算（数量总和可信）"
-          >
-            <el-tag type="warning" size="small" effect="plain">合并</el-tag>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column label="推算总额(税前)" min-width="120" align="right">
-        <template #default="{ row }">
-          {{
-            row.estimated_total_dividend != null
-              ? formatNumber(toNumber(row.estimated_total_dividend), 2)
-              : '—'
-          }}
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="110">
-        <template #default="{ row }">
-          <el-tooltip
-            v-if="row.match_detail && row.match_detail.amount_diff != null"
-            :content="`已按日期匹配到账本记录，但金额差 ${formatNumber(row.match_detail.amount_diff, 2)}，请核对`"
-          >
-            <el-tag type="warning" size="small">已匹配·金额差</el-tag>
-          </el-tooltip>
-          <el-tag v-else :type="suggestionStatusTag(row.status)" size="small">
-            {{ suggestionStatusLabel(row.status) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="180" fixed="right">
-        <template #default="{ row }">
-          <!-- 仅 NEW 可接受：MATCHED 已有账本记录，再入账即双计（后端同样拒绝） -->
-          <template v-if="row.status === 'NEW'">
-            <el-button type="primary" size="small" text @click="openAcceptDialog(row)">
-              接受
-            </el-button>
-            <el-button type="info" size="small" text @click="ignoreSuggestion(row)">
-              忽略
-            </el-button>
+        </el-table-column>
+        <el-table-column label="除权日" width="110">
+          <template #default="{ row }">{{ formatDate(row.ex_date) }}</template>
+        </el-table-column>
+        <el-table-column label="派息日" width="110">
+          <template #default="{ row }">{{
+            row.pay_date ? formatDate(row.pay_date) : '—'
+          }}</template>
+        </el-table-column>
+        <el-table-column label="每股税前(税后)" min-width="130" align="right">
+          <template #default="{ row }">
+            <template v-if="row.action_type === 'CASH_DIVIDEND'">
+              {{ formatNumber(toNumber(row.cash_div_pre_tax), 4) }}
+              <span v-if="row.cash_div_after_tax" class="after-tax">
+                ({{ formatNumber(toNumber(row.cash_div_after_tax), 4) }})
+              </span>
+            </template>
+            <template v-else>每股送转 {{ formatQuantity(row.stk_div_per_share) }}</template>
           </template>
-          <template v-else-if="row.status === 'MATCHED'">
-            <el-tooltip content="账本已有匹配记录，无需入账；如有出入请先核对既有记录">
-              <span class="accepted-hint">已在账</span>
+        </el-table-column>
+        <el-table-column label="登记日持仓" min-width="110" align="right">
+          <template #default="{ row }">
+            <span>{{ formatQuantity(row.record_date_quantity) }}</span>
+            <el-tooltip
+              v-if="row.quantity_basis === 'merged'"
+              content="账户归属存在矛盾，按合并口径推算（数量总和可信）"
+            >
+              <el-tag type="warning" size="small" effect="plain">合并</el-tag>
             </el-tooltip>
-            <el-button type="info" size="small" text @click="ignoreSuggestion(row)">
-              忽略
-            </el-button>
           </template>
-          <el-button
-            v-else-if="row.status === 'IGNORED'"
-            type="primary"
-            size="small"
-            text
-            @click="restoreSuggestion(row)"
-          >
-            恢复
-          </el-button>
-          <span v-else class="accepted-hint">已入账</span>
+        </el-table-column>
+        <el-table-column label="推算总额(税前)" min-width="120" align="right">
+          <template #default="{ row }">
+            {{
+              row.estimated_total_dividend != null
+                ? formatNumber(toNumber(row.estimated_total_dividend), 2)
+                : '—'
+            }}
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="110">
+          <template #default="{ row }">
+            <el-tooltip
+              v-if="row.match_detail && row.match_detail.amount_diff != null"
+              :content="`已按日期匹配到账本记录，但金额差 ${formatNumber(row.match_detail.amount_diff, 2)}，请核对`"
+            >
+              <el-tag type="warning" size="small">已匹配·金额差</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="suggestionStatusTag(row.status)" size="small">
+              {{ suggestionStatusLabel(row.status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="180" fixed="right">
+          <template #default="{ row }">
+            <!-- 仅 NEW 可接受：MATCHED 已有账本记录，再入账即双计（后端同样拒绝） -->
+            <template v-if="row.status === 'NEW'">
+              <el-button type="primary" size="small" text @click="openAcceptDialog(row)">
+                接受
+              </el-button>
+              <el-button type="info" size="small" text @click="ignoreSuggestion(row)">
+                忽略
+              </el-button>
+            </template>
+            <template v-else-if="row.status === 'MATCHED'">
+              <el-tooltip content="账本已有匹配记录，无需入账；如有出入请先核对既有记录">
+                <span class="accepted-hint">已在账</span>
+              </el-tooltip>
+              <el-button type="info" size="small" text @click="ignoreSuggestion(row)">
+                忽略
+              </el-button>
+            </template>
+            <el-button
+              v-else-if="row.status === 'IGNORED'"
+              type="primary"
+              size="small"
+              text
+              @click="restoreSuggestion(row)"
+            >
+              恢复
+            </el-button>
+            <span v-else class="accepted-hint">已入账</span>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty description="暂无分红建议；点击右上角同步公告" :image-size="88" />
         </template>
-      </el-table-column>
-      <template #empty>
-        <el-empty description="暂无分红建议；点击右上角同步公告" :image-size="88" />
-      </template>
-    </el-table>
+      </el-table>
+    </div>
 
     <!-- 接受建议：账户归属与税额可改 -->
-    <el-dialog v-model="acceptDialog.visible" title="接受分红建议" width="480px">
+    <el-dialog v-model="acceptDialog.visible" title="接受分红建议" width="min(480px, 94vw)">
       <el-form label-width="110px">
         <el-form-item label="标的">
           <span>
@@ -430,6 +444,20 @@ watch(
 
 @media (max-width: 900px) {
   .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
+/* 移动端：筛选下拉与同步按钮各占一行，表格在容器内横向滚动，不撑破视口 */
+@media (max-width: 640px) {
+  .suggestion-status-filter {
+    width: 100%;
+    margin-right: 0;
+    margin-bottom: 8px;
+  }
+
+  .header-actions > .el-button {
     width: 100%;
   }
 }

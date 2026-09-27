@@ -37,7 +37,12 @@ PRICE_REFRESH_MAX_WORKERS=4
 （生产 fail-closed）。不写的话本地明文登录会被拒、`/docs` 也打不开。
 
 完整变量清单（后台任务、Tushare 限速、价格新鲜度窗口、`LLM_REPORT_*` 等）
-见 `.env.example`，各变量与 `backend/app/config.py` 一一对应。
+见 `.env.example`，Settings 字段与 `backend/app/config.py` 一一对应（端口/证书/日志目录与
+backup 变量只给 compose 和宿主脚本用，本地开发可忽略）。新增配置要同步 `config.py`、
+`docker-compose.yml`、`.env.example` 三处，`tests/test_deploy_config_sync.py` 守着。
+
+私有部署使用的雪球客户端库 `xueqiu-market` 不在公开仓库中，`requirements.txt` 也不包含它；
+未安装时雪球行情/档案相关功能显式降级，其余不受影响。
 
 初始化或升级数据库：
 

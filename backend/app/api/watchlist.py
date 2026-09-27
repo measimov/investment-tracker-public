@@ -25,7 +25,10 @@ router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
 def _item_response(db: Session, item: WatchlistItem) -> WatchlistItemResponse:
     response = WatchlistItemResponse.model_validate(item)
-    response.graham_summary = graham_summary_for(db, item.symbol, item.market)
+    # 用户域上下文：该用户的 ADS_RATIO 规则覆盖 20-F 封面解析值（美股估值两项）
+    response.graham_summary = graham_summary_for(
+        db, item.symbol, item.market, user_id=item.user_id
+    )
     return response
 
 
@@ -41,7 +44,9 @@ def list_watchlist(
         .all()
     )
     # 摘要批量聚合：一条 IN 查询代替每条 3-4 次往返（评审 P2）
-    summaries = graham_summaries_for(db, [(item.symbol, item.market) for item in items])
+    summaries = graham_summaries_for(
+        db, [(item.symbol, item.market) for item in items], user_id=current_user.id
+    )
     responses = []
     for item in items:
         response = WatchlistItemResponse.model_validate(item)

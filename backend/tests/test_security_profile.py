@@ -2,6 +2,7 @@
 
 import threading
 from decimal import Decimal
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -675,7 +676,7 @@ def test_profile_api_quality_uses_market_statements(db):
     })
     db.commit()
 
-    body = get_symbol_profile("美股", "AAPL", None, db)
+    body = get_symbol_profile("美股", "AAPL", SimpleNamespace(id=None), db)
     assert body["capabilities"]["report_digest"] is True
     assert body["earnings_quality"]["per_year"]["2025"]["cfo_ni_ratio"] == 1.5
     assert body["statement_progress"] is None  # 报表抽取只有港股有
@@ -685,13 +686,29 @@ def test_profile_api_hk_carries_statement_progress(db):
     """港股档案带「报表抽取」进度（与 capabilities.statements 配对），零行时也是完整形状。"""
     from app.api.security_profiles import get_symbol_profile
 
-    body = get_symbol_profile("港股", "00700", None, db)
+    body = get_symbol_profile("港股", "00700", SimpleNamespace(id=None), db)
     assert body["capabilities"]["statements"] == "report_pdf"
     progress = body["statement_progress"]
     assert progress["reports_ok"] == 0 and progress["reports_failed"] == 0
     assert progress["annual_periods"] == [] and progress["failed_reports"] == []
     assert progress["last_extracted_at"] is None
-    assert get_symbol_profile("A股", "600036", None, db)["statement_progress"] is None
+    assert get_symbol_profile("A股", "600036", SimpleNamespace(id=None), db)["statement_progress"] is None
+    assert body["latest_data_at"] is None
+
+
+def test_latest_report_data_at_takes_newest_of_digests_and_statements():
+    """分析新鲜度基准（#221）：摘要生成时间与报表抽取时间取最新；按时刻比较而非字符串。"""
+    from app.api.security_profiles import _latest_report_data_at
+
+    digests = [
+        {"fetched_at": "2026-09-01T10:00:00+00:00"},
+        {"fetched_at": None},
+        {"fetched_at": "2026-09-03T01:00:00+08:00"},  # = 2026-09-02T17:00Z
+    ]
+    assert _latest_report_data_at(digests, None) == "2026-09-03T01:00:00+08:00"
+    progress = {"last_extracted_at": "2026-09-02T18:00:00+00:00"}
+    assert _latest_report_data_at(digests, progress) == "2026-09-02T18:00:00+00:00"
+    assert _latest_report_data_at([], {"last_extracted_at": None}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -1067,7 +1084,7 @@ def test_parse_rejects_market_banned_tags():
                 '"report_markdown":"r"}',
                 market="美股",
             )
-    # [自检回归] 安全边际充足要求估值准则 pass，美/港股无估值数据源 → 确定性禁用；
+    # 安全边际充足要求估值准则 pass（美/港股另需估值数据充足，见下）；
     # 安全边际不足不禁（财务强度 fail 单独可触发）
     margin_payload = (
         '{"tags":["安全边际充足"],"risk_level":"medium","summary":"s","report_markdown":"r"}'
@@ -1096,9 +1113,35 @@ def test_parse_rejects_market_banned_tags():
     ):
         with pytest.raises(ValueError, match="安全边际充足"):
             parse_analysis_output(margin_payload, market="A股", graham_screen=bad)
-    for banned_market in ("美股", "港股"):
-        with pytest.raises(ValueError, match="禁用标签"):
-            parse_analysis_output(margin_payload, market=banned_market, graham_screen=graham_ok)
+    # [PR #232] 美/港股不再整体禁用：四项 pass 且估算型估值数据充足才放行
+    def _estimated(pe_basis=None, pb_basis=None):
+        base_basis = {"price": 30.0, "price_date": "2026-09-25", "price_stale": False}
+        screen = _graham()
+        for item in screen["criteria"]:
+            if item["criterion"] == "pe":
+                item["basis"] = {**base_basis, "method": "ttm",
+                                 "components": [{"period": "20251231|FY"}], **(pe_basis or {})}
+            elif item["criterion"] == "pb_or_product":
+                item["basis"] = {**base_basis, **(pb_basis or {})}
+        return screen
+
+    for estimated_market in ("美股", "港股"):
+        assert parse_analysis_output(
+            margin_payload, market=estimated_market, graham_screen=_estimated()
+        )["tags"] == ["安全边际充足"]
+        for insufficient in (
+            _estimated(pe_basis={"price_stale": True}),  # 价格陈旧
+            _estimated(pb_basis={"price_stale": True}),
+            _estimated(pe_basis={"note": "最新中报与最新年报不衔接，未滚动"}),  # 估算告警
+            _estimated(pb_basis={"note": "隐含股数偏离最新年报 2 倍以上"}),
+            _estimated(pe_basis={"components": [{"period": "20240630|FY"}]}),  # 年报期末距价格日 > 460 天
+            _estimated(pe_basis={"components": []}),
+            _graham(pe="indeterminate"),
+        ):
+            with pytest.raises(ValueError, match="安全边际充足"):
+                parse_analysis_output(
+                    margin_payload, market=estimated_market, graham_screen=insufficient
+                )
     assert parse_analysis_output(
         '{"tags":["安全边际不足"],"risk_level":"medium","summary":"s","report_markdown":"r"}',
         market="美股",
@@ -1422,7 +1465,7 @@ def test_graham_inputs_take_annual_rows_not_recent_periods(db_session=None):
 
 
 def _seed_statement_rows(db, *, annual: int, interim: int):
-    from app.services.report_statement_prompts import STATEMENT_PROMPT_VERSION
+    from app.services.report_statement_prompts import STATEMENT_BUILD_VERSION, STATEMENT_PROMPT_VERSION
     from app.services.report_statements import STATEMENT_EXTRACTOR_VERSION
 
     for i in range(annual):
@@ -1430,12 +1473,14 @@ def _seed_statement_rows(db, *, annual: int, interim: int):
         svc.upsert_profile_row(db, "00700", "港股", "report_statements", f"{end}|FY", {
             "end_date": end, "fp": "FY", "currency": "CNY", "total_revenue": 100.0 + i,
             "extractor_version": STATEMENT_EXTRACTOR_VERSION, "prompt_version": STATEMENT_PROMPT_VERSION,
+            "build_version": STATEMENT_BUILD_VERSION,
         })
     for i in range(interim):
         end = f"{2025 - i}0630"
         svc.upsert_profile_row(db, "00700", "港股", "report_statements", f"{end}|H1", {
             "end_date": end, "fp": "H1", "currency": "CNY", "total_revenue": 50.0 + i,
             "extractor_version": STATEMENT_EXTRACTOR_VERSION, "prompt_version": STATEMENT_PROMPT_VERSION,
+            "build_version": STATEMENT_BUILD_VERSION,
         })
     db.commit()
 

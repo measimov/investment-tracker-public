@@ -5,8 +5,6 @@
  * 按 #141 的约定属于"跨组件共享的手写形状"——本页面内唯一权威副本。
  */
 
-import { formatNumber } from '@/utils/helpers'
-
 export interface TimeStat {
   period: string
   buy_amount: number
@@ -14,9 +12,19 @@ export interface TimeStat {
   [key: string]: unknown
 }
 
+/** 持仓排行（后端按标的合并各账户行、按 CNY 成本降序） */
 export interface ProfitLossItem {
+  symbol: string
+  name?: string | null
+  market: string
+  quantity: number
+  avg_cost: number
   total_cost: number
   currency: string
+  /** 最新汇率折 CNY；缺汇率时为 null */
+  total_cost_cny?: number | null
+  missing_rate?: boolean
+  account_count?: number
   [key: string]: unknown
 }
 
@@ -33,6 +41,7 @@ export interface CurrentPerformance {
   current_market_value: number
   holdings_detail: Array<Record<string, unknown>>
   missing_rate_currencies?: string[]
+  data_quality?: { warnings?: string[]; unpriced_position_count?: number }
   [key: string]: unknown
 }
 
@@ -41,6 +50,7 @@ export interface RealizedPnL {
   sold_cost: number
   realized_pnl_rate: number
   trades_detail: Array<Record<string, unknown>>
+  missing_rate_currencies?: string[]
   data_quality?: { warnings?: string[] }
   [key: string]: unknown
 }
@@ -72,6 +82,9 @@ export interface AccountReturn {
   realized_trading_pnl_cny: number
   unrealized_pnl_cny: number
   net_dividend_income_cny: number
+  /** 收益率分母口径：净投入为正时用净投入，否则（清仓后）用峰值投入 */
+  rate_denominator?: string
+  peak_invested_principal_cny?: number
   [key: string]: unknown
 }
 
@@ -84,6 +97,8 @@ export interface CurvePoint {
 
 export interface AnalyticsMetrics {
   annualized_return_rate?: number | null
+  observation_span_days?: number
+  risk_free_rate?: number
   max_drawdown_rate?: number | null
   sharpe_ratio?: number | null
   sortino_ratio?: number | null
@@ -92,7 +107,9 @@ export interface AnalyticsMetrics {
 }
 
 export interface TradeSkill {
+  /** 无有效平仓样本时为 null（不是 0%） */
   win_rate?: number | null
+  sample_count?: number
   payoff_ratio?: number | null
   profit_factor?: number | null
   [key: string]: unknown
@@ -150,21 +167,16 @@ export interface HistorySyncJob {
   [key: string]: unknown
 }
 
+/** 价格弹窗行：按 `symbol:market` 合并各账户持仓（见 priceRows.ts） */
 export interface PriceInputRow {
+  /** `symbol:market`——POST 价格映射的键 */
+  key: string
   symbol: string
   name?: string | null
   market: string
+  currency: string
   avg_cost: number
   current_price: number | null
   quantity: number
-}
-
-export function formatNullableNumber(value: number | string | null | undefined, precision = 2) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '--'
-  return formatNumber(Number(value), precision)
-}
-
-export function formatNullablePercent(value: number | string | null | undefined, precision = 2) {
-  if (value === null || value === undefined || Number.isNaN(Number(value))) return '--'
-  return `${formatNumber(Number(value), precision)}%`
+  account_count: number
 }

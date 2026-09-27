@@ -52,6 +52,9 @@ ANNUAL = {
     "hk_09618_20201231": ((254, 256), (251, 253), (257, 260), 1_000, "CNY", None),
     # 第三轮（全量重抽后）补的版式：利潤表/現金流量表列标题「本期發生額 上期發生額」
     "hk_01133_20171231": ((73, 75), (67, 69), (79, 81), 1, "CNY", []),
+    # 抽取器 v9：括号负数内侧空格（01023 2024）、中英双语标题日期不是列年份（00148 2017）
+    "hk_01023_20240630": ((63, 65), (65, 66), (68, 70), 1_000, "HKD", [2024, 2023]),
+    "hk_00148_20171231": ((67, 69), (69, 71), (74, 77), 1_000, "HKD", [2017, 2016]),
 }
 # 行在主导列数上的最低占比。中国准则报表把零值格留空（01133 2017 現金流量表 39 行里 6 行只有
 # 一期有数，33/39 = 84.6%）——纯文本里分不出空的是哪一列，单值行按本期列取；跨年比较列核对
@@ -728,3 +731,165 @@ def test_toc_page_with_masthead_lines_is_not_a_statement():
     assert "目錄" in pages[1].splitlines()[2]
     found = rs.locate_statements(pages, report_type="interim")
     assert found["income"].page_start == 27 and found["income"].title == "中期簡明綜合損益表"
+
+
+# ---------------------------------------------------------------------------
+# 抽取器 v9
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("line", [
+    "本年度虧損 ( 1,034,206) (970,000)",  # v8：本期数吞进标签「本年度虧損 (」，上期顶成本期
+    "本年度虧損 (1,034,206 ) (970,000)",  # v8：同样错列
+    "本年度虧損 ( 1,034,206 ) ( 970,000 )",  # v8：整行不是数字行，被丢掉
+])
+def test_parenthesised_negatives_with_inner_spaces(line):
+    expected = ("本年度虧損", "", [Decimal("-1034206"), Decimal("-970000")])
+    assert rs.parse_row(line, expected_columns=2) == expected
+    assert rs.parse_row(line) == expected
+
+
+@pytest.mark.parametrize("line, columns, expected", [
+    ("銷售成本 7 ( 1,034,206) ( 1,222,076)", 2, ("銷售成本", "7", [Decimal("-1034206"), Decimal("-1222076")])),
+    ("所得稅開支 12(a) ( 47,448 ) (45,018)", 0, ("所得稅開支", "12(a)", [Decimal("-47448"), Decimal("-45018")])),
+    ("其他 ( 1,234) –", 2, ("其他", "", [Decimal("-1234"), None])),
+    ("( 229,801 ) 196,467", 0, ("", "", [Decimal("-229801"), Decimal("196467")])),
+    # 标签里的括号不动（半角括号内不是数字）
+    ("應收款項 (附註) ( 12) 9", 2, ("應收款項 (附註)", "", [Decimal("-12"), Decimal("9")])),
+])
+def test_spaced_parentheses_keep_notes_dashes_and_labels(line, columns, expected):
+    assert rs.parse_row(line, expected_columns=columns) == expected
+
+
+def test_unbalanced_parentheses_are_not_silently_positive():
+    assert rs.parse_number("(1,034,206") is None
+    assert rs.parse_number("1,034,206)") is None
+    assert rs.parse_number("(97)") == Decimal("-97")
+    assert rs.parse_row("虧損 (1,034,206 (970,000)")[2] == [None, Decimal("-970000")]
+
+
+def test_spaced_parentheses_in_real_reports():
+    """01023 2024 年报「銷售 成本 ( 1,034,206) ( 1,222,076)」：v8 行为 label='銷售 成本 ( 1,034,206) ('、
+    values=[1222076]（上期成本顶成本期）。02313 2025 中报「(3,558 )」「(1,301,306 )」两行 v8 整行丢失。"""
+    found = rs.locate_statements(_pages("hk_01023_20240630"), report_type="annual")
+    cost = next(r for r in found["income"].rows if r.label == "銷售 成本")
+    assert cost.values == [Decimal("-1034206"), Decimal("-1222076")]
+    writedown = next(r for r in found["cashflow"].rows if r.label == "撥 回撇減存貨至可變現淨值")
+    assert (writedown.note, writedown.values) == ("7", [Decimal("-4146"), Decimal("-14562")])
+    interim = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")["cashflow"]
+    by_label = {r.label: r.values for r in interim.rows}
+    assert by_label["應 付關聯人士款項增加╱（減少）"] == [Decimal("13112"), Decimal("-3558")]
+    assert by_label["於 初始存款期超過三個月之銀行存款的投資增加"] == [Decimal("-1301306"), Decimal("-1752955")]
+
+
+def _statement(header, *, years=None, kind="balance", columns=2, four=False):
+    return rs.ParsedStatement(
+        kind=kind, page_start=1, page_end=1, title="t", header=header, unit_multiplier=1_000,
+        currency="HKD", years=rs._header_years(header) if years is None else years,
+        column_count=columns, interim_four_columns=four, rows=[],
+    )
+
+
+def _cols(parsed, report_type, end_date):
+    return [
+        (c.column, c.end_date, c.fp)
+        for c in rs.period_columns(parsed, report_type=report_type, end_date=end_date)
+    ]
+
+
+def test_bilingual_caption_date_is_not_the_column_year_line():
+    """00148 全部年报：「For the year ended 31 December 2016 截至二零一六年十二月三十一日止年度」是同一个
+    日期的中英双语，v8 当成列年份 [2016, 2016]，找不到上期 2015，比较列与比较期行全部缺失。"""
+    assert rs._header_years([
+        "綜合損益表", "For the year ended 31 December 2016 截至二零一六年十二月三十一日止年度", "2016 2015",
+        "二零一六年 二零一五年",
+    ]) == [2016, 2015]
+    assert rs._header_years([
+        "簡明綜合損益表", "截至二零二一年六月三十日止六個月 For the six months ended 30 June 2021",
+        "截至六月三十日止六個月", "二零二一年 二零二零年",
+    ]) == [2021, 2020]
+    # 两个不同的完整日期才是列（中国准则的期初列）
+    assert rs._header_years(["合併資產負債表", "項目 附註 2020年12月31日 2020年1月1日"]) == [2020, 2020]
+    found = rs.locate_statements(_pages("hk_00148_20171231"), report_type="annual")
+    for kind in ("income", "balance", "cashflow"):
+        assert found[kind].years == [2017, 2016]
+        assert _cols(found[kind], "annual", "20171231") == [(0, "20171231", "FY"), (1, "20161231", "FY")]
+    revenue = next(r for r in found["income"].rows if "Revenue" in r.label)
+    assert revenue.values == [Decimal("43159473"), Decimal("35830320")]
+
+
+def test_column_dates_decide_duplicate_year_columns():
+    # 6 月财年中报的资产负债表：两列同属 2022 年，只写月份（01023 真实表头）
+    found = rs.locate_statements(_pages("hk_01023_20221231_interim"), report_type="interim")
+    balance = found["balance"]
+    assert balance.years == [2022, 2022]
+    assert rs.column_dates(balance) == ["20221231", "20220630"]
+    assert _cols(balance, "interim", "20221231") == [(0, "20221231", "H1"), (1, "20220630", "FY")]
+    # 列日期决定本期列，不按位置：本期在第 1 列
+    swapped = _statement(["簡明綜合財務狀況表", "於二零二一年 於二零二一年", "六月 十二月", "附註 千港元 千港元"])
+    assert rs.column_dates(swapped) == ["20210630", "20211231"]
+    assert _cols(swapped, "interim", "20211231") == [(1, "20211231", "H1"), (0, "20210630", "FY")]
+    # 三列：本期末 / 上期末 / 上期初（02669 2023 重列）
+    three = _statement(
+        ["綜合財務狀況表", "二零二三年 二零二二年 二零二二年", "十二月三十一日 十二月三十一日 一月一日"], columns=3,
+    )
+    assert rs.column_dates(three) == ["20231231", "20221231", "20220101"]
+    assert _cols(three, "annual", "20231231") == [(0, "20231231", "FY"), (1, "20221231", "FY")]
+    # 英文月日行
+    english = _statement(["Balance", "二零二一年 二零二零年", "30 June 31 December"])
+    assert rs.column_dates(english) == ["20210630", "20201231"]
+
+
+def test_opening_balance_column_is_not_a_prior_year_end():
+    """中国准则「2020年12月31日 2020年1月1日」：1 月 1 日是新准则调整后的期初余额，年报不冒充上年末；
+    中报资产负债表沿用「另一列即上财年末」的旧规则。"""
+    annual = _statement(["合併資產負債表", "項目 附註 2020年12月31日 2020年1月1日"])
+    assert rs.column_dates(annual) == ["20201231", "20200101"]
+    assert _cols(annual, "annual", "20201231") == [(0, "20201231", "FY")]
+    interim = _statement(["合併資產負債表", "項目 附註 2023年6月30日 2023年1月1日"])
+    assert _cols(interim, "interim", "20230630") == [(0, "20230630", "H1"), (1, "20221231", "FY")]
+    # 三列里有真正的上年末：取它（01133 2018）
+    three = _statement(["合併資產負債表", "項目 附註 2018年12月31日 2018年1月1日 2017年12月31日"], columns=3)
+    assert _cols(three, "annual", "20181231") == [(0, "20181231", "FY"), (2, "20171231", "FY")]
+
+
+def test_duplicate_years_without_dates_fall_back_to_positions_for_annual():
+    parsed = _statement(["綜合損益表"], years=[2016, 2016], kind="income")
+    assert rs.column_dates(parsed) == []
+    assert _cols(parsed, "annual", "20161231") == [(0, "20161231", "FY"), (1, "20151231", "FY")]
+    # 四列中报（三个月 + 六个月）不受影响
+    four = _statement(["簡明綜合收益表"], years=[2026, 2025, 2026, 2025], kind="income", columns=4, four=True)
+    assert _cols(four, "interim", "20260630") == [(2, "20260630", "H1"), (3, "20250630", "H1")]
+
+
+def test_per_share_unit_hint_lines_are_attached_to_following_rows():
+    """#223：「人民幣仙 人民幣仙」（02669 中报 EPS 小表的列单位）此前只进无标签行的上下文，
+    其后的「基本及攤薄 21.33 23.45」有标签，提示就丢了。标签不改，提示进 context。"""
+    income = rs.locate_statements(_pages("hk_02669_20260630_interim"), report_type="interim")["income"]
+    eps = next(r for r in income.rows if r.label == "基本及攤薄")
+    assert eps.values == [Decimal("21.33"), Decimal("23.45")]
+    assert "人民幣仙 人民幣仙" in eps.context
+    # 金额行不带每股单位提示
+    assert all(not any("仙" in c for c in r.context) for r in income.rows if r.label == "期內溢利")
+    income = rs.locate_statements(_pages("hk_01995_20181231"), report_type="annual")["income"]
+    eps = next(r for r in income.rows if r.label == "每股基本及攤薄盈利")
+    assert eps.context == ["每股盈利（以每股人民幣列示）"]
+
+
+def test_unit_hint_scope_ends_at_the_next_amount_row():
+    pages = [
+        "綜合損益表\n截至2025年12月31日止年度\n2025年 2024年\n人民幣千元 人民幣千元\n"
+        "收入 1,000 900\n銷售成本 (600) (550)\n毛利 400 350\n年度盈利 1,320 1,275\n"
+        "港仙 港仙\n本公司擁有人應佔每股盈利 11\n基本 13.2 12.7\n攤薄 13.1 12.6\n"
+        "其他全面收益 1,005 1,004\n全面收益總額 2,325 2,279\n"
+    ]
+    income = rs.locate_statements(pages, report_type="annual")["income"]
+    context = {r.label: r.context for r in income.rows}
+    assert context["基本"][0] == "港仙 港仙" and context["攤薄"][0] == "港仙 港仙"
+    assert context["本公司擁有人應佔每股盈利"] == ["港仙 港仙"]
+    assert context["其他全面收益"] == [] and context["全面收益總額"] == []
+    assert context["收入"] == []
+    # 整表金额单位行、每股面值不是每股单位提示
+    assert not rs._is_unit_hint("（以百萬元計，股份及每股數據除外）")
+    assert not rs._is_unit_hint("普通股（每股面值0.00002美元；")
+    assert rs._is_unit_hint("每股盈利（以每股港仙列示）") and rs._is_unit_hint("HK cents HK cents")

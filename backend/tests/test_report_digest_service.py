@@ -139,6 +139,12 @@ def test_digest_generated_and_cached(db, monkeypatch):
     digests = svc.load_report_digests(db, "600036", "A股")
     assert [d["end_date"] for d in digests] == ["20251231", "20241231"]
     assert digests[0]["digest"]["业务分部占比"] == "零售 57%"
+    # 展示字段（#221）：分档与生成时间随行下发，详情页标「精简摘要」、判分析新鲜度
+    assert {d["digest_tier"] for d in digests} <= {"A", "B", "C"}
+    assert all(d["fetched_at"] for d in digests)
+    # 分析输入按字段挑选，展示字段不得混入
+    serialized = svc.serialize_digest_for_analysis(digests)
+    assert all(set(item) == {"end_date", "report_type", "digest"} for item in serialized)
 
 
 def test_max_new_guardrail_reports_remaining(db, monkeypatch):

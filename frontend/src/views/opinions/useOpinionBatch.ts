@@ -10,8 +10,8 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { useBatchJobProgress } from '@/composables/useBatchJobProgress'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { OpinionBatchJob, OpinionBatchTarget } from './types'
+import { showApiError } from '@/utils/showApiError'
 
 export const OPINION_BATCH_POLL_INTERVAL_MS = 3000
 // 墙钟上限 1 小时（后端 BATCH_MAX_SECONDS=1800，留一倍余量）
@@ -134,7 +134,7 @@ export function useOpinionBatch({
       await watchJob(response.data.id)
     } catch (error) {
       if (isUnmounted()) return
-      ElMessage.error(getApiErrorMessage(error, '批量观点摘要启动失败'))
+      showApiError(error, '批量观点摘要启动失败')
     } finally {
       if (!isUnmounted()) starting.value = false
     }

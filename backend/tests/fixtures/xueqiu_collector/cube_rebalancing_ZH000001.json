@@ -1,0 +1,114 @@
+{
+ "_note": "按标的监控 fixture：ids/时间/正文/互动计数取自 xueqiu-timeline-archiver 对真实响应的Markdown 导出（exports/*.md），外层结构与字段形状按 PR-1 真实 status 对象对齐；screen_name、公告附件 href、组合调仓 id 是占位值（导出里没有）。可用真实响应替换。",
+ "count": 3,
+ "page": 1,
+ "totalCount": 3,
+ "list": [
+  {
+   "id": 90000003,
+   "status": "success",
+   "cube_id": 1,
+   "category": "sys_rebalancing",
+   "exe_strategy": "market_all",
+   "created_at": 1567553527000,
+   "updated_at": 1567553527000,
+   "cash_value": null,
+   "cash": 0.0,
+   "comment": null,
+   "rebalancing_histories": [
+    {
+     "id": 1,
+     "rebalancing_id": 90000003,
+     "stock_id": 0,
+     "stock_name": "中国平安",
+     "stock_symbol": "SH601318",
+     "volume": null,
+     "price": null,
+     "net_value": null,
+     "weight": 13.01,
+     "target_weight": 14.65,
+     "prev_weight": 13.01,
+     "prev_target_weight": 13.01,
+     "prev_weight_adjusted": 13.01,
+     "prev_volume": null,
+     "prev_price": null,
+     "prev_net_value": null,
+     "proactive": true,
+     "created_at": 1567553527000,
+     "updated_at": 1567553527000
+    }
+   ]
+  },
+  {
+   "id": 90000002,
+   "status": "success",
+   "cube_id": 1,
+   "category": "sys_rebalancing",
+   "exe_strategy": "market_all",
+   "created_at": 1558999935000,
+   "updated_at": 1558999935000,
+   "cash_value": null,
+   "cash": 0.0,
+   "comment": null,
+   "rebalancing_histories": [
+    {
+     "id": 1,
+     "rebalancing_id": 90000002,
+     "stock_id": 0,
+     "stock_name": "中信银行",
+     "stock_symbol": "SH601998",
+     "volume": null,
+     "price": null,
+     "net_value": null,
+     "weight": 9.94,
+     "target_weight": 10.64,
+     "prev_weight": 9.94,
+     "prev_target_weight": 9.94,
+     "prev_weight_adjusted": 9.94,
+     "prev_volume": null,
+     "prev_price": null,
+     "prev_net_value": null,
+     "proactive": true,
+     "created_at": 1558999935000,
+     "updated_at": 1558999935000
+    }
+   ]
+  },
+  {
+   "id": 90000001,
+   "status": "success",
+   "cube_id": 1,
+   "category": "sys_rebalancing",
+   "exe_strategy": "market_all",
+   "created_at": 1558567933000,
+   "updated_at": 1558567933000,
+   "cash_value": null,
+   "cash": 0.0,
+   "comment": null,
+   "rebalancing_histories": [
+    {
+     "id": 1,
+     "rebalancing_id": 90000001,
+     "stock_id": 0,
+     "stock_name": "中国平安",
+     "stock_symbol": "SH601318",
+     "volume": null,
+     "price": null,
+     "net_value": null,
+     "weight": 12.41,
+     "target_weight": 12.7,
+     "prev_weight": 12.41,
+     "prev_target_weight": 12.41,
+     "prev_weight_adjusted": 12.41,
+     "prev_volume": null,
+     "prev_price": null,
+     "prev_net_value": null,
+     "proactive": true,
+     "created_at": 1558567933000,
+     "updated_at": 1558567933000
+    }
+   ]
+  }
+ ],
+ "maxPage": 1
+}

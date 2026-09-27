@@ -1,9 +1,9 @@
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { ref, reactive } from 'vue'
-import { ElMessage, type FormInstance } from 'element-plus'
+import { ElMessage, type FormInstance, type FormItemRule } from 'element-plus'
 import SecuritySelect from '@/components/SecuritySelect.vue'
 import { useTransactionsStore, type Transaction } from '@/stores/transactions'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { toNumber } from '@/utils/helpers'
 import {
   MARKETS,
@@ -33,9 +33,9 @@ const form = reactive<{
   name: string
   market: string
   transaction_type: string
-  quantity: number
-  price: number
-  fee: number
+  quantity: number | null
+  price: number | null
+  fee: number | null
   transaction_date: string
   currency: string
   notes: string
@@ -45,20 +45,36 @@ const form = reactive<{
   name: '',
   market: '',
   transaction_type: 'BUY',
-  quantity: 0,
-  price: 0,
+  quantity: null,
+  price: null,
   fee: 0,
   transaction_date: '',
   currency: 'CNY',
   notes: ''
 })
 
-const rules = {
+// 数量/价格默认空且必须 >0：此前默认 0 能直接通过 required 校验，提交后才被后端拒绝
+function positive(label: string): FormItemRule {
+  return {
+    trigger: 'blur',
+    validator: (_rule, value, callback) => {
+      if (value === null || value === undefined || value === '') {
+        callback(new Error(`请输入${label}`))
+      } else if (!(Number(value) > 0)) {
+        callback(new Error(`${label}必须大于 0`))
+      } else {
+        callback()
+      }
+    }
+  }
+}
+
+const rules: Record<string, FormItemRule[]> = {
   symbol: [{ required: true, message: '请输入股票代码', trigger: 'blur' }],
   market: [{ required: true, message: '请选择市场', trigger: 'change' }],
   transaction_type: [{ required: true, message: '请选择交易类型', trigger: 'change' }],
-  quantity: [{ required: true, message: '请输入数量', trigger: 'blur' }],
-  price: [{ required: true, message: '请输入价格', trigger: 'blur' }],
+  quantity: [positive('数量')],
+  price: [positive('价格')],
   // currency 可能被 securityFormPatch 清空（B股/加密货币推不出默认币种）
   currency: [{ required: true, message: '请选择币种', trigger: 'change' }],
   transaction_date: [{ required: true, message: '请选择交易日期', trigger: 'change' }]
@@ -104,8 +120,8 @@ function resetForm() {
     name: '',
     market: '',
     transaction_type: 'BUY',
-    quantity: 0,
-    price: 0,
+    quantity: null,
+    price: null,
     fee: 0,
     transaction_date: '',
     currency: 'CNY',
@@ -157,7 +173,7 @@ async function handleSubmit() {
       transaction_type: form.transaction_type,
       quantity: form.quantity,
       price: form.price,
-      fee: form.fee,
+      fee: form.fee ?? 0,
       transaction_date: form.transaction_date,
       currency: form.currency,
       notes: form.notes
@@ -172,7 +188,7 @@ async function handleSubmit() {
     dialogVisible.value = false
     emit('saved')
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, isEdit.value ? '更新失败' : '创建失败'))
+    showApiError(error, isEdit.value ? '更新失败' : '创建失败')
   } finally {
     submitting.value = false
   }
@@ -231,8 +247,9 @@ defineExpose({ openAdd, openEdit })
       <el-form-item label="价格" prop="price">
         <el-input-number v-model="form.price" :min="0" :controls="false" class="amount-input" />
       </el-form-item>
+      <!-- 同样不设 :precision：IBKR 手续费有 4 位小数，固定 2 位会在编辑保存时被截断 -->
       <el-form-item label="手续费" prop="fee">
-        <el-input-number v-model="form.fee" :min="0" :precision="2" />
+        <el-input-number v-model="form.fee" :min="0" :controls="false" class="amount-input" />
       </el-form-item>
       <el-form-item label="交易日期" prop="transaction_date">
         <el-date-picker

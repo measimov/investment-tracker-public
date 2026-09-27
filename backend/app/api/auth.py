@@ -71,7 +71,7 @@ def _require_secure_auth(request: Request) -> None:
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Login requires HTTPS",
+            detail="登录必须通过 HTTPS 访问",
         )
 
 
@@ -90,7 +90,7 @@ def _authenticate_user(request: Request, login_data: LoginRequest, db: Session) 
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="用户名或密码错误",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -102,7 +102,7 @@ def _authenticate_user(request: Request, login_data: LoginRequest, db: Session) 
         )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Inactive user",
+            detail="账号已被停用，请联系管理员",
         )
 
     logger.info(
@@ -209,7 +209,7 @@ def refresh_session(
     if renewed is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session can no longer be renewed",
+            detail="会话已失效，无法续期，请重新登录",
         )
     _set_auth_cookies(response, renewed)
     return LoginResponse(
@@ -286,7 +286,7 @@ def change_password(
     """
     # Verify old password
     if not verify_password(password_data.old_password, current_user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect password")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="原密码不正确")
 
     # Update password
     current_user.hashed_password = get_password_hash(password_data.new_password)
@@ -300,4 +300,4 @@ def change_password(
         revoked,
     )
 
-    return {"message": "Password updated successfully"}
+    return {"message": "密码已修改，所有会话已退出"}

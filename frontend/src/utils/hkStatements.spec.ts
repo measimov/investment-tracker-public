@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { mergeHkPivotRows, sourceLabel, suspectFieldsToScrub } from './hkStatements'
+import {
+  HK_FIELD_LABELS,
+  HK_NUMERIC_FIELDS,
+  buildNotes,
+  buildNotesText,
+  epsNoteText,
+  formatStatementPeriodKey,
+  isCurrencyOutlier,
+  isScrubbedCell,
+  localizeFieldNames,
+  mergeHkPivotRows,
+  sourceLabel,
+  summarizePivotCurrency,
+  suspectFieldsToScrub,
+  suspectTooltipText
+} from './hkStatements'
 
 const pdf2025 = {
   end_date: '20251231',
@@ -155,5 +170,156 @@ describe('mergeHkPivotRows', () => {
     )
     expect(sourceLabel(yahooOnly[0])).toBe('雅虎')
     expect(yahooOnly[0].__source.total_revenue).toBe('yahoo')
+  })
+})
+
+describe('展示辅助（#221）', () => {
+  it('比较列被雅虎补缺后仍标「PDF 比较列+雅虎」', () => {
+    const cmp = { ...pdf2025, end_date: '20241231', is_comparative: true, total_assets: null }
+    const rows = mergeHkPivotRows(
+      [cmp],
+      [{ end_date: '20241231', fp: 'FY', currency: 'CNY', total_assets: 500 }]
+    )
+    expect(sourceLabel(rows[0])).toBe('PDF 比较列+雅虎')
+  })
+
+  it('科目中文名覆盖全部数值科目', () => {
+    for (const field of HK_NUMERIC_FIELDS) {
+      expect(HK_FIELD_LABELS[field], field).toMatch(/[\u4e00-\u9fa5]|EBITDA/)
+    }
+    expect(localizeFieldNames('total_revenue 与雅虎相差 3.2%')).toBe('营业收入 与雅虎相差 3.2%')
+    // 检查 id 里的字段名前缀不被误替换
+    expect(localizeFieldNames('total_assets_positive')).toBe('total_assets_positive')
+  })
+
+  it('存疑已置空的单元格与缺数据区分；tooltip 用中文科目名', () => {
+    const suspect = {
+      ...pdf2025,
+      validation: {
+        status: 'suspect',
+        row_level: false,
+        suspect_fields: ['total_revenue'],
+        checks: [
+          {
+            id: 'yahoo_total_revenue',
+            severity: 'error',
+            status: 'suspect',
+            detail: 'total_revenue 与雅虎相差 12.0%'
+          }
+        ]
+      }
+    }
+    const [row] = mergeHkPivotRows([suspect], [])
+    expect(isScrubbedCell(row, 'total_revenue')).toBe(true)
+    expect(isScrubbedCell(row, 'total_assets')).toBe(false) // 本来就缺 = 缺数据
+    expect(suspectTooltipText(row)).toBe('已置空：营业收入。营业收入 与雅虎相差 12.0%')
+    // 雅虎补回后不再是「已置空」
+    const [refilled] = mergeHkPivotRows(
+      [suspect],
+      [{ end_date: '20251231', fp: 'FY', currency: 'CNY', total_revenue: 90 }]
+    )
+    expect(isScrubbedCell(refilled, 'total_revenue')).toBe(false)
+    const [whole] = mergeHkPivotRows(
+      [{ ...pdf2025, validation: { status: 'suspect', row_level: true, suspect_fields: [] } }],
+      []
+    )
+    expect(suspectTooltipText(whole)).toBe('整行校验不通过，全部科目已置空')
+  })
+
+  it('会计期键转人话', () => {
+    expect(formatStatementPeriodKey('20251231|FY')).toBe('2025 年报')
+    expect(formatStatementPeriodKey('20250630|H1')).toBe('2025 中报')
+    expect(formatStatementPeriodKey('20230630|FY')).toBe('2023-06 年报')
+    expect(formatStatementPeriodKey('20251231|H1')).toBe('2025-12 中报')
+    expect(formatStatementPeriodKey('garbage')).toBe('garbage')
+  })
+
+  it('币种一致才写进标题；与多数不一致（含未知）的行高亮', () => {
+    const uniform = summarizePivotCurrency([{ currency: 'HKD' }, { currency: 'HKD' }])
+    expect(uniform).toEqual({ majority: 'HKD', uniform: true })
+    expect(isCurrencyOutlier({ currency: 'HKD' }, uniform)).toBe(false)
+    const mixed = summarizePivotCurrency([
+      { currency: 'CNY' },
+      { currency: 'CNY' },
+      { currency: 'HKD' },
+      { currency: null }
+    ])
+    expect(mixed).toEqual({ majority: 'CNY', uniform: false })
+    expect(isCurrencyOutlier({ currency: 'CNY' }, mixed)).toBe(false)
+    expect(isCurrencyOutlier({ currency: 'HKD' }, mixed)).toBe(true)
+    expect(isCurrencyOutlier({ currency: null }, mixed)).toBe(true)
+    expect(summarizePivotCurrency([{ currency: 'CNY' }, {}]).uniform).toBe(false)
+  })
+})
+
+describe('构建层标注（PR-A：EPS 折元 / 小计修复 / 已重列）', () => {
+  const annotated = {
+    ...pdf2025,
+    basic_eps: 0.46,
+    build_version: 1,
+    eps_unit: { source_unit: 'cents', divisor: 100, basis: 'chain' },
+    repaired_fields: {
+      total_cur_assets: { from_row: 'r21', to_row: 'r23' },
+      total_assets: { from_row: null, to_row: null }
+    },
+    restated_by_kind: { cashflow: true },
+    mezzanine_equity: 17133208000,
+    validation: {
+      status: 'ok',
+      suspect_fields: [],
+      row_level: false,
+      checks: [
+        {
+          id: 'comparative_n_cashflow_act',
+          severity: 'info',
+          status: 'suspect',
+          reason: 'comparative_restated',
+          fields: ['n_cashflow_act']
+        },
+        {
+          id: 'yahoo_n_cashflow_act',
+          severity: 'info',
+          status: 'suspect',
+          reason: 'yahoo_restated',
+          fields: ['n_cashflow_act']
+        },
+        {
+          id: 'yahoo_total_revenue',
+          severity: 'info',
+          status: 'suspect',
+          reason: 'yahoo_definition_diff',
+          fields: ['total_revenue']
+        }
+      ]
+    }
+  }
+
+  it('标注是 info：不置空、不算存疑，元数据不当科目', () => {
+    const [row] = mergeHkPivotRows([annotated], [])
+    expect(row.__suspect).toBe(false)
+    expect(row.__suspectFields).toEqual([])
+    expect(row.n_cashflow_act).toBe(30)
+    expect(row.__source.mezzanine_equity).toBe('pdf')
+    expect(row.__source).not.toHaveProperty('eps_unit')
+    expect(row.__source).not.toHaveProperty('repaired_fields')
+    expect(row.__source).not.toHaveProperty('build_version')
+    expect(row.__notes.restated).toEqual(['n_cashflow_act'])
+    expect(row.__notes.yahooDefinitionDiff).toEqual(['total_revenue'])
+    expect(row.__notes.epsCents).toEqual({ basis: 'chain' })
+  })
+
+  it('tooltip 文案：已重列保留原值、修复前后行号、EPS 折元依据', () => {
+    const notes = buildNotes(annotated)
+    const text = buildNotesText(notes)
+    expect(text).toContain('已被后续报告重列：经营现金流（显示与分析均保留首次披露值）')
+    expect(text).toContain('流动资产：行 r21 → 行 r23')
+    expect(text).toContain('总资产：未映射 → 分项合计推导')
+    expect(text).toContain('与雅虎口径不同：营业收入')
+    expect(epsNoteText(notes)).toBe(
+      '原文以「仙」列示，已 ÷100 折为元（依据：与相邻报告的比较列首尾相接）'
+    )
+    const plain = buildNotes(pdf2025)
+    expect(buildNotesText(plain)).toBe('')
+    expect(epsNoteText(plain)).toBe('')
   })
 })

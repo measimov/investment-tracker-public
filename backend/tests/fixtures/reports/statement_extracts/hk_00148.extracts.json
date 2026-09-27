@@ -1,0 +1,490 @@
+{
+ "extracts": {
+  "20171231|annual": {
+   "ann_date": "22/04/2018 18:33",
+   "attempts": 1,
+   "end_date": "20171231",
+   "mapping": {
+    "balance": {
+     "accounts_receiv": [
+      "r14"
+     ],
+     "fix_assets": [
+      "r2"
+     ],
+     "inventories": [
+      "r12"
+     ],
+     "minority_int": [
+      "r39"
+     ],
+     "money_cap": [
+      "r20"
+     ],
+     "total_cur_assets": [
+      "r21"
+     ],
+     "total_cur_liab": [
+      "r29"
+     ],
+     "total_debt": [
+      "r28",
+      "r33"
+     ],
+     "total_equity": [
+      "r40"
+     ],
+     "total_hldr_eqy_exc_min_int": [
+      "r38"
+     ],
+     "total_nca": [
+      "r11"
+     ],
+     "total_ncl": [
+      "r34"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2018/0422/ltn20180422068_c.pdf|22/04/2018 18:33",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2018/0422/ltn20180422068_c.pdf",
+   "statements": {
+    "balance": {
+     "column_count": 2,
+     "currency": "HKD",
+     "header": [
+      "綜合財務狀況表",
+      "At 31 December 2017 於二零一七年十二月三十一日",
+      "2017 2016",
+      "二零一七年 二零一六年",
+      "NOTES HK$’000 HK$’000",
+      "附註 千港元 千港元",
+      "Non-current assets 非流動資產",
+      "Investment properties 投資物業 14 17,151,915 15,368,824",
+      "Properties, plant and equipment 物業、廠房及設備 15 14,529,533 13,545,102",
+      "Prepaid lease payments 預付租賃款項 16 931,029 874,668",
+      "Other non-current assets 其他非流動資產 17 691,213 –",
+      "Goodwill 商譽 18 2,288,149 2,288,149"
+     ],
+     "interim_four_columns": false,
+     "kind": "balance",
+     "page_end": 71,
+     "page_start": 69,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "Investment properties 投資物業",
+       "note": "14",
+       "values": [
+        "17151915",
+        "15368824"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "Properties, plant and equipment 物業、廠房及設備",
+       "note": "15",
+       "values": [
+        "14529533",
+        "13545102"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "Prepaid lease payments 預付租賃款項",
+       "note": "16",
+       "values": [
+        "931029",
+        "874668"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "Other non-current assets 其他非流動資產",
+       "note": "17",
+       "values": [
+        "691213",
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "Goodwill 商譽",
+       "note": "18",
+       "values": [
+        "2288149",
+        "2288149"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "Interests in associates 於聯營公司之權益",
+       "note": "19",
+       "values": [
+        "504090",
+        "1959874"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "Available-for-sale investments 可供出售投資",
+       "note": "20",
+       "values": [
+        "5746584",
+        "6537266"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "Entrusted loans 委托貸款",
+       "note": "24(a)",
+       "values": [
+        "788860",
+        "882944"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "and investment properties 投資物業之已付訂金",
+       "note": "",
+       "values": [
+        "485451",
+        "90940"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "Deferred tax assets 遞延稅項資產",
+       "note": "21",
+       "values": [
+        "3768",
+        "3347"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "",
+       "note": "",
+       "values": [
+        "43120592",
+        "41551114"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "Inventories 存貨",
+       "note": "22",
+       "values": [
+        "2115557",
+        "1779065"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "Properties held for development 待發展物業",
+       "note": "23",
+       "values": [
+        "15637824",
+        "15810227"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "and prepayments 及預付款項",
+       "note": "24(a)",
+       "values": [
+        "11763029",
+        "6946775"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "Bills receivables 應收票據",
+       "note": "24(b)",
+       "values": [
+        "5036119",
+        "3182724"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "Available-for-sale investments 可供出售投資",
+       "note": "20",
+       "values": [
+        "778986",
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "Other current assets 其他流動資產",
+       "note": "17",
+       "values": [
+        null,
+        "645931"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "Prepaid lease payments 預付租賃款項",
+       "note": "16",
+       "values": [
+        "24363",
+        "21809"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "Taxation recoverable 可收回稅項",
+       "note": "",
+       "values": [
+        "7964",
+        "10294"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "Bank balances and cash 銀行結餘及現金",
+       "note": "24(c)",
+       "values": [
+        "8113756",
+        "6472614"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "",
+       "note": "",
+       "values": [
+        "43477598",
+        "34869439"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "Assets classified as held for sale 分 類為待售資產",
+       "note": "25",
+       "values": [
+        "1696193",
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "",
+       "note": "",
+       "values": [
+        "45173791",
+        "34869439"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "Trade and other payables 貿易及其他應付賬款",
+       "note": "26",
+       "values": [
+        "9569089",
+        "6809624"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "Bills payables 應付票據",
+       "note": "26",
+       "values": [
+        "691834",
+        "170224"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r26",
+       "label": "residential units",
+       "note": "",
+       "values": [
+        "3551562",
+        "7334955"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r27",
+       "label": "Taxation payable 應繳稅項",
+       "note": "",
+       "values": [
+        "886418",
+        "528938"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r28",
+       "label": "within one year 到期之款項",
+       "note": "27",
+       "values": [
+        "5290745",
+        "7849588"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r29",
+       "label": "",
+       "note": "",
+       "values": [
+        "19989648",
+        "22693329"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r30",
+       "label": "Net current assets 流 動資產淨值",
+       "note": "",
+       "values": [
+        "25184143",
+        "12176110"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r31",
+       "label": "Total assets less current liabilities 資 產總值減流動負債",
+       "note": "",
+       "values": [
+        "68304735",
+        "53727224"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r32",
+       "label": "Deferred tax liabilities 遞延稅項負債",
+       "note": "21",
+       "values": [
+        "783418",
+        "759988"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r33",
+       "label": "due after one year 到期之款項",
+       "note": "27",
+       "values": [
+        "13797597",
+        "9014564"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r34",
+       "label": "",
+       "note": "",
+       "values": [
+        "14581015",
+        "9774552"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r35",
+       "label": "",
+       "note": "",
+       "values": [
+        "53723720",
+        "43952672"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r36",
+       "label": "Share capital 股本",
+       "note": "28",
+       "values": [
+        "106645",
+        "103840"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r37",
+       "label": "Reserves 儲備",
+       "note": "",
+       "values": [
+        "45932874",
+        "37483164"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r38",
+       "label": "of the Company",
+       "note": "",
+       "values": [
+        "46039519",
+        "37587004"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r39",
+       "label": "Non-controlling interests 非控股股東權益",
+       "note": "30",
+       "values": [
+        "7684201",
+        "6365668"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r40",
+       "label": "Total equity 資 本總額",
+       "note": "",
+       "values": [
+        "53723720",
+        "43952672"
+       ]
+      }
+     ],
+     "title": "綜合財務狀況表",
+     "unit_multiplier": 1000,
+     "years": [
+      2017,
+      2017
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "2017 年報"
+  }
+ },
+ "market": "港股",
+ "symbol": "00148",
+ "yahoo_fundamentals": {}
+}

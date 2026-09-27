@@ -46,6 +46,7 @@ from .opinion_summary_jobs import (
 from .security_analysis_batch_jobs import NoBatchTargetsError
 from .security_rule_service import get_cash_management_symbols, get_excluded_keys
 from .xueqiu_opinion_source import (
+    UNAVAILABLE_MESSAGE,
     OpinionSourceUnavailable,
     build_wanted_map,
     scan_matched_utterances,
@@ -203,10 +204,7 @@ def start_opinion_batch_job(
 ) -> Dict[str, Any]:
     freshness = source_freshness(db)
     if not freshness["available"]:
-        raise OpinionSourceUnavailable(
-            "雪球观点数据源未接入（未找到 xueqiu_archiver_utterances 表，"
-            "该表由 xueqiu-timeline-archiver 项目写入）"
-        )
+        raise OpinionSourceUnavailable(UNAVAILABLE_MESSAGE)
     preview = get_opinion_batch_targets(db, user_id)
     targets = preview["targets"]
     if not targets:

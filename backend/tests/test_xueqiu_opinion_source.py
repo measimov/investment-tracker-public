@@ -1,9 +1,9 @@
-"""雪球观点数据源 reader：符号提取、外部表 raw SQL、新鲜度、降级。
+"""雪球观点数据源 reader：符号提取、归档表 raw SQL、新鲜度、降级。
 
-外部表读取用**真 DDL fixture**（列类型与生产一致，尤其 created_at 是 TEXT）：
+表由迁移 20260927_0024 建出（DDL 与原 archiver 逐字一致，created_at 是 TEXT）：
 reader 的价值全在那段 raw SQL（created_at_ms 时间过滤、LIKE 预筛），
-monkeypatch 掉等于什么都没测。表归 xueqiu-timeline-archiver 所有，生产上
-本应用只读——fixture 建表仅为测试，teardown 即删。
+monkeypatch 掉等于什么都没测。表总是存在，「未接入」= 采集器从未成功运行且无发言；
+fixture 在前后清空 utterances / scan_runs。
 """
 
 from datetime import datetime, timedelta, timezone
@@ -13,21 +13,6 @@ from sqlalchemy import text
 
 from app.database import SessionLocal
 from app.services import xueqiu_opinion_source as src
-
-UTTERANCE_DDL = """
-CREATE TABLE IF NOT EXISTS xueqiu_archiver_utterances (
-    utterance_key text PRIMARY KEY,
-    target_user_id text, source text, source_id text, kind text,
-    post_id text, post_url text,
-    created_at text,              -- 生产实测就是 TEXT，不是 timestamptz
-    created_at_ms bigint,
-    author_id text, author_name text, text text,
-    context_post_id text, context_url text, context_author_name text,
-    context_text text,
-    first_seen_at timestamptz, last_seen_at timestamptz
-)
-"""
-
 
 @pytest.fixture
 def db():
@@ -39,32 +24,50 @@ def db():
         session.close()
 
 
+def _clean(db):
+    db.execute(text(
+        "TRUNCATE xueqiu_archiver_utterances, xueqiu_archiver_scan_runs RESTART IDENTITY"
+    ))
+    db.commit()
+
+
 @pytest.fixture
 def archiver_table(db):
-    db.execute(text(UTTERANCE_DDL))
-    db.commit()
+    """保留旧名：表由迁移保证存在，这里只负责前后清空。"""
+    _clean(db)
     yield
-    db.execute(text("DROP TABLE IF EXISTS xueqiu_archiver_utterances"))
-    db.commit()
+    _clean(db)
 
 
-def _insert(db, key, *, author="管我财", body="", context=None, post_url=None,
+def _insert(db, key, *, author="某作者", body="", context=None, post_url=None,
             context_url=None, kind="homepage_post", at=None, last_seen=None):
     at = at or datetime.now(timezone.utc)
     db.execute(
         text(
             "INSERT INTO xueqiu_archiver_utterances "
-            "(utterance_key, kind, author_name, text, context_text, post_url, "
-            " context_url, created_at_ms, last_seen_at) "
-            "VALUES (:key, :kind, :author, :body, :context, :post_url, "
-            "        :context_url, :ms, :last_seen)"
+            "(utterance_key, target_user_id, source, kind, author_name, text, context_text, "
+            " post_url, context_url, created_at_ms, last_seen_at) "
+            "VALUES (:key, '1', 'profile_timeline', :kind, :author, :body, :context, "
+            "        :post_url, :context_url, :ms, :last_seen)"
         ),
         {
             "key": key, "kind": kind, "author": author, "body": body,
-            "context": context, "post_url": post_url, "context_url": context_url,
+            "context": context or "", "post_url": post_url or "",
+            "context_url": context_url or "",
             "ms": int(at.timestamp() * 1000),
             "last_seen": last_seen or datetime.now(timezone.utc),
         },
+    )
+    db.commit()
+
+
+def _scan_run(db, *, status="ok", finished=None):
+    db.execute(
+        text(
+            "INSERT INTO xueqiu_archiver_scan_runs (target_user_id, author_user_id, status, "
+            " finished_at) VALUES ('1', '1', :status, :finished)"
+        ),
+        {"status": status, "finished": finished or datetime.now(timezone.utc)},
     )
     db.commit()
 
@@ -169,31 +172,36 @@ def test_source_freshness_stale_detection(db, archiver_table, monkeypatch):
     assert src.source_freshness(db)["stale"] is False
 
 
-def test_real_sql_error_recovers_session(db):
-    """评审 P2：外部表列漂移触发真实 DBAPI 错误后，同一 Session 必须还能用。
+def test_real_sql_error_recovers_session(db, archiver_table, monkeypatch):
+    """评审 P2：发言表列漂移触发真实 DBAPI 错误后，同一 Session 必须还能用。
 
     没有 SAVEPOINT 时事务被标成 aborted，后续任何查询都是
-    InFailedSqlTransaction——"降级"变 500。
+    InFailedSqlTransaction——"降级"变 500。表现在由迁移管理、不会缺列，这里把
+    reader 指向一张刻意缺 last_seen_at 的表来复现同一类错误。
     """
     db.execute(text(
-        "CREATE TABLE IF NOT EXISTS xueqiu_archiver_utterances "
+        "CREATE TABLE IF NOT EXISTS xueqiu_drift_utterances_test "
         "(utterance_key text PRIMARY KEY, created_at_ms bigint)"  # 刻意缺 last_seen_at
     ))
+    db.execute(text("INSERT INTO xueqiu_drift_utterances_test VALUES ('k', 1)"))
     db.commit()
+    monkeypatch.setattr(src, "UTTERANCE_TABLE", "xueqiu_drift_utterances_test")
     try:
         fresh = src.source_freshness(db)
         assert fresh["available"] is False
         # 同一 Session 继续查询必须成功（回归点）
         assert db.execute(text("SELECT 1")).scalar() == 1
     finally:
-        db.execute(text("DROP TABLE IF EXISTS xueqiu_archiver_utterances"))
+        db.rollback()
+        db.execute(text("DROP TABLE IF EXISTS xueqiu_drift_utterances_test"))
         db.commit()
 
 
-def test_missing_table_degrades_explicitly(db):
-    """无表：available False、ensure 抛、scan 抛——绝不静默返回空。"""
+def test_empty_source_degrades_explicitly(db, archiver_table):
+    """表在但采集器从未成功运行、库里没有发言：available False、ensure 抛、scan 抛——
+    绝不静默返回空。"""
     assert src.is_opinion_source_available(db) is False
-    with pytest.raises(src.OpinionSourceUnavailable):
+    with pytest.raises(src.OpinionSourceUnavailable, match="未接入"):
         src.ensure_opinion_source(db)
     with pytest.raises(src.OpinionSourceUnavailable):
         src.scan_matched_utterances(db, {"SH600519"}, since=datetime.now(timezone.utc))
@@ -202,6 +210,42 @@ def test_missing_table_degrades_explicitly(db):
         "available": False, "latest_scan_at": None,
         "latest_utterance_at": None, "stale": False,
     }
+    # 失败的采集轮次不算"接入"
+    _scan_run(db, status="failed")
+    assert src.is_opinion_source_available(db) is False
+
+
+def test_missing_table_still_degrades(db, monkeypatch):
+    """未迁移的库（表不存在）按同一语义降级。"""
+    monkeypatch.setattr(src, "UTTERANCE_TABLE", "xueqiu_no_such_table_test")
+    assert src.is_opinion_source_available(db) is False
+    assert src.source_freshness(db)["available"] is False
+
+
+def test_successful_scan_without_utterances_is_available(db, archiver_table):
+    """采集器成功跑过但关注作者都没发言：已接入（匹配为空是真实的"无观点"）。"""
+    finished = datetime.now(timezone.utc) - timedelta(hours=1)
+    _scan_run(db, status="ok", finished=finished)
+    assert src.is_opinion_source_available(db) is True
+    fresh = src.source_freshness(db)
+    assert fresh["available"] is True and fresh["stale"] is False
+    assert datetime.fromisoformat(fresh["latest_scan_at"]) == finished
+    assert fresh["latest_utterance_at"] is None
+    assert src.scan_matched_utterances(
+        db, {"SH600519"}, since=datetime.now(timezone.utc) - timedelta(days=1)
+    ) == {}
+
+
+def test_liveness_prefers_successful_scan_runs(db, archiver_table, monkeypatch):
+    """活性判据：最近一次成功采集优先，last_seen_at 只是没有采集记录时的兜底。"""
+    monkeypatch.setattr(src.settings, "xueqiu_opinion_stale_hours", 48)
+    _insert(db, "u1", body="x", last_seen=datetime.now(timezone.utc))
+    old_ok = datetime.now(timezone.utc) - timedelta(hours=100)
+    _scan_run(db, status="ok", finished=old_ok)
+    _scan_run(db, status="failed")  # 更新的失败轮次不刷新活性
+    fresh = src.source_freshness(db)
+    assert datetime.fromisoformat(fresh["latest_scan_at"]) == old_ok
+    assert fresh["stale"] is True
 
 
 def test_snapshot_warns_only_when_available_and_stale(db, archiver_table, monkeypatch):
@@ -215,7 +259,7 @@ def test_snapshot_warns_only_when_available_and_stale(db, archiver_table, monkey
     assert any("停摆" in w for w in result["data_quality"]["warnings"])
 
 
-def test_snapshot_silent_without_table(db):
+def test_snapshot_silent_without_data(db, archiver_table):
     from app.services.statistics import snapshot as snap_module
 
     result = snap_module.build_portfolio_snapshot(db, user_id=1)

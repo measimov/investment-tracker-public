@@ -10,7 +10,7 @@
 - 账户数据：券商账户归属、外部现金事件、导入批次追溯、月末对账快照与自动比对
 - 持仓计算：按交易和公司行动重算数量、成本和当前价格（账户级持仓）
 - 公司行动：现金股息、红股、配股、拆股、合股、税费调整、期初建仓/转托管转入（账户级绝对数量，成本可后补）；A/B 股分红公告自动同步为建议（Tushare，确认后入账）+ 持仓标的未来事件角标（财报披露/分红预案/限售解禁）
-- 收益统计：持仓表现、FIFO 已实现盈亏、股息收入；账户级收益为权益仓口径（仅证券投入），组合指标另标实验；TTWR 曲线可叠加基准指数对比（沪深300/恒生/标普500，超额收益为价格指数算术差）
+- 收益统计：持仓表现、FIFO 已实现盈亏、股息收入；账户级收益为权益仓口径（仅证券投入），组合指标另标实验；TTWR 曲线可叠加基准指数对比（沪深300/恒生/标普500，超额收益为价格指数算术差）；仪表盘显示当日/本月/本年损益（与 TTWR 曲线同一算法，权益仓口径）
 - 多币种：汇率维护、换算和双币种展示
 - 数据导入：标准交易/公司行动 CSV/Excel、招商证券电子对账单 PDF（含现金业务入账）、
   IBKR Activity CSV（含存款/利息/外汇入账）、东方财富普通股票与港股通 PDF 对账单
@@ -31,18 +31,32 @@
 
 ## 快速启动（Docker Compose）
 
+前置：Docker（`docker compose` 插件或独立 `docker-compose` 均可）、外部 PostgreSQL 16、TLS 证书。
+
 ```bash
 cp .env.example .env
-# 编辑 .env，保留并填写 docker-compose.yml 必需的环境变量
+# 编辑 .env：至少填完「必填」一组（数据库、密钥、初始口令、nginx 主机名与证书；Tushare token 可选）
 
+# /health 的 build 字段 = 当前提交（GNU/BSD sed 通用写法）
+SHA=$(git rev-parse --short HEAD)
+if grep -q '^BUILD_SHA=' .env; then
+  sed -i.bak "s/^BUILD_SHA=.*/BUILD_SHA=$SHA/" .env && rm -f .env.bak
+else
+  printf '\nBUILD_SHA=%s\n' "$SHA" >> .env
+fi
+
+docker compose build
+docker compose run --rm --user root backend chown -R 10001:10001 /app/logs
 docker compose run --rm backend alembic upgrade head
 docker compose run --rm backend python manage.py seed
 docker compose up -d
 ```
 
-访问 `https://<app-host>`；健康检查 `https://<app-host>/health`。
+访问 `https://<app-host>`；健康检查 `https://<app-host>/health`（`build` 字段应等于 `$SHA`）。
 `seed` 初始化 `admin` / `demo` 两个用户，密码来自 `.env`。
-必需环境变量清单见 [.env.example](.env.example) 与 [DEPLOYMENT.md](DEPLOYMENT.md)。
+
+完整步骤（环境变量表、群晖、升级清单、部署后数据任务、备份恢复、
+排障）见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
 本地开发（后端 venv + 前端 vite dev）步骤见 [DEVELOPMENT.md](DEVELOPMENT.md)。
 
@@ -66,12 +80,13 @@ docker compose up -d
 - `/api/broker-accounts`、`/api/cash-events`、`/api/import-batches`
 - `/api/reconciliation-snapshots`：月末对账快照与自动比对
 - `/api/holdings`：持仓查询、价格更新、行情刷新任务
-- `/api/statistics`：汇总、市场/时间统计、FIFO 盈亏、股息、TTWR 曲线、组合快照
+- `/api/statistics`：汇总、市场/时间统计、FIFO 盈亏、股息、TTWR 曲线、组合快照、当日/本月/本年损益（`GET /api/statistics/period-pnl`）
 - `/api/corporate-actions`、`/api/exchange-rates`、`/api/security-rules`（账本特例规则；`/api/excluded-securities` 为兼容路由）
 - `/api/llm-reports`：AI 复盘报告生成、追问、定期计划
 - `/api/import/*`、`/api/export/*`：文件导入与 CSV/Excel 导出
 
 ## 备份
 
-运行数据在 PostgreSQL 中，使用根目录 `./backup.sh`（`.partial` → 读检 → 原子改名 → SHA256）。
+运行数据在 PostgreSQL 中，使用根目录 `./backup.sh`（`.partial` → 读检 → 原子改名 → SHA256；
+宿主没有 pg_dump 时自动改用一次性 `postgres:16` 容器；`--prune --keep N` 按份数清理旧备份）。
 恢复演练与升级顺序见 [DEPLOYMENT.md](DEPLOYMENT.md)。`data/` 目录只保留原始导入文件。

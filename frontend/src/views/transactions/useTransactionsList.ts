@@ -9,8 +9,8 @@
 import { reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useTransactionsStore, type Transaction } from '@/stores/transactions'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { isTransfer } from './shared'
+import { showApiError } from '@/utils/showApiError'
 
 export function useTransactionsList() {
   const transactionsStore = useTransactionsStore()
@@ -70,7 +70,7 @@ export function useTransactionsList() {
         await loadTransactions()
       }
     } catch (error) {
-      ElMessage.error(getApiErrorMessage(error, '加载交易记录失败'))
+      showApiError(error, '加载交易记录失败')
     } finally {
       loading.value = false
     }
@@ -108,7 +108,7 @@ export function useTransactionsList() {
         ElMessage.success('删除成功')
         loadTransactions()
       } catch (error) {
-        ElMessage.error(getApiErrorMessage(error, '删除失败'))
+        showApiError(error, '删除失败')
       }
     })
   }

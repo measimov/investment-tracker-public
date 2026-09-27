@@ -21,6 +21,23 @@ from ..core.deps import get_current_active_user, get_current_admin_user
 
 router = APIRouter()
 
+MANUAL_PRICE_SOURCE = "manual"
+_DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _aware(value: Optional[datetime]) -> datetime:
+    if value is None:
+        return _DATETIME_MIN
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _apply_manual_price(row: Holding, price: Decimal, updated_at: datetime) -> None:
+    """手工改价：行情日期未知（写 NULL，前端显示「刷新于 …」），来源标 manual。"""
+    row.current_price = price
+    row.price_updated_at = updated_at
+    row.price_as_of = None
+    row.price_source = MANUAL_PRICE_SOURCE
+
 
 @router.get("", response_model=List[HoldingResponse])
 def get_holdings(
@@ -74,6 +91,14 @@ def get_holding(
     total_quantity = sum(Decimal(str(row.quantity)) for row in rows)
     total_cost = sum(Decimal(str(row.total_cost)) for row in rows)
     first = rows[0]
+    # 价格/写库时刻/行情日/来源是同一候选：取写库最晚的那一行整组返回，
+    # 不让一行的价格配上另一行的时间戳（与 resolve_server_prices 同口径）。
+    priced = [row for row in rows if row.current_price]
+    price_row = max(
+        priced,
+        key=lambda row: _aware(row.price_updated_at),
+        default=None,
+    )
     return HoldingResponse(
         id=first.id,
         user_id=first.user_id,
@@ -85,10 +110,10 @@ def get_holding(
         avg_cost=(total_cost / total_quantity) if total_quantity > 0 else Decimal("0"),
         total_cost=total_cost,
         currency=first.currency,
-        current_price=next((row.current_price for row in rows if row.current_price), None),
-        price_updated_at=max(
-            (row.price_updated_at for row in rows if row.price_updated_at), default=None
-        ),
+        current_price=price_row.current_price if price_row else None,
+        price_updated_at=price_row.price_updated_at if price_row else None,
+        price_as_of=price_row.price_as_of if price_row else None,
+        price_source=price_row.price_source if price_row else None,
         updated_at=max(row.updated_at for row in rows),
     )
 
@@ -126,8 +151,7 @@ def update_holding_price(
     )
     updated_at = datetime.now(timezone.utc)
     for row in sibling_rows:
-        row.current_price = price_update.current_price
-        row.price_updated_at = updated_at
+        _apply_manual_price(row, price_update.current_price, updated_at)
 
     db.commit()
     db.refresh(holding)
@@ -161,9 +185,9 @@ def batch_update_prices(
         )
 
         if rows:
+            updated_at = datetime.now(timezone.utc)
             for holding in rows:
-                holding.current_price = update.price
-                holding.price_updated_at = datetime.now(timezone.utc)
+                _apply_manual_price(holding, update.price, updated_at)
             success_list.append(
                 {"symbol": update.symbol, "market": update.market, "price": float(update.price)}
             )

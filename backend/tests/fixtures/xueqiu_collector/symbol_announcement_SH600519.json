@@ -1,0 +1,41 @@
+{
+ "_note": "按标的监控 fixture：ids/时间/正文/互动计数取自 xueqiu-timeline-archiver 对真实响应的Markdown 导出（exports/*.md），外层结构与字段形状按 PR-1 真实 status 对象对齐；screen_name、公告附件 href、组合调仓 id 是占位值（导出里没有）。可用真实响应替换。",
+ "count": 120,
+ "page": 1,
+ "maxPage": 40,
+ "list": [
+  {
+   "id": 405111930,
+   "created_at": 1786711588000,
+   "title": "",
+   "text": "贵州茅台：贵州茅台关于召开2026年半年度业绩说明会的公告 <a href=\"https://notice.example.invalid/405111930.PDF\" target=\"_blank\" title=\"公告原文\">网页链接</a>",
+   "description": "贵州茅台：贵州茅台关于召开2026年半年度业绩说明会的公告 <a href=\"https://notice.example.invalid/405111930.PDF\" target=\"_blank\" title=\"公告原文\">网页链接</a>",
+   "target": "/S/SH600519/405111930",
+   "reply_count": 42,
+   "retweet_count": 0,
+   "fav_count": 3
+  },
+  {
+   "id": 405111926,
+   "created_at": 1786711586000,
+   "title": "",
+   "text": "贵州茅台：贵州茅台第五届董事会2026年度第三次会议决议公告 <a href=\"https://notice.example.invalid/405111926.PDF\" target=\"_blank\" title=\"公告原文\">网页链接</a>",
+   "description": "贵州茅台：贵州茅台第五届董事会2026年度第三次会议决议公告 <a href=\"https://notice.example.invalid/405111926.PDF\" target=\"_blank\" title=\"公告原文\">网页链接</a>",
+   "target": "/S/SH600519/405111926",
+   "reply_count": 0,
+   "retweet_count": 0,
+   "fav_count": 5
+  },
+  {
+   "id": 405111922,
+   "created_at": 1786711584000,
+   "title": "",
+   "text": "贵州茅台：贵州茅台2026年半年度报告 <a href=\"https://notice.example.invalid/405111922.PDF\" target=\"_blank\" title=\"公告原文\">网页链接</a>",
+   "description": "贵州茅台：贵州茅台2026年半年度报告 <a href=\"https://notice.example.invalid/405111922.PDF\" target=\"_blank\" title=\"公告原文\">网页链接</a>",
+   "target": "/S/SH600519/405111922",
+   "reply_count": 1773,
+   "retweet_count": 0,
+   "fav_count": 96
+  }
+ ]
+}

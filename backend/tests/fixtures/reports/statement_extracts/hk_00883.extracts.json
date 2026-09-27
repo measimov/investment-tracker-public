@@ -1,0 +1,1539 @@
+{
+ "extracts": {
+  "20221231|annual": {
+   "ann_date": "11/04/2023 16:49",
+   "attempts": 1,
+   "end_date": "20221231",
+   "mapping": {
+    "income": {
+     "basic_eps": [
+      "r39"
+     ],
+     "diluted_eps": [
+      "r40"
+     ],
+     "income_tax": [
+      "r24"
+     ],
+     "int_exp": [
+      "r17"
+     ],
+     "n_income_attr_p": [
+      "r26"
+     ],
+     "operating_income": [
+      "r15"
+     ],
+     "sga_exp": [
+      "r12"
+     ],
+     "total_profit": [
+      "r23"
+     ],
+     "total_revenue": [
+      "r4"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2023/0411/2023041100804_c.pdf|11/04/2023 16:49",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2023/0411/2023041100804_c.pdf",
+   "statements": {
+    "income": {
+     "column_count": 2,
+     "currency": "CNY",
+     "header": [
+      "合併損益及其他綜合收益表",
+      "截至二零二二年十二月三十一日止年度",
+      "（除每股數據外，所有金額均以人民幣百萬元為單位）",
+      "附註 二零二二年 二零二一年",
+      "收入",
+      "與客戶簽訂的合同產生的收入",
+      "油氣銷售收入 4 352,956 222,125",
+      "貿易收入 4 60,433 18,084",
+      "其他收入 8,841 5,902",
+      "422,230 246,111",
+      "費用",
+      "作業費用 (31,566) (27,985)"
+     ],
+     "interim_four_columns": false,
+     "kind": "income",
+     "page_end": 106,
+     "page_start": 105,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "油氣銷售收入",
+       "note": "4",
+       "values": [
+        "352956",
+        "222125"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "貿易收入",
+       "note": "4",
+       "values": [
+        "60433",
+        "18084"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "其他收入",
+       "note": "",
+       "values": [
+        "8841",
+        "5902"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "",
+       "note": "",
+       "values": [
+        "422230",
+        "246111"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "作業費用",
+       "note": "",
+       "values": [
+        "-31566",
+        "-27985"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "除所得稅外的其他稅金 10(ii)",
+       "note": "",
+       "values": [
+        "-18778",
+        "-11172"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "勘探費用",
+       "note": "",
+       "values": [
+        "-14058",
+        "-11702"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "折舊、折耗及攤銷",
+       "note": "6",
+       "values": [
+        "-62852",
+        "-57236"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "石油特別收益金 10(iii)",
+       "note": "",
+       "values": [
+        "-24214",
+        "-2611"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "確認的資產減值及跌價準備，淨額 6,",
+       "note": "13",
+       "values": [
+        "-666",
+        "-7957"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "原油及油品採購成本",
+       "note": "",
+       "values": [
+        "-57383",
+        "-16641"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "銷售及管理費用",
+       "note": "",
+       "values": [
+        "-10468",
+        "-8961"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "其他",
+       "note": "",
+       "values": [
+        "-8920",
+        "-5867"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "",
+       "note": "",
+       "values": [
+        "-228905",
+        "-150132"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "營業利潤",
+       "note": "",
+       "values": [
+        "193325",
+        "95979"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "利息收入",
+       "note": "6",
+       "values": [
+        "2980",
+        "1341"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "財務費用",
+       "note": "7",
+       "values": [
+        "-6027",
+        "-6019"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "匯兌收益，淨額",
+       "note": "",
+       "values": [
+        "18",
+        "742"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "投資收益",
+       "note": "6",
+       "values": [
+        "2058",
+        "2850"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "聯營公司之利潤",
+       "note": "17",
+       "values": [
+        "663",
+        "611"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "合營公司之利潤╱（損失）",
+       "note": "18",
+       "values": [
+        "1248",
+        "-265"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "其他收益，淨額",
+       "note": "",
+       "values": [
+        "505",
+        "582"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "稅前利潤",
+       "note": "6",
+       "values": [
+        "194770",
+        "95821"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "所得稅費用",
+       "note": "10(i)",
+       "values": [
+        "-53093",
+        "-25514"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "淨利潤",
+       "note": "",
+       "values": [
+        "141677",
+        "70307"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r26",
+       "label": "本公司股東的權益",
+       "note": "",
+       "values": [
+        "141700",
+        "70320"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r27",
+       "label": "非控制性權益",
+       "note": "",
+       "values": [
+        "-23",
+        "-13"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r28",
+       "label": "",
+       "note": "",
+       "values": [
+        "141677",
+        "70307"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r29",
+       "label": "匯兌折算差異",
+       "note": "",
+       "values": [
+        "17945",
+        "-4577"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r30",
+       "label": "聯營公司其他綜合費用",
+       "note": "",
+       "values": [
+        null,
+        "-1"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r31",
+       "label": "現金流量套期儲備",
+       "note": "",
+       "values": [
+        "2",
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r32",
+       "label": "之公允價值變動",
+       "note": "19(i)",
+       "values": [
+        "1331",
+        "1172"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r33",
+       "label": "其他",
+       "note": "",
+       "values": [
+        "151",
+        "759"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r34",
+       "label": "其他綜合收益╱（費用）合計，稅後淨額",
+       "note": "",
+       "values": [
+        "19429",
+        "-2647"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r35",
+       "label": "本年綜合收益合計",
+       "note": "",
+       "values": [
+        "161106",
+        "67660"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r36",
+       "label": "本公司股東的權益",
+       "note": "",
+       "values": [
+        "161129",
+        "67673"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r37",
+       "label": "非控制性權益",
+       "note": "",
+       "values": [
+        "-23",
+        "-13"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r38",
+       "label": "",
+       "note": "",
+       "values": [
+        "161106",
+        "67660"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r39",
+       "label": "－基本（人民幣元）",
+       "note": "11",
+       "values": [
+        "3.03",
+        "1.57"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r40",
+       "label": "－攤薄（人民幣元）",
+       "note": "11",
+       "values": [
+        "3.03",
+        "1.57"
+       ]
+      }
+     ],
+     "title": "合併損益及其他綜合收益表",
+     "unit_multiplier": 1000000,
+     "years": [
+      2022,
+      2021
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "二零二二年年報"
+  },
+  "20231231|annual": {
+   "ann_date": "02/04/2024 16:37",
+   "attempts": 1,
+   "end_date": "20231231",
+   "mapping": {
+    "income": {
+     "basic_eps": [
+      "r41"
+     ],
+     "diluted_eps": [
+      "r42"
+     ],
+     "income_tax": [
+      "r25"
+     ],
+     "int_exp": [
+      "r18"
+     ],
+     "n_income_attr_p": [
+      "r27"
+     ],
+     "operating_income": [
+      "r16"
+     ],
+     "sga_exp": [
+      "r13"
+     ],
+     "total_profit": [
+      "r24"
+     ],
+     "total_revenue": [
+      "r4"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2024/0402/2024040202011_c.pdf|02/04/2024 16:37",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2024/0402/2024040202011_c.pdf",
+   "statements": {
+    "income": {
+     "column_count": 2,
+     "currency": "CNY",
+     "header": [
+      "合併損益及其他綜合收益表",
+      "截至二零二三年十二月三十一日止年度",
+      "（除每股數據外，所有金額均以人民幣百萬元為單位）",
+      "附註 二零二三年 二零二二年",
+      "收入",
+      "與客戶簽訂的合同產生的收入",
+      "油氣銷售收入 4 327,867 352,956",
+      "貿易收入 4 79,308 60,433",
+      "其他收入 9,434 8,841",
+      "416,609 422,230",
+      "費用",
+      "作業費用 (34,802) (31,566)"
+     ],
+     "interim_four_columns": false,
+     "kind": "income",
+     "page_end": 105,
+     "page_start": 104,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "油氣銷售收入",
+       "note": "4",
+       "values": [
+        "327867",
+        "352956"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "貿易收入",
+       "note": "4",
+       "values": [
+        "79308",
+        "60433"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "其他收入",
+       "note": "",
+       "values": [
+        "9434",
+        "8841"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "",
+       "note": "",
+       "values": [
+        "416609",
+        "422230"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "作業費用",
+       "note": "",
+       "values": [
+        "-34802",
+        "-31566"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "除所得稅外的其他稅金 10(ii), (iv)",
+       "note": "",
+       "values": [
+        "-24331",
+        "-18778"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "勘探費用",
+       "note": "",
+       "values": [
+        "-13716",
+        "-14058"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "折舊、折耗及攤銷",
+       "note": "6",
+       "values": [
+        "-68947",
+        "-62852"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "石油特別收益金 10(iii)",
+       "note": "",
+       "values": [
+        "-9517",
+        "-24214"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "確認的資產減值及跌價準備，淨額 6,",
+       "note": "13",
+       "values": [
+        "-3523",
+        "-677"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "預期信用（損失）╱轉回",
+       "note": "6",
+       "values": [
+        "-74",
+        "11"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "原油及油品採購成本",
+       "note": "",
+       "values": [
+        "-73950",
+        "-57383"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "銷售及管理費用",
+       "note": "",
+       "values": [
+        "-10952",
+        "-10468"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "其他",
+       "note": "",
+       "values": [
+        "-9028",
+        "-8920"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "",
+       "note": "",
+       "values": [
+        "-248840",
+        "-228905"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "營業利潤",
+       "note": "",
+       "values": [
+        "167769",
+        "193325"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "利息收入",
+       "note": "6",
+       "values": [
+        "4805",
+        "2980"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "財務費用",
+       "note": "7",
+       "values": [
+        "-5354",
+        "-6027"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "匯兌（損失）╱收益，淨額",
+       "note": "",
+       "values": [
+        "-297",
+        "18"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "投資收益",
+       "note": "6",
+       "values": [
+        "3084",
+        "2058"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "聯營公司之利潤",
+       "note": "17",
+       "values": [
+        "850",
+        "663"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "合營公司之利潤",
+       "note": "18",
+       "values": [
+        "1081",
+        "1248"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "其他收益，淨額",
+       "note": "",
+       "values": [
+        "1036",
+        "505"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "稅前利潤",
+       "note": "6",
+       "values": [
+        "172974",
+        "194770"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "所得稅費用",
+       "note": "10(i)",
+       "values": [
+        "-48884",
+        "-53093"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r26",
+       "label": "淨利潤",
+       "note": "",
+       "values": [
+        "124090",
+        "141677"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r27",
+       "label": "本公司股東的權益",
+       "note": "",
+       "values": [
+        "123843",
+        "141700"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r28",
+       "label": "非控制性權益",
+       "note": "",
+       "values": [
+        "247",
+        "-23"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r29",
+       "label": "",
+       "note": "",
+       "values": [
+        "124090",
+        "141677"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r30",
+       "label": "匯兌折算差異",
+       "note": "",
+       "values": [
+        "2863",
+        "17945"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r31",
+       "label": "聯營公司其他綜合收益",
+       "note": "",
+       "values": [
+        "152",
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r32",
+       "label": "現金流量套期儲備",
+       "note": "",
+       "values": [
+        "-33",
+        "2"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r33",
+       "label": "之公允價值變動",
+       "note": "19(i)",
+       "values": [
+        "-200",
+        "1331"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r34",
+       "label": "關於重新計量設定受益計劃的變更",
+       "note": "",
+       "values": [
+        "238",
+        "151"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r35",
+       "label": "聯營公司其他綜合收益",
+       "note": "",
+       "values": [
+        "15",
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r36",
+       "label": "其他綜合收益合計，稅後淨額",
+       "note": "",
+       "values": [
+        "3035",
+        "19429"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r37",
+       "label": "本年綜合收益合計",
+       "note": "",
+       "values": [
+        "127125",
+        "161106"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r38",
+       "label": "本公司股東的權益",
+       "note": "",
+       "values": [
+        "126878",
+        "161129"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r39",
+       "label": "非控制性權益",
+       "note": "",
+       "values": [
+        "247",
+        "-23"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r40",
+       "label": "",
+       "note": "",
+       "values": [
+        "127125",
+        "161106"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r41",
+       "label": "－基本（人民幣元）",
+       "note": "11",
+       "values": [
+        "2.60",
+        "3.03"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r42",
+       "label": "－攤薄（人民幣元）",
+       "note": "11",
+       "values": [
+        "2.60",
+        "3.03"
+       ]
+      }
+     ],
+     "title": "合併損益及其他綜合收益表",
+     "unit_multiplier": 1000000,
+     "years": [
+      2023,
+      2022
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "二零二三年年報"
+  },
+  "20241231|annual": {
+   "ann_date": "08/04/2025 16:54",
+   "attempts": 1,
+   "end_date": "20241231",
+   "mapping": {
+    "income": {
+     "basic_eps": [
+      "r42"
+     ],
+     "diluted_eps": [
+      "r43"
+     ],
+     "income_tax": [
+      "r25"
+     ],
+     "int_exp": [
+      "r18"
+     ],
+     "n_income_attr_p": [
+      "r27"
+     ],
+     "operating_income": [
+      "r16"
+     ],
+     "sga_exp": [
+      "r13"
+     ],
+     "total_profit": [
+      "r24"
+     ],
+     "total_revenue": [
+      "r4"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2025/0408/2025040800614_c.pdf|08/04/2025 16:54",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2025/0408/2025040800614_c.pdf",
+   "statements": {
+    "income": {
+     "column_count": 2,
+     "currency": "CNY",
+     "header": [
+      "合併損益及其他綜合收益表",
+      "截至二零二四年十二月三十一日止年度",
+      "（除每股數據外，所有金額均以人民幣百萬元為單位）",
+      "附註 二零二四年 二零二三年",
+      "收入",
+      "與客戶簽訂的合同產生的收入",
+      "油氣銷售收入 4 355,615 327,867",
+      "貿易收入 4 55,142 79,308",
+      "其他收入 9,749 9,434",
+      "420,506 416,609",
+      "費用",
+      "作業費用 (38,227) (34,802)"
+     ],
+     "interim_four_columns": false,
+     "kind": "income",
+     "page_end": 89,
+     "page_start": 88,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "油氣銷售收入",
+       "note": "4",
+       "values": [
+        "355615",
+        "327867"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "貿易收入",
+       "note": "4",
+       "values": [
+        "55142",
+        "79308"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "其他收入",
+       "note": "",
+       "values": [
+        "9749",
+        "9434"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "",
+       "note": "",
+       "values": [
+        "420506",
+        "416609"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "作業費用",
+       "note": "",
+       "values": [
+        "-38227",
+        "-34802"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "除所得稅外的其他稅金 10(ii), (iv)",
+       "note": "",
+       "values": [
+        "-20276",
+        "-24331"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "勘探費用",
+       "note": "",
+       "values": [
+        "-13860",
+        "-13716"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "折舊、折耗及攤銷",
+       "note": "6",
+       "values": [
+        "-74606",
+        "-68947"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "石油特別收益金 10(iii)",
+       "note": "",
+       "values": [
+        "-8297",
+        "-9517"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "確認的資產減值及跌價準備，淨額 6,",
+       "note": "13",
+       "values": [
+        "-8047",
+        "-3523"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "預期信用損失",
+       "note": "6",
+       "values": [
+        "-29",
+        "-74"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "原油及油品採購成本",
+       "note": "",
+       "values": [
+        "-50035",
+        "-73950"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "銷售及管理費用",
+       "note": "",
+       "values": [
+        "-11140",
+        "-10952"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "其他",
+       "note": "",
+       "values": [
+        "-11284",
+        "-9028"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "",
+       "note": "",
+       "values": [
+        "-235801",
+        "-248840"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "營業利潤",
+       "note": "",
+       "values": [
+        "184705",
+        "167769"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "利息收入",
+       "note": "6",
+       "values": [
+        "4582",
+        "4805"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "財務費用",
+       "note": "7",
+       "values": [
+        "-6096",
+        "-5354"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "匯兌損失，淨額",
+       "note": "",
+       "values": [
+        "-1318",
+        "-297"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "投資收益",
+       "note": "6",
+       "values": [
+        "5258",
+        "3084"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "聯營公司之利潤",
+       "note": "17",
+       "values": [
+        "757",
+        "850"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "合營公司之利潤",
+       "note": "18",
+       "values": [
+        "1079",
+        "1081"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "其他收益，淨額",
+       "note": "",
+       "values": [
+        "1009",
+        "1036"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "稅前利潤",
+       "note": "6",
+       "values": [
+        "189976",
+        "172974"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "所得稅費用",
+       "note": "10(i)",
+       "values": [
+        "-51994",
+        "-48884"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r26",
+       "label": "淨利潤",
+       "note": "",
+       "values": [
+        "137982",
+        "124090"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r27",
+       "label": "本公司股東的權益",
+       "note": "",
+       "values": [
+        "137936",
+        "123843"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r28",
+       "label": "非控制性權益",
+       "note": "",
+       "values": [
+        "46",
+        "247"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r29",
+       "label": "",
+       "note": "",
+       "values": [
+        "137982",
+        "124090"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r30",
+       "label": "匯兌折算差異",
+       "note": "",
+       "values": [
+        "4486",
+        "2863"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r31",
+       "label": "聯營公司其他綜合（費用）╱收益",
+       "note": "",
+       "values": [
+        "-78",
+        "152"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r32",
+       "label": "現金流量套期儲備",
+       "note": "",
+       "values": [
+        "15",
+        "-33"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r33",
+       "label": "之公允價值變動",
+       "note": "19(i)",
+       "values": [
+        "-175",
+        "-200"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r34",
+       "label": "關於重新計量設定受益計劃的變更",
+       "note": "",
+       "values": [
+        "138",
+        "238"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r35",
+       "label": "聯營公司其他綜合收益",
+       "note": "",
+       "values": [
+        null,
+        "15"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r36",
+       "label": "歸屬於少數股東的其他綜合收益的稅後淨額",
+       "note": "",
+       "values": [
+        null,
+        null
+       ]
+      },
+      {
+       "context": [],
+       "id": "r37",
+       "label": "其他綜合收益合計，稅後淨額",
+       "note": "",
+       "values": [
+        "4386",
+        "3035"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r38",
+       "label": "本年綜合收益合計",
+       "note": "",
+       "values": [
+        "142368",
+        "127125"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r39",
+       "label": "本公司股東的權益",
+       "note": "",
+       "values": [
+        "142322",
+        "126878"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r40",
+       "label": "非控制性權益",
+       "note": "",
+       "values": [
+        "46",
+        "247"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r41",
+       "label": "",
+       "note": "",
+       "values": [
+        "142368",
+        "127125"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r42",
+       "label": "－基本（人民幣元）",
+       "note": "11",
+       "values": [
+        "2.90",
+        "2.60"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r43",
+       "label": "－攤薄（人民幣元）",
+       "note": "11",
+       "values": [
+        "2.90",
+        "2.60"
+       ]
+      }
+     ],
+     "title": "合併損益及其他綜合收益表",
+     "unit_multiplier": 1000000,
+     "years": [
+      2024,
+      2023
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "二零二四年年報"
+  }
+ },
+ "market": "港股",
+ "symbol": "00883",
+ "yahoo_fundamentals": {
+  "20221231": {
+   "accounts_receiv": 37992000000.0,
+   "basic_eps": 3.03,
+   "capex": -94754000000.0,
+   "cost_of_revenue": 154444000000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 63070000000.0,
+   "diluted_eps": 3.03,
+   "ebitda": 263819000000.0,
+   "end_date": "20221231",
+   "fix_assets": 543377000000.0,
+   "fp": "FY",
+   "free_cashflow": 110820000000.0,
+   "gross_profit": 277781000000.0,
+   "income_tax": 53093000000.0,
+   "int_exp": 5979000000.0,
+   "inventories": 6239000000.0,
+   "money_cap": 85633000000.0,
+   "n_cashflow_act": 205574000000.0,
+   "n_income_attr_p": 141700000000.0,
+   "operating_income": 194002000000.0,
+   "sga_exp": 10468000000.0,
+   "total_assets": 929031000000.0,
+   "total_cur_assets": 264679000000.0,
+   "total_cur_liab": 113391000000.0,
+   "total_debt": 134396000000.0,
+   "total_hldr_eqy_exc_min_int": 597182000000.0,
+   "total_liab": 330648000000.0,
+   "total_profit": 194770000000.0,
+   "total_revenue": 432225000000.0
+  },
+  "20231231": {
+   "accounts_receiv": 37052000000.0,
+   "basic_eps": 2.6,
+   "capex": -120875000000.0,
+   "cost_of_revenue": 157335000000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 70324000000.0,
+   "diluted_eps": 2.6,
+   "ebitda": 248633000000.0,
+   "end_date": "20231231",
+   "fix_assets": 605122000000.0,
+   "fp": "FY",
+   "free_cashflow": 88868000000.0,
+   "gross_profit": 264195000000.0,
+   "income_tax": 48884000000.0,
+   "int_exp": 5335000000.0,
+   "inventories": 6451000000.0,
+   "money_cap": 133439000000.0,
+   "n_cashflow_act": 209743000000.0,
+   "n_income_attr_p": 123843000000.0,
+   "operating_income": 171292000000.0,
+   "sga_exp": 10952000000.0,
+   "total_assets": 1005598000000.0,
+   "total_cur_assets": 250275000000.0,
+   "total_cur_liab": 123939000000.0,
+   "total_debt": 120177000000.0,
+   "total_hldr_eqy_exc_min_int": 666586000000.0,
+   "total_liab": 337722000000.0,
+   "total_profit": 172974000000.0,
+   "total_revenue": 421530000000.0
+  }
+ }
+}

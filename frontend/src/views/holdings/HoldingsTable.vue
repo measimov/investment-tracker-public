@@ -1,173 +1,319 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
-import { ArrowRight } from '@element-plus/icons-vue'
+import { ArrowRight, EditPen } from '@element-plus/icons-vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import {
   formatNumber,
   formatCurrency,
-  formatDateTime,
+  formatDate,
   formatPercent,
+  formatPrice,
+  formatQuantity,
   toNumber
 } from '@/utils/helpers'
 import type { Holding } from '@/stores/holdings'
-import type { HoldingsTableFeature } from './useHoldingsTable'
+import type { HoldingRow, HoldingsTableFeature } from './useHoldingsTable'
 import type { SecurityBadgesFeature } from './useSecurityBadges'
+import type { SortOrder } from './display'
+import { displayAnalysisTag } from './display'
 
-defineProps<{ table: HoldingsTableFeature; badges: SecurityBadgesFeature }>()
+const props = defineProps<{ table: HoldingsTableFeature; badges: SecurityBadgesFeature }>()
 
 defineEmits<{ transfer: [row: Holding] }>()
 
 const isMobileView = useMediaQuery('(max-width: 640px)')
 const router = useRouter()
 
-// 成本未知份额（期初建仓/转托管转入未补录成本，#174）；旧后端不带该字段时视为 0
-function unknownCostQuantity(row: Holding): number {
-  return toNumber(row.unknown_cost_quantity ?? 0)
+// 进入编辑态即聚焦并全选：点一下就能直接输入新价
+const vFocus = {
+  mounted(el: HTMLElement) {
+    const input = el.querySelector('input')
+    input?.focus()
+    input?.select()
+  }
 }
 
 function openSecurityDetail(row: { symbol: string; market: string }) {
   router.push(`/securities/${encodeURIComponent(row.market)}/${encodeURIComponent(row.symbol)}`)
 }
+
+function isAccountView() {
+  return props.table.state.viewMode === 'account'
+}
+
+// 合并视图下只有多账户行可展开：单账户行展开内容与主行重复，隐藏其展开箭头
+function rowClassName({ row }: { row: HoldingRow }) {
+  return !isAccountView() && row.accounts.length <= 1 ? 'single-account-row' : ''
+}
+
+function onSortChange({ prop, order }: { prop: string | null; order: SortOrder }) {
+  props.table.setSort({ prop, order })
+}
+
+// 回车 = 失焦提交：el-input-number 在原生 change（失焦前触发）时才回写 v-model，
+// 直接在 keydown 里读草稿会拿到旧值
+function submitPriceOnEnter(event: KeyboardEvent) {
+  ;(event.target as HTMLElement | null)?.blur?.()
+}
+
+function accountSummary(row: HoldingRow): string {
+  if (row.accounts.length <= 1) return props.table.accountLabel(row.accounts[0]?.broker_account_id)
+  return `${row.accounts.length} 个账户`
+}
+
+function riskText(level: string) {
+  return `${props.badges.riskLabels[level] || level}风险`
+}
 </script>
 
 <template>
   <div v-if="!isMobileView" class="responsive-table desktop-data-table">
-    <el-table :data="table.visibleHoldings" v-loading="table.state.loading" stripe>
+    <!-- 排序由 useHoldingsTable 做（sortable="custom"）：缺价/缺汇率的行无论升降序都沉底；
+         default-sort 只负责让表头箭头高亮出当前排序 -->
+    <el-table
+      :data="table.rows"
+      :row-key="(row: HoldingRow) => row.key"
+      :row-class-name="rowClassName"
+      :default-sort="{ prop: 'marketValue', order: 'descending' }"
+      v-loading="table.state.loading"
+      class="holdings-table"
+      @sort-change="onSortChange"
+    >
       <template #empty>
         <el-empty description="暂无持仓数据" :image-size="88" />
       </template>
-      <el-table-column prop="symbol" label="代码" min-width="90" />
-      <el-table-column label="名称" min-width="150">
+
+      <!-- 合并视图：多账户行展开看各账户明细与转仓；单账户行不可展开（账户名在副行），
+           按账户视图不需要展开 -->
+      <el-table-column v-if="!isAccountView()" type="expand" width="36">
         <template #default="{ row }">
-          <el-link
-            type="primary"
-            :underline="false"
-            class="holding-name"
-            @click="openSecurityDetail(row)"
+          <div class="account-breakdown" data-testid="holding-accounts">
+            <div v-for="holding in row.accounts" :key="holding.id" class="account-line">
+              <span
+                class="account-name"
+                :class="{ 'account-unassigned': !holding.broker_account_id }"
+              >
+                {{ table.accountLabel(holding.broker_account_id) }}
+              </span>
+              <span class="num">{{ formatQuantity(holding.quantity) }} 股</span>
+              <span class="num muted">均价 {{ formatPrice(holding.avg_cost) }}</span>
+              <span class="num muted"
+                >成本 {{ formatCurrency(holding.total_cost, holding.currency) }}</span
+              >
+              <el-button type="primary" size="small" text @click="$emit('transfer', holding)">
+                转仓
+              </el-button>
+            </div>
+          </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="标的" width="200">
+        <template #default="{ row }">
+          <div class="cell-title">
+            <el-link
+              type="primary"
+              :underline="false"
+              class="holding-name"
+              @click="openSecurityDetail(row)"
+            >
+              {{ row.name || row.symbol }}
+            </el-link>
+            <el-tooltip
+              v-if="badges.upcomingEvent(row)"
+              :content="badges.eventTooltip(row)"
+              placement="top"
+            >
+              <el-tag
+                type="warning"
+                size="small"
+                effect="plain"
+                class="event-badge"
+                data-testid="security-event-badge"
+              >
+                {{ badges.upcomingEvent(row)!.label }}·{{ badges.upcomingEvent(row)!.daysText }}
+              </el-tag>
+            </el-tooltip>
+          </div>
+          <div class="cell-sub">
+            {{ row.symbol }} · {{ row.market }}
+            <template v-if="isAccountView() || row.accounts.length === 1">
+              ·
+              <span :class="{ 'account-unassigned': !row.accounts[0]?.broker_account_id }">
+                {{ table.accountLabel(row.accounts[0]?.broker_account_id) }}
+              </span>
+            </template>
+            <template v-else> · {{ accountSummary(row) }}</template>
+          </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="持仓 / 均价" width="130" align="right">
+        <template #default="{ row }">
+          <div class="cell-main num">{{ formatQuantity(row.quantity) }}</div>
+          <div class="cell-sub num">
+            均价 {{ formatPrice(row.avgCost) }}
+            <el-tooltip
+              v-if="row.unknownCost > 0"
+              content="其中这部分来自成本未知的期初建仓/转托管转入，平均成本与已实现盈亏为估计值；可在公司行动页补录成本"
+            >
+              <el-tag type="warning" size="small" effect="plain" class="unknown-cost-tag">
+                成本未知 {{ formatQuantity(row.unknownCost) }}
+              </el-tag>
+            </el-tooltip>
+          </div>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="现价" width="160" align="right">
+        <template #default="{ row }">
+          <!-- 默认只读；点数值或铅笔进入编辑，回车/失焦保存、Esc 取消。
+               保存作用于该标的全部账户，所以不做常驻输入框（易误改） -->
+          <div
+            v-if="table.isEditingPrice(row)"
+            class="price-editor"
+            @keydown.enter.prevent="submitPriceOnEnter"
+            @keydown.esc.prevent="table.cancelPriceEdit()"
           >
-            {{ row.name }}
-          </el-link>
-          <el-tooltip
-            v-if="badges.upcomingEvent(row)"
-            :content="badges.eventTooltip(row)"
-            placement="top"
-          >
+            <el-input-number
+              v-model="table.state.priceDraft"
+              v-focus
+              :min="0"
+              size="small"
+              :controls="false"
+              data-testid="price-input"
+              @blur="table.commitPriceEdit(row)"
+            />
+          </div>
+          <div v-else class="price-line">
             <el-tag
+              v-if="table.priceInfoOf(row)?.manual"
+              type="info"
+              size="small"
+              effect="plain"
+              class="price-flag"
+              data-testid="price-manual-tag"
+            >
+              手工
+            </el-tag>
+            <el-tag
+              v-if="table.priceInfoOf(row)?.stale"
               type="warning"
               size="small"
               effect="plain"
-              class="event-badge"
-              data-testid="security-event-badge"
+              class="price-flag"
+              data-testid="price-stale-tag"
             >
-              {{ badges.upcomingEvent(row)!.label }}·{{ badges.upcomingEvent(row)!.daysText }}
+              陈价
             </el-tag>
+            <button
+              type="button"
+              class="price-display"
+              :aria-label="`编辑 ${row.name || row.symbol} 的现价`"
+              data-testid="price-display"
+              @click="table.startPriceEdit(row)"
+            >
+              <span class="cell-main num">{{ formatPrice(table.priceOf(row)) }}</span>
+              <el-icon class="price-edit-icon"><EditPen /></el-icon>
+            </button>
+          </div>
+          <el-tooltip :disabled="!table.priceInfoOf(row)" placement="top">
+            <template #content>
+              <div v-for="line in table.priceInfoOf(row)?.tooltip || []" :key="line">
+                {{ line }}
+              </div>
+            </template>
+            <div class="cell-sub" data-testid="price-date">
+              {{ row.currency
+              }}<template v-if="table.priceInfoOf(row)?.label">
+                · {{ table.priceInfoOf(row)!.label }}</template
+              >
+            </div>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column prop="market" label="市场" width="80" />
-      <el-table-column label="账户" min-width="110" show-overflow-tooltip>
+
+      <el-table-column
+        label="市值 / 占比"
+        prop="marketValue"
+        width="170"
+        align="right"
+        sortable="custom"
+        :sort-orders="['descending', 'ascending', null]"
+      >
         <template #default="{ row }">
-          <span :class="{ 'account-unassigned': !row.broker_account_id }">
-            {{ table.accountLabel(row.broker_account_id) }}
-          </span>
+          <template v-if="table.marketValueOf(row) !== null">
+            <div class="cell-main num strong">
+              {{ formatCurrency(table.marketValueOf(row), row.currency) }}
+            </div>
+            <div class="cell-sub num">
+              <template v-if="row.currency !== 'CNY'">
+                ≈{{ formatCurrency(table.marketValueCNYOf(row)) }} ·
+              </template>
+              {{ table.weightOf(row) === null ? '—' : `${formatNumber(table.weightOf(row), 1)}%` }}
+            </div>
+          </template>
+          <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="quantity" label="持仓数量" min-width="120" align="right">
-        <template #default="{ row }">
-          {{ formatNumber(row.quantity, 4) }}
-        </template>
-      </el-table-column>
-      <el-table-column prop="avg_cost" label="平均成本" min-width="105" align="right">
-        <template #default="{ row }">
-          {{ formatNumber(row.avg_cost, 4) }}
+
+      <el-table-column
+        prop="profit"
+        width="170"
+        align="right"
+        sortable="custom"
+        :sort-orders="['descending', 'ascending', null]"
+      >
+        <template #header>
           <el-tooltip
-            v-if="unknownCostQuantity(row) > 0"
-            content="其中这部分来自成本未知的期初建仓/转托管转入，平均成本与已实现盈亏为估计值；可在公司行动页补录成本"
+            placement="top"
+            content="按折人民币金额排序（缺汇率的行沉底）。成本与市值均按今日汇率折人民币，不含汇兑损益"
           >
-            <el-tag type="warning" size="small" effect="plain" class="unknown-cost-tag">
-              成本未知 {{ formatNumber(unknownCostQuantity(row), 4) }}
-            </el-tag>
+            <span class="header-help">浮动盈亏</span>
           </el-tooltip>
         </template>
-      </el-table-column>
-      <el-table-column prop="total_cost" label="总成本" min-width="135" align="right">
         <template #default="{ row }">
-          <span class="accent-strong">
-            {{ formatCurrency(row.total_cost, row.currency) }}
-          </span>
+          <template v-if="table.profitOf(row) !== null">
+            <div class="cell-main num strong" :style="{ color: table.getProfitColor(row) }">
+              {{ formatCurrency(table.profitOf(row), row.currency) }}
+            </div>
+            <div class="cell-sub num" :style="{ color: table.getProfitColor(row) }">
+              <template v-if="row.currency !== 'CNY'">
+                ≈{{ formatCurrency(table.profitCNYOf(row)) }} ·
+              </template>
+              {{ formatPercent(table.profitRateOf(row)) }}
+            </div>
+          </template>
+          <span v-else class="muted">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="当前价格" width="150" align="right">
-        <template #default="{ row }">
-          <!-- 表格行内不放 +/- 步进钮：132px 下会把输入框压碎（截图实锤） -->
-          <el-input-number
-            v-model="table.state.currentPrices[table.priceKey(row)]"
-            :min="0"
-            :precision="4"
-            size="small"
-            :controls="false"
-            @change="table.savePriceToDatabase(row)"
-          />
-        </template>
-      </el-table-column>
-      <el-table-column label="当前市值" min-width="130" align="right">
-        <template #default="{ row }">
-          <span v-if="table.state.currentPrices[table.priceKey(row)]" style="font-weight: bold">
-            {{
-              formatCurrency(
-                (table.state.currentPrices[table.priceKey(row)] ?? 0) * toNumber(row.quantity),
-                row.currency
-              )
-            }}
-          </span>
-          <span v-else style="color: var(--app-text-soft)">-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="浮动盈亏" min-width="115" align="right">
-        <template #default="{ row }">
-          <span
-            v-if="table.state.currentPrices[table.priceKey(row)]"
-            :style="{ fontWeight: 'bold', color: table.getProfitColor(row) }"
-          >
-            {{ formatCurrency(table.calculateProfitAmount(row), row.currency) }}
-          </span>
-          <span v-else style="color: var(--app-text-soft)">-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="收益率" min-width="90" align="right">
-        <template #default="{ row }">
-          <span
-            v-if="table.state.currentPrices[table.priceKey(row)]"
-            :style="{ fontWeight: 'bold', color: table.getProfitColor(row) }"
-          >
-            {{ formatPercent(table.calculateProfitRate(row)) }}
-          </span>
-          <span v-else style="color: var(--app-text-soft)">-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="AI 标签" min-width="130">
+
+      <el-table-column label="AI" min-width="170">
         <template #default="{ row }">
           <template v-if="badges.analysisFor(row)">
-            <el-tooltip :content="badges.analysisFor(row)!.summary">
+            <el-tooltip placement="top">
+              <template #content>
+                <div class="ai-tooltip">{{ badges.analysisFor(row)!.summary }}</div>
+                <div v-if="badges.analysisFor(row)!.created_at" class="ai-tooltip-date">
+                  分析于 {{ formatDate(badges.analysisFor(row)!.created_at) }}
+                </div>
+              </template>
               <span class="ai-tags" data-testid="ai-tags">
+                <!-- 风险用 success/warning/danger，观点标签用中性 info：两者不再同为橙色 -->
                 <el-tag
                   :type="badges.riskTagType(badges.analysisFor(row)!.risk_level)"
                   size="small"
-                  effect="plain"
+                  effect="light"
                 >
-                  {{
-                    badges.riskLabels[badges.analysisFor(row)!.risk_level] ||
-                    badges.analysisFor(row)!.risk_level
-                  }}
+                  {{ riskText(badges.analysisFor(row)!.risk_level) }}
                 </el-tag>
                 <el-tag
-                  v-for="tag in badges.analysisFor(row)!.tags.slice(0, 2)"
-                  :key="tag"
+                  v-if="displayAnalysisTag(badges.analysisFor(row)!.tags)"
                   size="small"
                   effect="plain"
-                  type="warning"
+                  type="info"
                 >
-                  {{ tag }}
+                  {{ displayAnalysisTag(badges.analysisFor(row)!.tags) }}
                 </el-tag>
               </span>
             </el-tooltip>
@@ -197,15 +343,10 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
           <span v-if="!badges.analysisFor(row)" class="ai-untagged">未分析</span>
         </template>
       </el-table-column>
-      <el-table-column prop="currency" label="币种" width="70" />
-      <el-table-column prop="updated_at" label="更新时间" min-width="150">
+
+      <el-table-column v-if="isAccountView()" label="操作" width="72" fixed="right">
         <template #default="{ row }">
-          {{ formatDateTime(row.updated_at) }}
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="90" fixed="right">
-        <template #default="{ row }">
-          <el-button type="primary" size="small" text @click="$emit('transfer', row)">
+          <el-button type="primary" size="small" text @click="$emit('transfer', row.accounts[0])">
             转仓
           </el-button>
         </template>
@@ -215,8 +356,8 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
 
   <div v-else v-loading="table.state.loading" class="mobile-card-list">
     <article
-      v-for="row in table.visibleHoldings"
-      :key="`${row.market}-${row.symbol}-${row.broker_account_id ?? 'null'}`"
+      v-for="row in table.rows"
+      :key="row.key"
       class="mobile-card"
       data-testid="holding-card"
     >
@@ -237,34 +378,19 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
           <span v-if="row.name" class="mobile-card-name">{{ row.name }}</span>
         </button>
         <div class="mobile-card-tags">
+          <!-- 第一个 tag 必须是市场（移动端 E2E 据此拼标的档案路由） -->
           <el-tag size="small" effect="plain">{{ row.market }}</el-tag>
-          <el-tag size="small" type="info" effect="plain">
-            {{ table.accountLabel(row.broker_account_id) }}
-          </el-tag>
           <el-tag v-if="badges.upcomingEvent(row)" type="warning" size="small" effect="plain">
             {{ badges.upcomingEvent(row)!.label }}·{{ badges.upcomingEvent(row)!.daysText }}
           </el-tag>
-          <!-- AI 标签：移动端只取 1 个（标签行已有市场/账户/事件三个 tag）。
-               没有这块，手机上发起批量分析后回到本页看不到任何结果 -->
           <template v-if="badges.analysisFor(row)">
             <el-tag
               :type="badges.riskTagType(badges.analysisFor(row)!.risk_level)"
               size="small"
-              effect="plain"
+              effect="light"
               data-testid="ai-tags"
             >
-              {{
-                badges.riskLabels[badges.analysisFor(row)!.risk_level] ||
-                badges.analysisFor(row)!.risk_level
-              }}
-            </el-tag>
-            <el-tag
-              v-if="badges.analysisFor(row)!.tags[0]"
-              size="small"
-              effect="plain"
-              type="warning"
-            >
-              {{ badges.analysisFor(row)!.tags[0] }}
+              {{ riskText(badges.analysisFor(row)!.risk_level) }}
             </el-tag>
           </template>
         </div>
@@ -272,77 +398,106 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
 
       <div class="mobile-card-metrics">
         <div>
-          <span class="mobile-metric-label">总成本</span>
-          <strong>{{ formatCurrency(row.total_cost, row.currency) }}</strong>
-        </div>
-        <div>
-          <span class="mobile-metric-label">当前市值</span>
-          <strong v-if="table.state.currentPrices[table.priceKey(row)]">
-            {{
-              formatCurrency(
-                (table.state.currentPrices[table.priceKey(row)] ?? 0) * toNumber(row.quantity),
-                row.currency
-              )
-            }}
+          <span class="mobile-metric-label">市值</span>
+          <strong v-if="table.marketValueOf(row) !== null">
+            {{ formatCurrency(table.marketValueOf(row), row.currency) }}
           </strong>
-          <strong v-else>-</strong>
+          <strong v-else>—</strong>
+          <small v-if="row.currency !== 'CNY' && table.marketValueOf(row) !== null" class="approx">
+            ≈{{ formatCurrency(table.marketValueCNYOf(row)) }}
+          </small>
         </div>
         <div>
           <span class="mobile-metric-label">浮动盈亏</span>
-          <strong
-            v-if="table.state.currentPrices[table.priceKey(row)]"
+          <strong v-if="table.profitOf(row) !== null" :style="{ color: table.getProfitColor(row) }">
+            {{ formatCurrency(table.profitOf(row), row.currency) }}
+            <small v-if="table.profitRateOf(row) !== null">
+              {{ formatPercent(table.profitRateOf(row)) }}
+            </small>
+          </strong>
+          <strong v-else>—</strong>
+          <small
+            v-if="row.currency !== 'CNY' && table.profitOf(row) !== null"
+            class="approx"
             :style="{ color: table.getProfitColor(row) }"
           >
-            {{ formatCurrency(table.calculateProfitAmount(row), row.currency) }}
-          </strong>
-          <strong v-else>-</strong>
-        </div>
-        <div>
-          <span class="mobile-metric-label">收益率</span>
-          <strong
-            v-if="table.state.currentPrices[table.priceKey(row)]"
-            :style="{ color: table.getProfitColor(row) }"
-          >
-            {{ formatPercent(table.calculateProfitRate(row)) }}
-          </strong>
-          <strong v-else>-</strong>
+            ≈{{ formatCurrency(table.profitCNYOf(row)) }}
+          </small>
         </div>
       </div>
 
       <div class="mobile-card-meta">
-        <span>数量 {{ formatNumber(row.quantity, 4) }}</span>
-        <span>成本 {{ formatNumber(row.avg_cost, 4) }}</span>
+        <span>数量 {{ formatQuantity(row.quantity) }}</span>
+        <span>均价 {{ formatPrice(row.avgCost) }}</span>
+        <span v-if="table.weightOf(row) !== null"
+          >占比 {{ formatNumber(table.weightOf(row), 1) }}%</span
+        >
         <el-tag
-          v-if="unknownCostQuantity(row) > 0"
+          v-if="row.unknownCost > 0"
           type="warning"
           size="small"
           effect="plain"
           class="unknown-cost-tag"
         >
-          成本未知 {{ formatNumber(unknownCostQuantity(row), 4) }}
+          成本未知 {{ formatQuantity(row.unknownCost) }}
         </el-tag>
-        <span>{{ row.currency }}</span>
       </div>
 
       <div class="mobile-price-row">
-        <span>当前价格</span>
-        <el-input-number
-          v-model="table.state.currentPrices[table.priceKey(row)]"
-          :min="0"
-          :precision="4"
-          size="small"
-          @change="table.savePriceToDatabase(row)"
-        />
+        <span>现价 {{ row.currency }}</span>
+        <div
+          v-if="table.isEditingPrice(row)"
+          class="price-editor"
+          @keydown.enter.prevent="submitPriceOnEnter"
+          @keydown.esc.prevent="table.cancelPriceEdit()"
+        >
+          <el-input-number
+            v-model="table.state.priceDraft"
+            v-focus
+            :min="0"
+            size="small"
+            :controls="false"
+            data-testid="price-input"
+            @blur="table.commitPriceEdit(row)"
+          />
+        </div>
+        <div v-else class="mobile-price-value">
+          <button
+            type="button"
+            class="price-display"
+            :aria-label="`编辑 ${row.name || row.symbol} 的现价`"
+            data-testid="price-display"
+            @click="table.startPriceEdit(row)"
+          >
+            <span class="num">{{ formatPrice(table.priceOf(row)) }}</span>
+            <el-icon class="price-edit-icon"><EditPen /></el-icon>
+          </button>
+          <span class="mobile-price-date">
+            <el-tag v-if="table.priceInfoOf(row)?.manual" type="info" size="small" effect="plain">
+              手工
+            </el-tag>
+            <el-tag v-if="table.priceInfoOf(row)?.stale" type="warning" size="small" effect="plain">
+              陈价
+            </el-tag>
+            {{ table.priceInfoOf(row)?.label }}
+          </span>
+        </div>
       </div>
 
-      <div class="mobile-card-actions">
-        <el-button type="primary" size="small" text @click="$emit('transfer', row)">
-          转仓到其他账户
-        </el-button>
+      <div class="mobile-card-accounts">
+        <div v-for="holding in row.accounts" :key="holding.id" class="mobile-account-line">
+          <span :class="{ 'account-unassigned': !holding.broker_account_id }">
+            {{ table.accountLabel(holding.broker_account_id) }} ·
+            {{ formatQuantity(toNumber(holding.quantity)) }}
+          </span>
+          <el-button type="primary" size="small" text @click="$emit('transfer', holding)">
+            转仓到其他账户
+          </el-button>
+        </div>
       </div>
     </article>
     <el-empty
-      v-if="!table.state.loading && table.visibleHoldings.length === 0"
+      v-if="!table.state.loading && table.rows.length === 0"
       description="暂无持仓数据"
       :image-size="88"
     />
@@ -350,16 +505,51 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
 </template>
 
 <style scoped>
+.holdings-table :deep(.el-table__cell) {
+  padding: 8px 0;
+}
+
+.cell-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.35;
+}
+
+.cell-main {
+  line-height: 1.35;
+}
+
+.cell-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--app-text-soft);
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.strong {
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--app-text-soft);
+}
+
 .unknown-cost-tag {
   margin-left: 4px;
 }
 
 .holding-name {
-  margin-right: 6px;
+  font-weight: 600;
 }
 
 .ai-tags {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 4px;
   cursor: help;
 }
@@ -377,15 +567,95 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
   color: var(--app-text-soft);
 }
 
+.account-breakdown {
+  padding: 4px 16px 4px 48px;
+}
+
+.account-line {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) repeat(3, minmax(90px, 1fr)) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+.account-line + .account-line {
+  border-top: 1px dashed var(--app-border-soft);
+}
+
+.account-name {
+  font-weight: 500;
+}
+
+/* 单账户行：展开内容与主行重复，隐藏展开箭头（多账户行照常可展开） */
+.holdings-table :deep(.single-account-row .el-table__expand-icon) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.header-help {
+  cursor: help;
+  border-bottom: 1px dashed currentColor;
+}
+
+.price-line {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.price-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.price-edit-icon {
+  font-size: 13px;
+  color: var(--app-text-soft);
+  opacity: 0.55;
+}
+
+.price-display:hover .price-edit-icon,
+.price-display:focus-visible .price-edit-icon {
+  opacity: 1;
+  color: var(--app-primary);
+}
+
+.price-flag {
+  flex-shrink: 0;
+}
+
+.ai-tags :deep(.el-tag) {
+  white-space: nowrap;
+}
+
+.ai-tooltip {
+  max-width: 360px;
+}
+
+.ai-tooltip-date {
+  margin-top: 4px;
+  opacity: 0.75;
+}
+
 :deep(.el-input-number) {
   width: 112px;
 }
 
 @media (max-width: 640px) {
-  /* 卡片通用外观见 styles.css 的 .mobile-card 套件；这里只留持仓特有的价格输入行 */
+  /* 卡片通用外观见 styles.css 的 .mobile-card 套件；这里只留持仓特有的行 */
   .mobile-price-row {
     display: grid;
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: 88px minmax(0, 1fr);
     align-items: center;
     gap: 10px;
     margin-top: 12px;
@@ -395,6 +665,47 @@ function openSecurityDetail(row: { symbol: string; market: string }) {
 
   .mobile-price-row :deep(.el-input-number) {
     width: 100%;
+  }
+
+  .mobile-price-value {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+  }
+
+  .mobile-price-value .price-display {
+    font-weight: 600;
+    color: var(--app-text);
+  }
+
+  .mobile-price-date {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--app-text-soft);
+  }
+
+  .approx {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--app-text-soft);
+  }
+
+  .mobile-card-accounts {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--app-text-muted);
+  }
+
+  .mobile-account-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
 }
 </style>

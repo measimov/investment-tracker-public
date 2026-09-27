@@ -1,6 +1,7 @@
 """security_rules 请求/响应 schema：payload 按 rule_type 判别式强类型校验。"""
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from pydantic import (
@@ -20,6 +21,7 @@ VALID_RULE_TYPES = {
     "NAME_OVERRIDE",
     "PRICE_GAP_EXEMPTION",
     "CMB_CASH_BUSINESS",
+    "ADS_RATIO",
 }
 # CMB 业务映射的 symbol 是业务名、无市场；其余类型必须给市场
 MARKET_REQUIRED_TYPES = VALID_RULE_TYPES - {"CMB_CASH_BUSINESS"}
@@ -105,11 +107,24 @@ class _CmbCashBusinessPayload(BaseModel):
     event_type: Literal[CMB_ALLOWED_EVENT_TYPES]
 
 
+class _AdsRatioPayload(BaseModel):
+    """1 ADS = ratio 股普通股（"ten ADSs representing one share" 填 0.1）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ratio: Decimal = Field(gt=0, le=10000, max_digits=16, decimal_places=10)
+
+
+# 只对单一市场有意义的规则类型
+MARKET_RESTRICTED_TYPES = {"ADS_RATIO": "美股"}
+
+
 _PAYLOAD_MODELS = {
     "RELISTING": _RelistingPayload,
     "NAME_OVERRIDE": _NameOverridePayload,
     "PRICE_GAP_EXEMPTION": _PriceGapPayload,
     "CMB_CASH_BUSINESS": _CmbCashBusinessPayload,
+    "ADS_RATIO": _AdsRatioPayload,
 }
 
 
@@ -139,6 +154,9 @@ class SecurityRuleCreate(BaseModel):
                 raise ValueError(f"{self.rule_type} 规则必须指定市场")
             if self.market not in VALID_MARKETS:
                 raise ValueError(f"未知市场: {self.market}")
+            only = MARKET_RESTRICTED_TYPES.get(self.rule_type)
+            if only and self.market != only:
+                raise ValueError(f"{self.rule_type} 规则只适用于{only}")
         elif self.market is not None:
             # 唯一键含 market：放行非空市场会让同一业务名靠不同 market
             # 绕过唯一性，读取端折字典时事件类型不确定

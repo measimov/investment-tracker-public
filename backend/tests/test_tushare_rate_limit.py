@@ -547,7 +547,7 @@ def test_dual_gate_release_spacing_under_concurrency(monkeypatch, reset_rate_gat
     monkeypatch.setattr(
         stock_price_service.settings, "tushare_global_min_interval_seconds", 0.15
     )
-    monkeypatch.setenv("TUSHARE_HK_MIN_INTERVAL_SECONDS", "0.4")
+    monkeypatch.setattr(stock_price_service.settings, "tushare_hk_min_interval_seconds", 0.4)
 
     releases = {}
 

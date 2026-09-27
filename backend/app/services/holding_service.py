@@ -355,8 +355,11 @@ def recalculate_holdings(
 
     # 价格是证券级元数据：旧行被拆桶/合桶删除时，新建行必须继承已有估值，
     # 否则升级重放会丢掉所有手工/缓存价格。取最新一条有价行。
+    # 行情日期与来源随价格整组继承（#217），不拆开取。
     inherited_price = None
     inherited_price_at = None
+    inherited_price_as_of = None
+    inherited_price_source = None
     for row in existing_rows:
         if row.current_price is None:
             continue
@@ -366,6 +369,8 @@ def recalculate_holdings(
         ):
             inherited_price = row.current_price
             inherited_price_at = row.price_updated_at
+            inherited_price_as_of = row.price_as_of
+            inherited_price_source = row.price_source
 
     for account_id, row in existing_by_account.items():
         if account_id not in surviving:
@@ -396,6 +401,8 @@ def recalculate_holdings(
                 currency=state['currency'],
                 current_price=inherited_price,
                 price_updated_at=inherited_price_at,
+                price_as_of=inherited_price_as_of,
+                price_source=inherited_price_source,
             )
             db.add(row)
         persisted.append(row)

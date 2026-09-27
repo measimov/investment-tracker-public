@@ -84,7 +84,7 @@ async def test_browser_cookie_auth_requires_csrf_and_logout_clears_session(
 
         rejected = await client.post("/api/transactions", json=_transaction("COOKIE001"))
         assert rejected.status_code == 403
-        assert rejected.json()["detail"] == "CSRF validation failed"
+        assert rejected.json()["detail"] == "CSRF 校验失败，请刷新页面后重试"
 
         accepted = await client.post(
             "/api/transactions",
@@ -393,7 +393,7 @@ async def test_plaintext_login_is_rejected_when_https_is_required(
             json={"username": "demo", "password": "cookie-test-password"},
         )
         assert response.status_code == 400
-        assert response.json()["detail"] == "Login requires HTTPS"
+        assert response.json()["detail"] == "登录必须通过 HTTPS 访问"
 
 
 @pytest.mark.anyio

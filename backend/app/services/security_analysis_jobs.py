@@ -135,12 +135,15 @@ STATEMENT_LLM_FIELDS: Dict[str, tuple] = {
     # 港股 PDF 抽取行：只送科目与期别，源 URL/页码/指纹等溯源元数据留在库里
     "report_statements": (
         "end_date", "fp", "currency", "is_comparative", "validation_status",
+        # 已被后续报告重列的科目（值仍是首次披露数）/ 构建期修复过的资产小计
+        "restated_fields", "repaired_fields",
         "total_revenue", "cost_of_revenue", "gross_profit", "operating_income",
         "n_income_attr_p", "total_profit", "income_tax", "ebitda", "sga_exp", "int_exp",
         "basic_eps", "diluted_eps", "total_assets", "total_nca", "total_cur_assets",
         "total_cur_liab", "total_ncl", "accounts_receiv", "inventories", "fix_assets",
         "money_cap", "total_liab", "total_hldr_eqy_exc_min_int", "total_equity", "minority_int",
-        "total_debt", "n_cashflow_act", "capex", "free_cashflow", "depr_fa_coga_dpba",
+        "total_debt", "lt_borr", "st_borr", "n_cashflow_act", "capex", "free_cashflow",
+        "depr_fa_coga_dpba", "div_paid_owners",
     ),
 }
 
@@ -150,13 +153,16 @@ def _compact_statement_rows(dataset: str, rows: list) -> list:
     if not fields:
         return rows
     if dataset == "report_statements":
-        from .report_statement_checks import scrub_suspect_fields
+        from .report_statement_checks import restated_fields, scrub_suspect_fields
 
-        # 校验存疑的科目不送模型（已置空），但把"这一期被清洗过"说出来
+        # 校验存疑的科目不送模型（已置空），但把"这一期被清洗过"说出来；被后续报告重列的
+        # 科目保留首次披露值，只标注（用户口径：分析用原值）
         rows = [
             {
                 **scrub_suspect_fields(row),
                 "validation_status": (row.get("validation") or {}).get("status"),
+                "restated_fields": restated_fields(row) or None,
+                "repaired_fields": sorted(row.get("repaired_fields") or {}) or None,
             }
             for row in rows
         ]
@@ -187,6 +193,7 @@ def _payload_chars(payload: Dict[str, Any]) -> int:
 def build_analysis_input(
     db, symbol: str, market: str, *,
     digest_gaps: list | None = None, data_gaps: list | None = None,
+    user_id: int | None = None,
 ) -> Dict[str, Any]:
     """压缩输入：档案数据（逐集封顶+报表科目白名单）+ 事件 + 财报摘要
     + 商业画像/同业 + 利润质量指标。
@@ -213,7 +220,8 @@ def build_analysis_input(
     )
     # 准则取数走年度行专取口径（caps 窗口的季报会把年度行挤到 2-3 个，
     # 十年准则失灵、分红记录截断成错误 fail——真实账本冒烟实锤）
-    graham = compute_graham_for(db, symbol, market) or {"status": "no_data"}
+    # user_id = 发起分析的用户：其 ADS_RATIO 规则覆盖 20-F 封面解析值（美股估值口径）
+    graham = compute_graham_for(db, symbol, market, user_id=user_id) or {"status": "no_data"}
     common_semantics = (
         "report_digests=财报关键章节的 AI 摘要(按报告期倒序，旧年份为压缩版；"
         "属公司自述口径，可引用)；business_profile=商业画像(商业模式/分部/上下游/"
@@ -232,7 +240,9 @@ def build_analysis_input(
             "核心科目(合并报表口径，单位元)；events=财报披露/分红预案/解禁事件；"
         ),
         "美股": (
-            "edgar_companyfacts=SEC XBRL 年度(FY)/季度核心科目(单位美元，"
+            "edgar_companyfacts=SEC XBRL 年度(FY)/季度核心科目(金额单位为行内 currency 字段"
+            "=发行人的报告币种：美国本土发行人为美元，中概 20-F 发行人多为人民币；"
+            "basic_eps/diluted_eps 为每股普通股而非每股 ADS；"
             "科目缺失=该公司未按对应 us-gaap 概念披露——中概股常不披露贸易应收"
             "与存货，对应指标留空属正常)；report_digests 来自年报 10-K 或 20-F"
             "(外国私人发行人)；本市场无审计意见/质押/增减持/分红预案事件数据源；"
@@ -338,6 +348,24 @@ def start_security_analysis_job(user_id: int, symbol: str, market: str) -> Dict[
     return job
 
 
+def _ensure_ads_ratio_gap(db, symbol: str, market: str) -> list:
+    """美股：顺带确保最新 20-F 封面的 ADS 换算比已解析（缓存命中零下载）；
+    失败不阻断分析，只进缺口（估值两项会如实 indeterminate）。"""
+    if market != "美股":
+        return []
+    try:
+        from .ads_ratio_service import ensure_ads_ratio
+
+        outcome = ensure_ads_ratio(db, symbol)
+    except Exception as exc:  # 网络/EDGAR 异常：不影响主分析
+        db.rollback()
+        logger.warning("ADS 换算比解析失败 %s: %s", symbol, str(exc)[:150])
+        return ["ADS 换算比获取失败（20-F 封面），美股估值口径可能不可用"]
+    if outcome.get("status") in ("failed", "capped"):
+        return ["ADS 换算比获取失败（20-F 封面），美股估值口径可能不可用"]
+    return []
+
+
 def analyze_one(
     db,
     symbol: str,
@@ -345,6 +373,7 @@ def analyze_one(
     *,
     digest_max_new: int = 2,
     on_stage: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    user_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """执行一次完整标的分析并落 security_analyses；**不做任何 job 记账**。
 
@@ -394,7 +423,7 @@ def analyze_one(
     degraded = [
         f"{item['dataset']} 数据集本次获取失败"
         for item in sync_result.get("failed", [])
-    ] + [
+    ] + _ensure_ads_ratio_gap(db, symbol, market) + [
         f"{item['dataset']} 数据集因数据源频率限制本次跳过"
         f"（约 {item.get('retry_after_seconds')}s 后可重试）"
         for item in sync_result.get("skipped", [])
@@ -443,7 +472,7 @@ def analyze_one(
     # 4/6 组装输入
     stage("build_input", completed=3)
     input_payload = build_analysis_input(
-        db, symbol, market, digest_gaps=digest_gaps, data_gaps=degraded,
+        db, symbol, market, digest_gaps=digest_gaps, data_gaps=degraded, user_id=user_id,
     )
 
     # 5/6 生成（LLM）
@@ -519,7 +548,9 @@ def execute_security_analysis_job(claimed: Dict[str, Any]) -> None:
     try:
         # 心跳兜底：单次 LLM 调用或大年报解析本身就可能吃掉整个租约
         with job_heartbeat(job_id, JOB_TYPE, attempt_count=attempt):
-            outcome = analyze_one(db, symbol, market, on_stage=report)
+            outcome = analyze_one(
+                db, symbol, market, on_stage=report, user_id=claimed.get("user_id")
+            )
         if outcome["status"] == "failed":
             set_job_progress(
                 job_id, JOB_TYPE, required_attempt_count=attempt,

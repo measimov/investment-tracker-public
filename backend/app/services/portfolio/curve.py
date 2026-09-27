@@ -233,9 +233,14 @@ def replay_opening_positions(
     List[Dict[str, str]],
     List[Dict[str, Any]],
     Dict[Tuple[str, str], Decimal],
+    Dict[Tuple[str, str], Dict[str, str]],
 ]:
     """区间开始前的重放 → (positions, last_prices, invalid_events, opening_estimated_positions,
-    estimated_inflow_events, deferred_inflows)。
+    estimated_inflow_events, deferred_inflows, opening_price_basis)。
+
+    opening_price_basis = 期初仍持有且有估值价的每只标的：估值价的日期与来源（history 收盘 /
+    transaction 成交价）。只增加信息、不改任何数值——区间损益据此判断期初基准是否可靠（基准日
+    远早于区间起点时，区间损益里混进了此前累积的涨跌）。
 
     deferred_inflows = 成本未知的期初建仓里**仍持有且期初无价**的份额：它们不在期初市值里，
     区间内首个能定价的日子按该价补记流入。区间前已卖出的份额不挂起（买卖都在区间前，与曲线
@@ -342,9 +347,14 @@ def replay_opening_positions(
                     event["valued_on"] = start_date.isoformat()
             continue
         deferred_inflows[key] = min(quantity, held)
+    opening_price_basis = {
+        key: {"date": last_price_dates[key].isoformat(), "source": last_price_sources.get(key, "")}
+        for key, quantity in positions.items()
+        if quantity > 0 and key in last_price_dates
+    }
     return (
         positions, last_prices, invalid_position_events, opening_estimated_positions,
-        estimated_inflow_events, deferred_inflows,
+        estimated_inflow_events, deferred_inflows, opening_price_basis,
     )
 
 
@@ -360,7 +370,11 @@ def build_return_curve(
     rate_lookup: ExchangeRateLookup,
     fallback_currency: Callable[[str], str],
     today: date,
+    opening_fx_date: Optional[date] = None,
 ) -> Tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
+    """opening_fx_date：期初市值折本币所用的汇率日期，缺省为 start_date（统计页口径不变）。
+    区间损益传「起点前一天」——期初是上一日收盘时点的本币价值，否则起点当天的汇率变动在期初与
+    期末两边同时用新汇率而被抵消，汇兑损益恒为 0（PR #214 评审 P2）。"""
     curve_dates, calculation_level = select_curve_dates(
         price_maps,
         transactions,
@@ -386,6 +400,7 @@ def build_return_curve(
         opening_estimated_positions,
         estimated_inflow_events,
         deferred_inflows,
+        opening_price_basis,
     ) = replay_opening_positions(
         transactions_by_date,
         corporate_actions_by_date,
@@ -412,7 +427,7 @@ def build_return_curve(
         opening_market_value_cny += convert_on_date(
             quantity * price,
             currency,
-            start_date,
+            opening_fx_date or start_date,
             rate_lookup,
         )
 
@@ -631,6 +646,10 @@ def build_return_curve(
         "opening_positions": opening_positions,
         "opening_estimated_positions": opening_estimated_positions,
         "opening_unpriced_positions": opening_unpriced_positions,
+        # 期初估值价的日期与来源（"symbol:market" → {date, source}）：区间损益判断基准是否可靠
+        "opening_price_basis": {
+            f"{symbol}:{market}": basis for (symbol, market), basis in sorted(opening_price_basis.items())
+        },
         "terminal_positions": terminal_positions,
         # 成本未知的期初建仓：流入按与当日市值同一回退的价格估算并记 valuation_price；
         # 到达当天无价可估的份额挂起，在首个能定价的日子（valued_on）按该价补记流入，

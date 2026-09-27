@@ -21,6 +21,8 @@ export interface AnalysisSummaryRow {
   tags: string[]
   risk_level: string
   summary: string
+  /** 分析生成时刻（带时区 ISO） */
+  created_at?: string | null
 }
 
 export interface BatchResultRow {

@@ -28,6 +28,47 @@ def build_parser() -> argparse.ArgumentParser:
     catalog.add_argument(
         "--no-force", action="store_true", help="skip sources refreshed within the interval"
     )
+    collector = subcommands.add_parser(
+        "xueqiu-collector",
+        help="Run the Xueqiu author-utterance collector (long-running loop by default)",
+    )
+    collector.add_argument("--once", action="store_true", help="run one authors cycle and exit")
+    collector.add_argument(
+        "--author", action="append", help="limit to these Xueqiu user ids (repeatable; implies --once)"
+    )
+    collector.add_argument(
+        "--dry-run", action="store_true",
+        help="fetch and parse but write nothing (implies --once)",
+    )
+    collector.add_argument(
+        "--max-posts", type=int,
+        help="low-cost check: profile page 1, at most N candidate posts, 1 comment page each "
+        "(use with --dry-run for a shadow run; implies --once)",
+    )
+    collector.add_argument(
+        "--symbols-once", action="store_true",
+        help="run one per-symbol cycle (announcements/discussion + cubes + hots) and exit",
+    )
+    collector.add_argument(
+        "--symbol", action="append",
+        help="with --symbols-once: only these codes (our code, e.g. 600519 / 00700; "
+        "repeatable; needs --market; skips cubes/hots and does not mark the day as done)",
+    )
+    collector.add_argument("--market", help="market of --symbol (A股/B股/港股/美股)")
+    collector.add_argument(
+        "--database-url",
+        help="shadow run against another (test) database; name must contain test/e2e/shadow",
+    )
+    archive = subcommands.add_parser(
+        "xueqiu-import-archive-exports",
+        help="one-off idempotent import of xueqiu-timeline-archiver per-symbol Markdown exports",
+    )
+    archive.add_argument("--dir", required=True, help="the old repo's exports/ directory")
+    archive.add_argument("--dry-run", action="store_true", help="parse and count, write nothing")
+    subcommands.add_parser(
+        "xueqiu-collector-health",
+        help="exit 0 if the collector heartbeat is fresh (docker healthcheck)",
+    )
     return parser
 
 
@@ -125,11 +166,182 @@ def sync_security_catalog(markets, sources, *, force: bool) -> int:
     return 1 if failed else 0
 
 
+SHADOW_DB_MARKERS = ("test", "e2e", "shadow")
+
+
+def xueqiu_collector(args) -> int:
+    import signal
+    import threading
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.orm import sessionmaker
+
+    from app.database import SessionLocal, engine
+    from app.services.xueqiu_collector import runner
+    from app.services.xueqiu_collector.state import Heartbeat
+
+    stop_event = threading.Event()
+
+    def _stop(signum, _frame):
+        print(f"received signal {signum}, stopping at the next boundary...", flush=True)
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+
+    if (args.symbol or args.market) and not args.symbols_once:
+        print("--symbol / --market only apply to --symbols-once")
+        return 2
+    if args.symbols_once and (args.author or args.dry_run or args.once or args.max_posts):
+        print("--symbols-once cannot be combined with --once / --author / --dry-run / --max-posts")
+        return 2
+    if args.symbol and not args.market:
+        print("--symbol needs --market (A股/B股/港股/美股)")
+        return 2
+
+    once = (
+        args.once or args.dry_run or bool(args.author) or bool(args.database_url)
+        or args.symbols_once or bool(args.max_posts)
+    )
+    if not once:
+        runner.run_collector_loop(stop_event)
+        return 0
+
+    session_factory, bind = SessionLocal, engine
+    if args.database_url:
+        name = make_url(args.database_url).database or ""
+        if not any(marker in name.lower() for marker in SHADOW_DB_MARKERS):
+            print(f"refusing --database-url {name!r}: name must contain one of {SHADOW_DB_MARKERS}")
+            return 2
+        bind = create_engine(args.database_url, pool_pre_ping=True)
+        session_factory = sessionmaker(bind=bind)
+        print(f"shadow run against database {name!r}")
+
+    if args.symbols_once:
+        return _xueqiu_symbols_once(args, session_factory(), Heartbeat(bind), stop_event)
+
+    db = session_factory()
+    try:
+        heartbeat = None if args.dry_run else Heartbeat(bind)
+        knobs = runner.CollectorKnobs.from_settings()
+        if args.max_posts:
+            knobs.max_posts = max(1, args.max_posts)
+            knobs.max_comment_pages = 1
+        result = runner.run_authors_cycle(
+            db,
+            author_ids=args.author,
+            dry_run=args.dry_run,
+            knobs=knobs,
+            stop_event=stop_event,
+            heartbeat=heartbeat,
+        )
+    finally:
+        db.close()
+    print(f"cycle status={result.status} requests={result.request_count}")
+    if result.cookie:
+        print(f"cookie: {result.cookie['message']}")
+    for item in result.authors:
+        print(
+            f"  {item.author_id}: {item.status} candidates={item.candidate_count} "
+            f"replies={item.reply_count} profile_utterances={item.utterance_count}"
+            + (f" error={item.error}" if item.error else "")
+        )
+        if args.dry_run or args.database_url:
+            for key in sorted(set(item.utterance_keys)):
+                print(f"    {key}")
+    if result.message:
+        print(result.message)
+    return 0 if result.status in ("ok", "no_authors") else 1
+
+
+def _xueqiu_symbols_once(args, db, heartbeat, stop_event) -> int:
+    from app.services.xueqiu_collector import symbols
+
+    try:
+        targets = symbols.explicit_targets(args.symbol, args.market) if args.symbol else None
+    except ValueError as exc:
+        print(str(exc))
+        db.close()
+        return 2
+    try:
+        result = symbols.run_symbols_cycle(
+            db,
+            targets=targets,
+            include_market_wide=targets is None,
+            record_daily=targets is None,
+            stop_event=stop_event,
+            heartbeat=heartbeat,
+        )
+    finally:
+        db.close()
+    print(f"symbols cycle status={result.status} requests={result.request_count}")
+    if result.message:
+        print(result.message)
+    for failure in result.failures:
+        print(f"  failed: {failure}")
+    return 0 if result.status == "ok" else 1
+
+
+def xueqiu_import_archive_exports(args) -> int:
+    from pathlib import Path
+
+    from app.database import SessionLocal
+    from app.services.xueqiu_collector.archive_import import import_archive_exports
+
+    directory = Path(args.dir)
+    if not directory.is_dir():
+        print(f"not a directory: {directory}")
+        return 2
+    db = SessionLocal()
+    try:
+        stats = import_archive_exports(db, directory, dry_run=args.dry_run)
+    finally:
+        db.close()
+    mode = "dry-run (nothing written)" if args.dry_run else "imported"
+    print(f"{mode}: files={stats.files} symbols={len(stats.symbols)} "
+          f"malformed_blocks={stats.malformed_blocks}")
+    for key in sorted(stats.parsed):
+        print(
+            f"  {key}: parsed={stats.parsed[key]} unique={len(stats.unique.get(key, ()))} "
+            f"inserted={stats.inserted.get(key, 0)} "
+            f"with_author={stats.with_author.get(key, 0)} with_text={stats.with_text.get(key, 0)}"
+        )
+    if stats.skipped_files:
+        print(f"  skipped (unrecognized symbol): {', '.join(stats.skipped_files)}")
+    return 0
+
+
+def xueqiu_collector_health() -> int:
+    from app.config import settings
+    from app.services.xueqiu_collector.state import heartbeat_age_seconds
+
+    age = heartbeat_age_seconds()
+    limit = settings.xueqiu_collector_health_max_age_minutes * 60
+    if age is None:
+        print("no heartbeat file")
+        return 1
+    print(f"heartbeat age {age:.0f}s (limit {limit}s)")
+    return 0 if age <= limit else 1
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
+    if args.command == "xueqiu-collector-health":
+        # healthcheck 每几分钟跑一次：不配置日志，免得每次探活都往文件里写一行
+        return xueqiu_collector_health()
+
+    if args.command == "xueqiu-collector":
+        # 独立进程、同一日志目录：用自己的日志文件，不与 Web 进程抢 app.log 的轮转
+        configure_logging(app_log_name="xueqiu-collector.log")
+        return xueqiu_collector(args)
+
     configure_logging()
+
+    if args.command == "xueqiu-import-archive-exports":
+        return xueqiu_import_archive_exports(args)
 
     if args.command == "seed":
         created_count = seed_initial_users()

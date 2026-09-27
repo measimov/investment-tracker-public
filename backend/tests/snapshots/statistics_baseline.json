@@ -1,31 +1,40 @@
 {
   "holdings_cost_breakdown": [
     {
+      "account_count": 1,
       "avg_cost": 295.5,
       "currency": "HKD",
       "market": "港股",
+      "missing_rate": false,
       "name": "腾讯控股",
       "quantity": 220.0,
       "symbol": "0700",
-      "total_cost": 65010.0
+      "total_cost": 65010.0,
+      "total_cost_cny": 58509.0
     },
     {
+      "account_count": 1,
       "avg_cost": 1250.416667,
       "currency": "CNY",
       "market": "A股",
+      "missing_rate": false,
       "name": "贵州茅台",
       "quantity": 7.0,
       "symbol": "600519",
-      "total_cost": 8752.916667
+      "total_cost": 8752.916667,
+      "total_cost_cny": 8752.92
     },
     {
+      "account_count": 1,
       "avg_cost": 5.34,
       "currency": "USD",
       "market": "美股",
+      "missing_rate": false,
       "name": "Apple",
       "quantity": 220.0,
       "symbol": "AAPL",
-      "total_cost": 1174.8
+      "total_cost": 1174.8,
+      "total_cost_cny": 8458.56
     }
   ],
   "performance_analytics": {

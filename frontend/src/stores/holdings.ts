@@ -17,7 +17,21 @@ interface FetchOptions {
 // 兄弟字段也随之更新，本地拼行两头都不对。
 function patchHolding(cache: Record<string, Holding[]>, updated: Holding) {
   Object.keys(cache).forEach((key) => {
-    cache[key] = cache[key].map((holding) => (holding.id === updated.id ? updated : holding))
+    cache[key] = cache[key].map((holding) => {
+      if (holding.id === updated.id) return updated
+      // 后端按 user + symbol + market 更新该标的在所有账户的持仓价格：兄弟行只同步价格字段
+      // （价格/写库时刻/行情日/来源是一组，#217）
+      if (holding.symbol === updated.symbol && holding.market === updated.market) {
+        return {
+          ...holding,
+          current_price: updated.current_price,
+          price_updated_at: updated.price_updated_at,
+          price_as_of: updated.price_as_of,
+          price_source: updated.price_source
+        }
+      }
+      return holding
+    })
   })
 }
 
@@ -53,9 +67,21 @@ export const useHoldingsStore = defineStore('holdings', () => {
     loadingKeys.value = {}
   }
 
-  async function updateHoldingPrice(holdingId: number | string, price: number | string) {
+  // 同一标的连续改价：只让**最后一次**请求的响应回填缓存。先发的请求可能后返回，
+  // 按到达顺序回填会把缓存改回旧价，下次读缓存时输入框就退回旧值（PR #216 评审 P2）
+  const priceRequestSeq = new Map<string, number>()
+
+  async function updateHoldingPrice(
+    holdingId: number | string,
+    price: number | string,
+    securityKey?: string
+  ) {
+    const seq = (priceRequestSeq.get(securityKey ?? String(holdingId)) ?? 0) + 1
+    priceRequestSeq.set(securityKey ?? String(holdingId), seq)
     const response = await api.updateHoldingPrice(holdingId, price)
-    patchHolding(cache.value, response.data)
+    if (priceRequestSeq.get(securityKey ?? String(holdingId)) === seq) {
+      patchHolding(cache.value, response.data)
+    }
     return response
   }
 

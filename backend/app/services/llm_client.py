@@ -15,11 +15,15 @@ class LLMNotConfiguredError(Exception):
 
 
 class LLMClientError(Exception):
-    """LLM 调用失败；status_code 供调用方区分确定性失败（4xx）与可重试失败。"""
+    """LLM 调用失败；status_code 供调用方区分确定性失败（4xx）与可重试失败。
+    finish_reason 只在「200 但 content 为空」时有值（length = 推理耗尽输出额度）。"""
 
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(
+        self, message: str, status_code: int | None = None, finish_reason: str | None = None
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.finish_reason = finish_reason
 
 
 def is_llm_configured() -> bool:
@@ -82,10 +86,15 @@ def chat_completion(
 
     if not content:
         # 推理模型（deepseek-flash / 此前的 deepseek-v4-pro）会先产生 reasoning_content；
-        # 输出配额被推理耗尽时 content 为空——这是确定性截断，报清晰错误而非落空报告。
+        # 输出配额被推理耗尽时 content 为空（finish_reason=length）——同样的输入重试结果相同。
+        # status_code 为 None，`_is_transient` 默认按瞬时处理；需要把它当确定性失败的调用方
+        # （报表科目映射：statement_max_output_tokens）按 finish_reason 自行判定。
+        finish_reason = choice.get("finish_reason")
         raise LLMClientError(
-            f"LLM 输出为空（finish_reason={choice.get('finish_reason')}），"
-            "可能是 max_tokens 配额被推理消耗，可调大 llm_report_max_output_tokens"
+            f"LLM 输出为空（finish_reason={finish_reason}），"
+            "可能是 max_tokens 配额被推理消耗，可调大输出额度"
+            "（复盘/分析 llm_report_max_output_tokens，报表映射 statement_max_output_tokens）",
+            finish_reason=finish_reason,
         )
 
     return {

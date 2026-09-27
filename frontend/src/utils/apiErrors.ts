@@ -8,6 +8,8 @@ export interface NormalizedApiError extends Error {
   code?: string
   isAxiosError?: boolean
   originalError: unknown
+  /** 拦截器已为它弹过全局通知；view 层用 showApiError 时据此不再重复提示 */
+  globallyNotified?: boolean
 }
 
 export function isApiError(e: unknown): e is NormalizedApiError {

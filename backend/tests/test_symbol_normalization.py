@@ -125,7 +125,7 @@ async def test_corporate_action_create_and_update_normalize(db, api_user):
 
         created = await client.post("/api/corporate-actions", headers=auth, json={
             "symbol": "700", "market": "港股", "action_type": "CASH_DIVIDEND",
-            "ex_date": "2026-08-01", "dividend_per_share": "1.2",
+            "ex_date": "2026-08-01", "dividend_per_share": "1.2", "total_dividend": "120",
         })
         assert created.status_code == 201
         assert created.json()["symbol"] == "00700"
@@ -141,7 +141,7 @@ async def test_corporate_action_create_and_update_normalize(db, api_user):
         # 只改 market：既有 symbol 也要按新市场重归一（美股误录修正为港股）
         us_row = await client.post("/api/corporate-actions", headers=auth, json={
             "symbol": "941", "market": "美股", "action_type": "CASH_DIVIDEND",
-            "ex_date": "2026-08-02", "dividend_per_share": "0.5",
+            "ex_date": "2026-08-02", "dividend_per_share": "0.5", "total_dividend": "50",
         })
         fixed = await client.put(
             f"/api/corporate-actions/{us_row.json()['id']}", headers=auth,

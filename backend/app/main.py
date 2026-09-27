@@ -26,6 +26,7 @@ from .api import (
     security_catalog,
     security_profiles,
     watchlist,
+    xueqiu_collector,
 )
 from .core.logging import configure_logging, get_app_logger
 from .services.background_job_store import cleanup_expired_jobs, interrupt_stale_jobs
@@ -161,6 +162,7 @@ app.include_router(
     prefix="/api",
     tags=["Watchlist"],
 )
+app.include_router(xueqiu_collector.router)
 
 
 @app.on_event("startup")

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { showApiError } from '@/utils/showApiError'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
 import SecuritySelect from '@/components/SecuritySelect.vue'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { formatDateTime } from '@/utils/helpers'
+import { CASH_EVENT_TYPE_LABELS, cashEventTypeLabel, optionsOf } from '@/utils/labels'
 import { inferCurrency } from '@/utils/securities'
 import type { SecuritySearchItem } from '@/types'
 import { type SecurityRuleRow, currencyOptions, makeRemover, marketOptions } from './shared'
@@ -15,14 +16,15 @@ import { type SecurityRuleRow, currencyOptions, makeRemover, marketOptions } fro
 const securityRules = ref<SecurityRuleRow[]>([])
 const loading = ref(false)
 
-// 六类特例规则：一个表单承载全部字段，按 rule_type 动态显示与校验
+// 七类特例规则：一个表单承载全部字段，按 rule_type 动态显示与校验
 const RULE_TYPE_LABELS: Record<string, string> = {
   EXCLUDE: '排除标的',
   CASH_MANAGEMENT: '现金管理标的',
   RELISTING: '转板映射',
   NAME_OVERRIDE: '名称覆盖',
   PRICE_GAP_EXEMPTION: '行情缺口豁免',
-  CMB_CASH_BUSINESS: '招商现金业务'
+  CMB_CASH_BUSINESS: '招商现金业务',
+  ADS_RATIO: 'ADS 换算比'
 }
 const ruleTypeOptions = Object.entries(RULE_TYPE_LABELS).map(([value, label]) => ({ value, label }))
 const RULE_TYPE_HINTS: Record<string, string> = {
@@ -31,7 +33,9 @@ const RULE_TYPE_HINTS: Record<string, string> = {
   RELISTING: '旧标的退市转新市场重新上市，导入时自动生成转换交易',
   NAME_OVERRIDE: '行情源查不到名称时使用的手工显示名',
   PRICE_GAP_EXEMPTION: '该区间行情永久缺失（停牌-摘牌等），历史同步跳过且不计失败',
-  CMB_CASH_BUSINESS: '招商对账单业务名 → 现金事件类型的入账口径'
+  CMB_CASH_BUSINESS: '招商对账单业务名 → 现金事件类型的入账口径',
+  ADS_RATIO:
+    '美股 ADS 与普通股的换算比（1 ADS = N 股普通股），用于格雷厄姆估值；默认从 20-F 封面自动解析，解析失败或有误时在此填写（优先于解析值）'
 }
 const ruleTypeHint = (type: string) => RULE_TYPE_HINTS[type] || ''
 const ruleTypeLabel = (type: string) => RULE_TYPE_LABELS[type] || type
@@ -47,16 +51,7 @@ const ruleTypeTag = (type: string) =>
 
 // CMB 业务映射可选事件类型：不含 FX_IN/FX_OUT（IBKR 外汇兑换专用，
 // CMB 方向校验不认识，后端 CMB_ALLOWED_EVENT_TYPES 同步拒绝）
-const cmbEventTypeOptions = [
-  { label: '入金', value: 'DEPOSIT' },
-  { label: '出金', value: 'WITHDRAWAL' },
-  { label: '利息', value: 'INTEREST' },
-  { label: '费用', value: 'FEE' },
-  { label: '税费', value: 'TAX' },
-  { label: '转入', value: 'TRANSFER_IN' },
-  { label: '转出', value: 'TRANSFER_OUT' },
-  { label: '其他', value: 'OTHER' }
-]
+const cmbEventTypeOptions = optionsOf(CASH_EVENT_TYPE_LABELS, ['FX_IN', 'FX_OUT'])
 
 const ruleFilters = reactive<{ ruleType: string }>({ ruleType: '' })
 
@@ -84,8 +79,19 @@ const ruleForm = reactive({
   start_date: '',
   end_date: '',
   // CMB_CASH_BUSINESS
-  event_type: ''
+  event_type: '',
+  // ADS_RATIO（字符串输入：0.1 这类小数比例不经浮点）
+  ratio: ''
 })
+// ADS 换算比只对美股有意义（后端同样拒绝其他市场）
+const ADS_MARKET = '美股'
+watch(
+  () => ruleForm.rule_type,
+  (type) => {
+    if (type === 'ADS_RATIO') ruleForm.market = ADS_MARKET
+  }
+)
+const POSITIVE_DECIMAL = /^(?:\d+(?:\.\d+)?|\.\d+)$/
 const ruleRules = computed<FormRules>(() => {
   const isCmb = ruleForm.rule_type === 'CMB_CASH_BUSINESS'
   const rules: FormRules = {
@@ -106,6 +112,19 @@ const ruleRules = computed<FormRules>(() => {
   if (ruleForm.rule_type === 'PRICE_GAP_EXEMPTION')
     rules.start_date = [{ required: true, message: '请选择开始日期', trigger: 'change' }]
   if (isCmb) rules.event_type = [{ required: true, message: '请选择事件类型', trigger: 'change' }]
+  if (ruleForm.rule_type === 'ADS_RATIO')
+    rules.ratio = [
+      { required: true, message: '请输入换算比', trigger: 'blur' },
+      {
+        validator: (_rule, value: string, callback) => {
+          const text = String(value ?? '').trim()
+          if (!POSITIVE_DECIMAL.test(text) || Number(text) <= 0) {
+            callback(new Error('请输入大于 0 的数字，如 4 或 0.1'))
+          } else callback()
+        },
+        trigger: 'blur'
+      }
+    ]
   return rules
 })
 
@@ -125,7 +144,7 @@ async function loadSecurityRules() {
     securityRules.value = response.data
   } catch (error) {
     if (token !== rulesRequestToken) return
-    ElMessage.error(getApiErrorMessage(error, '特例规则加载失败'))
+    showApiError(error, '特例规则加载失败')
   } finally {
     if (token === rulesRequestToken) loading.value = false
   }
@@ -142,7 +161,9 @@ function ruleSummary(row: SecurityRuleRow): string {
     case 'PRICE_GAP_EXEMPTION':
       return `${payload.start_date} ~ ${payload.end_date || '至今'}`
     case 'CMB_CASH_BUSINESS':
-      return `→ ${payload.event_type}`
+      return `→ ${cashEventTypeLabel(payload.event_type as string)}`
+    case 'ADS_RATIO':
+      return `1 ADS = ${payload.ratio ?? '—'} 股`
     default:
       return '—'
   }
@@ -161,8 +182,10 @@ function openRuleDialog() {
     name: '',
     start_date: '',
     end_date: '',
-    event_type: ''
+    event_type: '',
+    ratio: ''
   })
+  if (ruleForm.rule_type === 'ADS_RATIO') ruleForm.market = ADS_MARKET
   ruleDialog.visible = true
 }
 
@@ -184,6 +207,8 @@ function buildRulePayload(): Record<string, unknown> | null {
       return { start_date: ruleForm.start_date, end_date: ruleForm.end_date || null }
     case 'CMB_CASH_BUSINESS':
       return { event_type: ruleForm.event_type }
+    case 'ADS_RATIO':
+      return { ratio: ruleForm.ratio.trim() }
     default:
       // EXCLUDE / CASH_MANAGEMENT 不携带 payload
       return null
@@ -205,7 +230,7 @@ async function saveRule() {
     ruleDialog.visible = false
     await loadSecurityRules()
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '特例规则保存失败'))
+    showApiError(error, '特例规则保存失败')
   } finally {
     ruleDialog.saving = false
   }
@@ -233,7 +258,8 @@ defineExpose({ reload: loadSecurityRules })
       <div>
         <h2>账本特例规则</h2>
         <p>
-          六类规则：排除标的＝导入只归档不入账、对账双侧忽略；现金管理标的＝其"产品红利发放"按利息入账（并非排除）；转板映射、名称覆盖、行情缺口豁免、招商现金业务用于修正导入与行情口径。
+          七类规则：排除标的＝导入只归档不入账、对账双侧忽略；现金管理标的＝其"产品红利发放"按利息入账（并非排除）；转板映射、名称覆盖、行情缺口豁免、招商现金业务用于修正导入与行情口径；ADS
+          换算比用于美股 20-F 发行人的估值口径。
         </p>
       </div>
       <el-button type="primary" :icon="Plus" @click="openRuleDialog">新增规则</el-button>
@@ -288,7 +314,7 @@ defineExpose({ reload: loadSecurityRules })
       </el-table>
     </div>
 
-    <el-dialog v-model="ruleDialog.visible" title="新增特例规则" width="560px">
+    <el-dialog v-model="ruleDialog.visible" title="新增特例规则" width="min(560px, 96vw)">
       <el-form ref="ruleFormRef" :model="ruleForm" :rules="ruleRules" label-width="100px">
         <el-form-item label="规则类型" prop="rule_type">
           <el-select v-model="ruleForm.rule_type">
@@ -317,13 +343,25 @@ defineExpose({ reload: loadSecurityRules })
             v-model="ruleForm.symbol"
             :resolve="false"
             placeholder="如 511880"
-            @select="ruleForm.market = $event.market"
+            @select="
+              ruleForm.market = ruleForm.rule_type === 'ADS_RATIO' ? ADS_MARKET : $event.market
+            "
           />
         </el-form-item>
         <el-form-item v-if="ruleForm.rule_type !== 'CMB_CASH_BUSINESS'" label="市场" prop="market">
-          <el-select v-model="ruleForm.market">
+          <el-select v-model="ruleForm.market" :disabled="ruleForm.rule_type === 'ADS_RATIO'">
             <el-option v-for="m in marketOptions" :key="m" :label="m" :value="m" />
           </el-select>
+        </el-form-item>
+
+        <el-form-item v-if="ruleForm.rule_type === 'ADS_RATIO'" label="换算比" prop="ratio">
+          <el-input
+            v-model="ruleForm.ratio"
+            placeholder="1 ADS 对应的普通股数，如 4；十份 ADS 合一股填 0.1"
+          >
+            <template #prepend>1 ADS =</template>
+            <template #append>股</template>
+          </el-input>
         </el-form-item>
 
         <template v-if="ruleForm.rule_type === 'RELISTING'">
@@ -406,6 +444,15 @@ defineExpose({ reload: loadSecurityRules })
 </template>
 
 <style scoped>
+@media (max-width: 640px) {
+  /* 移动端：筛选下拉占满一行，不把工具栏撑出视口；表格在容器内横向滚动 */
+  .compact-filter :deep(.el-form-item),
+  .compact-filter :deep(.el-select) {
+    width: 100%;
+    margin-right: 0;
+  }
+}
+
 .rule-type-hint {
   margin-top: 4px;
   font-size: 12px;

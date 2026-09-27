@@ -5,12 +5,15 @@ from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from datetime import date, timedelta
+from decimal import Decimal
 from ..config import settings
 from ..services.symbol_normalization import normalize_manual_symbol
 from ..database import get_db
 from ..models.corporate_action import CorporateAction
 from ..models.corporate_action_suggestion import CorporateActionSuggestion
 from ..models.broker_account import BrokerAccount
+from ..models.broker_fund_flow import BrokerFundFlow
+from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.holding import Holding
 from ..models.security_event import SecurityEvent
 from ..models.user import User
@@ -21,6 +24,8 @@ from ..schemas.corporate_action import (
     CashDividendCreate,
     OpeningPositionCostUpdate,
     StockDividendCreate,
+    derive_tax_withheld,
+    validate_cash_dividend_total,
     validate_opening_position_fields,
 )
 from ..services.portfolio.semantics import OPENING_POSITION, QUANTITY_ACTION_TYPES
@@ -69,6 +74,66 @@ def _ensure_corporate_action_is_mutable(db: Session, user_id: int, action: Corpo
         source_link_field="corporate_action_id",
         detail=IMMUTABLE_IMPORTED_ACTION_DETAIL,
     )
+
+
+def _annotate_read_only(db: Session, user_id: int, actions: List[CorporateAction]):
+    """给响应补 `read_only` 展示字段：与 ensure_record_is_mutable 同一判据
+    （带批次，或被券商来源流水引用）。此前前端只看 import_batch_id，被来源流水
+    链接但无批次的记录会显示「编辑」然后 409。批量两次 IN 查询，不逐行查。"""
+    ids = [action.id for action in actions if action.import_batch_id is None]
+    linked: set[int] = set()
+    if ids:
+        for model in (BrokerFundFlow, IbkrActivityFlow):
+            linked.update(
+                row[0]
+                for row in db.query(model.corporate_action_id)
+                .filter(model.user_id == user_id, model.corporate_action_id.in_(ids))
+                .distinct()
+                .all()
+            )
+    for action in actions:
+        action.read_only = action.import_batch_id is not None or action.id in linked
+    return actions
+
+
+def _apply_cash_dividend_update_rules(db_action: CorporateAction, update_data: dict) -> None:
+    """现金股息更新的金额口径（#220），就地改写 update_data。
+
+    - 合并后的股息总额必须存在且 >0（与创建入口同一校验，缺失即 422）；
+    - 请求未显式给税额（或给 null）但给了税率：税额 = 合并后总额 × 税率；
+    - 总额或税额发生变化而请求未带 net_dividend：清空已存的税后净额，
+      让 semantics.cash_dividend_amounts 按 gross−tax 重新派生——否则分红建议
+      入账的记录（带显式 net）改完总额后，统计仍按旧 net 计。
+    """
+    total = update_data.get("total_dividend", db_action.total_dividend)
+    try:
+        validate_cash_dividend_total(total)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if update_data.get("tax_withheld") is None and update_data.get("tax_rate") is not None:
+        update_data["tax_withheld"] = derive_tax_withheld(total, update_data["tax_rate"])
+
+    def _changed(field: str) -> bool:
+        """按**金额语义**比较：税额 null 与 0 等价（cash_dividend_amounts 把 null 税额按 0 计）。
+
+        前端编辑表单即使只改备注也会把空税额提交为 0；若把 null→0 当成金额变化，就会
+        清掉显式净额，total=100/tax=null/net=90 的记录静默变成 100（PR #228 评审 P2）。
+        """
+        if field not in update_data:
+            return False
+        old, new = getattr(db_action, field), update_data[field]
+        if field == "tax_withheld":
+            old = Decimal("0") if old is None else old
+            new = Decimal("0") if new is None else new
+        if old is None or new is None:
+            return old is not new
+        return Decimal(str(old)) != Decimal(str(new))
+
+    if "net_dividend" not in update_data and (
+        _changed("total_dividend") or _changed("tax_withheld")
+    ):
+        update_data["net_dividend"] = None
 
 
 def _build_corporate_action_query(
@@ -206,8 +271,13 @@ def list_corporate_actions(
         unassigned_account=unassigned_account,
     )
 
-    actions = query.order_by(CorporateAction.ex_date.desc()).offset(skip).limit(limit).all()
-    return actions
+    actions = (
+        query.order_by(CorporateAction.ex_date.desc(), CorporateAction.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return _annotate_read_only(db, current_user.id, actions)
 
 
 @router.get("/count")
@@ -280,7 +350,7 @@ def get_corporate_action(
     ).first()
     if not action:
         raise HTTPException(status_code=404, detail="公司行动记录不存在")
-    return action
+    return _annotate_read_only(db, current_user.id, [action])[0]
 
 
 @router.put("/{action_id:int}", response_model=CorporateActionResponse)
@@ -329,6 +399,8 @@ def update_corporate_action(
         for lock_symbol, lock_market in sorted({(old_symbol, old_market), (new_symbol, new_market)}):
             lock_security_timeline(db, current_user.id, lock_symbol, lock_market)
         validate_owned_references(db, current_user.id, update_data)
+        if update_data.get("action_type", old_action_type) == "CASH_DIVIDEND":
+            _apply_cash_dividend_update_rules(db_action, update_data)
         for field, value in update_data.items():
             setattr(db_action, field, value)
         db.flush()
@@ -395,7 +467,7 @@ def update_opening_position_cost(
         db.rollback()
         raise
     db.refresh(db_action)
-    return db_action
+    return _annotate_read_only(db, current_user.id, [db_action])[0]
 
 
 @router.delete("/{action_id:int}", status_code=204)
@@ -457,7 +529,9 @@ def get_actions_by_symbol(
     )
     if market:
         query = query.filter(CorporateAction.market == market)
-    return query.order_by(CorporateAction.ex_date.desc()).all()
+    return _annotate_read_only(
+        db, current_user.id, query.order_by(CorporateAction.ex_date.desc()).all()
+    )
 
 
 # ---------------------------------------------------------------------------

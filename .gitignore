@@ -118,3 +118,6 @@ cookies.xueqiu.json
 
 # symlinked from the private checkout during local verification; never publish
 frontend/node_modules
+
+# 本机 compose 覆盖（如容器 DNS），不入库
+docker-compose.override.yml

@@ -89,6 +89,37 @@ def _query_latest_rate(
     return None
 
 
+def get_latest_rate_details(
+    db: Session, base_currency: str = BASE_CURRENCY
+) -> Dict[str, Dict]:
+    """各币种对基准货币的最新有效汇率，连同**各自的**生效日期与来源。
+
+    返回 {currency: {'rate': Decimal, 'effective_date': date, 'source': str}}，
+    不含基准货币自身。汇率页逐卡显示日期/来源并标记过期——此前所有卡片共用
+    全表最新一条的日期与来源，三个月没更新的币种也显示「今天 · api」（#220）。
+    (from, to, effective_date) 有唯一约束，同一币种不会有同日并列。
+    """
+    rate_records = (
+        db.query(ExchangeRate)
+        .filter(
+            ExchangeRate.to_currency == base_currency,
+            ExchangeRate.is_active.is_(True),
+        )
+        .order_by(ExchangeRate.effective_date.asc(), ExchangeRate.id.asc())
+        .all()
+    )
+    details: Dict[str, Dict] = {}
+    for record in rate_records:
+        # 升序遍历，后来者覆盖 = 每个币种留下最新的一条
+        details[record.from_currency] = {
+            'rate': Decimal(str(record.rate)),
+            'effective_date': record.effective_date,
+            'source': record.source,
+        }
+    details.pop(base_currency, None)
+    return details
+
+
 def get_all_latest_rates(db: Session, base_currency: str = BASE_CURRENCY) -> Dict[str, Decimal]:
     """
     获取所有币种对基准货币的最新汇率
@@ -100,29 +131,9 @@ def get_all_latest_rates(db: Session, base_currency: str = BASE_CURRENCY) -> Dic
     Returns:
         {currency: rate} 字典
     """
-    rates = {}
-    rates[base_currency] = Decimal("1.0")
-
-    # 查询所有以base_currency为目标货币的汇率
-    rate_records = db.query(ExchangeRate).filter(
-        ExchangeRate.to_currency == base_currency,
-        ExchangeRate.is_active.is_(True),
-    ).all()
-
-    # 按币种分组，取最新的
-    currency_rates = {}
-    for record in rate_records:
-        currency = record.from_currency
-        if currency not in currency_rates or record.effective_date > currency_rates[currency]['date']:
-            currency_rates[currency] = {
-                'rate': Decimal(str(record.rate)),
-                'date': record.effective_date
-            }
-
-    # 提取汇率
-    for currency, data in currency_rates.items():
+    rates = {base_currency: Decimal("1.0")}
+    for currency, data in get_latest_rate_details(db, base_currency).items():
         rates[currency] = data['rate']
-
     return rates
 
 

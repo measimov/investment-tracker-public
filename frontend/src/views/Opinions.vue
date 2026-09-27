@@ -1,18 +1,21 @@
 <script setup lang="ts">
 /**
  * 雪球观点页（父 view 只做布局与编排，逻辑在 views/opinions/ 下，issue #140）：
- * 数据源状态条 + 批量生成 + 标的观点 / 作者动态两个 tab。
+ * 数据源状态条 + 采集器卡片 + 今日热帖 + 批量生成 + 标的观点 / 作者动态两个 tab。
  */
 import { onMounted, ref } from 'vue'
 import { useAliveGuard } from '@/composables/useAliveGuard'
 import JobProgressCard from '@/components/JobProgressCard.vue'
 import SymbolsTab from './opinions/SymbolsTab.vue'
 import AuthorsTab from './opinions/AuthorsTab.vue'
+import CollectorCard from './opinions/CollectorCard.vue'
+import HotPostsCard from './opinions/HotPostsCard.vue'
 import { useOpinions } from './opinions/useOpinions'
 import { useOpinionBatch } from './opinions/useOpinionBatch'
+import { formatDateTime } from '@/utils/helpers'
 
 const { isUnmounted } = useAliveGuard()
-const { state, staleHoursText, loadSummaries, loadFeed } = useOpinions()
+const { state, staleText, loadSummaries, loadFeed } = useOpinions()
 const batch = useOpinionBatch({
   isUnmounted,
   refreshSummaries: loadSummaries
@@ -38,8 +41,8 @@ onMounted(async () => {
           <div>
             <span class="page-title">雪球观点</span>
             <span v-if="state.freshness?.available" class="freshness-line">
-              数据更新于 {{ state.freshness.latest_scan_at?.slice(0, 16).replace('T', ' ') }} ·
-              最新发言 {{ state.freshness.latest_utterance_at?.slice(0, 10) }}
+              数据更新于 {{ formatDateTime(state.freshness.latest_scan_at) }} · 最新发言
+              {{ formatDateTime(state.freshness.latest_utterance_at) }}
             </span>
           </div>
           <el-button
@@ -61,7 +64,7 @@ onMounted(async () => {
         show-icon
         data-testid="opinion-source-missing"
         title="雪球观点数据源未接入"
-        description="未找到 xueqiu_archiver_utterances 表；该数据由 xueqiu-timeline-archiver 项目的采集任务写入同一数据库。"
+        description="库中还没有关注作者的发言：雪球采集器未启用或尚未成功运行过一轮（见下方「采集器」卡片）。"
         class="status-alert"
       />
       <el-alert
@@ -70,8 +73,8 @@ onMounted(async () => {
         :closable="false"
         show-icon
         data-testid="opinion-source-stale"
-        :title="`雪球观点数据已 ${staleHoursText} 小时未更新`"
-        description="archiver 采集 cron 可能已停摆（Cookie 过期或任务失败）；摘要仍可生成，但不含最新发言。"
+        :title="`雪球观点数据${staleText}`"
+        description="雪球采集器可能已停摆（Cookie 过期、WAF 或进程离线，见下方「采集器」卡片）；摘要仍可生成，但不含最新发言。"
         class="status-alert"
       />
       <el-alert
@@ -81,6 +84,9 @@ onMounted(async () => {
         :title="state.loadError"
         class="status-alert"
       />
+
+      <CollectorCard />
+      <HotPostsCard />
 
       <JobProgressCard
         v-if="batch.job"
@@ -111,7 +117,11 @@ onMounted(async () => {
           />
         </el-tab-pane>
         <el-tab-pane label="作者动态" name="authors">
-          <AuthorsTab :authors="state.feedAuthors" :loading="state.feedLoading" />
+          <AuthorsTab
+            :authors="state.feedAuthors"
+            :loading="state.feedLoading"
+            :days="state.recentDays"
+          />
         </el-tab-pane>
       </el-tabs>
     </el-card>

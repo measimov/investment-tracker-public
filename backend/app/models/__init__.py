@@ -22,6 +22,19 @@ from .security_profile import SecurityAnalysis, SecurityProfileData
 from .security_opinion import SecurityOpinionSummary
 from .hkex_dayquot_report import HkexDayquotReport
 from .security_catalog import SecurityCatalogEntry, SecurityCatalogSync
+from .xueqiu_collector import (
+    XueqiuArchiverPost,
+    XueqiuArchiverPostScanState,
+    XueqiuArchiverReply,
+    XueqiuArchiverScanRun,
+    XueqiuArchiverUtterance,
+    XueqiuCollectorAuthor,
+    XueqiuCollectorCube,
+    XueqiuCollectorState,
+    XueqiuCubeRebalancing,
+    XueqiuHotPost,
+    XueqiuSymbolPost,
+)
 
 __all__ = [
     "Transaction",
@@ -51,4 +64,15 @@ __all__ = [
     "HkexDayquotReport",
     "SecurityCatalogEntry",
     "SecurityCatalogSync",
+    "XueqiuArchiverPost",
+    "XueqiuArchiverPostScanState",
+    "XueqiuArchiverReply",
+    "XueqiuArchiverScanRun",
+    "XueqiuArchiverUtterance",
+    "XueqiuCollectorAuthor",
+    "XueqiuCollectorCube",
+    "XueqiuCollectorState",
+    "XueqiuCubeRebalancing",
+    "XueqiuHotPost",
+    "XueqiuSymbolPost",
 ]

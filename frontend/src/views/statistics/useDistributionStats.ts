@@ -6,13 +6,12 @@
 import { computed, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
-import { useExchangeRates } from '@/composables/useExchangeRates'
+import { formatNumber } from '@/utils/helpers'
 import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR, chartTooltipCurrency } from '@/styles/tokens'
 import type { MarketStat } from '@/types'
 import type { ProfitLossItem, SummaryStats, TimeStat } from './types'
 
 export function useDistributionStats() {
-  const { convertToCNY } = useExchangeRates()
   const state = reactive({
     marketStats: [] as MarketStat[],
     timeStats: [] as TimeStat[],
@@ -65,10 +64,10 @@ export function useDistributionStats() {
     state.marketStats.reduce((sum, item) => sum + item.total_cost, 0)
   )
 
+  // 排行占比的分母：后端折好的 CNY 成本之和（与概览同口径）；缺汇率的行
+  // total_cost_cny 为 null，不计入分母（与该行占比显示「—」一致）
   const totalInvestedCNY = computed(() =>
-    state.profitLossData.reduce((sum, item) => {
-      return sum + convertToCNY(item.total_cost, item.currency)
-    }, 0)
+    state.profitLossData.reduce((sum, item) => sum + (item.total_cost_cny ?? 0), 0)
   )
 
   const marketChartOption = computed(() => ({
@@ -140,7 +139,8 @@ export function useDistributionStats() {
       yAxis: {
         type: 'value',
         axisLabel: {
-          formatter: '¥{value}'
+          // 千分位（此前 ¥1000000 一长串）
+          formatter: (value: number) => `¥${formatNumber(value, 0)}`
         }
       },
       series: [

@@ -645,7 +645,12 @@ YAHOO_HK_FIELD_MAP: Dict[str, str] = {
     "annualFreeCashFlow": "free_cashflow",
     "annualCapitalExpenditure": "capex",
     "annualDepreciationAndAmortization": "depr_fa_coga_dpba",
+    # 已付普通股股息（Yahoo 为负数现金流出，落库取量级，与 PDF 映射的 div_paid_owners 同口径；
+    # 2026-09 实测 00700/00883/02313 返回近 4 年，与 annualCashDividendsPaid 相同）
+    "annualCommonStockDividendPaid": "div_paid_owners",
 }
+# 落库取绝对值的科目（量级口径）
+YAHOO_HK_MAGNITUDE_FIELDS = frozenset({"div_paid_owners"})
 
 
 def to_yahoo_hk_code(symbol: str) -> str:
@@ -698,5 +703,5 @@ def yahoo_hk_fundamentals(symbol: str) -> List[Dict[str, Any]]:
                 "fp": "FY",
                 "currency": item.get("currencyCode"),
             })
-            row[field] = value
+            row[field] = abs(value) if field in YAHOO_HK_MAGNITUDE_FIELDS else value
     return sorted(merged.values(), key=lambda r: r["end_date"], reverse=True)

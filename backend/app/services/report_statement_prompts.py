@@ -16,7 +16,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .report_statements import STATEMENT_EXTRACTOR_VERSION
 
-STATEMENT_PROMPT_VERSION = 4
+# v5：新增 lt_borr / st_borr（格雷厄姆准则 2 的长期债务）与 div_paid_owners（分红记录）
+STATEMENT_PROMPT_VERSION = 5
+# 构建版本：抽取行（结构化行 + 映射）→ 会计期科目行这一步的代码口径（EPS 单位折算、资产小计
+# 修复、夹层权益、重列标记）。与抽取器/prompt 解耦——改构建逻辑只需
+# `rebuild_report_statements` 零下载零 LLM 从已存抽取行重建，不必重抽 PDF 或重跑映射
+STATEMENT_BUILD_VERSION = 1
 
 # 目标科目：与 report_fetchers.YAHOO_HK_FIELD_MAP / earnings_quality.pivot_rows_to_statements
 # 对齐（同名 = 同口径），下游利润质量/格雷厄姆/分析输入零改动即可消费
@@ -53,11 +58,17 @@ STATEMENT_FIELDS: Dict[str, Dict[str, str]] = {
         "minority_int": "非控股权益/非控制性权益/少数股东权益——**权益部分**的那一行（可能为负）；"
         "不是负债内的少数股东款项",
         "total_debt": "借款合计：短期借款+长期借款+应付票据/债券（流动与非流动都算，多行求和；不含租赁负债与经营性应付）",
+        "lt_borr": "非流动借款 + 非流动应付债券/票据/可转换债券（**非流动负债**部分的有息借款，多行求和；"
+        "不含租赁负债、递延收入与经营性应付；没有则 null）",
+        "st_borr": "流动借款 + 一年内到期的借款/债券/票据（**流动负债**部分的有息借款，多行求和；"
+        "不含租赁负债与贸易应付；没有则 null）",
     },
     "cashflow": {
         "n_cashflow_act": "经营活动所得/（所用）现金流量净额",
         "capex": "购买物业、设备及器材（含在建工程/投资物业）的付款（按报表符号，通常为负）",
         "depr_fa_coga_dpba": "折旧及摊销（若现金流量表以间接法列出；多行求和；没有则 null）",
+        "div_paid_owners": "已付本公司股东/权益持有人股息（不含已付非控股权益/少数股东股息；按报表符号；"
+        "现金流量表没有这一行则 null）",
     },
 }
 # 每股指标不按单位放大
@@ -65,8 +76,9 @@ PER_SHARE_FIELDS = frozenset({"basic_eps", "diluted_eps"})
 # 费用类科目报表里多为括号负数，落库统一取**正的绝对值**——与 Yahoo（cost_of_revenue 为正）
 # 和 A 股 Tushare（sell_exp/admin_exp 为正）同口径，否则毛利率 = (收入−成本)/收入 会算成
 # 超过 100%、Beneish 的 SGAI 因子符号反转。capex 保持报表符号（Yahoo 亦为负）。
+# 已付股东股息同理取量级（格雷厄姆分红记录只看是否 > 0，与雅虎 CommonStockDividendPaid 的负号无关）
 EXPENSE_MAGNITUDE_FIELDS = frozenset(
-    {"cost_of_revenue", "sga_exp", "int_exp", "income_tax", "depr_fa_coga_dpba"}
+    {"cost_of_revenue", "sga_exp", "int_exp", "income_tax", "depr_fa_coga_dpba", "div_paid_owners"}
 )
 # 至少要解析出的科目：缺了说明定位到了别的表或映射失败，整份判确定性失败。每张表列出
 # 若干「备选组」，任一组齐全即可——港股净资产格式的財務狀況表没有「資產總值」行（09926/
@@ -100,10 +112,14 @@ FIELD_KIND: Dict[str, str] = {
     field: kind for kind, fields in STATEMENT_FIELDS.items() for field in fields
 }
 FIELD_KIND["free_cashflow"] = "cashflow"
+# 夹层权益（美国准则口径的可赎回非控制性权益）：按行名确定性取值，不走 LLM、不进分析白名单，
+# 只参与资产负债恒等式（资产 = 负债 + 夹层权益 + 权益总额）与展示
+FIELD_KIND["mezzanine_equity"] = "balance"
 
 
 def statement_row_current(payload: Dict[str, Any]) -> bool:
-    """report_statements 行是否由当前版本的抽取器与 prompt 生成（缺字段 = 版本 1 的历史行）。
+    """report_statements 行是否由当前版本的抽取器、prompt 与构建逻辑生成（抽取器/prompt 缺字段 =
+    版本 1 的历史行；构建版本缺字段 = 0，即 PR-A 之前写出的行一律待重建）。
 
     **所有读取路径都必须过它**（档案加载 / 格雷厄姆 / 分析输入 / 进度 / Yahoo 合并）：写入
     侧按双版本触发重算，但每轮受 max_new 限制只重算少量报告，未重算或重算失败的旧金额若
@@ -112,6 +128,7 @@ def statement_row_current(payload: Dict[str, Any]) -> bool:
     return (
         int(payload.get("extractor_version") or 1) == STATEMENT_EXTRACTOR_VERSION
         and int(payload.get("prompt_version") or 1) == STATEMENT_PROMPT_VERSION
+        and int(payload.get("build_version") or 0) == STATEMENT_BUILD_VERSION
     )
 
 _SYSTEM_PROMPT = """你是财务报表科目映射器。用户给出一家上市公司一份年报/中报里三张合并报表的\
@@ -131,6 +148,9 @@ _SYSTEM_PROMPT = """你是财务报表科目映射器。用户给出一家上市
 6b. total_equity 取**权益部分**的合计行（權益總額/總權益/權益合計，含非控股權益），\
 minority_int 取权益部分的「非控股權益/非控制性權益/少數股東權益」行；负债内的少数股东款项\
 不算。没有权益总额行时 total_equity 留 null，系统用归母权益 + 非控股权益推导。
+6c. lt_borr 只取**非流动负债**部分、st_borr 只取**流动负债**部分的借款/债券/票据行（同一行\
+可以同时出现在 total_debt 里）；租赁负债、贸易应付不算。div_paid_owners 只取已付本公司股东\
+的股息行，「已付非控股權益股息」不算。
 7. 输出严格 JSON：{"income": {科目: [id...] | null, ...}, "balance": {...}, "cashflow": {...}}，\
 只包含输入中存在的报表，不要任何解释文字。"""
 

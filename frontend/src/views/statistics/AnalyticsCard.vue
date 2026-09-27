@@ -11,9 +11,9 @@ import {
 } from 'echarts/components'
 import VChart from 'vue-echarts'
 import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
-import { formatCurrency, profitColor as getProfitColor } from '@/utils/helpers'
+import { EMPTY, formatCurrency, profitColor as getProfitColor } from '@/utils/helpers'
 import { RANGE_PRESETS, type AnalyticsFeature } from './useAnalytics'
-import { formatNullableNumber, formatNullablePercent } from './types'
+import { formatNullableNumber, formatNullablePercent, formatPlainPercent } from './format'
 
 use([
   CanvasRenderer,
@@ -37,6 +37,9 @@ defineProps<{ analytics: AnalyticsFeature }>()
             <div class="title-with-tag">
               <span>证券组合 TTWR 与风险指标</span>
               <el-tag type="warning" effect="plain" size="small">实验指标</el-tag>
+              <el-tag v-if="analytics.state.whatIfPrices" type="warning" effect="dark" size="small">
+                手工价试算中
+              </el-tag>
             </div>
             <el-button
               type="primary"
@@ -51,7 +54,7 @@ defineProps<{ analytics: AnalyticsFeature }>()
         </template>
 
         <el-alert
-          title="TTWR 与风险指标为实验指标，基于证券交易现金流估算，未包含账户现金和真实外部入出金；胜率/盈亏比按平仓日落在所选区间内的每笔平仓交易统计。"
+          title="TTWR 与风险指标为实验指标，基于证券交易现金流估算，未包含账户现金和真实外部入出金；夏普率/索提诺率按无风险利率 0 计算；胜率/盈亏比按平仓日落在所选区间内的每笔平仓交易统计（按笔，不是按标的）；区间不足半年时年化仅供参考。"
           type="warning"
           :closable="false"
           show-icon
@@ -133,9 +136,18 @@ defineProps<{ analytics: AnalyticsFeature }>()
             >
               {{ formatNullablePercent(analytics.metrics.annualized_return_rate) }}
             </span>
+            <span
+              v-if="analytics.shortRange && analytics.metrics.annualized_return_rate != null"
+              class="metric-hint"
+            >
+              区间不足半年，年化仅供参考
+            </span>
           </div>
           <div class="analytics-metric">
-            <span class="metric-label">夏普率</span>
+            <span class="metric-label"
+              >夏普率<el-tooltip content="无风险利率按 0 计算（未扣除存款/国债收益）"
+                ><el-icon class="label-help"><QuestionFilled /></el-icon></el-tooltip
+            ></span>
             <span class="metric-value">{{
               formatNullableNumber(analytics.metrics.sharpe_ratio)
             }}</span>
@@ -149,7 +161,7 @@ defineProps<{ analytics: AnalyticsFeature }>()
           <div class="analytics-metric">
             <span class="metric-label">最大回撤</span>
             <span class="metric-value danger">
-              {{ formatNullablePercent(analytics.metrics.max_drawdown_rate) }}
+              {{ formatPlainPercent(analytics.metrics.max_drawdown_rate) }}
             </span>
           </div>
           <div class="analytics-metric">
@@ -176,11 +188,18 @@ defineProps<{ analytics: AnalyticsFeature }>()
               {{ formatNullablePercent(analytics.primaryBenchmarkComparison.excess_return_rate) }}
             </span>
           </div>
-          <div class="analytics-metric">
-            <span class="metric-label">标的胜率（实验）</span>
+          <div class="analytics-metric" data-testid="win-rate-metric">
+            <span class="metric-label">胜率（按笔·实验）</span>
             <span class="metric-value">{{
-              formatNullablePercent(analytics.tradeSkill.win_rate)
+              analytics.tradeSkill.sample_count
+                ? formatPlainPercent(analytics.tradeSkill.win_rate)
+                : EMPTY
             }}</span>
+            <span class="metric-hint">
+              样本 {{ analytics.tradeSkill.sample_count ?? 0 }} 笔平仓{{
+                analytics.tradeSkill.sample_count ? '' : '，区间内无平仓'
+              }}
+            </span>
           </div>
           <div class="analytics-metric">
             <span class="metric-label">盈亏比</span>
@@ -200,13 +219,13 @@ defineProps<{ analytics: AnalyticsFeature }>()
               class="metric-value"
               :style="{ color: getProfitColor(analytics.rangeSummary.realized_pnl_cny || 0) }"
             >
-              {{ formatCurrency(analytics.rangeSummary.realized_pnl_cny || 0) }}
+              {{ formatCurrency(analytics.rangeSummary.realized_pnl_cny) }}
             </span>
           </div>
           <div class="analytics-metric">
             <span class="metric-label">区间税后股息</span>
             <span class="metric-value">
-              {{ formatCurrency(analytics.rangeSummary.dividend_net_cny || 0) }}
+              {{ formatCurrency(analytics.rangeSummary.dividend_net_cny) }}
             </span>
           </div>
           <div class="analytics-metric">
@@ -216,6 +235,12 @@ defineProps<{ analytics: AnalyticsFeature }>()
               :style="{ color: getProfitColor(analytics.rangeSummary.xirr_annualized_rate || 0) }"
             >
               {{ formatNullablePercent(analytics.rangeSummary.xirr_annualized_rate) }}
+            </span>
+            <span
+              v-if="analytics.shortRange && analytics.rangeSummary.xirr_annualized_rate != null"
+              class="metric-hint"
+            >
+              区间不足半年，年化仅供参考
             </span>
           </div>
         </div>
@@ -327,18 +352,9 @@ defineProps<{ analytics: AnalyticsFeature }>()
   gap: 6px;
   min-height: 72px;
   padding: 14px;
-  background:
-    linear-gradient(150deg, var(--app-primary-soft), transparent 60%), var(--app-surface-muted);
+  background: var(--app-surface-muted);
   border: 1px solid var(--app-border-soft);
   border-radius: var(--app-radius-inner);
-  transition:
-    transform 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-.analytics-metric:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--app-shadow-sm);
 }
 
 .metric-label {
@@ -357,6 +373,11 @@ defineProps<{ analytics: AnalyticsFeature }>()
 
 .metric-value.danger {
   color: var(--app-danger);
+}
+
+.metric-hint {
+  color: var(--app-text-soft);
+  font-size: 12px;
 }
 
 .analytics-warnings {

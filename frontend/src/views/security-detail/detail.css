@@ -1,0 +1,198 @@
+/*
+ * 标的详情页各内容块的统一样式（#221，扁平主题）：由 SecurityDetail.vue 引入，tab 子组件与
+ * OpinionSection 共用同一套区块 / 标题 / 元信息条 / 定义列表，保证 AI 分析、财报摘要、
+ * 观点摘要的间距与字号一致。类名统一 `sd-` 前缀，不与全局样式冲突。
+ * 只用主题令牌（值由 styles.css 决定），不写渐变/阴影；.markdown-body 排版走全局样式。
+ */
+
+.sd-block {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius);
+  padding: 14px 16px;
+}
+
+.sd-block + .sd-block {
+  margin-top: 16px;
+}
+
+.sd-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.sd-block-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--app-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.sd-block-title .sd-title-note {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+}
+
+.sd-help {
+  color: var(--app-text-soft);
+  cursor: help;
+  font-size: 14px;
+}
+
+.sd-block-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 元信息条：标签 + 一句话摘要 + 生成时间/新鲜度（AI 分析、观点摘要共用） */
+.sd-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.sd-meta-summary {
+  flex-basis: 100%;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--app-text);
+}
+
+.sd-meta-time {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-footnote {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-text-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-muted {
+  color: var(--app-text-soft);
+  font-size: 13px;
+}
+
+/* 定义列表：左列字段名固定宽度灰字，右列正文（商业画像、财报摘要字段） */
+.sd-field-list {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 7.5em minmax(0, 1fr);
+  gap: 8px 14px;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.sd-field-list > dt {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.85;
+}
+
+.sd-field-list > dd {
+  margin: 0;
+  color: var(--app-text);
+  min-width: 0;
+  word-break: break-word;
+}
+
+.sd-inline-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.sd-inline-list li + li {
+  margin-top: 2px;
+}
+
+/* 关键数字：紧凑两列网格 */
+.sd-number-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-number-grid li {
+  padding: 4px 8px;
+  background: var(--app-surface-muted);
+  border-radius: var(--app-radius-inner);
+}
+
+.sd-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.sd-red-flag {
+  color: var(--app-danger);
+  font-weight: 600;
+}
+
+/* 港股报表：存疑已置空（区别于缺数据的「—」）、币种与多数不一致、中报行 */
+.sd-scrubbed {
+  color: var(--app-warning);
+  font-weight: 600;
+  cursor: help;
+}
+
+.sd-currency-outlier {
+  color: var(--app-warning);
+  font-weight: 600;
+}
+
+.sd-src-sup {
+  font-size: 10px;
+  color: var(--app-text-soft);
+  margin-left: 1px;
+}
+
+.el-table .sd-interim-row > td.el-table__cell {
+  background: var(--app-surface-secondary);
+}
+
+.sd-period-badge {
+  margin-left: 4px;
+  font-size: 11px;
+  color: var(--app-text-muted);
+}
+
+@media (max-width: 640px) {
+  .sd-block {
+    padding: 12px;
+  }
+
+  .sd-field-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+
+  .sd-field-list > dd + dt {
+    margin-top: 8px;
+  }
+
+  .sd-number-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

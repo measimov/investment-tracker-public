@@ -104,7 +104,33 @@ class CorporateActionCreate(CorporateActionBase):
             validate_opening_position_fields(
                 self.adjusted_quantity, self.adjusted_cost_per_share, self.cost_basis_adjustment
             )
+        elif self.action_type == "CASH_DIVIDEND":
+            validate_cash_dividend_total(self.total_dividend)
+            # 只给税率不给税额：按 总额×税率 推导预扣税（与 /cash-dividend 快捷接口同一算式）。
+            # 否则税率只是一个不参与任何金额的标签——semantics.cash_dividend_amounts
+            # 只读 tax_withheld，预扣税汇总会漏税、税后按全额进统计与对账（#220）。
+            # net_dividend 未显式给时不存，由 cash_dividend_amounts 按 gross−tax 派生。
+            if "tax_withheld" not in self.model_fields_set or self.tax_withheld is None:
+                derived = derive_tax_withheld(self.total_dividend, self.tax_rate)
+                if derived is not None:
+                    self.tax_withheld = derived
         return self
+
+
+def validate_cash_dividend_total(total_dividend) -> None:
+    """现金股息必须有股息总额：统计/对账只读总额，只填每股的记录按 0 计、等于没有。"""
+    if total_dividend is None or total_dividend <= 0:
+        raise ValueError("现金股息必须提供股息总额 total_dividend（>0）")
+
+
+def derive_tax_withheld(total_dividend, tax_rate) -> Optional[Decimal]:
+    """预扣税 = 总额 × 税率；任一缺失返回 None（不推导）。
+
+    `/cash-dividend` 快捷接口与通用创建/更新入口共用这一份算式。
+    """
+    if total_dividend is None or tax_rate is None:
+        return None
+    return Decimal(str(total_dividend)) * Decimal(str(tax_rate))
 
 
 def validate_opening_position_fields(quantity, cost_per_share, total_cost) -> None:
@@ -171,6 +197,9 @@ class CorporateActionResponse(CorporateActionBase):
 
     id: int
     import_batch_id: Optional[int] = None
+    # 展示字段：导入产物（带批次或被来源流水引用）不可编辑/删除。
+    # 读端点与补录成本端点计算；创建/更新入口本就只对可变记录成功，缺省 False
+    read_only: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -186,7 +215,8 @@ class CashDividendCreate(BaseModel):
     market: str = Field(..., max_length=20)
     ex_date: date
     dividend_per_share: Decimal = Field(..., gt=0, description="每股股息")
-    total_dividend: Optional[Decimal] = Field(None, gt=0, description="总股息")
+    # 总额必填：统计与对账只读总额（与通用创建入口的 CASH_DIVIDEND 校验一致）
+    total_dividend: Decimal = Field(..., gt=0, description="总股息")
     tax_rate: Optional[Decimal] = Field(default=Decimal("0.1"), ge=0, le=1, description="税率，默认10%")
     currency: str = Field(default="CNY", max_length=10)
     notes: Optional[str] = None
@@ -196,8 +226,8 @@ class CashDividendCreate(BaseModel):
         tax_withheld = None
         net_dividend = None
 
-        if self.total_dividend and self.tax_rate:
-            tax_withheld = self.total_dividend * self.tax_rate
+        if self.tax_rate:
+            tax_withheld = derive_tax_withheld(self.total_dividend, self.tax_rate)
             net_dividend = self.total_dividend - tax_withheld
 
         return CorporateActionCreate(

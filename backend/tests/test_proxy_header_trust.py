@@ -173,7 +173,7 @@ def test_spoofed_forwarded_proto_cannot_bypass_require_https(untrusted_backend):
         timeout=10,
     )
     assert response.status_code == 400, response.text
-    assert response.json()["detail"] == "Login requires HTTPS"
+    assert response.json()["detail"] == "登录必须通过 HTTPS 访问"
 
 
 def test_slash_redirect_behind_a_trusted_proxy_stays_on_https(trusted_backend):

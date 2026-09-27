@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.services import stock_price_service
 from app.services.stock_price_service import (
     Market,
     configure_tushare_client_endpoint,
@@ -52,7 +53,7 @@ def test_parse_tencent_quote_price_rejects_missing_or_invalid_price():
 
 
 def test_configure_tushare_client_endpoint_uses_https_default(monkeypatch):
-    monkeypatch.delenv("TUSHARE_API_BASE_URL", raising=False)
+    monkeypatch.setattr(stock_price_service.settings, "tushare_api_base_url", "")
 
     class DummyClient:
         _DataApi__http_url = "http://api.waditu.com/dataapi"
@@ -65,7 +66,9 @@ def test_configure_tushare_client_endpoint_uses_https_default(monkeypatch):
 
 
 def test_configure_tushare_client_endpoint_accepts_override(monkeypatch):
-    monkeypatch.setenv("TUSHARE_API_BASE_URL", "https://api.tushare.pro/dataapi/")
+    monkeypatch.setattr(
+        stock_price_service.settings, "tushare_api_base_url", "https://api.tushare.pro/dataapi/"
+    )
 
     class DummyClient:
         _DataApi__http_url = "http://api.waditu.com/dataapi"

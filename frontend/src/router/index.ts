@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { ElMessage } from 'element-plus'
 
@@ -15,90 +15,105 @@ const Login = () => import('../views/Login.vue')
 const UserManagement = () => import('../views/admin/UserManagement.vue')
 const AllHoldings = () => import('../views/admin/AllHoldings.vue')
 
-const routes = [
+// meta.title：标签页标题的页面名（与导航文案一致）；meta.nav：不在导航里的
+// 页面点亮哪个菜单项
+const routes: RouteRecordRaw[] = [
   {
     path: '/login',
     name: 'Login',
     component: Login,
-    meta: { requiresAuth: false }
+    meta: { requiresAuth: false, title: '登录' }
   },
   {
     path: '/',
     name: 'Dashboard',
     component: Dashboard,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '仪表盘' }
   },
   {
     path: '/transactions',
     name: 'Transactions',
     component: Transactions,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '交易记录' }
   },
   {
     path: '/account-data',
     name: 'AccountData',
     component: AccountData,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '账户数据' }
   },
   {
     path: '/holdings',
     name: 'Holdings',
     component: Holdings,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '当前持仓' }
   },
   {
     path: '/watchlist',
     name: 'Watchlist',
     component: () => import('../views/Watchlist.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '观察清单' }
   },
   {
     path: '/opinions',
     name: 'Opinions',
     component: () => import('../views/Opinions.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '雪球观点' }
   },
   {
     path: '/securities/:market/:symbol',
     name: 'SecurityDetail',
     component: () => import('../views/SecurityDetail.vue'),
-    meta: { requiresAuth: true }
+    meta: {
+      requiresAuth: true,
+      // 详情页不在导航里：点亮「当前持仓」；标题带上代码，多开几个标的时可区分
+      nav: '/holdings',
+      title: (to) => `${String(to.params.symbol ?? '')} · 标的档案`
+    }
   },
   {
     path: '/corporate-actions',
     name: 'CorporateActions',
     component: CorporateActions,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '公司行动' }
   },
   {
     path: '/reports',
     name: 'Reports',
     component: () => import('../views/Reports.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: 'AI 复盘' }
   },
   {
     path: '/statistics',
     name: 'Statistics',
     component: Statistics,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '统计分析' }
   },
   {
     path: '/exchange-rates',
     name: 'ExchangeRates',
     component: ExchangeRates,
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '汇率管理' }
   },
   {
     path: '/admin/users',
     name: 'UserManagement',
     component: UserManagement,
-    meta: { requiresAuth: true, requiresAdmin: true }
+    meta: { requiresAuth: true, requiresAdmin: true, title: '用户管理' }
   },
   {
     path: '/admin/holdings',
     name: 'AllHoldings',
     component: AllHoldings,
-    meta: { requiresAuth: true, requiresAdmin: true }
+    meta: { requiresAuth: true, requiresAdmin: true, title: '查看所有持仓' }
+  },
+  {
+    // 兜底 404，必须放在最后。不要求登录：输错地址应该看到「页面不存在」，
+    // 而不是被踢去登录页、登录回跳后再落到一个空白页
+    path: '/:pathMatch(.*)*',
+    name: 'NotFound',
+    component: () => import('../views/NotFound.vue'),
+    meta: { requiresAuth: false, title: '页面不存在' }
   }
 ]
 
@@ -108,6 +123,8 @@ const router = createRouter({
 })
 
 // Global navigation guard
+// 未登录的跳转只在这里发生：会话探测（/auth/me）带 skipAuthRedirect，
+// 拦截器不再同时整页跳转（此前两处一起跳，页面刷两次、提示一闪即逝，#219）
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
 
@@ -148,6 +165,14 @@ router.beforeEach(async (to, from, next) => {
   }
 
   next()
+})
+
+const APP_TITLE = '投资追踪系统'
+
+// 标签页标题「页面名 · 投资追踪系统」：此前所有页都叫「投资追踪系统」，多开标签无法区分
+router.afterEach((to) => {
+  const title = typeof to.meta.title === 'function' ? to.meta.title(to) : to.meta.title
+  document.title = title ? `${title} · ${APP_TITLE}` : APP_TITLE
 })
 
 export default router

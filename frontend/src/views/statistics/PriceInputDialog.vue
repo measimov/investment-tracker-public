@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { formatNumber } from '@/utils/helpers'
+import { formatPrice, formatQuantity } from '@/utils/helpers'
 import type { PriceInputsFeature } from './usePriceInputs'
 
 defineProps<{
@@ -11,21 +11,26 @@ defineEmits<{ calculate: [] }>()
 </script>
 
 <template>
-  <!-- 价格输入对话框 -->
-  <el-dialog v-model="prices.state.dialogVisible" title="输入当前价格" width="720px">
+  <!-- 价格输入对话框：每个标的一行（多账户持仓已合并），价格为原币 -->
+  <el-dialog v-model="prices.state.dialogVisible" title="输入当前价格" width="760px">
+    <p class="price-dialog-note">
+      「计算」为手工价试算：只影响本页的业绩与 TTWR 指标，不写入持仓；「保存价格」才会写入。
+      空价行已按服务端估值价（含历史收盘）预填。
+    </p>
     <div class="responsive-table">
-      <el-table :data="prices.state.rows" max-height="560" stripe v-loading="loading">
+      <el-table :data="prices.state.rows" row-key="key" max-height="560" stripe v-loading="loading">
         <el-table-column prop="symbol" label="代码" width="100" />
         <el-table-column prop="name" label="名称" min-width="130" show-overflow-tooltip />
-        <el-table-column prop="market" label="市场" width="100" />
+        <el-table-column prop="market" label="市场" width="90" />
         <el-table-column label="持仓数量" width="120" align="right">
           <template #default="{ row }">
-            {{ formatNumber(row.quantity, 2) }}
+            {{ formatQuantity(row.quantity) }}
           </template>
         </el-table-column>
-        <el-table-column label="平均成本" width="120" align="right">
+        <el-table-column label="平均成本" width="130" align="right">
           <template #default="{ row }">
-            {{ formatNumber(row.avg_cost, 4) }}
+            {{ formatPrice(row.avg_cost) }}
+            <span class="currency-code">{{ row.currency }}</span>
           </template>
         </el-table-column>
         <el-table-column label="当前价格" width="180">
@@ -47,6 +52,18 @@ defineEmits<{ calculate: [] }>()
 </template>
 
 <style scoped>
+.price-dialog-note {
+  margin: 0 0 12px;
+  color: var(--app-text-soft);
+  font-size: 12px;
+}
+
+.currency-code {
+  margin-left: 4px;
+  color: var(--app-text-soft);
+  font-size: 12px;
+}
+
 @media (max-width: 900px) {
   .price-dialog-footer {
     grid-template-columns: 1fr;

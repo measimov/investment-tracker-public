@@ -29,6 +29,10 @@ from .fx import (
 )
 
 
+# 持仓表现的缺价提示（泛泛一句）；组合快照有具体标的清单时据此去重
+UNPRICED_POSITIONS_WARNING = "部分当前持仓缺少可用估值价格，其成本与市值未计入汇总。"
+
+
 def _empty_cost_bucket() -> Dict[str, Any]:
     return {
         "total_cost_cny": Decimal("0"),
@@ -213,25 +217,83 @@ def get_holdings_cost_breakdown(db: Session, user_id: int) -> List[Dict[str, Any
 
     Renamed from get_profit_loss_analysis (issue #48): it never contained any
     P&L fields, only the cost composition of current holdings.
-    """
-    holdings = db.query(Holding).filter(Holding.user_id == user_id).all()
 
-    analysis = []
+    持仓是账户级的（每账户一行），排行按标的合并（#218：此前每账户一行、且按
+    原币 total_cost 排序——HK$ 与 ¥ 的数字直接比大小）。合并键带币种：同一
+    (symbol, market) 的各账户行币种本应一致，真不一致时原币金额不能相加，宁可
+    分成两行也不跨币种求和。
+
+    total_cost_cny 与 summary / by-market 同一口径（最新汇率，逐账户行折算后
+    相加）；缺汇率时为 None 并标 missing_rate，排在有 CNY 成本的行之后。
+    单账户行的 quantity / avg_cost / total_cost 与合并前逐字段相同。
+    """
+    holdings = (
+        db.query(Holding).filter(Holding.user_id == user_id).order_by(Holding.id).all()
+    )
+
+    merged: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     for holding in holdings:
-        analysis.append(
-            {
+        currency = holding.currency or "CNY"
+        key = (holding.symbol, holding.market, currency)
+        bucket = merged.get(key)
+        if bucket is None:
+            bucket = {
                 "symbol": holding.symbol,
                 "name": holding.name,
                 "market": holding.market,
-                "quantity": float(holding.quantity),
-                "avg_cost": float(holding.avg_cost),
-                "total_cost": float(holding.total_cost),
-                "currency": holding.currency,
+                "currency": currency,
+                "rows": [],
+                "quantity": Decimal("0"),
+                "total_cost": Decimal("0"),
+                "total_cost_cny": Decimal("0"),
+                "missing_rates": set(),
+            }
+            merged[key] = bucket
+        if not bucket["name"] and holding.name:
+            bucket["name"] = holding.name
+        amount = Decimal(str(holding.total_cost))
+        bucket["rows"].append(holding)
+        bucket["quantity"] += Decimal(str(holding.quantity))
+        bucket["total_cost"] += amount
+        bucket["total_cost_cny"] += to_cny_or_track_missing(
+            db, amount, currency, bucket["missing_rates"]
+        )
+
+    analysis = []
+    for bucket in merged.values():
+        rows = bucket["rows"]
+        if len(rows) == 1:
+            avg_cost = float(rows[0].avg_cost)
+        elif bucket["quantity"] > 0:
+            avg_cost = float(bucket["total_cost"] / bucket["quantity"])
+        else:
+            avg_cost = 0.0
+        missing_rate = bool(bucket["missing_rates"])
+        analysis.append(
+            {
+                "symbol": bucket["symbol"],
+                "name": bucket["name"],
+                "market": bucket["market"],
+                "quantity": float(bucket["quantity"]),
+                "avg_cost": avg_cost,
+                "total_cost": float(bucket["total_cost"]),
+                "currency": bucket["currency"],
+                "total_cost_cny": (
+                    None if missing_rate else round(float(bucket["total_cost_cny"]), 2)
+                ),
+                "missing_rate": missing_rate,
+                "account_count": len(rows),
             }
         )
 
-    # Sort by total cost descending
-    analysis.sort(key=lambda x: x["total_cost"], reverse=True)
+    # 按 CNY 成本降序；缺汇率的行无法与其他行比较，排在最后（组内按原币成本）
+    analysis.sort(
+        key=lambda x: (
+            x["total_cost_cny"] is None,
+            -(x["total_cost_cny"] or 0),
+            -x["total_cost"],
+        )
+    )
 
     return analysis
 
@@ -377,9 +439,7 @@ def _current_holdings_data_quality(
     data_quality["unpriced_positions"] = unpriced_positions
     data_quality["unpriced_position_count"] = len(unpriced_positions)
     if unpriced_positions:
-        data_quality.setdefault("warnings", []).append(
-            "部分当前持仓缺少可用估值价格，其成本与市值未计入汇总。"
-        )
+        data_quality.setdefault("warnings", []).append(UNPRICED_POSITIONS_WARNING)
     data_quality["missing_rate_currencies"] = sorted(missing_rates or set())
     warning = missing_rate_warning(missing_rates or set())
     if warning:

@@ -269,8 +269,10 @@ class TestHkBoundaries:
         result = compute_graham_screen("港股", _hk_statements(range(2022, 2026)))
         verdicts = _verdicts(result)
         assert verdicts["earnings_stability"] == "indeterminate"
-        assert "不足原著 10 年" in _reasons(result)["earnings_stability"]
-        # 无估值/分红数据源：如实 indeterminate，不冒充判定
+        # 整段连续、只是起点晚：说"历史短"而不是"缺某某年数据"
+        assert "披露历史仅 4 年（最早 2022），不足原著十年" in _reasons(result)["earnings_stability"]
+        assert "披露历史仅 4 年" in _reasons(result)["earnings_growth"]
+        # 无行情价格 / 无现金流量表股息数据：如实 indeterminate，不冒充判定
         assert verdicts["pe"] == "indeterminate"
         assert verdicts["pb_or_product"] == "indeterminate"
         assert verdicts["dividend_record"] == "indeterminate"

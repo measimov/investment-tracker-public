@@ -32,6 +32,20 @@ export type ReconciliationSnapshot = components['schemas']['ReconciliationSnapsh
 export type SecurityRule = components['schemas']['SecurityRuleResponse']
 export type WatchlistItem = components['schemas']['WatchlistItemResponse']
 export type WatchlistMembership = components['schemas']['WatchlistMembershipResponse']
+export type CollectorStatus = components['schemas']['CollectorStatusResponse']
+export type CollectorAuthor = components['schemas']['CollectorAuthorResponse']
+export type CollectorAuthorCreate = components['schemas']['CollectorAuthorCreate']
+export type CollectorAuthorUpdate = components['schemas']['CollectorAuthorUpdate']
+export type CollectorScanRun = components['schemas']['CollectorScanRunResponse']
+export type CollectorCookieStatus = components['schemas']['CollectorCookieStatus']
+export type CollectorCube = components['schemas']['CollectorCubeResponse']
+export type CollectorCubeCreate = components['schemas']['CollectorCubeCreate']
+export type CollectorCubeUpdate = components['schemas']['CollectorCubeUpdate']
+export type CollectorSymbolsStatus = components['schemas']['CollectorSymbolsStatus']
+export type XueqiuFeedPost = components['schemas']['XueqiuFeedPost']
+export type XueqiuSymbolFeed = components['schemas']['XueqiuSymbolFeedResponse']
+export type XueqiuHotPost = components['schemas']['XueqiuHotPostItem']
+export type XueqiuHots = components['schemas']['XueqiuHotsResponse']
 export type SecurityEvent = components['schemas']['SecurityEventResponse']
 export type DividendSuggestion = components['schemas']['SuggestionResponse']
 export type BrokerImportResult = components['schemas']['BrokerImportResult']
@@ -132,4 +146,48 @@ export interface OpinionFeedAuthor {
   author: string
   total: number
   items: OpinionFeedItem[]
+}
+
+// ---------------------------------------------------------------------------
+// GET /statistics/period-pnl（后端 Dict[str, Any] 端点，形状以 statistics/period_pnl.py 为准）
+// ---------------------------------------------------------------------------
+export type PeriodPnlKey = 'daily' | 'mtd' | 'ytd'
+
+export interface PeriodPnlBasis {
+  symbol: string
+  market: string
+  basis_date: string
+  /** history = 收盘价；transaction = 只能用成交价估值 */
+  basis_source: string
+}
+
+export interface PeriodPnlSummary {
+  label: string
+  start_date: string
+  end_date: string
+  /** exact 可靠；estimated 期初基准陈旧（含此前累积涨跌）；unavailable 期初有持仓完全无价，不给数 */
+  status: 'exact' | 'estimated' | 'unavailable'
+  /** unavailable 时为 null */
+  pnl_cny: number | null
+  /** 区间时间加权收益率（%）；区间内无有效估值点或 unavailable 时为 null */
+  return_rate: number | null
+  stale_opening_basis: PeriodPnlBasis[]
+  opening_unpriced_positions: Array<{ symbol: string; market: string }>
+  opening_market_value_cny: number
+  closing_market_value_cny: number
+  cash_in_cny: number
+  cash_out_cny: number
+  dividend_income_cny: number
+  points: number
+  unpriced_positions: Array<{ symbol: string; market: string }>
+  stale_price_positions: Array<{ symbol: string; market: string }>
+  estimated_inflow_events?: number
+}
+
+export interface PeriodPnlResponse {
+  base_currency: string
+  as_of: string
+  methodology: { scope: string; method: string; status: string; description: string }
+  periods: Record<PeriodPnlKey, PeriodPnlSummary>
+  data_quality: { warnings: string[]; [key: string]: unknown }
 }

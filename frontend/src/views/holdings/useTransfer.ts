@@ -9,9 +9,9 @@ import { ElMessage } from 'element-plus'
 import { useTransactionsStore } from '@/stores/transactions'
 import type { Holding } from '@/stores/holdings'
 import { todayLocalISODate, toNumber } from '@/utils/helpers'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { BrokerAccount } from '@/types'
 import type { TransferForm } from './types'
+import { showApiError } from '@/utils/showApiError'
 
 export function useTransfer({
   accounts,
@@ -83,7 +83,7 @@ export function useTransfer({
       state.visible = false
       await reload()
     } catch (error) {
-      ElMessage.error(getApiErrorMessage(error, '转仓失败'))
+      showApiError(error, '转仓失败')
     } finally {
       state.submitting = false
     }

@@ -788,6 +788,11 @@ def load_report_digests(
             "end_date": payload.get("end_date"),
             "source_url": payload.get("source_url"),
             "digest": payload.get("digest"),
+            # 展示字段：C 档（旧年份）只有核心三字段，详情页据此标「精简摘要」；
+            # fetched_at 供分析新鲜度判断。分析输入经 serialize_digest_for_analysis
+            # 按字段挑选，不受这两个键影响
+            "digest_tier": str(payload.get("digest_tier") or DEFAULT_DIGEST_TIER),
+            "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
         })
         if len(digests) >= limit:
             break

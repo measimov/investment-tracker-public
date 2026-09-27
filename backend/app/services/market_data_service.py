@@ -142,6 +142,46 @@ def to_tencent_kline_code(symbol: str, market: str) -> Optional[str]:
     return None
 
 
+# 美股腾讯 K 线代码要带交易所后缀（usPDD.OQ / usBABA.N），标的本身不带交易所信息：按常见
+# 顺序探测一次、进程内缓存。无后缀的 usPDD 只返回最新 1 根，不能用作历史源
+_TENCENT_US_SUFFIXES = (".OQ", ".N", ".AM")
+_tencent_us_code_cache: Dict[str, Optional[str]] = {}
+
+
+def resolve_tencent_us_kline_code(symbol: str) -> Optional[str]:
+    """美股 → 腾讯 K 线代码（带交易所后缀）；探测不到返回 None（结果缓存，含 None）。
+
+    Tushare 的美股日线在当前积分档是试用限频（us_daily 每分钟/每小时 1 次）、复权日线
+    us_daily_adj 无权限，美股历史只能靠兜底源——此前美股没有任何兜底，同步必失败。"""
+    text = str(symbol or "").strip().upper()
+    if not text or not text.replace(".", "").isalnum():
+        return None
+    if text in _tencent_us_code_cache:
+        return _tencent_us_code_cache[text]
+    probe_end = date.today()
+    probe_start = probe_end - timedelta(days=14)
+    found: Optional[str] = None
+    for suffix in _TENCENT_US_SUFFIXES:
+        code = f"us{text}{suffix}"
+        try:
+            response = requests.get(
+                TENCENT_KLINE_URL,
+                params={"param": f"{code},day,{probe_start.isoformat()},{probe_end.isoformat()},20,"},
+                headers={"User-Agent": YAHOO_USER_AGENT},
+                timeout=15,
+            )
+            response.raise_for_status()
+            node = ((response.json() or {}).get("data") or {}).get(code) or {}
+        except Exception as exc:  # noqa: BLE001 — 探测失败不缓存，下次再试
+            logger.warning("腾讯美股代码探测 %s 失败: %s", code, exc)
+            return None
+        if isinstance(node, dict) and (node.get("day") or node.get("qfqday")):
+            found = code
+            break
+    _tencent_us_code_cache[text] = found
+    return found
+
+
 def _fetch_tencent_kline_rows(
     kline_code: str, start_date: date, end_date: date
 ) -> List[Dict[str, Any]]:
@@ -782,6 +822,15 @@ def fetch_and_store_security_price_history(
         }
 
     tencent_code = to_tencent_kline_code(symbol, market)
+
+    def fallback_code() -> Optional[str]:
+        # 美股的腾讯代码要联网探测交易所后缀，只在 Tushare 失败/空返回时才解析
+        if tencent_code:
+            return tencent_code
+        if market == "美股":
+            return resolve_tencent_us_kline_code(symbol)
+        return None
+
     try:
         df = _tushare_history_query(
             resolved["api"],
@@ -793,12 +842,13 @@ def fetch_and_store_security_price_history(
             # Tushare 空返回可能是真无交易日，也可能是覆盖空洞
             # （daily 不含 B 股/可转债、hk_daily 不含港股 ETF/REIT）。
             # 有腾讯映射就再问一次兜底源，仍为空才视为无数据。
-            if tencent_code:
+            code = fallback_code()
+            if code:
                 return _fetch_and_store_tencent_history(
                     db,
                     symbol=symbol,
                     market=market,
-                    kline_code=tencent_code,
+                    kline_code=code,
                     start_date=start_date,
                     end_date=end_date,
                     currency=currency,
@@ -838,13 +888,14 @@ def fetch_and_store_security_price_history(
     except Exception as exc:
         db.rollback()
         logger.warning("同步 %s %s 历史行情失败: %s", market, symbol, exc)
-        if tencent_code:
+        code = fallback_code()
+        if code:
             try:
                 return _fetch_and_store_tencent_history(
                     db,
                     symbol=symbol,
                     market=market,
-                    kline_code=tencent_code,
+                    kline_code=code,
                     start_date=start_date,
                     end_date=end_date,
                     currency=currency,

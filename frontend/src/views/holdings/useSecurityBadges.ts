@@ -8,6 +8,8 @@
 
 import { reactive } from 'vue'
 import api from '@/api'
+import { todayLocalISODate } from '@/utils/helpers'
+import { parseLocalDate } from '@/utils/dateRange'
 import type { OpinionSummariesResponse, OpinionSummaryRow, SecurityEvent } from '@/types'
 import { OPINION_CHANGE_TAGS, opinionTagType } from '../opinions/useOpinions'
 import type { AnalysisSummaryRow } from './types'
@@ -96,12 +98,13 @@ export function useSecurityBadges() {
   }
 
   function upcomingEvent(row: { symbol: string; market: string }) {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayLocalISODate()
     const upcoming = eventsFor(row).filter((event) => event.event_date >= today)
     if (!upcoming.length) return null
     const nearest = upcoming[0]
+    // 两端都按本地日期解析再相减：UTC「今天」在北京时间 0-8 点会差一天（#219）
     const days = Math.round(
-      (new Date(nearest.event_date).getTime() - new Date(today).getTime()) / 86400000
+      (parseLocalDate(nearest.event_date).getTime() - parseLocalDate(today).getTime()) / 86400000
     )
     return {
       label: EVENT_TYPE_LABELS[nearest.event_type] || nearest.event_type,
@@ -111,7 +114,7 @@ export function useSecurityBadges() {
   }
 
   function eventTooltip(row: { symbol: string; market: string }): string {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = todayLocalISODate()
     return eventsFor(row)
       .filter((event) => event.event_date >= today)
       .map(

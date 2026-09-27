@@ -16,6 +16,7 @@ from ..services.statistics import (
     calculate_performance_analytics,
     calculate_performance_summary,
     resolve_server_prices,
+    calculate_period_pnl,
 )
 from ..services.performance_history_jobs import (
     get_performance_history_sync_job,
@@ -195,6 +196,19 @@ def get_performance_analytics_server_priced(
         start_date, end_date, risk_free_rate, refresh_history, benchmarks,
     )
     result.setdefault("data_quality", {})["price_sources"] = sources
+    result["data_quality"]["price_freshness"] = freshness
+    return result
+
+
+@router.get("/period-pnl", response_model=Dict[str, Any])
+def get_period_pnl(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """当日 / 本月 / 本年损益（权益仓口径，与收益曲线同一算法）；估值价格由服务端决定。"""
+    prices, sources, freshness = resolve_server_prices(db, current_user.id)
+    result = calculate_period_pnl(db, current_user.id, prices)
+    result["data_quality"]["price_sources"] = sources
     result["data_quality"]["price_freshness"] = freshness
     return result
 

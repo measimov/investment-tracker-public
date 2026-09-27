@@ -16,13 +16,13 @@
       </div>
       <div class="summary-item">
         <span>现金事件</span>
-        <strong>{{ cashEvents.length }}</strong>
+        <strong>{{ countLabel(cashEvents) }}</strong>
         <small>入金、出金及账户费用</small>
       </div>
       <div class="summary-item">
         <span>最近导入</span>
         <strong class="summary-date">{{ latestBatchDate }}</strong>
-        <small>{{ importBatches.length }} 个可追溯批次</small>
+        <small>{{ countLabel(importBatches) }} 个可追溯批次</small>
       </div>
       <div class="summary-item">
         <span>月末核对</span>
@@ -87,18 +87,28 @@
 </template>
 
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { computed, onMounted, reactive, ref, type Ref } from 'vue'
-import { ElMessage } from 'element-plus'
 import { CircleCheck, Coin, Files, Refresh, Remove, Wallet } from '@element-plus/icons-vue'
 import api from '@/api'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { formatDate } from '@/utils/helpers'
 import AccountsTab from './account-data/AccountsTab.vue'
 import CashEventsTab from './account-data/CashEventsTab.vue'
 import ImportBatchesTab from './account-data/ImportBatchesTab.vue'
 import ReconciliationTab from './account-data/ReconciliationTab.vue'
 import SecurityRulesTab from './account-data/SecurityRulesTab.vue'
-import type { AccountRow, CashEventRow, ImportBatchRow, SnapshotRow } from './account-data/shared'
+import {
+  LIST_LIMIT,
+  isAtListLimit,
+  type AccountRow,
+  type CashEventRow,
+  type ImportBatchRow,
+  type SnapshotRow
+} from './account-data/shared'
+
+// 满额时显示「1000+」：列表只取回最近 LIST_LIMIT 条，真实总数可能更多
+const countLabel = (rows: readonly unknown[]) =>
+  isAtListLimit(rows) ? `${LIST_LIMIT}+` : String(rows.length)
 
 // 壳层职责（issue #140）：页头汇总 + tab 骨架 + 汇总卡消费的四类数据的
 // 装载。各 tab 的表格/弹窗/CRUD 在 account-data/ 下的页面私有子组件里；
@@ -145,7 +155,7 @@ function makeLoader<T>(
     try {
       target.value = (await fetcher()).data
     } catch (error) {
-      ElMessage.error(getApiErrorMessage(error, failureMessage))
+      showApiError(error, failureMessage)
     } finally {
       loading[loadingKey] = false
     }
@@ -156,19 +166,19 @@ const loadAccounts = makeLoader('accounts', accounts, () => api.getBrokerAccount
 const loadCashEvents = makeLoader(
   'cash',
   cashEvents,
-  () => api.getCashEvents({ limit: 1000 }),
+  () => api.getCashEvents({ limit: LIST_LIMIT }),
   '现金事件加载失败'
 )
 const loadImportBatches = makeLoader(
   'batches',
   importBatches,
-  () => api.getImportBatches({ limit: 1000 }),
+  () => api.getImportBatches({ limit: LIST_LIMIT }),
   '导入批次加载失败'
 )
 const loadSnapshots = makeLoader(
   'snapshots',
   snapshots,
-  () => api.getReconciliationSnapshots({ limit: 1000 }),
+  () => api.getReconciliationSnapshots({ limit: LIST_LIMIT }),
   '月末核对加载失败'
 )
 
@@ -227,7 +237,6 @@ onMounted(refreshAll)
   border: 1px solid var(--app-border-soft);
   border-radius: var(--app-radius);
   background: var(--app-surface);
-  box-shadow: var(--app-shadow-sm);
 }
 
 .summary-item span,

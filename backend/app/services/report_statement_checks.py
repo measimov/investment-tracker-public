@@ -3,13 +3,19 @@
 抽取管线把「定位→映射→取数」做完后，这里回答两个问题：
 
 1. 这一行的数字**自洽**吗——会计恒等式（毛利=收入−成本、总资产=非流动+流动、总负债=流动+
-   非流动、权益总额=归母+少数、资产=负债+权益总额、FCF=CFO−|capex|）与合理性（总资产>0、
-   流动资产≤总资产、幅度守卫）；
+   非流动、权益总额=归母+少数、资产=负债+夹层权益+权益总额、FCF=CFO−|capex|）与合理性
+   （总资产>0、流动资产≤总资产、幅度守卫）；
 2. 与**外部证据**对得上吗——Yahoo 同一财年的行、下一年报告的比较列（由服务层传入）。
 
 结论落在行上的 `validation` 块：`status` 只有 ok/suspect 两档；`suspect` 当且仅当有
 severity=error 的检查不通过。存疑科目列在 `suspect_fields`，读取侧（利润质量/格雷厄姆/
 分析输入）用 `scrub_suspect_fields` 置空后由 Yahoo 补缺；UI 仍拿到原值并打标。
+
+**来源优先级与重列（v4）**：比较列来自更晚的报告、且该表表头标注「經重列/重列/重新表述/
+Restated」时，差异是公司自己的重列而不是抽取错误——记 info（`reason=comparative_restated`），
+**保留原值**（分析用首次披露数，只标注「已重列」）。雅虎差异若能被更晚报告的比较列解释（比较列
+与我们一致 → 雅虎口径不同 `yahoo_definition_diff`；比较列带重列标记且与雅虎一致 → 雅虎取的是
+重列数 `yahoo_restated`）同样记 info。没有标记的比较列大差异仍判存疑。
 
 **硬失败**（`hard_failures`）是另一层：总资产≤0、流动资产>总资产、总资产小于归母权益一半、
 三张表币种冲突——这些不是"某个科目可疑"而是"这行根本不是那份报表"（09926 2020 的
@@ -22,10 +28,11 @@ severity=error 的检查不通过。存疑科目列在 `suspect_fields`，读取
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-STATEMENT_VALIDATION_VERSION = 3
+STATEMENT_VALIDATION_VERSION = 4
 
 IDENTITY_REL_TOL = 0.01
 CROSS_CHECK_REL_TOL = 0.01
@@ -34,6 +41,24 @@ COMPARATIVE_INFO_TOL = 0.01
 COMPARATIVE_SUSPECT_TOL = 0.05
 # 幅度守卫：总资产不可能小于归母权益的一半（拆数字行的总资产会小几个量级）
 HARD_MAGNITUDE_RATIO = 0.5
+# 「与更晚报告的比较列一致」的容差（雅虎口径差异 / 雅虎取了重列数的判据）
+DEFINITION_MATCH_TOL = 0.005
+# EPS 与雅虎的比值落在这个区间 = 单位差 100 倍（仙当元），判 error
+EPS_CENTS_RATIO_RANGE = (90.0, 110.0)
+
+# 表头的重列标记（生产表头实测的全部变体）：「（重新表述）」02669、「（經重述）」00148/00799/00883、
+# 「（經重列）」「经重列」、「（重列）」00728、「（已重述）」02333、「(Restated)」00148；另收「重新呈列」
+RESTATED_RE = re.compile(r"重新表述|重述|重列|重新呈列|restated|re-presented", re.I)
+_AMOUNT_RE = re.compile(r"\d{1,3}(?:,\d{3})+|\d{5,}")
+
+# 交叉核对科目所属报表（重列标记按表记录）；与 report_statement_prompts.FIELD_KIND 一致
+_CHECK_FIELD_KIND = {
+    "total_revenue": "income",
+    "n_income_attr_p": "income",
+    "basic_eps": "income",
+    "total_assets": "balance",
+    "n_cashflow_act": "cashflow",
+}
 
 # 交叉核对的科目及严重级：归母净利 Yahoo 对部分公司是含少数股东口径，先记 info
 CROSS_CHECK_FIELDS: Dict[str, str] = {
@@ -61,8 +86,17 @@ NUMERIC_FIELDS = frozenset({
     "total_assets", "total_nca", "total_cur_assets", "total_cur_liab", "total_ncl",
     "accounts_receiv", "inventories", "fix_assets", "money_cap", "total_liab",
     "total_hldr_eqy_exc_min_int", "total_equity", "minority_int", "total_debt",
-    "n_cashflow_act", "capex", "depr_fa_coga_dpba", "free_cashflow",
+    "n_cashflow_act", "capex", "depr_fa_coga_dpba", "free_cashflow", "mezzanine_equity",
+    "lt_borr", "st_borr", "div_paid_owners",
 })
+
+
+def header_restated(header: Sequence[str]) -> bool:
+    """表头是否标注比较列已重列。只看纯文本表头行——带金额的数据行（表头截取到第一条金额行
+    之后还会带几行数据）里的「重列」是科目名，不是列标注。"""
+    return any(
+        RESTATED_RE.search(line or "") and not _AMOUNT_RE.search(line or "") for line in header
+    )
 
 
 def _num(row: Dict[str, Any], field: str) -> Optional[float]:
@@ -120,6 +154,13 @@ def _identity(
     }
 
 
+def balance_identity_addends(row: Dict[str, Any]) -> tuple:
+    """资产负债恒等式右端：有夹层权益时三项，否则两项（夹层权益缺失 ≠ 科目缺失）。"""
+    if _num(row, "mezzanine_equity") is not None:
+        return ("total_liab", "mezzanine_equity", "total_equity")
+    return ("total_liab", "total_equity")
+
+
 def identity_checks(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     checks = [
         _identity("gross_profit_identity", row, lhs_field="gross_profit",
@@ -130,10 +171,11 @@ def identity_checks(row: Dict[str, Any]) -> List[Dict[str, Any]]:
                   addends=("total_cur_liab", "total_ncl")),
         _identity("total_equity_identity", row, lhs_field="total_equity",
                   addends=("total_hldr_eqy_exc_min_int", "minority_int"), allow_lhs_excess=True),
-        # 资产 = 负债 + 权益总额（含少数股东）。没抽到权益总额时**不能**拿归母权益冒充——
-        # 少数股东权益为负的公司（09926）会假阳性
+        # 资产 = 负债 + 夹层权益 + 权益总额（含少数股东）。没抽到权益总额时**不能**拿归母权益
+        # 冒充——少数股东权益为负的公司（09926）会假阳性。夹层权益（美国准则口径的可赎回非控制
+        # 性权益，09618 2019/2020）既不是负债也不是权益，缺了它恒等式差的正好是这一行
         _identity("balance_sheet_identity", row, lhs_field="total_assets",
-                  addends=("total_liab", "total_equity"),
+                  addends=balance_identity_addends(row),
                   skip_reason="权益总额未知（含少数股东权益），资产恒等式未校验"),
     ]
     cfo, capex, fcf = _num(row, "n_cashflow_act"), _num(row, "capex"), _num(row, "free_cashflow")
@@ -213,13 +255,102 @@ def currency_check(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _evidence_later(row: Dict[str, Any], evidence: Dict[str, Any]) -> bool:
+    """比较列证据是否来自**更晚**的报告（报告期晚于本行来源报告）。"""
+    theirs = str(evidence.get("source_end_date") or "")
+    ours = str(row.get("source_end_date") or row.get("end_date") or "")
+    return bool(theirs) and theirs > ours
+
+
+def evidence_restated(row: Dict[str, Any], evidence: Optional[Dict[str, Any]], field: str) -> bool:
+    """该科目所在报表的比较列是否被**更晚**的报告在表头标注为重列。"""
+    if not evidence:
+        return False
+    kind = _CHECK_FIELD_KIND.get(field)
+    restated = evidence.get("restated_by_kind") or {}
+    return bool(kind and restated.get(kind)) and _evidence_later(row, evidence)
+
+
+def _same_currency(row: Dict[str, Any], other: Optional[Dict[str, Any]]) -> bool:
+    if not other:
+        return False
+    ours, theirs = row.get("currency"), other.get("currency")
+    return bool(ours) and bool(theirs) and ours == theirs
+
+
+def _explain_yahoo_diff(
+    row: Dict[str, Any],
+    comparative: Optional[Dict[str, Any]],
+    field: str,
+    ours: float,
+    theirs: float,
+) -> Optional[Dict[str, str]]:
+    """雅虎差异能否被更晚报告的比较列解释 → {reason, detail}；解释不了返回 None。
+
+    - 更晚报告的比较列与我们一致（≤0.5%）：两份官方报告互相印证，是雅虎口径不同（00883 收入
+      含/不含某些项目）→ `yahoo_definition_diff`；
+    - 更晚报告标注了重列、且它的重列数与雅虎一致：雅虎取的是重列后的数（02669 2024 CFO）
+      → `yahoo_restated`，保留首次披露值。"""
+    if not comparative or not _same_currency(row, comparative) or not _evidence_later(row, comparative):
+        return None
+    later = _num(comparative, field)
+    if later is None:
+        return None
+    source = comparative.get("source_period_key")
+    rel = _rel_diff(ours, theirs)
+    if _rel_diff(ours, later) <= DEFINITION_MATCH_TOL:
+        return {
+            "reason": "yahoo_definition_diff",
+            "detail": f"{field} 与雅虎相差 {rel:.1%}，但与 {source} 比较列一致（雅虎口径不同）",
+        }
+    if evidence_restated(row, comparative, field) and _rel_diff(later, theirs) <= DEFINITION_MATCH_TOL:
+        return {
+            "reason": "yahoo_restated",
+            "detail": (
+                f"{field} 与雅虎相差 {rel:.1%}：{source} 已重列该期（重列数与雅虎一致），"
+                "保留首次披露值"
+            ),
+        }
+    return None
+
+
+def _eps_check(row: Dict[str, Any], yahoo_row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """EPS 与雅虎：比值≈100 是「仙当元」的单位错误（error，#223 同类问题以后能被抓住）；其余
+    差异只记 info（雅虎 EPS 口径与报表不总一致）。"""
+    ours, theirs = _num(row, "basic_eps"), _num(yahoo_row, "basic_eps")
+    if ours is None or theirs is None or not _same_currency(row, yahoo_row):
+        return None
+    base: Dict[str, Any] = {
+        "id": "yahoo_basic_eps", "fields": ["basic_eps"], "source": "yahoo_fundamentals",
+        "ours": ours, "theirs": theirs,
+    }
+    if theirs != 0:
+        ratio = ours / theirs
+        low, high = EPS_CENTS_RATIO_RANGE
+        if low <= ratio <= high:
+            return {
+                **base, "severity": "error", "status": "suspect", "reason": "eps_unit_100x",
+                "detail": f"basic_eps {ours:g} 是雅虎 {theirs:g} 的 {ratio:.0f} 倍，疑似以仙列示未折元",
+            }
+    rel = _rel_diff(ours, theirs)
+    if rel <= CROSS_CHECK_REL_TOL:
+        return {**base, "severity": "info", "status": "ok", "rel_diff": rel, "detail": ""}
+    return {
+        **base, "severity": "info", "status": "suspect", "rel_diff": rel,
+        "detail": f"basic_eps 与雅虎相差 {rel:.1%}",
+    }
+
+
 def cross_check_row(
     row: Dict[str, Any],
     *,
     yahoo_row: Optional[Dict[str, Any]] = None,
     comparative_row: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """与 Yahoo 同期行 / 另一份报告的同期比较列逐科目核对。币种未知或不同 → skipped 并写原因。"""
+    """与 Yahoo 同期行 / 另一份报告的同期比较列逐科目核对。币种未知或不同 → skipped 并写原因。
+
+    v4：比较列差异且证据报告标注了重列 → info `comparative_restated`；雅虎差异能被更晚报告的
+    比较列解释 → info `yahoo_definition_diff` / `yahoo_restated`（见模块 docstring）。"""
     checks: List[Dict[str, Any]] = []
     for source_name, other, (info_tol, suspect_tol) in (
         ("yahoo_fundamentals", yahoo_row, (CROSS_CHECK_REL_TOL, CROSS_CHECK_REL_TOL)),
@@ -227,10 +358,11 @@ def cross_check_row(
     ):
         if not other:
             continue
-        source = other.get("source_period_key") if source_name == "comparative" else source_name
+        is_yahoo = source_name == "yahoo_fundamentals"
+        source = source_name if is_yahoo else other.get("source_period_key")
         ours_currency, theirs_currency = row.get("currency"), other.get("currency")
         for field, severity in CROSS_CHECK_FIELDS.items():
-            check_id = f"{'yahoo' if source_name == 'yahoo_fundamentals' else 'comparative'}_{field}"
+            check_id = f"{'yahoo' if is_yahoo else 'comparative'}_{field}"
             ours, theirs = _num(row, field), _num(other, field)
             if ours is None or theirs is None:
                 checks.append({
@@ -246,19 +378,43 @@ def cross_check_row(
                 })
                 continue
             rel = _rel_diff(ours, theirs)
+            label = "雅虎" if is_yahoo else f"{source} 比较列"
+            check: Dict[str, Any] = {
+                "id": check_id, "fields": [field], "source": source,
+                "ours": ours, "theirs": theirs, "rel_diff": rel,
+            }
+            explained = (
+                _explain_yahoo_diff(row, comparative_row, field, ours, theirs)
+                if is_yahoo and rel > info_tol
+                else None
+            )
             if rel <= info_tol:
-                status, level = "ok", severity
+                check.update(status="ok", severity=severity, tol=info_tol, detail="")
+            elif not is_yahoo and evidence_restated(row, other, field):
+                # 更晚的报告自己标注了重列：差异是公司重列，不是抽取错误——保留原值只标注
+                check.update(
+                    status="suspect", severity="info", tol=suspect_tol, reason="comparative_restated",
+                    detail=f"{field} 与{label}相差 {rel:.1%}（该报告表头标注重列，保留首次披露值）",
+                )
+            elif explained:
+                check.update(status="suspect", severity="info", tol=info_tol, **explained)
             elif rel <= suspect_tol:
-                status, level = "suspect", "info"  # 比较列 1-5%：可能是重述，只记不判
+                # 比较列 1-5%、没有重列标记：可能是未标注的重述，只记不判
+                check.update(
+                    status="suspect", severity="info", tol=suspect_tol,
+                    detail=f"{field} 与{label}相差 {rel:.1%}",
+                )
             else:
-                status, level = "suspect", severity
-            label = "雅虎" if source_name == "yahoo_fundamentals" else f"{source} 比较列"
-            checks.append({
-                "id": check_id, "severity": level, "status": status, "fields": [field],
-                "source": source, "ours": ours, "theirs": theirs, "rel_diff": rel,
-                "tol": info_tol if level == "error" else suspect_tol,
-                "detail": "" if status == "ok" else f"{field} 与{label}相差 {rel:.1%}",
-            })
+                check.update(
+                    status="suspect", severity=severity,
+                    tol=info_tol if severity == "error" else suspect_tol,
+                    detail=f"{field} 与{label}相差 {rel:.1%}",
+                )
+            checks.append(check)
+        if is_yahoo:
+            eps = _eps_check(row, other)
+            if eps:
+                checks.append(eps)
     return checks
 
 
@@ -399,6 +555,18 @@ def rederive_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         elif field in SUM_DERIVED_FIELDS:
             row[field] = sum(values)
     return row
+
+
+RESTATED_REASONS = frozenset({"comparative_restated", "yahoo_restated"})
+
+
+def restated_fields(payload: Dict[str, Any]) -> List[str]:
+    """被更晚报告重列过的科目（保留首次披露值，只标注「已重列」）：UI 标注与分析输入共用。"""
+    fields: List[str] = []
+    for check in (payload.get("validation") or {}).get("checks") or []:
+        if check.get("reason") in RESTATED_REASONS:
+            fields.extend(f for f in check.get("fields") or [] if f not in fields)
+    return fields
 
 
 def validation_summary(payload: Dict[str, Any]) -> str:

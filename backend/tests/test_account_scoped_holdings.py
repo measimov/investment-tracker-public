@@ -235,6 +235,7 @@ def test_split_buckets_inherit_security_level_price():
             market="美股", quantity=Decimal("150"), avg_cost=Decimal("10.67"),
             total_cost=Decimal("1600"), currency="USD",
             current_price=Decimal("13.5"), price_updated_at=stamp,
+            price_as_of=date(2026, 6, 30), price_source="tushare-us_daily",
         ))
         db.commit()
 
@@ -244,6 +245,9 @@ def test_split_buckets_inherit_security_level_price():
         for row in rows:
             assert row.current_price == Decimal("13.5")
             assert row.price_updated_at is not None
+            # 行情日期与来源随价格整组继承（#217）
+            assert row.price_as_of == date(2026, 6, 30)
+            assert row.price_source == "tushare-us_daily"
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -293,6 +297,10 @@ def test_manual_price_update_syncs_all_account_rows():
         recalculate_holdings(db, 1, "AAPL", "美股")
         rows = get_rows(db)
         assert len(rows) == 2
+        for row in rows:
+            row.price_as_of = date(2026, 9, 25)
+            row.price_source = "tencent-quote"
+        db.commit()
 
         user = db.query(User).filter(User.id == 1).one()
         update_holding_price(
@@ -306,6 +314,9 @@ def test_manual_price_update_syncs_all_account_rows():
             db.refresh(row)
             assert row.current_price == Decimal("15.5")
             assert row.price_updated_at is not None
+            # 手工价：行情日期未知、来源标 manual（前端据此打「手工」标，#217）
+            assert row.price_as_of is None
+            assert row.price_source == "manual"
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()

@@ -40,15 +40,6 @@
           <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
           <el-table-column prop="market" label="市场" width="90" />
           <el-table-column prop="note" label="观察理由" min-width="220" show-overflow-tooltip />
-          <el-table-column label="当前价" min-width="130" align="right">
-            <template #default="{ row }">
-              <template v-if="row.current_price != null">
-                {{ formatNumber(row.current_price, 4) }}
-                <div class="price-updated-at">{{ formatDateTime(row.price_updated_at) }}</div>
-              </template>
-              <span v-else class="muted">—</span>
-            </template>
-          </el-table-column>
           <el-table-column label="格雷厄姆准则" min-width="150">
             <template #default="{ row }">
               <el-tooltip
@@ -113,9 +104,6 @@
             <span>{{ row.note }}</span>
           </div>
           <div class="mobile-card-meta">
-            <span v-if="row.current_price != null">
-              当前价 {{ formatNumber(row.current_price, 4) }}
-            </span>
             <span>加入 {{ formatDate(row.created_at) }}</span>
           </div>
           <div class="mobile-card-actions">
@@ -165,7 +153,7 @@
             :rows="3"
             maxlength="500"
             show-word-limit
-            placeholder="为什么观察：一句话理由/买入条件（正式论点可在标的档案页记录）"
+            placeholder="为什么观察：一句话理由/买入条件"
           />
         </el-form-item>
       </el-form>
@@ -187,6 +175,7 @@
 </template>
 
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
@@ -194,8 +183,7 @@ import { ArrowRight, Plus } from '@element-plus/icons-vue'
 import api from '../api'
 import SecuritySelect from '../components/SecuritySelect.vue'
 import { useMediaQuery } from '../composables/useMediaQuery'
-import { getApiErrorMessage } from '../utils/apiErrors'
-import { formatDate, formatDateTime, formatNumber } from '../utils/helpers'
+import { formatDate } from '../utils/helpers'
 import {
   MARKETS,
   freeTextFormPatch,
@@ -220,12 +208,12 @@ const rules = {
   market: [{ required: true, message: '请选择市场', trigger: 'change' }]
 }
 
-// 准则摘要 tag 配色：不达标为主 → warning；有达标且无不达标 → success；
-// 全部不可判定 → info（数据边界，不是负面信号）
+// 准则摘要 tag 配色：全部达标且无不达标才绿；有不达标 warning（哪怕达标数更多——
+// 「达标 5/7」里有 2 项不达标不该显示成绿色）；其余（含全部不可判定）info
 function grahamTagType(summary: Record<string, unknown>) {
   const passed = Number(summary.passed || 0)
   const failed = Number(summary.failed || 0)
-  if (failed > passed) return 'warning'
+  if (failed > 0) return 'warning'
   if (passed > 0) return 'success'
   return 'info'
 }
@@ -240,7 +228,7 @@ async function loadWatchlist() {
     const response = await api.getWatchlist()
     items.value = response.data
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '加载观察清单失败'))
+    showApiError(error, '加载观察清单失败')
   } finally {
     loading.value = false
   }
@@ -304,7 +292,7 @@ async function handleSubmit() {
     dialogVisible.value = false
     await loadWatchlist()
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, editingId.value === null ? '添加失败' : '更新失败'))
+    showApiError(error, editingId.value === null ? '添加失败' : '更新失败')
   } finally {
     submitting.value = false
   }
@@ -321,7 +309,7 @@ function removeItem(row: WatchlistItem) {
       ElMessage.success('已移出观察清单')
       await loadWatchlist()
     } catch (error) {
-      ElMessage.error(getApiErrorMessage(error, '移除失败'))
+      showApiError(error, '移除失败')
     }
   })
 }
@@ -340,11 +328,6 @@ onMounted(loadWatchlist)
 
 .watchlist-note {
   margin-bottom: 16px;
-}
-
-.price-updated-at {
-  font-size: 12px;
-  color: var(--app-text-soft);
 }
 
 .muted {

@@ -13,6 +13,15 @@ export function formatLocalDate(date: Date): string {
   return `${year}-${month}-${day}`
 }
 
+/**
+ * 'YYYY-MM-DD' 按**本地**零点解析。`new Date('2026-09-26')` 是 UTC 零点，
+ * 与本地日期相减在正时区会差出小数天/错一天。
+ */
+export function parseLocalDate(value: string): Date {
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number)
+  return new Date(year, (month || 1) - 1, day || 1)
+}
+
 export function monthsBefore(base: Date, months: number): Date {
   const target = new Date(base.getFullYear(), base.getMonth() - months, 1)
   const lastDayOfTargetMonth = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate()

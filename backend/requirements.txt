@@ -19,6 +19,8 @@ python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 email-validator==2.1.0
 httpx==0.26.0
+# 雪球发言采集器：帖子全文页 HTML 解析（services/xueqiu_collector/detail.py）
+lxml==6.1.2
 # 标的全集：拼音首字母兜底与繁→简（港交所名單只有繁体）；纯 Python、离线
 pypinyin==0.55.0
 zhconv==1.4.3

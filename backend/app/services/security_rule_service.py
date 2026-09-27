@@ -6,7 +6,8 @@ excluded_security_service 的签名，导入器与对账比对零改动。
 """
 
 from datetime import date
-from typing import Any, Dict, List, Optional, Set, Tuple
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -97,3 +98,30 @@ def get_cmb_cash_business_map(db: Session, user_id: int) -> Dict[str, str]:
         for rule in _rules(db, user_id, "CMB_CASH_BUSINESS")
         if (rule.payload or {}).get("event_type")
     }
+
+
+def get_ads_ratios(
+    db: Session, user_id: int, symbols: Optional[Iterable[str]] = None
+) -> Dict[str, Decimal]:
+    """美股 ADS 换算比覆盖（symbol → 1 ADS 对应的普通股数）；畸形/非正值跳过。
+
+    消费方是 ads_ratio_service.resolve_ads_ratio(s)：用户规则优先于 20-F 封面解析值。"""
+    query = db.query(SecurityRule).filter(
+        SecurityRule.user_id == user_id,
+        SecurityRule.rule_type == "ADS_RATIO",
+        SecurityRule.market == "美股",
+    )
+    if symbols is not None:
+        wanted = sorted(set(symbols))
+        if not wanted:
+            return {}
+        query = query.filter(SecurityRule.symbol.in_(wanted))
+    result: Dict[str, Decimal] = {}
+    for rule in query.all():
+        try:
+            ratio = Decimal(str((rule.payload or {}).get("ratio")))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if ratio.is_finite() and ratio > 0:
+            result[rule.symbol] = ratio
+    return result

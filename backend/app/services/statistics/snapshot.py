@@ -6,7 +6,7 @@
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from sqlalchemy import func, tuple_
 from sqlalchemy.orm import Session
@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 from ...models.broker_account import BrokerAccount
 from ...models.reconciliation_snapshot import ReconciliationSnapshot
 from ...models.transaction import Transaction
-from .aggregates import calculate_performance_summary, get_statistics_by_market
+from .aggregates import (
+    UNPRICED_POSITIONS_WARNING,
+    calculate_performance_summary,
+    get_statistics_by_market,
+)
+from .fx import missing_rate_warning
 from .pricing import PRICE_STALE_DAYS, resolve_server_prices
 
 # 分范围对账（东财 stock/hk_connect）同一快照日会有多条：聚合最新快照日
@@ -59,6 +64,39 @@ def _latest_reconciliations_by_account(
     ):
         rows_by_account[row.broker_account_id].append(row)
     return rows_by_account
+
+
+def _performance_warnings(
+    performance: Dict[str, Any], has_missing_price_list: bool
+) -> Tuple[List[str], List[str]]:
+    """看板的业绩类警告：持仓表现的数据质量 + 三块的缺汇率币种合成一条。
+
+    - 缺汇率（#218）：持仓表现、已实现盈亏、股息各自剔除了无法折算的金额，
+      此前看板只转述持仓表现那一块，已实现/股息缺汇率时首页毫无提示。三块的
+      币种取并集只出一条（原先持仓表现那条被并集那条取代，不重复）。
+    - 缺价：持仓表现的「部分当前持仓缺少可用估值价格」是泛泛一句，快照另有
+      列出具体标的的那条；两条说的是同一批标的，有具体清单时去掉泛泛那条。
+    """
+    current = performance.get("current_performance", {})
+    current_quality = current.get("data_quality", {}) or {}
+    current_missing = set(current_quality.get("missing_rate_currencies") or [])
+    current_rate_warning = missing_rate_warning(current_missing)
+
+    missing_rates = set(current_missing)
+    for block in ("realized_pnl", "dividend_summary"):
+        missing_rates.update(performance.get(block, {}).get("missing_rate_currencies") or [])
+
+    warnings: List[str] = []
+    for warning in current_quality.get("warnings", []):
+        if current_rate_warning and warning == current_rate_warning:
+            continue
+        if has_missing_price_list and warning == UNPRICED_POSITIONS_WARNING:
+            continue
+        warnings.append(warning)
+    union_warning = missing_rate_warning(missing_rates)
+    if union_warning:
+        warnings.append(union_warning)
+    return warnings, sorted(missing_rates)
 
 
 def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
@@ -133,7 +171,7 @@ def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
         key for key, info in freshness.items() if info["stale"] and info["source"] != "missing"
     )
     missing_prices = sorted(key for key, info in freshness.items() if info["source"] == "missing")
-    warnings = list(performance["current_performance"].get("data_quality", {}).get("warnings", []))
+    warnings, missing_rate_currencies = _performance_warnings(performance, bool(missing_prices))
     if stale_prices:
         warnings.append(
             f"以下标的估值价格超过 {PRICE_STALE_DAYS} 天未更新：{'、'.join(stale_prices)}"
@@ -141,8 +179,8 @@ def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
     if missing_prices:
         warnings.append(f"以下标的缺少可用估值价格：{'、'.join(missing_prices)}")
 
-    # 雪球观点数据源停摆预警：只在"已接入但长时间未更新"时报（未部署 archiver
-    # 是合法形态，不该在看板报警）。探测本身异常静默——观点数据源的故障不配
+    # 雪球观点数据源停摆预警：只在"已接入但长时间未更新"时报（采集器未启用、
+    # 从未跑过是合法形态，不该在看板报警）。探测本身异常静默——观点数据源的故障不配
     # 拖垮整个看板。
     try:
         from ..xueqiu_opinion_source import source_freshness
@@ -152,7 +190,7 @@ def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
             latest = opinion_freshness.get("latest_scan_at") or "未知时间"
             warnings.append(
                 f"雪球观点数据源自 {latest} 起未再更新，"
-                "archiver 采集 cron 可能已停摆"
+                "雪球采集器可能已停摆（见观点页「采集器」卡片）"
             )
     except Exception:  # noqa: BLE001 —— 预警是锦上添花
         pass
@@ -175,5 +213,6 @@ def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
             "warnings": warnings,
             "stale_price_count": len(stale_prices),
             "missing_price_count": len(missing_prices),
+            "missing_rate_currencies": missing_rate_currencies,
         },
     }

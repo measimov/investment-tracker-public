@@ -1,127 +1,158 @@
 <template>
-  <el-container class="app-container">
-    <el-header class="app-header">
-      <div class="header-content">
-        <router-link to="/" class="brand-link">
-          <span class="brand-mark" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-          </span>
-          <span class="brand-title">投资追踪系统</span>
-        </router-link>
-        <el-button
-          v-if="authStore.isAuthenticated"
-          class="mobile-nav-button"
-          :icon="Menu"
-          circle
-          aria-label="打开导航"
-          @click="mobileNavVisible = true"
-        />
-        <el-menu
-          v-if="authStore.isAuthenticated"
-          :default-active="activeMenu"
-          mode="horizontal"
-          router
-          class="header-menu"
-        >
-          <el-menu-item v-for="item in visibleNavItems" :key="item.path" :index="item.path">
-            <el-icon><component :is="item.icon" /></el-icon>
-            <span>{{ item.label }}</span>
-          </el-menu-item>
-        </el-menu>
-        <div v-if="authStore.isAuthenticated" class="user-info">
-          <el-dropdown @command="handleUserCommand">
-            <span class="user-dropdown">
-              <span class="user-avatar" aria-hidden="true">{{ userInitial }}</span>
-              <span class="username">{{ authStore.user?.username }}</span>
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+  <!-- 中文 locale：Element Plus 默认英文，空表「No Data」、分页「25/page」、日期选择器月份都是英文（#219） -->
+  <el-config-provider :locale="zhCn">
+    <el-container class="app-container">
+      <el-header class="app-header">
+        <div class="header-content">
+          <router-link to="/" class="brand-link">
+            <span class="brand-mark" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
             </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item disabled>
-                  <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
-                  <el-tag v-else type="info" size="small">普通用户</el-tag>
-                </el-dropdown-item>
-                <el-dropdown-item divided command="logout">
-                  <el-icon><SwitchButton /></el-icon>
-                  退出登录
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </div>
-      </div>
-      <el-drawer
-        v-model="mobileNavVisible"
-        class="mobile-nav-drawer"
-        direction="rtl"
-        size="82%"
-        :with-header="false"
-        append-to-body
-      >
-        <div class="mobile-nav-panel">
-          <div class="mobile-nav-user">
-            <div class="mobile-nav-identity">
-              <span class="user-avatar user-avatar-lg" aria-hidden="true">{{ userInitial }}</span>
-              <div>
-                <div class="mobile-nav-name">{{ authStore.user?.username }}</div>
-                <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
-                <el-tag v-else type="info" size="small">普通用户</el-tag>
-              </div>
-            </div>
-            <el-button
-              :icon="Close"
-              circle
-              aria-label="关闭导航"
-              @click="mobileNavVisible = false"
-            />
-          </div>
+            <span class="brand-title">投资追踪系统</span>
+          </router-link>
+          <el-button
+            v-if="authStore.isAuthenticated"
+            class="mobile-nav-button"
+            :icon="Menu"
+            circle
+            aria-label="打开导航"
+            @click="mobileNavVisible = true"
+          />
           <el-menu
+            v-if="authStore.isAuthenticated"
             :default-active="activeMenu"
+            mode="horizontal"
             router
-            class="mobile-nav-menu"
-            @select="mobileNavVisible = false"
+            class="header-menu"
           >
-            <el-menu-item v-for="item in visibleNavItems" :key="item.path" :index="item.path">
+            <el-menu-item v-for="item in primaryNavItems" :key="item.path" :index="item.path">
               <el-icon><component :is="item.icon" /></el-icon>
               <span>{{ item.label }}</span>
             </el-menu-item>
+            <!-- 低频页主动收进「更多」：常用页不会因宽度不够被挤进 EP 的「…」 -->
+            <el-sub-menu index="more" class="header-more-menu">
+              <template #title>
+                <el-icon><MoreFilled /></el-icon>
+                <span>更多</span>
+              </template>
+              <el-menu-item v-for="item in moreNavItems" :key="item.path" :index="item.path">
+                <el-icon><component :is="item.icon" /></el-icon>
+                <span>{{ item.label }}</span>
+              </el-menu-item>
+            </el-sub-menu>
           </el-menu>
-          <el-button
-            class="mobile-logout-button"
-            :icon="SwitchButton"
-            @click="handleUserCommand('logout')"
-          >
-            退出登录
-          </el-button>
-        </div>
-      </el-drawer>
-    </el-header>
-    <transition name="status-banner">
-      <div v-if="appStatus.hasBlockingIssue" class="status-overlay">
-        <div class="status-content">
-          <el-icon><WarningFilled /></el-icon>
-          <div>
-            <strong>{{ appStatus.statusTitle }}</strong>
-            <span>{{ appStatus.message }}</span>
+          <div v-if="authStore.isAuthenticated" class="user-info">
+            <el-dropdown @command="handleUserCommand">
+              <span class="user-dropdown">
+                <span class="user-avatar" aria-hidden="true">{{ userInitial }}</span>
+                <span class="username">{{ authStore.user?.username }}</span>
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item disabled>
+                    <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
+                    <el-tag v-else type="info" size="small">普通用户</el-tag>
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="password">
+                    <el-icon><Lock /></el-icon>
+                    修改密码
+                  </el-dropdown-item>
+                  <el-dropdown-item command="logout">
+                    <el-icon><SwitchButton /></el-icon>
+                    退出登录
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
         </div>
-        <el-button size="small" @click="appStatus.clear">关闭</el-button>
-      </div>
-    </transition>
-    <el-main class="app-main">
-      <router-view />
-    </el-main>
-  </el-container>
+        <el-drawer
+          v-model="mobileNavVisible"
+          class="mobile-nav-drawer"
+          direction="rtl"
+          size="82%"
+          :with-header="false"
+          append-to-body
+        >
+          <div class="mobile-nav-panel">
+            <div class="mobile-nav-user">
+              <div class="mobile-nav-identity">
+                <span class="user-avatar user-avatar-lg" aria-hidden="true">{{ userInitial }}</span>
+                <div>
+                  <div class="mobile-nav-name">{{ authStore.user?.username }}</div>
+                  <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
+                  <el-tag v-else type="info" size="small">普通用户</el-tag>
+                </div>
+              </div>
+              <el-button
+                :icon="Close"
+                circle
+                aria-label="关闭导航"
+                @click="mobileNavVisible = false"
+              />
+            </div>
+            <el-menu
+              :default-active="activeMenu"
+              router
+              class="mobile-nav-menu"
+              @select="mobileNavVisible = false"
+            >
+              <el-menu-item v-for="item in primaryNavItems" :key="item.path" :index="item.path">
+                <el-icon><component :is="item.icon" /></el-icon>
+                <span>{{ item.label }}</span>
+              </el-menu-item>
+              <!-- 抽屉里空间充足：「更多」平铺成分组，不再折叠一层 -->
+              <el-menu-item-group title="更多">
+                <el-menu-item v-for="item in moreNavItems" :key="item.path" :index="item.path">
+                  <el-icon><component :is="item.icon" /></el-icon>
+                  <span>{{ item.label }}</span>
+                </el-menu-item>
+              </el-menu-item-group>
+            </el-menu>
+            <div class="mobile-account-actions">
+              <el-button :icon="Lock" @click="handleUserCommand('password')">修改密码</el-button>
+              <el-button
+                class="mobile-logout-button"
+                :icon="SwitchButton"
+                @click="handleUserCommand('logout')"
+              >
+                退出登录
+              </el-button>
+            </div>
+          </div>
+        </el-drawer>
+      </el-header>
+      <transition name="status-banner">
+        <div v-if="appStatus.hasBlockingIssue" class="status-overlay">
+          <div class="status-content">
+            <el-icon><WarningFilled /></el-icon>
+            <div>
+              <strong>{{ appStatus.statusTitle }}</strong>
+              <span>{{ appStatus.message }}</span>
+            </div>
+          </div>
+          <el-button size="small" @click="appStatus.clear">关闭</el-button>
+        </div>
+      </transition>
+      <el-main class="app-main">
+        <router-view />
+      </el-main>
+    </el-container>
+    <ChangePasswordDialog v-if="authStore.isAuthenticated" v-model="passwordDialogVisible" />
+  </el-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 import { useAppStatusStore } from './stores/appStatus'
 import { ElMessage } from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import {
   ChatDotRound,
   Close,
@@ -130,8 +161,10 @@ import {
   MagicStick,
   DocumentCopy,
   List,
+  Lock,
   Menu,
   Money,
+  MoreFilled,
   Odometer,
   SwitchButton,
   Tickets,
@@ -147,32 +180,49 @@ const authStore = useAuthStore()
 const appStatus = useAppStatusStore()
 const mobileNavVisible = ref(false)
 
-// 导航项集中定义，桌面端与移动端菜单共用（认证状态由路由守卫恢复）
-const navItems = [
+// 导航项集中定义，桌面端与移动端菜单共用（认证状态由路由守卫恢复）。
+// 按使用频率排：常用页在前；低频页主动收进「更多」，不等宽度不够时被 EP 挤进「…」
+interface NavItem {
+  path: string
+  label: string
+  icon: Component
+  adminOnly?: boolean
+}
+
+const primaryNav: NavItem[] = [
   { path: '/', label: '仪表盘', icon: DataBoard },
-  { path: '/account-data', label: '账户数据', icon: Tickets },
-  { path: '/transactions', label: '交易记录', icon: List },
-  { path: '/corporate-actions', label: '公司行动', icon: DocumentCopy },
   { path: '/holdings', label: '当前持仓', icon: Wallet },
+  { path: '/transactions', label: '交易记录', icon: List },
+  { path: '/statistics', label: '统计分析', icon: TrendCharts },
   { path: '/watchlist', label: '观察清单', icon: View },
   { path: '/opinions', label: '雪球观点', icon: ChatDotRound },
-  { path: '/statistics', label: '统计分析', icon: TrendCharts },
-  { path: '/reports', label: 'AI 复盘', icon: MagicStick },
+  { path: '/reports', label: 'AI 复盘', icon: MagicStick }
+]
+
+const moreNav: NavItem[] = [
+  { path: '/corporate-actions', label: '公司行动', icon: DocumentCopy },
+  { path: '/account-data', label: '账户数据', icon: Tickets },
   { path: '/exchange-rates', label: '汇率管理', icon: Money },
   { path: '/admin/holdings', label: '查看所有持仓', icon: Odometer, adminOnly: true },
   { path: '/admin/users', label: '用户管理', icon: User, adminOnly: true }
 ]
 
-const visibleNavItems = computed(() =>
-  navItems.filter((item) => !item.adminOnly || authStore.isAdmin)
-)
+const visible = (item: NavItem) => !item.adminOnly || authStore.isAdmin
+const primaryNavItems = computed(() => primaryNav.filter(visible))
+const moreNavItems = computed(() => moreNav.filter(visible))
 
 const userInitial = computed(() => authStore.user?.username?.trim().charAt(0).toUpperCase() || '?')
 
-const activeMenu = computed(() => route.path)
+// 详情/嵌套路由用 meta.nav 指向所属菜单（标的档案 → 当前持仓），否则按 path 高亮
+const activeMenu = computed(() => route.meta.nav ?? route.path)
+
+const passwordDialogVisible = ref(false)
 
 const handleUserCommand = async (command: string) => {
-  if (command === 'logout') {
+  if (command === 'password') {
+    mobileNavVisible.value = false
+    passwordDialogVisible.value = true
+  } else if (command === 'logout') {
     mobileNavVisible.value = false
     await authStore.logout()
     ElMessage.success('已退出登录')
@@ -193,9 +243,8 @@ const handleUserCommand = async (command: string) => {
   z-index: 100;
   height: auto;
   min-height: var(--app-header-height);
-  background-color: rgba(255, 255, 255, 0.72);
-  border-bottom: 1px solid var(--app-separator);
-  backdrop-filter: saturate(180%) blur(20px);
+  background-color: var(--app-surface);
+  border-bottom: 1px solid var(--app-border-soft);
   padding: 0;
 }
 
@@ -219,10 +268,6 @@ const handleUserCommand = async (command: string) => {
   text-decoration: none;
 }
 
-.brand-link:hover .brand-mark {
-  transform: scale(1.06) rotate(-2deg);
-}
-
 .brand-mark {
   display: grid;
   grid-template-columns: repeat(3, 5px);
@@ -231,18 +276,16 @@ const handleUserCommand = async (command: string) => {
   width: 28px;
   height: 28px;
   padding: 5px;
-  background: var(--app-primary-gradient);
+  background: var(--app-primary);
   border: none;
-  border-radius: 9px;
-  box-shadow: 0 4px 10px -2px var(--app-primary-shadow);
-  transition: transform var(--app-duration) var(--apple-spring);
+  border-radius: var(--app-radius-inner);
 }
 
 .brand-mark span {
   display: block;
   width: 5px;
-  border-radius: 2px 2px 0 0;
-  background: rgba(255, 255, 255, 0.95);
+  border-radius: 1px 1px 0 0;
+  background: var(--app-on-primary);
 }
 
 .brand-mark span:nth-child(1) {
@@ -292,7 +335,7 @@ const handleUserCommand = async (command: string) => {
   margin: 8px 3px;
   padding: 0 14px;
   border: none !important;
-  border-radius: 999px;
+  border-radius: var(--app-radius-inner);
   color: var(--app-text-muted) !important;
   font-weight: 500;
   font-size: 14px;
@@ -311,7 +354,7 @@ const handleUserCommand = async (command: string) => {
 
 :deep(.header-menu.el-menu--horizontal > .el-menu-item:hover) {
   color: var(--app-text) !important;
-  background: rgba(15, 23, 42, 0.05) !important;
+  background: var(--app-hover) !important;
 }
 
 .user-info {
@@ -331,12 +374,12 @@ const handleUserCommand = async (command: string) => {
   gap: 8px;
   cursor: pointer;
   padding: 4px 10px 4px 4px;
-  border-radius: 999px;
+  border-radius: var(--app-radius-inner);
   transition: background-color var(--app-duration) var(--apple-ease);
 }
 
 .user-dropdown:hover {
-  background-color: rgba(15, 23, 42, 0.05);
+  background-color: var(--app-hover);
 }
 
 .user-avatar {
@@ -345,9 +388,8 @@ const handleUserCommand = async (command: string) => {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--app-primary-gradient);
-  box-shadow: 0 2px 6px -1px var(--app-primary-shadow);
-  color: #fff;
+  background: var(--app-primary);
+  color: var(--app-on-primary);
   font-size: 13px;
   font-weight: 700;
   line-height: 1;
@@ -371,19 +413,7 @@ const handleUserCommand = async (command: string) => {
   width: 100%;
   max-width: 1440px;
   margin: 0 auto;
-  padding: 28px 24px;
-  animation: fadeIn 0.4s var(--apple-spring);
-}
-
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  padding: 20px 24px;
 }
 
 .status-overlay {
@@ -397,10 +427,9 @@ const handleUserCommand = async (command: string) => {
   width: min(100%, 1440px);
   margin: 0 auto;
   padding: 12px 32px;
-  color: #7f1d1d;
-  background: #fef2f2;
-  border-bottom: 1px solid #fecaca;
-  box-shadow: 0 8px 20px rgba(127, 29, 29, 0.08);
+  color: var(--app-danger-text);
+  background: var(--app-danger-surface);
+  border-bottom: 1px solid var(--app-danger-border);
 }
 
 .status-content {
@@ -420,7 +449,7 @@ const handleUserCommand = async (command: string) => {
 }
 
 .status-content span {
-  color: #991b1b;
+  color: var(--app-danger-text);
   font-size: 13px;
 }
 
@@ -450,7 +479,7 @@ const handleUserCommand = async (command: string) => {
   gap: 16px;
   padding: 20px 20px 16px;
   border-bottom: 1px solid var(--app-separator);
-  background: linear-gradient(135deg, var(--app-primary-soft), transparent 70%);
+  background: var(--app-surface-muted);
 }
 
 .mobile-nav-identity {
@@ -491,7 +520,7 @@ const handleUserCommand = async (command: string) => {
 }
 
 .mobile-nav-menu :deep(.el-menu-item:hover) {
-  background: rgba(15, 23, 42, 0.04);
+  background: var(--app-hover);
 }
 
 .mobile-logout-button {
@@ -582,5 +611,49 @@ const handleUserCommand = async (command: string) => {
     gap: 10px;
     padding: 10px 12px;
   }
+}
+</style>
+
+<!--
+  #219 导航/账号操作新增的样式，单独成块放在末尾：上面的主样式块由扁平主题改造负责，
+  分开写减少合并冲突。「更多」与 EP 自动溢出的「…」都是 .el-sub-menu，它们的标题
+  要与顶层菜单项同一套外观；当前页在「更多」里时 EP 给 sub-menu 加 .is-active，
+  此前没有覆盖这个状态，高亮样式与其他项不一致。
+-->
+<style scoped>
+:deep(.header-menu.el-menu--horizontal > .el-sub-menu .el-sub-menu__title) {
+  height: 36px;
+  line-height: 36px;
+  margin: 8px 3px;
+  padding: 0 14px;
+  border: none !important;
+  border-radius: var(--app-radius-inner);
+  color: var(--app-text-muted) !important;
+  font-weight: 500;
+  font-size: 14px;
+  background: transparent !important;
+}
+
+:deep(.header-menu.el-menu--horizontal > .el-sub-menu .el-sub-menu__title:hover) {
+  color: var(--app-text) !important;
+  background: var(--app-hover, rgba(15, 23, 42, 0.05)) !important;
+}
+
+:deep(.header-menu.el-menu--horizontal > .el-sub-menu.is-active .el-sub-menu__title) {
+  color: var(--app-primary) !important;
+  background: var(--app-primary-soft) !important;
+  font-weight: 600;
+}
+
+.mobile-account-actions {
+  display: flex;
+  gap: 8px;
+  margin: 12px 16px 20px;
+}
+
+.mobile-account-actions .el-button {
+  flex: 1;
+  margin: 0;
+  border-radius: var(--app-radius-inner);
 }
 </style>

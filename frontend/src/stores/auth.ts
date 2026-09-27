@@ -2,12 +2,16 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import api from '../api'
 import type { User } from '../types'
-import { isApiError } from '../utils/apiErrors'
+import { getApiErrorMessage, isApiError } from '../utils/apiErrors'
 import { setSecuritySearchCacheScope } from '../utils/securitySearchCache'
 
 // 后端 User schema 为准（PR #172 复审）；localStorage 旧缓存的兼容在
 // loadCachedUser 的 JSON 解码边界显式处理，不整体降型。
 export type UserInfo = User
+
+export type LoginResult =
+  | { success: true }
+  | { success: false; message: string; globallyNotified: boolean }
 
 export const useAuthStore = defineStore('auth', () => {
   function loadCachedUser(): UserInfo | null {
@@ -52,7 +56,7 @@ export const useAuthStore = defineStore('auth', () => {
     setSecuritySearchCacheScope(null)
   }
 
-  async function login(username: string, password: string) {
+  async function login(username: string, password: string): Promise<LoginResult> {
     try {
       const response = await api.login(username, password)
       cacheUser(response.data.user)
@@ -62,10 +66,13 @@ export const useAuthStore = defineStore('auth', () => {
     } catch (error) {
       clearSession()
       sessionChecked.value = true
+      // getApiErrorMessage 而不是直接取 detail：422 的 detail 是数组，
+      // 直接塞进提示会显示成 [object Object]
       return {
         success: false,
-        message:
-          (isApiError(error) && error.response?.data?.detail) || '登录失败，请检查用户名和密码'
+        message: getApiErrorMessage(error, '登录失败，请检查用户名和密码'),
+        // 拦截器已弹过全局通知（5xx/断网）：登录页不再重复显示同一条错误
+        globallyNotified: isApiError(error) && error.globallyNotified === true
       }
     }
   }
@@ -81,6 +88,15 @@ export const useAuthStore = defineStore('auth', () => {
       clearSession()
       sessionChecked.value = true
     }
+  }
+
+  /**
+   * 只清本地会话、不调后端登出：改密码成功后服务端已吊销全部会话，
+   * 此时再 POST /auth/logout 会吃 401 并触发拦截器整页跳转。
+   */
+  function endLocalSession() {
+    clearSession()
+    sessionChecked.value = true
   }
 
   async function fetchUserInfo(): Promise<UserInfo> {
@@ -114,6 +130,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAdmin,
     login,
     logout,
+    endLocalSession,
     fetchUserInfo,
     checkAuth,
     updateUser

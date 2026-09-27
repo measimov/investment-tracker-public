@@ -16,22 +16,46 @@ from app.config import Settings
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _env_example_keys() -> set[str]:
-    keys = set()
+# `.env.example` 的条目：`KEY=value`，或注释掉的 `# KEY=value`——带默认值的旋钮刻意写成
+# 注释（取消注释才覆盖），这样 `cp .env.example .env` 不会把今天的默认值钉死在部署里。
+_EXAMPLE_ENTRY_RE = re.compile(r"^(?:#\s*)?([A-Z][A-Z0-9_]*)=(.*)$")
+
+
+def _example_entries() -> dict[str, str]:
+    entries = {}
     for line in (REPO_ROOT / ".env.example").read_text().splitlines():
-        match = re.match(r"^([A-Z][A-Z0-9_]*)=", line.strip())
+        match = _EXAMPLE_ENTRY_RE.match(line.strip())
         if match:
-            keys.add(match.group(1))
-    return keys
+            # 注释行的行内说明（`# KEY=v   # 说明`）不属于值
+            entries[match.group(1)] = re.split(r"\s+#", match.group(2), maxsplit=1)[0].strip()
+    return entries
 
 
-def _compose_backend_env_keys() -> set[str]:
+def _env_example_keys() -> set[str]:
+    return set(_example_entries())
+
+
+def _compose_service_blocks() -> list[str]:
+    """同一镜像的两个服务：backend（Web）与 xueqiu-collector（采集器常驻进程）。"""
     text = (REPO_ROOT / "docker-compose.yml").read_text()
-    backend_block = text.split("backend:", 1)[1].split("frontend:", 1)[0]
+    backend_block = text.split("\n  backend:", 1)[1].split("\n  frontend:", 1)[0]
+    collector_block = text.split("\n  xueqiu-collector:", 1)[1].split("\nsecrets:", 1)[0]
+    return [backend_block, collector_block]
+
+
+def _compose_env_keys(block: str) -> set[str]:
     # 两种写法都算透传：`KEY=${KEY:-默认}` 与裸键 `KEY`（值取宿主同名变量）。
     # 裸键是更好的默认：compose 里写 `:-默认` 会造出第二个默认值来源，#128 的
     # LLM_REPORT_MAX_OUTPUT_TOKENS 就是被那种写法把 config.py 的修复挡掉的。
-    return set(re.findall(r"^\s+-\s+([A-Z][A-Z0-9_]*)(?:=|\s*$)", backend_block, re.M))
+    return set(re.findall(r"^\s+-\s+([A-Z][A-Z0-9_]*)(?:=|\s*$)", block, re.M))
+
+
+def _compose_backend_env_keys() -> set[str]:
+    return _compose_env_keys(_compose_service_blocks()[0])
+
+
+def _compose_all_env_keys() -> set[str]:
+    return set().union(*(_compose_env_keys(block) for block in _compose_service_blocks()))
 
 
 def test_env_example_covers_every_settings_field():
@@ -41,7 +65,7 @@ def test_env_example_covers_every_settings_field():
 
 
 def test_compose_passthrough_vars_exist_in_env_example():
-    unknown = _compose_backend_env_keys() - _env_example_keys()
+    unknown = _compose_all_env_keys() - _env_example_keys()
     assert not unknown, f"docker-compose 透传了示例文件没有的变量: {sorted(unknown)}"
 
 
@@ -92,18 +116,24 @@ def _config_default(key: str):
 
 
 def _bare_passthrough_keys() -> set[str]:
-    text = (REPO_ROOT / "docker-compose.yml").read_text()
-    backend_block = text.split("backend:", 1)[1].split("frontend:", 1)[0]
+    backend_block = "\n".join(_compose_service_blocks())
     return set(re.findall(r"^\s+-\s+([A-Z][A-Z0-9_]*)\s*$", backend_block, re.M))
 
 
 def _env_example_values() -> dict[str, str]:
-    values = {}
-    for line in (REPO_ROOT / ".env.example").read_text().splitlines():
-        match = re.match(r"^([A-Z][A-Z0-9_]*)=(.*)$", line.strip())
-        if match:
-            values[match.group(1)] = match.group(2)
-    return values
+    return _example_entries()
+
+
+def _same_value(example: str, default) -> bool:
+    example = example.strip().strip("'\"")
+    if isinstance(default, bool):
+        return example.lower() == str(default).lower()
+    if isinstance(default, (int, float)):
+        try:
+            return float(example) == float(default)
+        except ValueError:
+            return False
+    return example == str(default)
 
 
 def test_bare_passthrough_examples_match_config_defaults():
@@ -120,7 +150,6 @@ def test_bare_passthrough_examples_match_config_defaults():
         if key not in example:
             continue  # 缺失由 test_env_example_covers_every_settings_field 负责
         default = _config_default(key)
-        expected = str(default).lower() if isinstance(default, bool) else str(default)
-        if example[key].strip().lower() != expected.lower():
+        if not _same_value(example[key], default):
             drift.append(f"{key}: .env.example={example[key]!r} 但 config.py 默认={default!r}")
     assert not drift, "裸键透传项的示例值与代码默认值漂移:\n" + "\n".join(drift)

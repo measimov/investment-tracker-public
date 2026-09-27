@@ -18,7 +18,8 @@ Optimizations:
 from enum import Enum
 from typing import TypedDict, Optional, Dict, Any
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import os
@@ -128,6 +129,9 @@ class PriceResult(TypedDict):
 
     price: Optional[Decimal]
     timestamp: datetime
+    # 行情所属交易日（#217）：timestamp 是抓取时刻，周六刷新到的是周五收盘。
+    # 报价源拿不到日期时为 None（前端退回显示刷新时刻），绝不拿 today 冒充。
+    as_of: Optional[date]
     source: str
     success: bool
     error: Optional[str]
@@ -139,6 +143,7 @@ def price_result(
     source: str,
     success: bool,
     error: Optional[str] = None,
+    as_of: Optional[date] = None,
 ) -> PriceResult:
     return {
         "price": price,
@@ -146,10 +151,73 @@ def price_result(
         # 在 UTC+8 环境产生"未来 8 小时"的时间戳，令新鲜度判定恒真、
         # 主动刷新长期全部跳过（实测 elapsed = -4556s）。
         "timestamp": datetime.now(timezone.utc),
+        "as_of": as_of if success else None,
         "source": source,
         "success": success,
         "error": error,
     }
+
+
+def parse_quote_date(value: Any) -> Optional[date]:
+    """报价源的日期/时间字段 -> 行情所属交易日；解析不了返回 None（绝不抛）。
+
+    覆盖的形态都已是**交易所本地时间**的字符串：Tushare trade_date `20260925`、
+    trade_time `2026-09-25 16:00:00`、腾讯 A 股 `20260924161444` / 港股
+    `2026/09/25 16:08:20`——统一取前 8 位数字。datetime/date（含 pandas
+    Timestamp）直接取日期。
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if len(digits) < 8:
+        return None
+    try:
+        return datetime.strptime(digits[:8], "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def _row_quote_date(row: Any, *columns: str) -> Optional[date]:
+    """DataFrame 行里第一个能解析的日期列。"""
+    for column in columns:
+        try:
+            parsed = parse_quote_date(row.get(column))
+        except Exception:  # noqa: BLE001 - 日期是锦上添花，不能拖垮取价
+            parsed = None
+        if parsed is not None:
+            return parsed
+    return None
+
+
+# 毫秒时间戳（雪球）换算成交易日要用**交易所本地时区**：美股 16:00 ET 收盘在
+# 东八区已是次日凌晨，按业务时区换算会把周五收盘记成周六。
+MARKET_TIMEZONES: Dict[str, str] = {
+    "A股": "Asia/Shanghai",
+    "B股": "Asia/Shanghai",
+    "港股": "Asia/Hong_Kong",
+    "美股": "America/New_York",
+    "新加坡股": "Asia/Singapore",
+}
+
+
+def quote_date_from_epoch_ms(milliseconds: Any, market: str) -> Optional[date]:
+    """毫秒时间戳 -> 该市场交易所本地日期；非法值返回 None。"""
+    if isinstance(milliseconds, bool) or not isinstance(milliseconds, (int, float)):
+        return None
+    if not milliseconds or milliseconds != milliseconds:  # 0 / NaN
+        return None
+    tz_name = MARKET_TIMEZONES.get(market)
+    if tz_name is None:
+        return None
+    try:
+        moment = datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return moment.astimezone(ZoneInfo(tz_name)).date()
 
 
 _tushare_lock = Lock()
@@ -165,7 +233,7 @@ _TUSHARE_GLOBAL_KEY = "__global__"
 def get_tushare_min_interval(api_name: str) -> float:
     """Return provider-specific call spacing to avoid known Tushare quota bursts."""
     if api_name in {"hk_mins", "hk_daily"}:
-        return float(os.environ.get("TUSHARE_HK_MIN_INTERVAL_SECONDS", "31"))
+        return float(settings.tushare_hk_min_interval_seconds)
     return 0.0
 
 
@@ -307,7 +375,8 @@ def get_tushare_pro():
 
 def get_tushare_api_base_url() -> str:
     """Return the Tushare HTTPS data API base URL used by the SDK client."""
-    return (os.environ.get("TUSHARE_API_BASE_URL") or DEFAULT_TUSHARE_API_BASE_URL).rstrip("/")
+    configured = (settings.tushare_api_base_url or "").strip()
+    return (configured or DEFAULT_TUSHARE_API_BASE_URL).rstrip("/")
 
 
 def configure_tushare_client_endpoint(pro_client) -> None:
@@ -425,6 +494,16 @@ def fetch_tencent_quote_name(symbol: str, market: str) -> Optional[str]:
         return None
 
 
+def parse_tencent_quote_date(text: str, quote_code: str) -> Optional[date]:
+    """腾讯行情字段[30] 是行情时间（A 股 `20260924161444`、港股 `2026/09/25 16:08:20`，
+    均为交易所本地时间）；缺失或格式异常返回 None。"""
+    try:
+        fields = parse_tencent_quote_fields(text, quote_code)
+    except ValueError:
+        return None
+    return parse_quote_date(fields[30]) if len(fields) > 30 else None
+
+
 def parse_tencent_quote_price(text: str, quote_code: str) -> Decimal:
     fields = parse_tencent_quote_fields(text, quote_code)
     if len(fields) < 4:
@@ -446,7 +525,12 @@ def fetch_tencent_stock_price(symbol: str, market: Market) -> PriceResult:
         )
         response.raise_for_status()
         price = parse_tencent_quote_price(response.text, quote_code)
-        return price_result(price=price, source="tencent-quote", success=True)
+        return price_result(
+            price=price,
+            source="tencent-quote",
+            success=True,
+            as_of=parse_tencent_quote_date(response.text, quote_code),
+        )
     except Exception as exc:
         error_msg = f"腾讯行情获取失败: {str(exc)[:200]}"
         logger.warning("  %s %s %s", market.value, symbol, error_msg)
@@ -550,7 +634,12 @@ def fetch_a_stock_price_tushare(symbol: str) -> PriceResult:
         row = df.iloc[0]
         price = positive_decimal_price(row.get("close"))
         logger.info(f"✓ A股 {symbol} Tushare rt_k成功: {price}")
-        return price_result(price=price, source="tushare-rt_k", success=True)
+        return price_result(
+            price=price,
+            source="tushare-rt_k",
+            success=True,
+            as_of=_row_quote_date(row, "trade_date", "trade_time"),
+        )
     except Exception as e:
         logger.warning(f"  Tushare rt_k失败，尝试daily最新收盘价: {str(e)[:120]}")
 
@@ -559,7 +648,12 @@ def fetch_a_stock_price_tushare(symbol: str) -> PriceResult:
         row = df.sort_values("trade_date").iloc[-1]
         price = positive_decimal_price(row.get("close"))
         logger.info(f"✓ A股 {symbol} Tushare daily成功: {price}")
-        return price_result(price=price, source="tushare-daily", success=True)
+        return price_result(
+            price=price,
+            source="tushare-daily",
+            success=True,
+            as_of=_row_quote_date(row, "trade_date"),
+        )
     except Exception as e:
         error_msg = f"Tushare获取A股价格失败: {str(e)[:200]}"
         logger.error(f"✗ A股 {symbol} 失败: {error_msg}")
@@ -596,7 +690,12 @@ def fetch_hk_stock_price_tushare(symbol: str) -> PriceResult:
         row = df.sort_values("trade_time").iloc[-1]
         price = positive_decimal_price(row.get("close"))
         logger.info(f"✓ 港股 {symbol} Tushare hk_mins成功: {price}")
-        return price_result(price=price, source="tushare-hk_mins", success=True)
+        return price_result(
+            price=price,
+            source="tushare-hk_mins",
+            success=True,
+            as_of=_row_quote_date(row, "trade_time"),
+        )
     except Exception as e:
         logger.warning(f"  Tushare hk_mins失败，尝试hk_daily最新收盘价: {str(e)[:120]}")
 
@@ -605,7 +704,12 @@ def fetch_hk_stock_price_tushare(symbol: str) -> PriceResult:
         row = df.sort_values("trade_date").iloc[-1]
         price = positive_decimal_price(row.get("close"))
         logger.info(f"✓ 港股 {symbol} Tushare hk_daily成功: {price}")
-        return price_result(price=price, source="tushare-hk_daily", success=True)
+        return price_result(
+            price=price,
+            source="tushare-hk_daily",
+            success=True,
+            as_of=_row_quote_date(row, "trade_date"),
+        )
 
     except Exception as e:
         error_msg = f"港股 {symbol} Tushare获取失败: {str(e)[:200]}"
@@ -643,7 +747,12 @@ def fetch_us_stock_price_tushare(symbol: str) -> PriceResult:
         row = df.sort_values("trade_date").iloc[-1]
         price = positive_decimal_price(row.get("close"))
         logger.info(f"✓ 美股 {symbol} Tushare us_daily成功: {price}")
-        return price_result(price=price, source="tushare-us_daily", success=True)
+        return price_result(
+            price=price,
+            source="tushare-us_daily",
+            success=True,
+            as_of=_row_quote_date(row, "trade_date"),
+        )
 
     except Exception as e:
         error_msg = f"美股 {symbol} Tushare获取失败: {str(e)[:200]}"
@@ -694,7 +803,12 @@ def fetch_crypto_price_tushare(symbol: str) -> PriceResult:
         row = df.sort_values(date_col).iloc[-1]
         price = positive_decimal_price(row.get("close"))
         logger.info(f"✓ 加密货币 {symbol} Tushare coin_bar成功: {price}")
-        return price_result(price=price, source="tushare-coin_bar", success=True)
+        return price_result(
+            price=price,
+            source="tushare-coin_bar",
+            success=True,
+            as_of=_row_quote_date(row, date_col),
+        )
 
     except Exception as e:
         error_msg = f"加密货币 {symbol} Tushare获取失败: {str(e)[:200]}"
@@ -862,6 +976,9 @@ def update_all_holdings_prices(db: Session, user_id: int = None) -> Dict[str, An
         ):
             holding.current_price = result["price"]
             holding.price_updated_at = result["timestamp"]
+            # 行情日期与来源随价格整组覆盖：拿不到日期写 None，不保留上一次的旧日期
+            holding.price_as_of = result.get("as_of")
+            holding.price_source = (result.get("source") or "")[:40] or None
             success_list.append(
                 {
                     "symbol": holding.symbol,

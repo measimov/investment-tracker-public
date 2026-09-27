@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
 import type { OpinionSummaryRow } from '@/types'
-import { opinionTagType } from './useOpinions'
+import { formatDate } from '@/utils/helpers'
+import { opinionTagStyle } from './opinionTags'
 
 defineProps<{
   items: OpinionSummaryRow[]
@@ -52,10 +53,12 @@ function openDetail(row: OpinionSummaryRow) {
             v-for="tag in row.tags"
             :key="tag"
             size="small"
-            :type="opinionTagType(tag)"
+            :type="opinionTagStyle(tag).type"
+            :effect="opinionTagStyle(tag).effect"
             class="opinion-tag"
+            :class="{ 'opinion-change': opinionTagStyle(tag).change }"
           >
-            {{ tag }}
+            {{ opinionTagStyle(tag).label }}
           </el-tag>
         </template>
         <span v-else class="muted">未生成</span>
@@ -86,7 +89,7 @@ function openDetail(row: OpinionSummaryRow) {
     </el-table-column>
     <el-table-column label="生成时间" width="120">
       <template #default="{ row }">
-        <span v-if="row.created_at">{{ row.created_at.slice(0, 10) }}</span>
+        <span v-if="row.created_at">{{ formatDate(row.created_at) }}</span>
         <span v-else class="muted">—</span>
       </template>
     </el-table-column>
@@ -102,6 +105,11 @@ function openDetail(row: OpinionSummaryRow) {
 </template>
 
 <style scoped>
+/* 近期变化类标签：加粗 + 实线描边，主题把标签统一做浅色时仍能一眼区分 */
+.opinion-change {
+  font-weight: 600;
+  border-color: currentColor;
+}
 .symbol-sub {
   margin-left: 6px;
   color: var(--el-text-color-secondary);

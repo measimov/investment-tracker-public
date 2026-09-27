@@ -99,35 +99,34 @@ const loginForm = reactive({
 
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 6, message: '密码长度至少为6位', trigger: 'blur' }
-  ]
+  // 登录不校验长度：口令下限只约束新设口令（后端 MIN_PASSWORD_LENGTH=10），
+  // 种子用户的初始口令来自环境变量、不受它约束——这里卡长度会把人挡在门外
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
 }
 
 const handleLogin = async () => {
   if (!loginFormRef.value) return
 
   try {
-    // Validate form
     await loginFormRef.value.validate()
+  } catch {
+    return // 表单校验未通过：错误已显示在输入框下方
+  }
 
-    loading.value = true
-    errorMessage.value = ''
-
-    // Attempt login
+  loading.value = true
+  errorMessage.value = ''
+  try {
     const result = await authStore.login(loginForm.username, loginForm.password)
 
     if (result.success) {
       ElMessage.success('登录成功')
       // 回到会话过期前的页面；无 redirect 时回首页
       router.push(safeRedirectTarget())
-    } else {
+    } else if (!result.globallyNotified) {
+      // 用户名密码错误、账号停用等只在表单下方提示一次；
+      // 5xx/断网已由全局通知提示，不再重复
       errorMessage.value = result.message
     }
-  } catch (error) {
-    // Form validation failed
-    console.error('Login error:', error)
   } finally {
     loading.value = false
   }
@@ -141,34 +140,16 @@ const handleLogin = async () => {
   align-items: center;
   min-height: calc(100vh - 52px);
   padding: 48px 20px;
-  background:
-    radial-gradient(720px 380px at 15% 8%, rgba(99, 102, 241, 0.16), transparent 60%),
-    radial-gradient(640px 340px at 88% 16%, rgba(139, 92, 246, 0.14), transparent 55%),
-    radial-gradient(560px 380px at 50% 105%, rgba(16, 185, 129, 0.1), transparent 55%);
+  background: var(--app-bg);
 }
 
 .login-shell {
   width: 100%;
   max-width: 400px;
-  padding: 36px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.7);
-  border-radius: 22px;
-  box-shadow: var(--app-shadow-lg);
-  backdrop-filter: saturate(160%) blur(24px);
-  -webkit-backdrop-filter: saturate(160%) blur(24px);
-  animation: loginIn 0.5s var(--apple-spring);
-}
-
-@keyframes loginIn {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  padding: 32px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius);
 }
 
 .login-brand {
@@ -188,17 +169,16 @@ const handleLogin = async () => {
   width: 38px;
   height: 38px;
   padding: 7px;
-  background: var(--app-primary-gradient);
+  background: var(--app-primary);
   border: none;
-  border-radius: 11px;
-  box-shadow: 0 6px 14px -3px var(--app-primary-shadow);
+  border-radius: var(--app-radius);
 }
 
 .brand-mark span {
   display: block;
   width: 6px;
-  border-radius: 2px 2px 0 0;
-  background: rgba(255, 255, 255, 0.95);
+  border-radius: 1px 1px 0 0;
+  background: var(--app-on-primary);
 }
 
 .brand-mark span:nth-child(1) {
@@ -243,10 +223,10 @@ const handleLogin = async () => {
 }
 
 .login-form :deep(.el-button) {
-  height: 46px;
-  font-size: 16px;
+  height: 40px;
+  font-size: 15px;
   font-weight: 600;
-  border-radius: 12px;
+  border-radius: var(--app-radius-inner);
 }
 
 @media (max-width: 640px) {

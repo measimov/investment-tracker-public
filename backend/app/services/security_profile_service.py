@@ -10,6 +10,7 @@ JSON 行（security_profile_data），按 (symbol, market, dataset, period_key)
 原子 upsert。
 """
 
+import re
 import time
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional
@@ -22,6 +23,7 @@ from sqlalchemy.sql import func
 from ..core.logging import get_app_logger
 from ..core.timeutil import to_local_date
 from ..models.security_profile import SecurityProfileData
+from .earnings_quality import EDGAR_MISSING_OTHER_CURRENCY, EDGAR_PIVOT_VERSION
 from .stock_price_service import (
     classify_tushare_error,
     to_tushare_a_code,
@@ -144,7 +146,18 @@ EDGAR_CONCEPT_CHAINS: Dict[str, tuple] = {
     # 短期借款概念在各公司间过于分裂，刻意不收——净债务口径按"仅长期"
     # 标注方向性偏差，胜过用错概念拼出貌似完整的合计。
     "total_cur_liab": ("LiabilitiesCurrent",),
-    "lt_debt": ("LongTermDebtNoncurrent", "LongTermDebt"),
+    # 长期债务：链上首个有值者胜（逐期）。LongTermDebt 含一年内到期部分，排在专门的非流动
+    # 概念之后；可转债/票据概念是发行可转债的中概股常用口径——拼多多 20-F 只报
+    # ConvertibleDebtNoncurrent（2026-09 companyfacts 实查），不报 LongTermDebt*
+    "lt_debt": (
+        "LongTermDebtNoncurrent", "LongTermDebt", "ConvertibleNotesPayableNoncurrent",
+        "ConvertibleDebtNoncurrent", "ConvertibleLongTermNotesPayable", "LongTermNotesPayable",
+        "SeniorLongTermNotes", "LongTermDebtAndCapitalLeaseObligations",
+    ),
+    # 已付股东股息（现金流量表，量级由消费侧取绝对值）；FY 行有经营现金流而无该概念 → 0
+    "div_paid_owners": (
+        "PaymentsOfDividends", "PaymentsOfDividendsCommonStock", "PaymentsOfOrdinaryDividends",
+    ),
     "int_exp": ("InterestExpense", "InterestExpenseDebt"),
     "fix_assets": ("PropertyPlantAndEquipmentNet",),
     "n_cashflow_act": ("NetCashProvidedByUsedInOperatingActivities",),
@@ -205,7 +218,10 @@ def _matches_period(item: Dict[str, Any], fp: str) -> bool:
 
 
 def _apply_concept_sums(
-    facts: Dict[str, Any], rows: Dict[tuple, Dict[str, Any]], marks: Dict[tuple, tuple]
+    facts: Dict[str, Any],
+    rows: Dict[tuple, Dict[str, Any]],
+    marks: Dict[tuple, tuple],
+    currency: str = "USD",
 ) -> None:
     """概念链落空的期间用分项求和补齐（只补空，不覆盖链上已有值）。
 
@@ -221,7 +237,7 @@ def _apply_concept_sums(
             concept_data = facts.get(concept)
             if not concept_data:
                 continue
-            units = (concept_data.get("units") or {}).get("USD") or []
+            units = _edgar_unit_rows(concept_data, currency)
             latest: Dict[tuple, tuple] = {}  # 期间键 → (filed, val)
             for item in units:
                 end, fp, value = (
@@ -243,11 +259,85 @@ def _apply_concept_sums(
             rows[key][field] = sum(v[key] for v in per_component.values())
 
 
+# 判定报告币种的核心科目：营收/归母净利/总资产（各自的整条兜底链）
+EDGAR_CURRENCY_PROBE_FIELDS = ("total_revenue", "n_income_attr_p", "total_assets")
+_ISO_CURRENCY_UNIT = re.compile(r"^[A-Z]{3}$")
+
+
+def edgar_reporting_currency(facts: Dict[str, Any]) -> str:
+    """发行人的报告币种：核心科目 FY 事实覆盖期数最多的 ISO 币种单位（并列时 USD 优先）。
+
+    中概 20-F 发行人（PDD/BABA）以人民币编表，companyfacts 里 `USD` 单位只是最新一年的
+    "为方便读者按 1 美元=7.xx 元折算"——每份 20-F 只折本年，多年序列逐年折算率不同，
+    比较列与更早年份根本没有 USD 值（PDD 2016-2017、BABA 应收账款整条只有 CNY）。
+    报告币种的全序列恒比便利折算长，按覆盖期数取即可确定地选中它；美国本土 10-K 发行人
+    只有 USD 单位，结果不变。companyfacts 不含 dei 的报告币种事实（PDD 无 dei、BABA 的 dei
+    只有股数与 ADS 比例），只能从单位推断。核心科目一条都没有时退回 USD（原口径）。
+    """
+    periods: Dict[str, set] = {}
+    for field in EDGAR_CURRENCY_PROBE_FIELDS:
+        for concept in EDGAR_CONCEPT_CHAINS[field]:
+            units = (facts.get(concept) or {}).get("units") or {}
+            for unit, items in units.items():
+                if not _ISO_CURRENCY_UNIT.match(unit):
+                    continue  # 每股（CNY/shares）、股数（shares）等非货币单位不参与
+                bucket = periods.setdefault(unit, set())
+                for item in items:
+                    if (
+                        item.get("fp") == "FY" and item.get("end")
+                        and item.get("val") is not None and _matches_period(item, "FY")
+                    ):
+                        bucket.add((field, item["end"]))
+    if not periods:
+        return "USD"
+    return max(sorted(periods), key=lambda unit: (len(periods[unit]), unit == "USD"))
+
+
+def _edgar_unit_rows(concept_data: Dict[str, Any], currency: str) -> List[Dict[str, Any]]:
+    """概念在报告币种下的事实：金额 `<CUR>`、每股 `<CUR>/shares`。
+
+    **只取报告币种**：该币种缺某概念时留空，不回退到 USD——同一期间行里混着人民币科目与
+    美元便利折算科目，下游的比率/估值都会静默算错（每行只有一个 currency 标签）。
+    """
+    units = concept_data.get("units") or {}
+    return units.get(currency) or units.get(f"{currency}/shares") or []
+
+
+def _mark_other_currency_gaps(
+    facts: Dict[str, Any], rows: Dict[tuple, Dict[str, Any]], currency: str
+) -> None:
+    """报告币种下为空、但该期有别币种事实（或该概念整条没有报告币种单位）的科目记
+    `edgar_missing_reasons[field] = other_currency_only`：不混币取数的代价是「不可知」，
+    不能被下游当成「发行人没报这个概念」按 0 推断（股息记录/长期债务）。"""
+    own_units = {currency, f"{currency}/shares"}
+    for field, chain in EDGAR_CONCEPT_CHAINS.items():
+        foreign_only = False
+        foreign_periods: set = set()
+        for concept in chain:
+            units = (facts.get(concept) or {}).get("units") or {}
+            foreign = [unit for unit in units if unit not in own_units]
+            if not foreign:
+                continue
+            if not any(units.get(unit) for unit in own_units):
+                foreign_only = True  # 该概念整条没有报告币种单位：任何期间的空值都不可知
+            for unit in foreign:
+                for item in units[unit]:
+                    end, fp = str(item.get("end") or ""), str(item.get("fp") or "")
+                    if end and item.get("val") is not None and _matches_period(item, fp):
+                        foreign_periods.add((end, fp))
+        if not foreign_only and not foreign_periods:
+            continue
+        for key, row in rows.items():
+            if row.get(field) is None and (foreign_only or key in foreign_periods):
+                row.setdefault("edgar_missing_reasons", {})[field] = EDGAR_MISSING_OTHER_CURRENCY
+
+
 def _fetch_edgar_companyfacts(symbol: str, market: str) -> List[Dict[str, Any]]:
     """EDGAR XBRL → 每 (end, fp) 一行。
 
     口径选择：duration fact 必须与 fp 的期间长度相符（FY=全年、Qx=单季），
     不符者整条丢弃而不是任其覆盖；同口径下多 filing 取 filed 最新（重述胜）。
+    币种：全部科目按发行人的报告币种取（edgar_reporting_currency），行上 `currency` 如实标注。
     """
     from .report_fetchers import edgar_companyfacts, edgar_lookup
 
@@ -255,6 +345,9 @@ def _fetch_edgar_companyfacts(symbol: str, market: str) -> List[Dict[str, Any]]:
     if not lookup:
         raise ValueError(f"美股代码 {symbol} 未在 SEC 注册表中找到")
     facts = (edgar_companyfacts(lookup["cik"]).get("facts") or {}).get("us-gaap") or {}
+    currency = edgar_reporting_currency(facts)
+    if currency != "USD":
+        logger.info("EDGAR %s 报告币种为 %s，按该币种取数（不取美元便利折算）", symbol, currency)
 
     rows: Dict[tuple, Dict[str, Any]] = {}
     # (期间键, 字段) → (概念优先级, filed)：优先级与重述判定都必须**逐期**做
@@ -266,9 +359,7 @@ def _fetch_edgar_companyfacts(symbol: str, market: str) -> List[Dict[str, Any]]:
             concept_data = facts.get(concept)
             if not concept_data:
                 continue
-            units = concept_data.get("units") or {}
-            unit_rows = units.get("USD") or units.get("USD/shares") or []
-            for item in unit_rows:
+            for item in _edgar_unit_rows(concept_data, currency):
                 end = str(item.get("end") or "")
                 fp = str(item.get("fp") or "")
                 value = item.get("val")
@@ -289,12 +380,15 @@ def _fetch_edgar_companyfacts(symbol: str, market: str) -> List[Dict[str, Any]]:
                     "end_date": end.replace("-", ""),
                     "fp": fp,
                     "form": item.get("form"),
-                    "currency": "USD",
+                    "currency": currency,
+                    # 概念链版本：「缺概念 → 0」只对按当前链抓取的行成立
+                    "edgar_chain_version": EDGAR_PIVOT_VERSION,
                 })
                 row[field] = value
                 marks[(key, field)] = (rank, filed)
 
-    _apply_concept_sums(facts, rows, marks)
+    _apply_concept_sums(facts, rows, marks, currency)
+    _mark_other_currency_gaps(facts, rows, currency)
 
     # 分类封顶：年度与季度各留各的额度。统一按 end_date 取前 N 会被数量占优的
     # 季度行占满——实测 AAPL 158 个期间里 FY 仅 20 个，一刀切 40 行只剩 4 个
@@ -498,6 +592,33 @@ def _prune_daily_basic(db: Session, symbol: str, market: str) -> None:
         ).delete(synchronize_session=False)
 
 
+def _prune_other_currency_rows(
+    db: Session, symbol: str, market: str, dataset: str, rows: List[Dict[str, Any]]
+) -> None:
+    """删掉与本次透视币种不同的旧行。upsert 只覆盖本次产出的期间键：报告币种改按 CNY 取数后，
+    只在旧 USD 透视里出现过的期间会以 USD 行残留，与新的 CNY 行混在同一数据集里——跨行的
+    增速/趋势会把两种币种当成同一序列。本次无产出（空 fetch）时不动。"""
+    currencies = {row.get("currency") for row in rows}
+    if not currencies:
+        return
+    stale_ids = [
+        row_id
+        for row_id, payload in db.query(SecurityProfileData.id, SecurityProfileData.payload)
+        .filter(
+            SecurityProfileData.symbol == symbol,
+            SecurityProfileData.market == market,
+            SecurityProfileData.dataset == dataset,
+        )
+        .all()
+        if (payload or {}).get("currency") not in currencies
+    ]
+    if stale_ids:
+        db.query(SecurityProfileData).filter(SecurityProfileData.id.in_(stale_ids)).delete(
+            synchronize_session=False
+        )
+        logger.info("%s/%s %s 删除 %d 行旧币种透视行", symbol, market, dataset, len(stale_ids))
+
+
 # 接口冷却的分档阈值：不超过这个时长就地等一下，超过则跳过该数据集。
 # 等待发生在这里（锁外），绝不能塞进 wait_for_tushare_rate_limit 的临界区。
 TUSHARE_COOLDOWN_INLINE_WAIT_SECONDS = 20.0
@@ -539,6 +660,8 @@ def sync_symbol_profile(db: Session, symbol: str, market: str) -> Dict[str, Any]
             inserted = upsert_profile_rows(db, symbol, market, dataset, rows)
             if dataset == "daily_basic":
                 _prune_daily_basic(db, symbol, market)
+            if dataset == "edgar_companyfacts":
+                _prune_other_currency_rows(db, symbol, market, dataset, rows)
             db.commit()
             result["datasets"][dataset] = {"rows": len(rows), "inserted": inserted}
         except Exception as exc:  # 单数据集失败不中断
@@ -615,81 +738,268 @@ def _dataset_rows(
     return [row.payload for row in rows]
 
 
-def load_graham_inputs(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
-    """graham_screen 的取数口径：报表只取**年度行**（A股 period_key=末日 1231；
-    美股 EDGAR 键带 |FY 后缀；港股 Yahoo 全为年度）、分红实施记录取全量、
-    估值快照只要最新一行。库内无任何报表数据返回 None。
+# 格雷厄姆估值的中报/季报行窗口（港股 H1 取近三期即可覆盖「最新中报 + 上年同期」；美股单季 8 行）
+GRAHAM_INTERIM_ROWS = 6
+GRAHAM_QUARTER_ROWS = 24
 
-    全部消费点（详情页 profile / 分析输入 / 观察清单摘要）统一走这里，
-    口径一处定义。
-    """
+# 一个标的的格雷厄姆取数器：(dataset, 期间键后缀, 排除后缀, 行数上限) → payload 列表
+_Pick = Callable[..., List[Dict[str, Any]]]
+
+
+def _graham_statement_datasets(market: str, pick: _Pick) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+    """报表只取**年度行**（A股 period_key=末日 1231；美股 EDGAR 键带 |FY 后缀；港股 PDF 年度行
+    `末日|FY` 优先、Yahoo 全为年度）。"""
     if market == "美股":
-        statements_rows = {
-            "edgar_companyfacts": _dataset_rows(
-                db, symbol, market, "edgar_companyfacts", like="%|FY"
-            )
-        }
-    elif market == "港股":
-        statements_rows = {
+        return {"edgar_companyfacts": pick("edgar_companyfacts", suffix="|FY")}
+    if market == "港股":
+        return {
             # PDF 抽取的年度行优先（period_key=末日|FY），Yahoo 补缺——由 market_statements 合并
-            "report_statements": _dataset_rows(
-                db, symbol, market, "report_statements", like="%|FY"
-            ),
-            "yahoo_fundamentals": _dataset_rows(db, symbol, market, "yahoo_fundamentals"),
+            "report_statements": pick("report_statements", suffix="|FY"),
+            "yahoo_fundamentals": pick("yahoo_fundamentals"),
         }
-    elif market == "A股":
-        statements_rows = {
-            "income": _dataset_rows(db, symbol, market, "income", like="%1231"),
-            "balancesheet": _dataset_rows(db, symbol, market, "balancesheet", like="%1231"),
+    if market == "A股":
+        return {
+            "income": pick("income", suffix="1231"),
+            "balancesheet": pick("balancesheet", suffix="1231"),
         }
-    else:
-        return None
-    if not any(statements_rows.values()):
+    return None
+
+
+def _graham_interim_rows(market: str, pick: _Pick) -> List[Dict[str, Any]]:
+    """TTM 与 MRQ 用的非年度行：港股 = PDF 中报行（存疑科目先清洗）；美股 = EDGAR 单季行。"""
+    if market == "港股":
+        from .report_statement_checks import scrub_suspect_fields
+
+        return [
+            scrub_suspect_fields(row)
+            for row in pick("report_statements", suffix="|H1", limit=GRAHAM_INTERIM_ROWS)
+        ]
+    if market == "美股":
+        return pick("edgar_companyfacts", exclude_suffix="|FY", limit=GRAHAM_QUARTER_ROWS)
+    return []
+
+
+def load_graham_inputs(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
+    """graham_screen 的取数口径：报表只取**年度行**、分红实施记录取全量、估值快照只要最新
+    一行；港股/美股另取中报/季报行（TTM 与 MRQ）。库内无任何报表数据返回 None。
+
+    全部消费点（详情页 profile / 分析输入 / 观察清单摘要）统一走这里与
+    graham_summaries_for 的同一组取数函数，口径一处定义。
+    """
+    pick = _single_symbol_picker(db, symbol, market)
+    statements_rows = _graham_statement_datasets(market, pick)
+    if statements_rows is None or not any(statements_rows.values()):
         return None
     return {
         "statement_datasets": statements_rows,
-        "daily_basic_rows": _dataset_rows(db, symbol, market, "daily_basic", limit=1),
-        "dividend_rows": _dataset_rows(
-            db, symbol, market, "dividend_history", limit=GRAHAM_DIVIDEND_ROWS
-        ),
+        "interim_rows": _graham_interim_rows(market, pick),
+        "daily_basic_rows": pick("daily_basic", limit=1),
+        "dividend_rows": pick("dividend_history", limit=GRAHAM_DIVIDEND_ROWS),
     }
 
 
-def compute_graham_for(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
-    """load_graham_inputs + 纯函数计算；无数据返回 None。"""
+def _single_symbol_picker(db: Session, symbol: str, market: str) -> _Pick:
+    def pick(
+        dataset: str, *, suffix: Optional[str] = None, exclude_suffix: Optional[str] = None,
+        limit: int = GRAHAM_ANNUAL_ROWS,
+    ) -> List[Dict[str, Any]]:
+        if exclude_suffix is None:
+            return _dataset_rows(
+                db, symbol, market, dataset, like=f"%{suffix}" if suffix else None, limit=limit,
+            )
+        query = (
+            db.query(SecurityProfileData)
+            .filter(
+                SecurityProfileData.symbol == symbol,
+                SecurityProfileData.market == market,
+                SecurityProfileData.dataset == dataset,
+                SecurityProfileData.period_key.notlike(f"%{exclude_suffix}"),
+            )
+            .order_by(SecurityProfileData.period_key.desc())
+            .limit(limit)
+        )
+        return [row.payload for row in query.all()]
+
+    return pick
+
+
+def _latest_price_rows(db: Session, keys: List[tuple]) -> Dict[tuple, Any]:
+    """(symbol, market) → 行情库最新一根收盘（DISTINCT ON，一次查询）。"""
+    from ..models.security_price import SecurityPrice
+
+    wanted = [key for key in keys if key[1] in ("港股", "美股")]
+    if not wanted:
+        return {}
+    rows = (
+        db.query(SecurityPrice)
+        .filter(SecurityPrice.symbol.in_(sorted({symbol for symbol, _ in wanted})))
+        .filter(SecurityPrice.market.in_(sorted({market for _, market in wanted})))
+        .distinct(SecurityPrice.symbol, SecurityPrice.market)
+        .order_by(SecurityPrice.symbol, SecurityPrice.market, SecurityPrice.price_date.desc())
+        .all()
+    )
+    return {(row.symbol, row.market): row for row in rows}
+
+
+def _graham_valuation(
+    symbol: str,
+    market: str,
+    statements: Dict[str, List[Dict[str, Any]]],
+    interim_rows: List[Dict[str, Any]],
+    annual_rows: List[Dict[str, Any]],
+    price_row: Any,
+    rate_lookup: Any,
+    ads_ratio: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """港股/美股估值输入：最新收盘价（陈旧照算、标注）+ 报表币种→价格币种汇率 + ADS 口径。
+
+    ads_ratio = ads_ratio_service.resolve_ads_ratio(s) 的结果（用户规则 > 20-F 封面解析）：
+    EDGAR 每股数据按普通股、行情价按 ADS；有换算比即用（不论表单），没有而年报是 20-F →
+    估值两项 indeterminate（不猜比例）；10-K 发行人按 1:1。"""
+    from ..core.timeutil import local_today
+    from .graham_screen import resolve_fx_rates
+    from .statistics.pricing import PRICE_STALE_DAYS
+
+    if price_row is None:
+        return {"price": None}
+    age_days = (local_today() - price_row.price_date).days
+    price = {
+        "close": float(price_row.close_price),
+        "currency": price_row.currency,
+        "date": price_row.price_date.isoformat(),
+        "stale": age_days > PRICE_STALE_DAYS,
+        "age_days": age_days,
+        "source": price_row.source,
+    }
+    currencies = {
+        row.get("currency")
+        for kind in ("income", "balancesheet")
+        for row in statements.get(kind, [])
+    } | {row.get("currency") for row in interim_rows}
+    valuation: Dict[str, Any] = {
+        "price": price,
+        "fx_rates": resolve_fx_rates(
+            currencies, price["currency"], price_row.price_date, rate_lookup
+        ),
+        "interim_rows": interim_rows,
+    }
+    if market == "美股":
+        form = next((row.get("form") for row in annual_rows if row.get("form")), None)
+        valuation["annual_form"] = form
+        if ads_ratio:
+            valuation["share_ratio"] = float(ads_ratio["ratio"])
+            valuation["share_ratio_note"] = ads_ratio["note"]
+            valuation["share_ratio_source"] = ads_ratio["source"]
+        elif str(form or "").startswith("20-F"):
+            valuation["share_ratio_missing"] = True
+    return valuation
+
+
+def _graham_history_confirmed(market: str, plan: Optional[Dict[str, Any]]) -> bool:
+    """可得年度数据的起点是否即公司披露历史的起点。港股以披露易清单为准：完整清单里的年报
+    不足十份才说「披露历史仅 N 年」；否则可能只是更早年报尚未抽取。其余市场的数据源覆盖全史。"""
+    if market != "港股":
+        return True
+    from .report_statement_service import ANNUAL_YEARS
+
+    return bool(plan) and int((plan or {}).get("planned_annual") or 0) < ANNUAL_YEARS
+
+
+def _screen_symbol(
+    symbol: str,
+    market: str,
+    pick: _Pick,
+    *,
+    price_row: Any,
+    rate_lookup: Any,
+    plan: Optional[Dict[str, Any]],
+    ads_ratio: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """一个标的的格雷厄姆结果（单标的与批量共用）；无报表数据返回 None。"""
     from .earnings_quality import market_statements
     from .graham_screen import compute_graham_screen
 
-    inputs = load_graham_inputs(db, symbol, market)
-    if inputs is None:
+    statement_datasets = _graham_statement_datasets(market, pick)
+    if statement_datasets is None or not any(statement_datasets.values()):
         return None
-    result = compute_graham_screen(
+    statements = market_statements(market, statement_datasets)
+    valuation = None
+    if market in ("港股", "美股"):
+        interim = _graham_interim_rows(market, pick)
+        annual_rows = statement_datasets.get("edgar_companyfacts") or []
+        valuation = _graham_valuation(
+            symbol, market, statements, interim, annual_rows, price_row, rate_lookup,
+            ads_ratio=ads_ratio,
+        )
+    return compute_graham_screen(
         market,
-        market_statements(market, inputs["statement_datasets"]),
-        daily_basic_rows=inputs["daily_basic_rows"],
-        dividend_rows=inputs["dividend_rows"],
+        statements,
+        daily_basic_rows=pick("daily_basic", limit=1),
+        dividend_rows=pick("dividend_history", limit=GRAHAM_DIVIDEND_ROWS),
+        valuation=valuation,
+        history_confirmed=_graham_history_confirmed(market, plan),
     )
-    return result if result["status"] == "ok" else None
+
+
+def _rate_lookup_for(db: Session, markets) -> Any:
+    if not any(market in ("港股", "美股") for market in markets):
+        return None
+    from .statistics.fx import DbExchangeRateLookup
+
+    return DbExchangeRateLookup.from_db(db)
+
+
+def _ads_ratios_for(
+    db: Session, keys: List[tuple], user_id: Optional[int]
+) -> Dict[str, Dict[str, Any]]:
+    """美股标的的生效 ADS 换算比；user_id=None（无用户上下文）只用 20-F 封面解析值。"""
+    symbols = [symbol for symbol, market in keys if market == "美股"]
+    if not symbols:
+        return {}
+    from .ads_ratio_service import resolve_ads_ratios
+
+    return resolve_ads_ratios(db, symbols, user_id)
+
+
+def compute_graham_for(
+    db: Session, symbol: str, market: str, *, user_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """单标的格雷厄姆结果（详情页 profile / 分析输入）；无数据返回 None。
+
+    user_id：请求方用户（其 ADS_RATIO 规则覆盖 20-F 解析值）；None = 只用解析值。"""
+    plan = None
+    if market == "港股":
+        from .report_statement_service import load_statement_plan
+
+        plan = load_statement_plan(db, symbol, market)
+    result = _screen_symbol(
+        symbol, market, _single_symbol_picker(db, symbol, market),
+        price_row=_latest_price_rows(db, [(symbol, market)]).get((symbol, market)),
+        rate_lookup=_rate_lookup_for(db, [market]),
+        plan=plan,
+        ads_ratio=_ads_ratios_for(db, [(symbol, market)], user_id).get(symbol),
+    )
+    return result if result is not None and result["status"] == "ok" else None
 
 
 def graham_summaries_for(
-    db: Session, keys: List[tuple],
+    db: Session, keys: List[tuple], *, user_id: Optional[int] = None,
 ) -> Dict[tuple, Optional[Dict[str, Any]]]:
     """批量版 graham_summary_for：一次查询取全部标的的准则输入，避免列表页
     每条 3-4 次往返的 N 倍放大（评审 P2）。返回 {(symbol, market): summary|None}。
 
     仍按 (symbol, market) 逐标的计算纯函数；差别只在取数：一条 IN 查询把
-    所需数据集全部拉回内存后按标的分桶，再按 load_graham_inputs 的同一口径
-    （年度行/分红全量/最新估值）在内存中裁剪。
+    所需数据集全部拉回内存后按标的分桶，再按单标的的同一组取数函数
+    （_graham_statement_datasets / _graham_interim_rows）在内存中裁剪；
+    行情价一条 DISTINCT ON、汇率表整表装载一次。
     """
-    from .earnings_quality import market_statements
-    from .graham_screen import compute_graham_screen
+    from .report_statement_service import PLAN_DATASET
 
     if not keys:
         return {}
     wanted_datasets = (
         "income", "balancesheet", "daily_basic", "dividend_history",
-        "edgar_companyfacts", "yahoo_fundamentals", "report_statements",
+        "edgar_companyfacts", "yahoo_fundamentals", "report_statements", PLAN_DATASET,
     )
     symbols = sorted({symbol for symbol, _ in keys})
     rows = (
@@ -712,47 +1022,39 @@ def graham_summaries_for(
         buckets.setdefault((symbol, market), {}).setdefault(dataset, []).append(
             (period_key, payload)
         )
+    prices = _latest_price_rows(db, keys)
+    rate_lookup = _rate_lookup_for(db, [market for _, market in keys])
+    ads_ratios = _ads_ratios_for(db, keys, user_id)
 
-    def _pick(bucket, dataset, *, like_suffix=None, limit=GRAHAM_ANNUAL_ROWS):
-        items = bucket.get(dataset, [])
-        if like_suffix:
-            items = [(k, v) for k, v in items if str(k).endswith(like_suffix)]
-        if dataset in MARKET_JOB_DATASETS.get("港股", {}):
-            current = _job_dataset_current(dataset)
-            items = [(k, v) for k, v in items if current(v or {})]
-        return [payload for _, payload in items[:limit]]
+    def bucket_picker(bucket: Dict[str, List[tuple]]) -> _Pick:
+        def pick(
+            dataset: str, *, suffix: Optional[str] = None, exclude_suffix: Optional[str] = None,
+            limit: int = GRAHAM_ANNUAL_ROWS,
+        ) -> List[Dict[str, Any]]:
+            items = bucket.get(dataset, [])
+            if suffix:
+                items = [(k, v) for k, v in items if str(k).endswith(suffix)]
+            if exclude_suffix:
+                items = [(k, v) for k, v in items if not str(k).endswith(exclude_suffix)]
+            if dataset in MARKET_JOB_DATASETS.get("港股", {}):
+                current = _job_dataset_current(dataset)
+                items = [(k, v) for k, v in items if current(v or {})]
+            return [payload for _, payload in items[:limit]]
+
+        return pick
 
     result: Dict[tuple, Optional[Dict[str, Any]]] = {}
     for key in keys:
         symbol, market = key
         bucket = buckets.get(key, {})
-        if market == "美股":
-            statement_datasets = {
-                "edgar_companyfacts": _pick(bucket, "edgar_companyfacts", like_suffix="|FY")
-            }
-        elif market == "港股":
-            statement_datasets = {
-                "report_statements": _pick(bucket, "report_statements", like_suffix="|FY"),
-                "yahoo_fundamentals": _pick(bucket, "yahoo_fundamentals"),
-            }
-        elif market == "A股":
-            statement_datasets = {
-                "income": _pick(bucket, "income", like_suffix="1231"),
-                "balancesheet": _pick(bucket, "balancesheet", like_suffix="1231"),
-            }
-        else:
-            result[key] = None
-            continue
-        if not any(statement_datasets.values()):
-            result[key] = None
-            continue
-        screen = compute_graham_screen(
-            market,
-            market_statements(market, statement_datasets),
-            daily_basic_rows=_pick(bucket, "daily_basic", limit=1),
-            dividend_rows=_pick(bucket, "dividend_history", limit=GRAHAM_DIVIDEND_ROWS),
+        plan_items = bucket.get(PLAN_DATASET) or []
+        screen = _screen_symbol(
+            symbol, market, bucket_picker(bucket),
+            price_row=prices.get(key), rate_lookup=rate_lookup,
+            plan=plan_items[0][1] if plan_items else None,
+            ads_ratio=ads_ratios.get(symbol) if market == "美股" else None,
         )
-        if screen["status"] != "ok":
+        if screen is None or screen["status"] != "ok":
             result[key] = None
             continue
         result[key] = {
@@ -765,11 +1067,13 @@ def graham_summaries_for(
     return result
 
 
-def graham_summary_for(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
+def graham_summary_for(
+    db: Session, symbol: str, market: str, *, user_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
     """观察清单列表列用的准则摘要（计数 + 数据年度）；无档案数据返回 None
     ——前端显示"未同步档案"而不是 0/7 的误导计数。取数走 compute_graham_for
     的年度行专取口径（caps 窗口的旧实现会把分红记录截断成错误 fail）。"""
-    result = compute_graham_for(db, symbol, market)
+    result = compute_graham_for(db, symbol, market, user_id=user_id)
     if result is None:
         return None
     return {

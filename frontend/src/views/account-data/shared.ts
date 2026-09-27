@@ -7,6 +7,7 @@
 
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import { MARKETS } from '@/utils/securities'
+import { DELETED_ACCOUNT_LABEL, UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
 import type { Ref } from 'vue'
 import type {
   BrokerAccount,
@@ -15,9 +16,9 @@ import type {
   ReconciliationSnapshot,
   SecurityRule
 } from '@/types'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { formatLocalDate } from '@/utils/dateRange'
 import { todayLocalISODate } from '@/utils/helpers'
+import { showApiError } from '@/utils/showApiError'
 
 // 生成类型为准；旧别名字段（历史模板回退读多种键名）以交集补充（下同）
 export type AccountRow = BrokerAccount & {
@@ -69,6 +70,34 @@ export interface DialogState {
 }
 
 export const brokerOptions = ['招商证券', '东方财富证券', 'IBKR', '汇丰香港']
+
+// 现金事件 / 导入批次 / 月末核对一次取回的上限（不分页）：满额时界面提示
+// 「仅显示最近 N 条」，筛选与汇总只在已取回的数据里进行
+export const LIST_LIMIT = 1000
+
+export const isAtListLimit = (rows: readonly unknown[], limit = LIST_LIMIT) => rows.length >= limit
+
+// 月末核对快照的报表范围（statement_scope）：东财普通股票/港股通两份对账单同日各一行
+const SCOPE_LABELS: Record<string, string> = {
+  stock: '普通股票',
+  hk_connect: '港股通'
+}
+
+export const statementScopeLabel = (scope: string | null | undefined) =>
+  scope ? SCOPE_LABELS[scope] || scope : '全账户'
+
+/** 带符号的差额（+1,234.50 / -3），0 显示为 0；缺值为占位符 */
+export function signedDelta(value: unknown, decimals = 2): string {
+  if (value === null || value === undefined || value === '') return '—'
+  const number = Number(value)
+  if (Number.isNaN(number)) return '—'
+  const body = Math.abs(number).toLocaleString('zh-CN', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: decimals
+  })
+  if (body === '0') return '0'
+  return `${number > 0 ? '+' : '-'}${body}`
+}
 export const currencyOptions = ['CNY', 'HKD', 'USD', 'SGD']
 // 与后端 VALID_MARKETS 对齐（快照持仓行与特例规则表单共用）；唯一权威在 utils/securities
 export const marketOptions: readonly string[] = MARKETS
@@ -87,7 +116,8 @@ export const accountName = (account: AccountRow | null | undefined) =>
 
 export const accountLabelIn = (accounts: AccountRow[], id: unknown) => {
   const account = accounts.find((item) => String(item.id) === String(id))
-  return account ? accountName(account) : '未关联账户'
+  if (id === null || id === undefined || id === '') return UNASSIGNED_ACCOUNT_LABEL
+  return account ? accountName(account) : DELETED_ACCOUNT_LABEL
 }
 
 export async function confirmDelete(title: string, message: string) {
@@ -127,7 +157,7 @@ export function makeSaver({
       dialog.visible = false
       await reload()
     } catch (error) {
-      ElMessage.error(getApiErrorMessage(error, messages.failure))
+      showApiError(error, messages.failure)
     } finally {
       dialog.saving = false
     }
@@ -157,8 +187,7 @@ export function makeRemover<T>({
       ElMessage.success(successMessage)
       await reload()
     } catch (error) {
-      if (error !== 'cancel' && error !== 'close')
-        ElMessage.error(getApiErrorMessage(error, failureMessage))
+      if (error !== 'cancel' && error !== 'close') showApiError(error, failureMessage)
     }
   }
 }

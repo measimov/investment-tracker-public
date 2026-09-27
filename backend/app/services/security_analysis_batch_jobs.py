@@ -286,6 +286,7 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
                 outcome = analyze_one(
                     db, target["symbol"], target["market"],
                     digest_max_new=digest_max_new,
+                    user_id=user_id,
                     on_stage=lambda stage, extra: progress(
                         current_stage=ANALYSIS_STAGE_LABELS.get(stage, stage)
                     ),

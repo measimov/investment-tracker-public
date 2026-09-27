@@ -19,6 +19,7 @@ RULE_TYPES = (
     "NAME_OVERRIDE",
     "PRICE_GAP_EXEMPTION",
     "CMB_CASH_BUSINESS",
+    "ADS_RATIO",
 )
 
 
@@ -32,6 +33,7 @@ class SecurityRule(Base):
     - NAME_OVERRIDE: {name}
     - PRICE_GAP_EXEMPTION: {start_date, end_date|null}（null=摘牌后开放至今）
     - CMB_CASH_BUSINESS: {event_type}
+    - ADS_RATIO: {ratio}（美股 1 ADS = ratio 股普通股，覆盖 20-F 封面解析值；只允许 market=美股）
     - EXCLUDE / CASH_MANAGEMENT: null
 
     注意：EXCLUDE（只归档不入账）与 CASH_MANAGEMENT（派息按利息入账）是
@@ -57,7 +59,7 @@ class SecurityRule(Base):
     __table_args__ = (
         CheckConstraint(
             "rule_type IN ('EXCLUDE', 'CASH_MANAGEMENT', 'RELISTING', "
-            "'NAME_OVERRIDE', 'PRICE_GAP_EXEMPTION', 'CMB_CASH_BUSINESS')",
+            "'NAME_OVERRIDE', 'PRICE_GAP_EXEMPTION', 'CMB_CASH_BUSINESS', 'ADS_RATIO')",
             name="ck_security_rules_rule_type",
         ),
         # CMB 业务映射必须 market IS NULL：唯一键含 market，放行非空市场

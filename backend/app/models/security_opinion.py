@@ -8,8 +8,8 @@ from ..database import Base
 class SecurityOpinionSummary(Base):
     """雪球观点摘要（全局追加产物，与 SecurityAnalysis 同定位）。
 
-    输入是 xueqiu-timeline-archiver 写入同库的关注用户发言（外部表，本应用
-    只读），LLM 按「近期窗口 vs 更早基线」归纳各作者立场与**近期观点变化**。
+    输入是雪球采集器（services/xueqiu_collector）写入的关注作者发言，LLM
+    按「近期窗口 vs 更早基线」归纳各作者立场与**近期观点变化**。
     追加式：最新 = created_at DESC 第一条；上一条天然可 diff（前端展示
     "较上次标签变化"）。不塞 security_profile_data——那是按自然键幂等 upsert
     的输入缓存，放不下"取最新 + 历史留痕"的产物语义。

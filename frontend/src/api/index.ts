@@ -1,10 +1,17 @@
 import axios, { type AxiosError, type AxiosRequestConfig } from 'axios'
-import type { SecurityResolveResponse, SecuritySearchResponse } from '@/types'
+import type { PeriodPnlResponse, SecurityResolveResponse, SecuritySearchResponse } from '@/types'
 import type {
   AdminHolding,
   BrokerAccount,
   BrokerImportResult,
   CashEvent,
+  CollectorAuthor,
+  CollectorAuthorCreate,
+  CollectorAuthorUpdate,
+  CollectorCube,
+  CollectorCubeCreate,
+  CollectorCubeUpdate,
+  CollectorStatus,
   CorporateAction,
   DividendSuggestion,
   ExchangeRate,
@@ -24,7 +31,9 @@ import type {
   Transaction,
   User,
   WatchlistItem,
-  WatchlistMembership
+  WatchlistMembership,
+  XueqiuHots,
+  XueqiuSymbolFeed
 } from '../types'
 import { ElNotification } from 'element-plus'
 import { useAppStatusStore } from '../stores/appStatus'
@@ -77,6 +86,11 @@ function getStatusStore(): ReturnType<typeof useAppStatusStore> | null {
   }
 }
 
+// 502/504 = 反向代理找不到后端（容器重启/部署窗口），与 503 同属「服务不可用」
+function isUnavailableStatus(status: number | undefined): boolean {
+  return status === 502 || status === 503 || status === 504
+}
+
 function notifyGlobalError(error: NormalizedApiError): void {
   if (error.config?.skipGlobalErrorNotification) return
 
@@ -86,9 +100,12 @@ function notifyGlobalError(error: NormalizedApiError): void {
     error.code === 'ECONNABORTED' ||
     status === 403 ||
     status === 500 ||
-    status === 503
+    isUnavailableStatus(status)
 
   if (!shouldNotify) return
+  // 本次（或 5 秒内同键的上一次）已经弹过通知：view 层 showApiError 据此跳过，
+  // 同一个错误不再「右上角通知 + 顶部消息」各弹一次
+  error.globallyNotified = true
 
   const message = getApiErrorMessage(error)
   const key = `${status || error.code || 'network'}:${message}`
@@ -99,7 +116,7 @@ function notifyGlobalError(error: NormalizedApiError): void {
   lastGlobalErrorAt = now
 
   ElNotification.error({
-    title: status === 503 ? '服务不可用' : '请求失败',
+    title: isUnavailableStatus(status) ? '服务不可用' : '请求失败',
     message,
     duration: 4500
   })
@@ -159,8 +176,10 @@ apiClient.interceptors.response.use(
     const normalizedError = normalizeApiError(error)
     const statusStore = getStatusStore()
 
-    // Handle 401 Unauthorized - clear auth and redirect to login
-    if (normalizedError.response?.status === 401) {
+    // Handle 401 Unauthorized - clear auth and redirect to login.
+    // skipAuthRedirect 的请求（守卫里的会话探测、登录本身）由调用方处理：
+    // 路由守卫会 next('/login') 并提示，这里再整页跳转就刷两次（#219）
+    if (normalizedError.response?.status === 401 && !normalizedError.config?.skipAuthRedirect) {
       // Clear authentication
       localStorage.removeItem('user')
 
@@ -176,7 +195,7 @@ apiClient.interceptors.response.use(
 
     if (!normalizedError.response || normalizedError.code === 'ECONNABORTED') {
       statusStore?.markConnectionLost(normalizedError.userMessage)
-    } else if (normalizedError.response.status === 503) {
+    } else if (isUnavailableStatus(normalizedError.response.status)) {
       statusStore?.markMaintenance(normalizedError.userMessage)
     }
 
@@ -209,13 +228,25 @@ function uploadFile<T = BrokerImportResult>(
 const api = {
   // Authentication
   login(username: string, password: string) {
-    return apiClient.post<LoginResponse>('/auth/login', { username, password })
+    return apiClient.post<LoginResponse>(
+      '/auth/login',
+      { username, password },
+      { skipAuthRedirect: true }
+    )
   },
   logout() {
     return apiClient.post('/auth/logout')
   },
+  // 会话探测：401 = 未登录，交给路由守卫统一跳转与提示
   getUserInfo() {
-    return apiClient.get<User>('/auth/me')
+    return apiClient.get<User>('/auth/me', { skipAuthRedirect: true })
+  },
+  // 修改自己的密码：成功后后端吊销该用户全部会话（含当前这个）
+  changePassword(oldPassword: string, newPassword: string) {
+    return apiClient.put<{ message: string }>('/auth/me/password', {
+      old_password: oldPassword,
+      new_password: newPassword
+    })
   },
 
   // Transactions
@@ -534,7 +565,56 @@ const api = {
       skipGlobalErrorNotification: true
     })
   },
-  // 雪球观点摘要（数据源 = xueqiu-timeline-archiver 写入同库的关注用户发言）
+  // 雪球发言采集器：状态与作者名单对登录用户可读；增删改与「立即运行」仅管理员。
+  // 立即运行只记请求，由独立的 xueqiu-collector 进程在 30s 内拾取
+  getCollectorStatus() {
+    return apiClient.get<CollectorStatus>('/xueqiu-collector/status')
+  },
+  createCollectorAuthor(data: CollectorAuthorCreate) {
+    return apiClient.post<CollectorAuthor>('/xueqiu-collector/authors', data)
+  },
+  updateCollectorAuthor(userId: string, data: CollectorAuthorUpdate) {
+    return apiClient.patch<CollectorAuthor>(
+      `/xueqiu-collector/authors/${encodeURIComponent(userId)}`,
+      data
+    )
+  },
+  deleteCollectorAuthor(userId: string) {
+    return apiClient.delete(`/xueqiu-collector/authors/${encodeURIComponent(userId)}`)
+  },
+  requestCollectorRun(target: 'authors' | 'symbols' = 'authors') {
+    return apiClient.post<CollectorStatus>('/xueqiu-collector/run-now', null, {
+      params: { target }
+    })
+  },
+  // 组合跟踪名单（按标的采集的组合调仓），权限同作者名单
+  createCollectorCube(data: CollectorCubeCreate) {
+    return apiClient.post<CollectorCube>('/xueqiu-collector/cubes', data)
+  },
+  updateCollectorCube(cubeId: string, data: CollectorCubeUpdate) {
+    return apiClient.patch<CollectorCube>(
+      `/xueqiu-collector/cubes/${encodeURIComponent(cubeId)}`,
+      data
+    )
+  },
+  deleteCollectorCube(cubeId: string) {
+    return apiClient.delete(`/xueqiu-collector/cubes/${encodeURIComponent(cubeId)}`)
+  },
+  // 采集器每日按标的落库的只读展示：标的的雪球公告/讨论、今日热帖。
+  // 锦上添花的数据，失败由调用方静默处理，不弹全局通知
+  getXueqiuSymbolFeed(params: { symbol: string; market: string; kind?: string; limit?: number }) {
+    return apiClient.get<XueqiuSymbolFeed>('/xueqiu-collector/symbol-feed', {
+      params,
+      skipGlobalErrorNotification: true
+    })
+  },
+  getXueqiuHots(params?: { scope?: 'day' | 'week'; limit?: number }) {
+    return apiClient.get<XueqiuHots>('/xueqiu-collector/hots', {
+      params,
+      skipGlobalErrorNotification: true
+    })
+  },
+  // 雪球观点摘要（数据源 = 本仓雪球采集器写入的关注作者发言）
   listOpinionSummaries() {
     return apiClient.get('/securities/opinion-summaries')
   },
@@ -619,6 +699,11 @@ const api = {
   // Portfolio snapshot：一次调用返回看板全量数据（表现/新鲜度/市场/近期交易/对账状态）
   getPortfolioSnapshot() {
     return apiClient.get('/statistics/portfolio-snapshot')
+  },
+
+  // 当日 / 本月 / 本年损益（权益仓口径，与收益曲线同一算法；服务端定价）
+  getPeriodPnl() {
+    return apiClient.get<PeriodPnlResponse>('/statistics/period-pnl')
   },
 
   // Performance Statistics

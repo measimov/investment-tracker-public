@@ -1,0 +1,110 @@
+{
+ "_generator": "xueqiu-timeline-archiver src/xueqiu_archiver/signature/xueqiu_md5_1038.js @3e7fcc6，node v22，全局 Date 固定为 now_ms；一次性生成，测试不依赖 Node",
+ "goldens": [
+  {
+   "url": "https://xueqiu.com/v4/statuses/user_timeline.json?page=1&user_id=1000000001&type=3",
+   "now_ms": 1758950400123,
+   "signed": "https://xueqiu.com/v4/statuses/user_timeline.json?page=1&user_id=1000000001&type=3&md5__1038=eqAxBQitG%3D0QTx05DIBDCqAKT3NoTTqDRn7oD"
+  },
+  {
+   "url": "https://xueqiu.com/v4/statuses/user_timeline.json?page=1&user_id=1000000001&type=3",
+   "now_ms": 1790000000000,
+   "signed": "https://xueqiu.com/v4/statuses/user_timeline.json?page=1&user_id=1000000001&type=3&md5__1038=eqAxBQitG%3D0QTx05DIBDCT8Ug1LD"
+  },
+  {
+   "url": "https://xueqiu.com/v4/statuses/user_timeline.json?page=1&user_id=1000000001&type=3",
+   "now_ms": 1700000000001,
+   "signed": "https://xueqiu.com/v4/statuses/user_timeline.json?page=1&user_id=1000000001&type=3&md5__1038=eqAxBQitG%3D0QTx05DIBDCuWXgqLD"
+  },
+  {
+   "url": "https://xueqiu.com/v4/statuses/user_timeline.json?page=2&user_id=1000000002&type=3",
+   "now_ms": 1758950400123,
+   "signed": "https://xueqiu.com/v4/statuses/user_timeline.json?page=2&user_id=1000000002&type=3&md5__1038=eqjxuDnDgDc73xYqGNDQuxBKKDvFPEf8YRDTD"
+  },
+  {
+   "url": "https://xueqiu.com/v4/statuses/user_timeline.json?page=2&user_id=1000000002&type=3",
+   "now_ms": 1790000000000,
+   "signed": "https://xueqiu.com/v4/statuses/user_timeline.json?page=2&user_id=1000000002&type=3&md5__1038=eqjxuDnDgDc73xYqGNDQuxBKa6MV74D"
+  },
+  {
+   "url": "https://xueqiu.com/v4/statuses/user_timeline.json?page=2&user_id=1000000002&type=3",
+   "now_ms": 1700000000001,
+   "signed": "https://xueqiu.com/v4/statuses/user_timeline.json?page=2&user_id=1000000002&type=3&md5__1038=eqjxuDnDgDc73xYqGNDQuxBI3XM574D"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/comments.json?id=312345678&count=20&page=1&reply=true&split=true",
+   "now_ms": 1758950400123,
+   "signed": "https://xueqiu.com/statuses/comments.json?id=312345678&count=20&page=1&reply=true&split=true&md5__1038=n4%2BxnD0Dg00%3DY%2BDBqoo%3Di%3DDCW7W34iKGOjeD"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/comments.json?id=312345678&count=20&page=1&reply=true&split=true",
+   "now_ms": 1790000000000,
+   "signed": "https://xueqiu.com/statuses/comments.json?id=312345678&count=20&page=1&reply=true&split=true&md5__1038=n4%2BxnD0Dg00%3DY%2BDBqoo%3DPWXLex"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/comments.json?id=312345678&count=20&page=1&reply=true&split=true",
+   "now_ms": 1700000000001,
+   "signed": "https://xueqiu.com/statuses/comments.json?id=312345678&count=20&page=1&reply=true&split=true&md5__1038=n4%2BxnD0Dg00%3DY%2BDBqooN7FNo4"
+  },
+  {
+   "url": "https://xueqiu.com/1000000001/351234567",
+   "now_ms": 1758950400123,
+   "signed": "https://xueqiu.com/1000000001/351234567?md5__1038=eqAxBDRQq40CD%2F80xBKi%3DKityHL2DQqpD"
+  },
+  {
+   "url": "https://xueqiu.com/1000000001/351234567",
+   "now_ms": 1790000000000,
+   "signed": "https://xueqiu.com/1000000001/351234567?md5__1038=eqAxBDRQq40CD%2F80xBKit%3DZITPD"
+  },
+  {
+   "url": "https://xueqiu.com/1000000001/351234567",
+   "now_ms": 1700000000001,
+   "signed": "https://xueqiu.com/1000000001/351234567?md5__1038=eqAxBDRQq40CD%2F80xBIKtL5Wx"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/351234567",
+   "now_ms": 1758950400123,
+   "signed": "https://xueqiu.com/statuses/351234567?md5__1038=n4fxRDyDumKGqDKDsTiQY%2Bqmqx4Ax4fRirfbD"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/351234567",
+   "now_ms": 1790000000000,
+   "signed": "https://xueqiu.com/statuses/351234567?md5__1038=n4fxRDyDumKGqDKDsTiQYit0%3DXdL4D"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/351234567",
+   "now_ms": 1700000000001,
+   "signed": "https://xueqiu.com/statuses/351234567?md5__1038=n4fxRDyDumKGqDKDsTiQY7FXLRfD"
+  },
+  {
+   "url": "https://xueqiu.com/query/v1/symbol/search/status?symbol=SH600519&page=1&size=10&count=10&sort=time",
+   "now_ms": 1758950400123,
+   "signed": "https://xueqiu.com/query/v1/symbol/search/status?symbol=SH600519&page=1&size=10&count=10&sort=time&md5__1038=Qqfx9DR7iQKGqx05DIB4Cq2xRhQxnQ%3D6GQ7oD"
+  },
+  {
+   "url": "https://xueqiu.com/query/v1/symbol/search/status?symbol=SH600519&page=1&size=10&count=10&sort=time",
+   "now_ms": 1790000000000,
+   "signed": "https://xueqiu.com/query/v1/symbol/search/status?symbol=SH600519&page=1&size=10&count=10&sort=time&md5__1038=Qqfx9DR7iQKGqx05DIB4CqYvoXM64D"
+  },
+  {
+   "url": "https://xueqiu.com/query/v1/symbol/search/status?symbol=SH600519&page=1&size=10&count=10&sort=time",
+   "now_ms": 1700000000001,
+   "signed": "https://xueqiu.com/query/v1/symbol/search/status?symbol=SH600519&page=1&size=10&count=10&sort=time&md5__1038=Qqfx9DR7iQKGqx05DIB4CuWXgdLD"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/stock_timeline.json?symbol_id=SH600519&count=20&source=%E5%85%AC%E5%91%8A&page=1",
+   "now_ms": 1758950400123,
+   "signed": "https://xueqiu.com/statuses/stock_timeline.json?symbol_id=SH600519&count=20&source=%E5%85%AC%E5%91%8A&page=1&md5__1038=n4%2Bxc7DQGQG%3D5BKDsoox8DBDRrxAooh7x7Kdx"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/stock_timeline.json?symbol_id=SH600519&count=20&source=%E5%85%AC%E5%91%8A&page=1",
+   "now_ms": 1790000000000,
+   "signed": "https://xueqiu.com/statuses/stock_timeline.json?symbol_id=SH600519&count=20&source=%E5%85%AC%E5%91%8A&page=1&md5__1038=n4%2Bxc7DQGQG%3D5BKDsoox4Ro6g1LD"
+  },
+  {
+   "url": "https://xueqiu.com/statuses/stock_timeline.json?symbol_id=SH600519&count=20&source=%E5%85%AC%E5%91%8A&page=1",
+   "now_ms": 1700000000001,
+   "signed": "https://xueqiu.com/statuses/stock_timeline.json?symbol_id=SH600519&count=20&source=%E5%85%AC%E5%91%8A&page=1&md5__1038=n4%2Bxc7DQGQG%3D5BKDsooxIRS%3D23D"
+  }
+ ]
+}

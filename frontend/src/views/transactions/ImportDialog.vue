@@ -5,8 +5,16 @@ import { ElMessage } from 'element-plus'
 import api from '@/api'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { BrokerAccount, BrokerImportResult, SuspectedDuplicateSample } from '@/types'
-import { downloadFile, todayLocalISODate } from '@/utils/helpers'
+import {
+  downloadFile,
+  formatNumber,
+  formatPrice,
+  formatQuantity,
+  todayLocalISODate
+} from '@/utils/helpers'
+import { transactionTypeLabel } from '@/utils/labels'
 import { brokerAccountLabel } from './shared'
+import { importAccountChoice } from './importAccounts'
 
 // 预览/导入响应以后端 BrokerImportResult 为准（生成类型；此前手写副本已漂移：
 // statement_scope 的 null、诊断报告新增字段都没跟上）
@@ -23,6 +31,9 @@ const importing = ref(false)
 const uploadFile = ref<File | null>(null)
 const importMode = ref('standard')
 const brokerPreview = ref<BrokerPreview | null>(null)
+// 面板里展示的是预览还是正式导入的结果（部分入账时导入结果会替换预览）：
+// 结果态文案切成「导入结果」、导入按钮禁用——同一份文件不应在未改动时再点一次
+const importDone = ref(false)
 const importBrokerAccountId = ref<number | null>(null)
 // 疑似重复（#190）：用户勾选后确认为真实成交的 row_hash，随预览/导入一起回传；
 // 换文件、换账户、换模式都要清空——确认是对某一份文件里某几行的决定
@@ -93,24 +104,13 @@ const handleDownloadDiagnostics = () => {
     `cmb-import-diagnostics-${todayLocalISODate()}.json`
   )
 }
-const brokerImportAccountOptions = computed(() => {
-  const keywordMap: Record<string, string[]> = {
-    cmb: ['招商'],
-    ibkr: ['IBKR', 'INTERACTIVE'],
-    eastmoney: ['东方']
-  }
-  const keywords = keywordMap[importMode.value]
-  if (!keywords) return []
-  return props.brokerAccounts.filter(
-    (account) =>
-      account.is_active !== false &&
-      keywords.some((keyword) =>
-        String(account.broker || '')
-          .toUpperCase()
-          .includes(keyword)
-      )
-  )
-})
+const brokerImportChoice = computed(() =>
+  importAccountChoice(props.brokerAccounts, importMode.value)
+)
+const brokerImportAccountOptions = computed(() => brokerImportChoice.value?.options ?? [])
+const brokerImportEmptyReason = computed(() =>
+  props.brokerAccountsLoading ? null : (brokerImportChoice.value?.emptyReason ?? null)
+)
 
 function open() {
   visible.value = true
@@ -121,27 +121,32 @@ function resetConfirmedSuspected() {
   selectedSuspectedRows.value = []
 }
 
+function clearPreview() {
+  brokerPreview.value = null
+  importDone.value = false
+}
+
 function handleFileChange(file: { raw?: File }) {
   uploadFile.value = file.raw ?? null
-  brokerPreview.value = null
+  clearPreview()
   resetConfirmedSuspected()
 }
 
 function handleFileRemove() {
   uploadFile.value = null
-  brokerPreview.value = null
+  clearPreview()
   resetConfirmedSuspected()
 }
 
 watch(importMode, () => {
   uploadFile.value = null
-  brokerPreview.value = null
+  clearPreview()
   importBrokerAccountId.value = null
   resetConfirmedSuspected()
 })
 
 watch(importBrokerAccountId, () => {
-  brokerPreview.value = null
+  clearPreview()
   resetConfirmedSuspected()
 })
 
@@ -173,6 +178,7 @@ async function handleImportPreview() {
       )
     }
     brokerPreview.value = response.data
+    importDone.value = false
     selectedSuspectedRows.value = []
     ElMessage.success('预览完成')
   } catch (error) {
@@ -209,7 +215,7 @@ async function handleImport() {
         `导入交易 ${response.data.imported_transactions} 条，` +
         `公司行动 ${response.data.imported_corporate_actions} 条，` +
         `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
-        `现金收益 ${response.data.imported_cash_events || 0} 条，` +
+        `现金事件 ${response.data.imported_cash_events || 0} 条，` +
         `跳过重复 ${response.data.duplicate_rows} 条`
     } else if (importMode.value === 'ibkr') {
       response = await api.importIbkrActivity(uploadFile.value, importBrokerAccountId.value)
@@ -218,6 +224,7 @@ async function handleImport() {
         `导入交易 ${response.data.imported_transactions} 条，` +
         `公司行动 ${response.data.imported_corporate_actions} 条，` +
         `预扣税调整 ${response.data.imported_tax_adjustments} 条，` +
+        `现金事件 ${response.data.imported_cash_events || 0} 条，` +
         `跳过重复 ${response.data.duplicate_rows} 条`
     } else if (importMode.value === 'eastmoney') {
       response = await api.importEastmoneyStatement(uploadFile.value, importBrokerAccountId.value)
@@ -252,6 +259,7 @@ async function handleImport() {
         Boolean(brokerResult.errors?.length)
       if (hasIssues) {
         brokerPreview.value = brokerResult
+        importDone.value = true
         ElMessage.warning('导入未达到完整入账标准，请按页面提示处理后再导入')
         emit('imported', { force: true })
         return
@@ -261,7 +269,7 @@ async function handleImport() {
     ElMessage.success(successMessage)
     visible.value = false
     uploadFile.value = null
-    brokerPreview.value = null
+    clearPreview()
     importBrokerAccountId.value = null
     resetConfirmedSuspected()
     emit('imported', { force: false })
@@ -299,10 +307,13 @@ defineExpose({ open })
           :value="account.id"
         />
       </el-select>
-      <small v-if="importMode === 'eastmoney'">
+      <small v-if="brokerImportEmptyReason" class="import-account-empty">
+        {{ brokerImportEmptyReason }}
+        <router-link to="/account-data">前往账户数据</router-link>
+      </small>
+      <small v-else-if="importMode === 'eastmoney'">
         预览和导入都按所选账户去重；普通股票与港股通两份对账单必须选择同一个账户
       </small>
-      <small v-else-if="importMode === 'cmb'">预览和正式导入都必须选择匹配账户</small>
       <small v-else>预览和正式导入都必须选择匹配账户</small>
     </div>
     <div v-else class="import-account-field">
@@ -372,6 +383,29 @@ defineExpose({ open })
     />
 
     <div v-if="brokerPreview" class="import-preview">
+      <div class="import-preview-title" data-testid="import-preview-title">
+        {{ importDone ? '导入结果' : '预览结果' }}
+        <el-tag v-if="importDone && brokerPreview.batch_status" size="small" type="warning">
+          {{ brokerPreview.batch_status === 'PARTIAL' ? '部分入账' : brokerPreview.batch_status }}
+        </el-tag>
+      </div>
+      <el-descriptions
+        v-if="importDone"
+        :column="3"
+        border
+        size="small"
+        class="responsive-descriptions import-result-counts"
+      >
+        <el-descriptions-item label="已入账交易">
+          {{ brokerPreview.imported_transactions }}
+        </el-descriptions-item>
+        <el-descriptions-item label="已入账公司行动">
+          {{ brokerPreview.imported_corporate_actions || 0 }}
+        </el-descriptions-item>
+        <el-descriptions-item label="已入账现金事件">
+          {{ brokerPreview.imported_cash_events || 0 }}
+        </el-descriptions-item>
+      </el-descriptions>
       <el-descriptions :column="3" border size="small" class="responsive-descriptions">
         <el-descriptions-item label="券商">{{ brokerPreview.broker }}</el-descriptions-item>
         <el-descriptions-item v-if="importMode === 'eastmoney'" label="对账单范围">
@@ -417,7 +451,7 @@ defineExpose({ open })
         <el-descriptions-item v-if="importMode === 'ibkr'" label="期权跳过">{{
           brokerPreview.skipped_option_rows
         }}</el-descriptions-item>
-        <el-descriptions-item v-if="importMode === 'ibkr'" label="现金入账">{{
+        <el-descriptions-item v-if="importMode === 'ibkr'" label="现金事件">{{
           brokerPreview.eligible_cash_event_rows || 0
         }}</el-descriptions-item>
         <el-descriptions-item v-if="importMode === 'ibkr'" label="外汇入账">{{
@@ -431,9 +465,18 @@ defineExpose({ open })
         }}</el-descriptions-item>
         <el-descriptions-item
           v-if="importMode === 'eastmoney' || importMode === 'cmb'"
-          :label="importMode === 'cmb' ? '现金收益' : '港股通组合费'"
+          :label="importMode === 'cmb' ? '现金事件' : '港股通组合费'"
         >
           {{ brokerPreview.eligible_cash_rows || 0 }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="importMode === 'cmb'" label="期初建仓">
+          {{ brokerPreview.eligible_opening_position_rows || 0 }}
+        </el-descriptions-item>
+        <el-descriptions-item
+          v-if="(brokerPreview.expected_archived_rows || 0) > 0"
+          label="预期归档"
+        >
+          {{ brokerPreview.expected_archived_rows }}
         </el-descriptions-item>
         <el-descriptions-item v-if="importMode === 'eastmoney'" label="不支持跳过">{{
           brokerPreview.skipped_unsupported_rows
@@ -445,7 +488,8 @@ defineExpose({ open })
           brokerPreview.reported_position_count || 0
         }}</el-descriptions-item>
         <el-descriptions-item label="日期范围"
-          >{{ brokerPreview.date_start }} ~ {{ brokerPreview.date_end }}</el-descriptions-item
+          >{{ brokerPreview.date_start || '—' }} ~
+          {{ brokerPreview.date_end || '—' }}</el-descriptions-item
         >
       </el-descriptions>
 
@@ -463,10 +507,15 @@ defineExpose({ open })
         type="warning"
         :closable="false"
         show-icon
-        :title="`发现 ${brokerPreview.duplicate_rows} 条重复流水，正式导入时会跳过`"
+        :title="
+          importDone
+            ? `${brokerPreview.duplicate_rows} 条重复流水已跳过`
+            : `发现 ${brokerPreview.duplicate_rows} 条重复流水，正式导入时会跳过`
+        "
       />
+      <!-- 有阻断错误时不显示绿色「未发现重复」：整份文件还不能导入，绿条会误导 -->
       <el-alert
-        v-else
+        v-else-if="!brokerPreviewHasBlockingErrors && !importDone"
         class="preview-alert"
         type="success"
         :closable="false"
@@ -501,15 +550,29 @@ defineExpose({ open })
           <el-table-column prop="trade_date" label="日期" width="105" />
           <el-table-column prop="symbol" label="代码" width="90" />
           <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
-          <el-table-column prop="transaction_type" label="方向" width="70" />
-          <el-table-column prop="quantity" label="数量" width="100" align="right" />
-          <el-table-column prop="amount" label="发生金额" width="120" align="right" />
+          <el-table-column label="方向" width="70">
+            <template #default="{ row }">{{ transactionTypeLabel(row.transaction_type) }}</template>
+          </el-table-column>
+          <el-table-column label="数量" width="100" align="right">
+            <template #default="{ row }">{{ formatQuantity(row.quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="发生金额" width="120" align="right">
+            <template #default="{ row }">{{ formatNumber(row.amount, 2) }}</template>
+          </el-table-column>
           <el-table-column label="已入账价格 → 本单价格" min-width="150" align="right">
             <template #default="{ row }">
-              {{ row.existing_price ?? '—' }} → {{ row.price }}
+              {{ formatPrice(row.existing_price) }} → {{ formatPrice(row.price) }}
             </template>
           </el-table-column>
-          <el-table-column prop="row_number" label="行号" width="70" align="right" />
+          <el-table-column label="已入账来源" min-width="150" show-overflow-tooltip>
+            <template #default="{ row }">
+              {{ row.existing_source_filename || '—' }}
+              <template v-if="row.existing_row_number"
+                >第 {{ row.existing_row_number }} 行</template
+              >
+            </template>
+          </el-table-column>
+          <el-table-column prop="row_number" label="本单行号" width="80" align="right" />
         </el-table>
         <div class="suspected-actions">
           <span class="suspected-hint">
@@ -547,7 +610,7 @@ defineExpose({ open })
         type="error"
         :closable="false"
         show-icon
-        :title="`存在需要先处理的数据问题，当前不允许正式导入${messageCountSuffix(
+        :title="`${importDone ? '存在需要处理的数据问题' : '存在需要先处理的数据问题，当前不允许正式导入'}${messageCountSuffix(
           brokerPreview.errors,
           brokerPreview.errors_total
         )}`"
@@ -590,10 +653,12 @@ defineExpose({ open })
           @click="handleImport"
           :loading="importing"
           :disabled="
-            (isBrokerImportMode && !importBrokerAccountId) || brokerPreviewHasBlockingErrors
+            (isBrokerImportMode && !importBrokerAccountId) ||
+            brokerPreviewHasBlockingErrors ||
+            importDone
           "
         >
-          导入
+          {{ importDone ? '已导入' : '导入' }}
         </el-button>
       </div>
     </template>
@@ -629,6 +694,23 @@ defineExpose({ open })
 
 .import-preview {
   margin-top: 16px;
+}
+
+.import-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--app-text);
+  font-weight: 600;
+}
+
+.import-result-counts {
+  margin-bottom: 8px;
+}
+
+.import-account-field > small.import-account-empty {
+  color: var(--app-warning);
 }
 
 .suspected-block {

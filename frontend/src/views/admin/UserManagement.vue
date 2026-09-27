@@ -15,7 +15,9 @@
         <el-table :data="users" v-loading="loading" stripe>
           <el-table-column prop="id" label="ID" width="80" />
           <el-table-column prop="username" label="用户名" min-width="130" show-overflow-tooltip />
-          <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip />
+          <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.email || EMPTY }}</template>
+          </el-table-column>
           <el-table-column prop="is_active" label="状态" width="100">
             <template #default="{ row }">
               <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">
@@ -55,7 +57,7 @@
           <el-input v-model="form.username" placeholder="请输入用户名" :disabled="isEdit" />
         </el-form-item>
         <el-form-item label="邮箱" prop="email">
-          <el-input v-model="form.email" placeholder="请输入邮箱" type="email" />
+          <el-input v-model="form.email" placeholder="选填" type="email" clearable />
         </el-form-item>
         <el-form-item label="密码" prop="password" v-if="!isEdit">
           <el-input
@@ -123,8 +125,8 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'elem
 import { Plus } from '@element-plus/icons-vue'
 import api from '../../api'
 import type { User } from '../../types'
-import { formatDateTime } from '../../utils/helpers'
-import { isApiError } from '../../utils/apiErrors'
+import { EMPTY, formatDateTime } from '../../utils/helpers'
+import { showApiError } from '../../utils/showApiError'
 
 // 后端 User schema 为准（此前手写副本把 email 写成必填非空，已漂移）
 type UserRow = User
@@ -191,10 +193,9 @@ const rules: FormRules = {
     { required: true, message: '请输入用户名', trigger: 'blur' },
     { min: 3, max: 50, message: '用户名长度应为3-50个字符', trigger: 'blur' }
   ],
-  email: [
-    { required: true, message: '请输入邮箱', trigger: 'blur' },
-    { type: 'email', message: '请输入有效的邮箱地址', trigger: 'blur' }
-  ],
+  // 邮箱非必填（后端 Optional）：只在填了的时候校验格式。此前必填，
+  // 编辑没有邮箱的种子用户时只能编造一个
+  email: [{ type: 'email', message: '请输入有效的邮箱地址', trigger: 'blur' }],
   password: [{ required: true, validator: validatePassword, trigger: 'blur' }]
 }
 
@@ -209,7 +210,7 @@ async function loadUsers() {
     const response = await api.getUsers()
     users.value = response.data
   } catch (error) {
-    ElMessage.error('加载用户列表失败')
+    showApiError(error, '加载用户列表失败')
   } finally {
     loading.value = false
   }
@@ -226,38 +227,50 @@ function handleEdit(row: UserRow) {
   Object.assign(form, {
     id: row.id,
     username: row.username,
-    email: row.email,
+    email: row.email ?? '',
     is_active: row.is_active,
     is_admin: row.is_admin
   })
+  // 上一次校验的红字不带进本次编辑
+  formRef.value?.clearValidate()
   dialogVisible.value = true
 }
 
 async function handleSubmit() {
-  const valid = await formRef.value?.validate()
-  if (!valid) return
+  // validate() 校验不通过时是 reject 而不是返回 false：不接住会变成未处理的 Promise 拒绝
+  try {
+    await formRef.value?.validate()
+  } catch {
+    return
+  }
 
+  // 空邮箱发 null：空串过不了后端 EmailStr（422）；编辑时显式 null = 清空邮箱
+  const email = form.email.trim() || null
   submitting.value = true
   try {
     if (isEdit.value) {
       const updateData = {
-        email: form.email,
+        email,
         is_active: form.is_active,
         is_admin: form.is_admin
       }
       await api.updateUser(form.id as number, updateData)
       ElMessage.success('更新用户成功')
     } else {
-      await api.createUser(form)
+      await api.createUser({
+        username: form.username,
+        email,
+        password: form.password,
+        is_active: form.is_active,
+        is_admin: form.is_admin
+      })
       ElMessage.success('创建用户成功')
     }
     dialogVisible.value = false
     loadUsers()
   } catch (error) {
-    ElMessage.error(
-      (isApiError(error) && error.response?.data?.detail) ||
-        (isEdit.value ? '更新用户失败' : '创建用户失败')
-    )
+    // 422 的 detail 是数组，getApiErrorMessage（showApiError 内部）会拼成一句话
+    showApiError(error, isEdit.value ? '更新用户失败' : '创建用户失败')
   } finally {
     submitting.value = false
   }
@@ -272,8 +285,11 @@ function handleResetPassword(row: UserRow) {
 }
 
 async function handleResetPasswordSubmit() {
-  const valid = await resetPasswordFormRef.value?.validate()
-  if (!valid) return
+  try {
+    await resetPasswordFormRef.value?.validate()
+  } catch {
+    return
+  }
 
   resettingPassword.value = true
   try {
@@ -281,7 +297,7 @@ async function handleResetPasswordSubmit() {
     ElMessage.success('重置密码成功')
     resetPasswordVisible.value = false
   } catch (error) {
-    ElMessage.error((isApiError(error) && error.response?.data?.detail) || '重置密码失败')
+    showApiError(error, '重置密码失败')
   } finally {
     resettingPassword.value = false
   }
@@ -299,7 +315,7 @@ function handleDelete(row: UserRow) {
         ElMessage.success('删除用户成功')
         loadUsers()
       } catch (error) {
-        ElMessage.error((isApiError(error) && error.response?.data?.detail) || '删除用户失败')
+        showApiError(error, '删除用户失败')
       }
     })
     .catch(() => {
@@ -308,7 +324,9 @@ function handleDelete(row: UserRow) {
 }
 
 function resetForm() {
+  // 清掉 id：否则编辑过某个用户后再点「添加」，表单还带着那个用户的 id
   Object.assign(form, {
+    id: undefined,
     username: '',
     email: '',
     password: '',

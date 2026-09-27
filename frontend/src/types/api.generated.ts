@@ -662,6 +662,9 @@ export interface paths {
     /**
      * Get Latest Rates
      * @description 获取最新汇率（相对于基准货币CNY）
+     *
+     *     `details` 按币种给出各自的生效日期与来源；顶层 `effective_date`/`source`
+     *     保留兼容，取各币种中最新的那条（无汇率时为今天 · system）。
      */
     get: operations['get_latest_rates_api_exchange_rates_latest_get']
     put?: never
@@ -1710,7 +1713,7 @@ export interface paths {
      *
      *     截断按**逐作者**封顶（per_author），不做全局截断：全局截断会让高产作者
      *     挤掉其他人的整段历史——实测 30 天窗口一位作者 187 条、全局 200 条上限时
-     *     其余作者几乎整体消失（2026-09-03 反馈的"只有管我财"一半根因；另一半是
+     *     其余作者几乎整体消失（2026-09-03 反馈的"只有某作者"一半根因；另一半是
      *     前端整块堆叠的展示埋没）。每组返回 total 供前端展示"另有 N 条未显示"。
      *     作者按各自最新发言时间倒序排列。
      */
@@ -2180,6 +2183,26 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/statistics/period-pnl': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Period Pnl
+     * @description 当日 / 本月 / 本年损益（权益仓口径，与收益曲线同一算法）；估值价格由服务端决定。
+     */
+    get: operations['get_period_pnl_api_statistics_period_pnl_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/statistics/portfolio-snapshot': {
     parameters: {
       query?: never
@@ -2514,6 +2537,152 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/xueqiu-collector/authors': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Collector Authors */
+    get: operations['list_collector_authors_api_xueqiu_collector_authors_get']
+    put?: never
+    /** Create Collector Author */
+    post: operations['create_collector_author_api_xueqiu_collector_authors_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/xueqiu-collector/authors/{xueqiu_user_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Collector Author
+     * @description 只移出名单；已采集的发言保留（观点摘要的历史输入不应随名单变动消失）。
+     */
+    delete: operations['delete_collector_author_api_xueqiu_collector_authors__xueqiu_user_id__delete']
+    options?: never
+    head?: never
+    /** Update Collector Author */
+    patch: operations['update_collector_author_api_xueqiu_collector_authors__xueqiu_user_id__patch']
+    trace?: never
+  }
+  '/api/xueqiu-collector/cubes': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Collector Cubes */
+    get: operations['list_collector_cubes_api_xueqiu_collector_cubes_get']
+    put?: never
+    /** Create Collector Cube */
+    post: operations['create_collector_cube_api_xueqiu_collector_cubes_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/xueqiu-collector/cubes/{cube_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Collector Cube
+     * @description 只移出名单；已采集的调仓记录保留。
+     */
+    delete: operations['delete_collector_cube_api_xueqiu_collector_cubes__cube_id__delete']
+    options?: never
+    head?: never
+    /** Update Collector Cube */
+    patch: operations['update_collector_cube_api_xueqiu_collector_cubes__cube_id__patch']
+    trace?: never
+  }
+  '/api/xueqiu-collector/hots': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Hot Posts */
+    get: operations['get_hot_posts_api_xueqiu_collector_hots_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/xueqiu-collector/run-now': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Request Collector Run */
+    post: operations['request_collector_run_api_xueqiu_collector_run_now_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/xueqiu-collector/status': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Collector Status */
+    get: operations['get_collector_status_api_xueqiu_collector_status_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/xueqiu-collector/symbol-feed': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Symbol Feed */
+    get: operations['get_symbol_feed_api_xueqiu_collector_symbol_feed_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/health': {
     parameters: {
       query?: never
@@ -2575,6 +2744,16 @@ export interface components {
        * @description Asset name
        */
       name?: string | null
+      /**
+       * Price As Of
+       * @description 行情所属交易日（报价源给出）；null = 未知或手工价
+       */
+      price_as_of?: string | null
+      /**
+       * Price Source
+       * @description 报价来源（tencent-quote / tushare-daily / manual …）；null = 未知
+       */
+      price_source?: string | null
       /**
        * Price Updated At
        * @description Price update timestamp
@@ -3041,7 +3220,7 @@ export interface components {
        * Total Dividend
        * @description 总股息
        */
-      total_dividend?: (number | string) | null
+      total_dividend: number | string
     }
     /** CashEventCreate */
     CashEventCreate: {
@@ -3232,6 +3411,246 @@ export interface components {
       sources: string[]
       /** Started */
       started: boolean
+    }
+    /** CollectorAuthorCreate */
+    CollectorAuthorCreate: {
+      /**
+       * Display Name
+       * @default
+       */
+      display_name: string
+      /**
+       * Enabled
+       * @default true
+       */
+      enabled: boolean
+      /**
+       * Note
+       * @default
+       */
+      note: string
+      /**
+       * Xueqiu User Id
+       * @description 雪球用户数字 ID（主页 URL xueqiu.com/u/<ID>）
+       */
+      xueqiu_user_id: string
+    }
+    /** CollectorAuthorResponse */
+    CollectorAuthorResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string
+      /** Display Name */
+      display_name: string
+      /** Enabled */
+      enabled: boolean
+      /** Last Message */
+      last_message: string
+      /** Last Run At */
+      last_run_at?: string | null
+      /** Last Status */
+      last_status: string
+      /** Note */
+      note: string
+      /** Xueqiu User Id */
+      xueqiu_user_id: string
+    }
+    /** CollectorAuthorUpdate */
+    CollectorAuthorUpdate: {
+      /** Display Name */
+      display_name?: string | null
+      /** Enabled */
+      enabled?: boolean | null
+      /** Note */
+      note?: string | null
+    }
+    /** CollectorCookieStatus */
+    CollectorCookieStatus: {
+      /**
+       * Cookie
+       * @default
+       */
+      cookie: string
+      /** Days Left */
+      days_left?: number | null
+      /**
+       * Level
+       * @description normal / warning / critical / unconfigured
+       */
+      level: string
+      /** Message */
+      message: string
+    }
+    /** CollectorCubeCreate */
+    CollectorCubeCreate: {
+      /**
+       * Cube Id
+       * @description 雪球组合代号，如 ZH000001（组合页 xueqiu.com/P/<代号>）
+       */
+      cube_id: string
+      /**
+       * Display Name
+       * @default
+       */
+      display_name: string
+      /**
+       * Enabled
+       * @default true
+       */
+      enabled: boolean
+      /**
+       * Note
+       * @default
+       */
+      note: string
+    }
+    /** CollectorCubeResponse */
+    CollectorCubeResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string
+      /** Cube Id */
+      cube_id: string
+      /** Display Name */
+      display_name: string
+      /** Enabled */
+      enabled: boolean
+      /** Last Message */
+      last_message: string
+      /** Last Run At */
+      last_run_at?: string | null
+      /** Last Status */
+      last_status: string
+      /** Note */
+      note: string
+    }
+    /** CollectorCubeUpdate */
+    CollectorCubeUpdate: {
+      /** Display Name */
+      display_name?: string | null
+      /** Enabled */
+      enabled?: boolean | null
+      /** Note */
+      note?: string | null
+    }
+    /** CollectorScanRunResponse */
+    CollectorScanRunResponse: {
+      /** Author User Id */
+      author_user_id: string
+      /** Candidate Count */
+      candidate_count: number
+      /** Error Message */
+      error_message: string
+      /** Finished At */
+      finished_at?: string | null
+      /** Reply Count */
+      reply_count: number
+      /** Run Id */
+      run_id: number
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string
+      /** Status */
+      status: string
+      /** Stopped Early */
+      stopped_early: boolean
+      /** Utterance Count */
+      utterance_count: number
+      /** Waf Hit */
+      waf_hit: boolean
+    }
+    /** CollectorStatusResponse */
+    CollectorStatusResponse: {
+      /**
+       * Alive
+       * @description 采集器进程心跳在健康阈值内
+       */
+      alive: boolean
+      /** Authors */
+      authors: components['schemas']['CollectorAuthorResponse'][]
+      cookie: components['schemas']['CollectorCookieStatus']
+      /** Cubes */
+      cubes: components['schemas']['CollectorCubeResponse'][]
+      /** Cycle Minutes */
+      cycle_minutes: number
+      /**
+       * Enabled
+       * @description Web 进程读到的 XUEQIU_COLLECTOR_ENABLED
+       */
+      enabled: boolean
+      /** Heartbeat At */
+      heartbeat_at?: string | null
+      /** Last Cycle Finished At */
+      last_cycle_finished_at?: string | null
+      /** Last Cycle Message */
+      last_cycle_message: string
+      /** Last Cycle Started At */
+      last_cycle_started_at?: string | null
+      /** Last Cycle Status */
+      last_cycle_status: string
+      /** Last Waf At */
+      last_waf_at?: string | null
+      /** Recent Runs */
+      recent_runs: components['schemas']['CollectorScanRunResponse'][]
+      /** Run Pending */
+      run_pending: boolean
+      /** Run Requested At */
+      run_requested_at?: string | null
+      symbols: components['schemas']['CollectorSymbolsStatus']
+      /** Waf Cooldown Until */
+      waf_cooldown_until?: string | null
+    }
+    /** CollectorSymbolsStatus */
+    CollectorSymbolsStatus: {
+      /**
+       * Enabled
+       * @description XUEQIU_COLLECTOR_SYMBOLS_ENABLED（仍受总开关约束）
+       */
+      enabled: boolean
+      /** Last Business Date */
+      last_business_date?: string | null
+      /** Last Finished At */
+      last_finished_at?: string | null
+      /** Last Message */
+      last_message: string
+      /** Last Started At */
+      last_started_at?: string | null
+      /** Last Stats */
+      last_stats?: Record<string, unknown>
+      /** Last Status */
+      last_status: string
+      /**
+       * Retry Attempts
+       * @description 当天已尝试的轮数（含首轮）
+       * @default 0
+       */
+      retry_attempts: number
+      /**
+       * Retry Item Count
+       * @description 待重试项数；None 且 retry_pending = 整轮重跑（WAF/Cookie 不可用）
+       */
+      retry_item_count?: number | null
+      /**
+       * Retry Pending
+       * @description 当天有待重试的失败项（业务日尚未记为已跑）
+       * @default false
+       */
+      retry_pending: boolean
+      /**
+       * Run After
+       * @description 每日一轮的起始时刻（业务时区 HH:MM）
+       */
+      run_after: string
+      /** Run Pending */
+      run_pending: boolean
+      /** Run Requested At */
+      run_requested_at?: string | null
     }
     /** CorporateActionCreate */
     CorporateActionCreate: {
@@ -3469,6 +3888,11 @@ export interface components {
        * @description 支付日/到账日
        */
       payment_date?: string | null
+      /**
+       * Read Only
+       * @default false
+       */
+      read_only: boolean
       /**
        * Record Date
        * @description 登记日
@@ -3742,9 +4166,16 @@ export interface components {
        */
       base_currency: string
       /**
+       * Details
+       * @description 按币种的最新汇率、生效日期与来源（不含基准货币）
+       */
+      details?: {
+        [key: string]: components['schemas']['ExchangeRateLatestDetail']
+      }
+      /**
        * Effective Date
        * Format: date
-       * @description 汇率日期
+       * @description 各币种中最新的汇率日期（兼容字段）
        */
       effective_date: string
       /**
@@ -3756,9 +4187,31 @@ export interface components {
       }
       /**
        * Source
-       * @description 数据来源
+       * @description 最新那条汇率的来源（兼容字段）
        */
       source: string
+    }
+    /**
+     * ExchangeRateLatestDetail
+     * @description 单个币种对基准货币的最新汇率及其自身的生效日期/来源
+     */
+    ExchangeRateLatestDetail: {
+      /**
+       * Effective Date
+       * Format: date
+       * @description 该币种汇率的生效日期
+       */
+      effective_date: string
+      /**
+       * Rate
+       * @description 汇率
+       */
+      rate: string
+      /**
+       * Source
+       * @description 该币种汇率的来源
+       */
+      source?: string | null
     }
     /** ExchangeRateUpdate */
     ExchangeRateUpdate: {
@@ -3844,6 +4297,16 @@ export interface components {
        * @description Asset name
        */
       name?: string | null
+      /**
+       * Price As Of
+       * @description 行情所属交易日（报价源给出）；null = 未知或手工价
+       */
+      price_as_of?: string | null
+      /**
+       * Price Source
+       * @description 报价来源（tencent-quote / tushare-daily / manual …）；null = 未知
+       */
+      price_source?: string | null
       /**
        * Price Updated At
        * @description Price update timestamp
@@ -4806,6 +5269,105 @@ export interface components {
       item_id?: number | null
       /** Watching */
       watching: boolean
+    }
+    /** XueqiuFeedPost */
+    XueqiuFeedPost: {
+      /** Author Id */
+      author_id: string
+      /** Author Name */
+      author_name: string
+      /** Created At Ms */
+      created_at_ms: number
+      /**
+       * First Seen At
+       * Format: date-time
+       */
+      first_seen_at: string
+      /**
+       * Last Seen At
+       * Format: date-time
+       */
+      last_seen_at: string
+      /** Like Count */
+      like_count?: number | null
+      /**
+       * Links
+       * @description 站外附件链接（公告原文等）
+       */
+      links?: string[]
+      /** Post Id */
+      post_id: string
+      /** Reply Count */
+      reply_count?: number | null
+      /** Text */
+      text: string
+      /** Title */
+      title: string
+      /** Url */
+      url: string
+    }
+    /** XueqiuHotPostItem */
+    XueqiuHotPostItem: {
+      /** Author Id */
+      author_id: string
+      /** Author Name */
+      author_name: string
+      /** Created At Ms */
+      created_at_ms: number
+      /**
+       * First Seen At
+       * Format: date-time
+       */
+      first_seen_at: string
+      /**
+       * Last Seen At
+       * Format: date-time
+       */
+      last_seen_at: string
+      /** Like Count */
+      like_count?: number | null
+      /**
+       * Links
+       * @description 站外附件链接（公告原文等）
+       */
+      links?: string[]
+      /** Post Id */
+      post_id: string
+      /** Rank */
+      rank: number
+      /** Reply Count */
+      reply_count?: number | null
+      /** Text */
+      text: string
+      /** Title */
+      title: string
+      /** Url */
+      url: string
+    }
+    /** XueqiuHotsResponse */
+    XueqiuHotsResponse: {
+      /** Items */
+      items?: components['schemas']['XueqiuHotPostItem'][]
+      /** Scope */
+      scope: string
+      /** Snapshot At */
+      snapshot_at?: string | null
+    }
+    /** XueqiuSymbolFeedResponse */
+    XueqiuSymbolFeedResponse: {
+      /** Announcements */
+      announcements?: components['schemas']['XueqiuFeedPost'][]
+      /** Discussions */
+      discussions?: components['schemas']['XueqiuFeedPost'][]
+      /**
+       * Last Cycle Finished At
+       * @description 上一轮按标的采集结束时间（判断数据新旧）
+       */
+      last_cycle_finished_at?: string | null
+      /** Market */
+      market: string
+      /** Symbol */
+      symbol: string
     }
   }
   responses: never
@@ -8630,6 +9192,26 @@ export interface operations {
       }
     }
   }
+  get_period_pnl_api_statistics_period_pnl_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': Record<string, unknown>
+        }
+      }
+    }
+  }
   get_portfolio_snapshot_api_statistics_portfolio_snapshot_get: {
     parameters: {
       query?: never
@@ -9236,6 +9818,360 @@ export interface operations {
         }
         content: {
           'application/json': unknown
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  list_collector_authors_api_xueqiu_collector_authors_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorAuthorResponse'][]
+        }
+      }
+    }
+  }
+  create_collector_author_api_xueqiu_collector_authors_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CollectorAuthorCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorAuthorResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_collector_author_api_xueqiu_collector_authors__xueqiu_user_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        xueqiu_user_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  update_collector_author_api_xueqiu_collector_authors__xueqiu_user_id__patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        xueqiu_user_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CollectorAuthorUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorAuthorResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  list_collector_cubes_api_xueqiu_collector_cubes_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorCubeResponse'][]
+        }
+      }
+    }
+  }
+  create_collector_cube_api_xueqiu_collector_cubes_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CollectorCubeCreate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorCubeResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_collector_cube_api_xueqiu_collector_cubes__cube_id__delete: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        cube_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  update_collector_cube_api_xueqiu_collector_cubes__cube_id__patch: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        cube_id: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CollectorCubeUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorCubeResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_hot_posts_api_xueqiu_collector_hots_get: {
+    parameters: {
+      query?: {
+        scope?: 'day' | 'week'
+        limit?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['XueqiuHotsResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  request_collector_run_api_xueqiu_collector_run_now_post: {
+    parameters: {
+      query?: {
+        /** @description authors=作者发言一轮 / symbols=按标的采集一轮 */
+        target?: 'authors' | 'symbols'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorStatusResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_collector_status_api_xueqiu_collector_status_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CollectorStatusResponse']
+        }
+      }
+    }
+  }
+  get_symbol_feed_api_xueqiu_collector_symbol_feed_get: {
+    parameters: {
+      query: {
+        symbol: string
+        market: string
+        /** @description 只取一类；缺省两类都取 */
+        kind?: ('announcement' | 'discussion') | null
+        /** @description 每类最多条数 */
+        limit?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['XueqiuSymbolFeedResponse']
         }
       }
       /** @description Validation Error */

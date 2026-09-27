@@ -12,6 +12,8 @@ import type {
   RealizedPnL,
   TotalRealizedReturn
 } from './types'
+import { serverPriceMap } from './priceRows'
+import type { PriceFreshnessInfo } from './warnings'
 
 export function usePerformanceSummary() {
   const state = reactive({
@@ -54,12 +56,20 @@ export function usePerformanceSummary() {
     } as AccountReturn
   })
 
+  // 服务端定价（GET）附带的价格新鲜度与实际估值价：试算（POST）时不适用，
+  // 置空而不是沿用上一次的——否则手工价下还在报「陈价」
+  const pricing = reactive({
+    priceFreshness: null as Record<string, PriceFreshnessInfo> | null,
+    serverPrices: {} as Record<string, number>
+  })
+
   function apply(data: {
     current_performance?: CurrentPerformance
     realized_pnl?: RealizedPnL
     dividend_summary?: DividendSummary
     total_realized_return?: TotalRealizedReturn
     account_return?: AccountReturn
+    price_freshness?: Record<string, PriceFreshnessInfo>
   }) {
     state.currentPerformance = data.current_performance || state.currentPerformance
     state.realizedPnL = data.realized_pnl || state.realizedPnL
@@ -73,9 +83,15 @@ export function usePerformanceSummary() {
     // manual what-if path from the price dialog (POST).
     const response = await api.getPerformanceSummary(prices)
     apply(response.data)
+    if (prices) {
+      pricing.priceFreshness = null
+    } else {
+      pricing.priceFreshness = response.data?.price_freshness ?? null
+      pricing.serverPrices = serverPriceMap(response.data?.current_performance?.holdings_detail)
+    }
   }
 
-  return reactive({ state, load })
+  return reactive({ state, pricing, load })
 }
 
 export type PerformanceSummaryFeature = ReturnType<typeof usePerformanceSummary>

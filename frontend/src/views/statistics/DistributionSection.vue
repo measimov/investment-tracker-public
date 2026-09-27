@@ -10,9 +10,9 @@ import {
 } from 'echarts/components'
 import VChart from 'vue-echarts'
 import { COLOR } from '@/styles/tokens'
-import { useExchangeRates } from '@/composables/useExchangeRates'
-import { formatCurrency, formatNumber } from '@/utils/helpers'
+import { EMPTY, formatCurrency, formatPrice, formatQuantity } from '@/utils/helpers'
 import type { DistributionStatsFeature } from './useDistributionStats'
+import { formatPlainPercent } from './format'
 
 use([
   CanvasRenderer,
@@ -24,9 +24,21 @@ use([
   GridComponent
 ])
 
-defineProps<{ dist: DistributionStatsFeature }>()
+const props = defineProps<{ dist: DistributionStatsFeature }>()
 
-const { convertToCNY } = useExchangeRates()
+// 占比与排序都用后端按最新汇率折好的 CNY 成本（与概览同口径）；缺汇率的行显示「—」
+function share(value: number | null | undefined, total: number): string {
+  if (value === null || value === undefined || !total) return EMPTY
+  return formatPlainPercent((value / total) * 100)
+}
+
+function formatShare(valueCNY: number | null | undefined): string {
+  return share(valueCNY, props.dist.totalInvestedCNY)
+}
+
+function accountLabel(count: number | undefined): string {
+  return count && count > 1 ? `${count} 个` : '1'
+}
 </script>
 
 <template>
@@ -37,7 +49,7 @@ const { convertToCNY } = useExchangeRates()
       <el-col :xs="24" :md="12">
         <el-card class="stat-card">
           <template #header>
-            <span>市场分布统计</span>
+            <span>市场分布统计（按成本）</span>
           </template>
           <el-empty
             v-if="dist.state.marketStats.length === 0"
@@ -70,7 +82,7 @@ const { convertToCNY } = useExchangeRates()
               </el-table-column>
               <el-table-column label="占比" min-width="90" align="right">
                 <template #default="{ row }">
-                  {{ formatNumber((row.total_cost / dist.totalInvested) * 100, 2) }}%
+                  {{ share(row.total_cost, dist.totalInvested) }}
                 </template>
               </el-table-column>
             </el-table>
@@ -107,25 +119,32 @@ const { convertToCNY } = useExchangeRates()
       <el-col :span="24">
         <el-card class="stat-card">
           <template #header>
-            <span>持仓排行</span>
+            <span>持仓排行（按人民币成本）</span>
           </template>
           <div class="responsive-table">
             <el-table :data="dist.state.profitLossData" stripe>
               <template #empty>
                 <el-empty description="暂无持仓排行数据" :image-size="88" />
               </template>
-              <el-table-column type="index" label="排名" width="80" />
+              <el-table-column type="index" label="排名" width="70" />
               <el-table-column prop="symbol" label="代码" min-width="100" />
               <el-table-column prop="name" label="名称" min-width="130" show-overflow-tooltip />
               <el-table-column prop="market" label="市场" width="80" />
-              <el-table-column prop="quantity" label="数量" min-width="110" align="right">
+              <!-- 后端已按标的合并各账户持仓，这里标出合并了几个账户 -->
+              <el-table-column label="账户" width="70" align="right">
                 <template #default="{ row }">
-                  {{ formatNumber(row.quantity, 4) }}
+                  {{ accountLabel(row.account_count) }}
                 </template>
               </el-table-column>
-              <el-table-column prop="avg_cost" label="成本价" min-width="105" align="right">
+              <el-table-column prop="quantity" label="数量" min-width="110" align="right">
                 <template #default="{ row }">
-                  {{ formatNumber(row.avg_cost, 4) }}
+                  {{ formatQuantity(row.quantity) }}
+                </template>
+              </el-table-column>
+              <el-table-column prop="avg_cost" label="成本价" min-width="120" align="right">
+                <template #default="{ row }">
+                  {{ formatPrice(row.avg_cost) }}
+                  <span class="currency-code">{{ row.currency }}</span>
                 </template>
               </el-table-column>
               <el-table-column prop="total_cost" label="总成本" min-width="130" align="right">
@@ -133,22 +152,17 @@ const { convertToCNY } = useExchangeRates()
                   <span :style="{ fontWeight: 'bold', color: COLOR.primary }">
                     {{ formatCurrency(row.total_cost, row.currency) }}
                   </span>
-                  <div
-                    v-if="row.currency !== 'CNY'"
-                    style="font-size: 12px; color: var(--app-text-soft); margin-top: 2px"
-                  >
-                    ≈ {{ formatCurrency(convertToCNY(row.total_cost, row.currency)) }}
+                  <div v-if="row.currency !== 'CNY'" class="cny-line">
+                    <template v-if="row.total_cost_cny != null">
+                      ≈ {{ formatCurrency(row.total_cost_cny) }}
+                    </template>
+                    <template v-else>缺 {{ row.currency }} 汇率</template>
                   </div>
                 </template>
               </el-table-column>
               <el-table-column label="占比" width="100" align="right">
                 <template #default="{ row }">
-                  {{
-                    formatNumber(
-                      (convertToCNY(row.total_cost, row.currency) / dist.totalInvestedCNY) * 100,
-                      2
-                    )
-                  }}%
+                  {{ formatShare(row.total_cost_cny) }}
                 </template>
               </el-table-column>
             </el-table>
@@ -158,3 +172,17 @@ const { convertToCNY } = useExchangeRates()
     </el-row>
   </div>
 </template>
+
+<style scoped>
+.currency-code {
+  margin-left: 4px;
+  color: var(--app-text-soft);
+  font-size: 12px;
+}
+
+.cny-line {
+  margin-top: 2px;
+  color: var(--app-text-soft);
+  font-size: 12px;
+}
+</style>

@@ -37,6 +37,7 @@ from .stock_price_service import (
     get_exchange_type,
     positive_decimal_price,
     price_result,
+    quote_date_from_epoch_ms,
 )
 
 logger = get_app_logger(__name__)
@@ -192,7 +193,12 @@ def fetch_xueqiu_stock_price(symbol: str, market: Market) -> PriceResult:
         # 的 current 可能是 0 或负，那在 adapter 眼里是"成功"。
         price = positive_decimal_price(raw["price"])
         logger.info("✓ 雪球行情 %s %s 成功: %s", market.value, symbol, price)
-        return price_result(price=price, source=QUOTE_SOURCE, success=True)
+        # 行情所属交易日（#217）：quote.timestamp 是毫秒，按**交易所**本地时区换算
+        # （美股收盘在东八区已是次日），拿不到就留 None
+        as_of = quote_date_from_epoch_ms(
+            (snapshot.get("quote") or {}).get("timestamp"), market.value
+        )
+        return price_result(price=price, source=QUOTE_SOURCE, success=True, as_of=as_of)
     except Exception as exc:
         error_msg = f"雪球行情获取失败: {str(exc)[:200]}"
         logger.warning("  %s %s %s", market.value, symbol, error_msg)

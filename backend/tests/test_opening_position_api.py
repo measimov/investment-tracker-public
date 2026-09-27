@@ -133,7 +133,7 @@ async def test_api_create_backfill_and_delete_opening_position(db, api_user):
         # 非期初建仓不能走补录端点
         dividend = await client.post("/api/corporate-actions", headers=auth, json={
             "symbol": "161226", "market": "A股", "action_type": "CASH_DIVIDEND",
-            "ex_date": "2026-02-01", "dividend_per_share": "0.1",
+            "ex_date": "2026-02-01", "dividend_per_share": "0.1", "total_dividend": "26.9",
         })
         wrong = await client.patch(
             f"/api/corporate-actions/{dividend.json()['id']}/cost-basis", headers=auth,

@@ -13,7 +13,7 @@ LLM 读摘要找"会计技巧"不可靠：先从已入库的三大报表/财务�
   非结论；杠杆率用总负债/总资产近似 LVGI，注明口径）
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 METRIC_SEMANTICS = {
     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
@@ -78,8 +78,55 @@ def _round(value: Optional[float], digits: int = 4) -> Optional[float]:
     return round(value, digits) if value is not None else None
 
 
+# EDGAR 透视行的版本（行上 `edgar_chain_version`）。v2：长期债务扩展链与已付股息链；
+# v3：按**报告币种**取数（中概 20-F 发行人为 CNY，此前只取 USD 单位——那只是最新一两年的
+# 便利折算，多年序列残缺且逐年折算率不同）。部署后美股档案需重新同步一次才会换成 v3 行
+EDGAR_PIVOT_VERSION = 3
+# 「现金流量表在而无股息概念 → 0」「本期无长期债务概念而往年有 → 0」只对 v2+ 的行成立——
+# 旧链抓的行缺这些概念只说明当时没抓，不说明公司没有（v3 只改取数币种，不影响这条前提）
+EDGAR_ZERO_INFERENCE_MIN_VERSION = 2
+# 行上 `edgar_missing_reasons[field]` 的取值：该科目在报告币种下为空、但发行人用**别的币种**
+# 披露过这个概念。只有不带这个标记的空值才是「发行人没报这个概念」——股息/长期债务的
+# 「缺概念 → 0」推断只对后者成立（透视层 security_profile_service._mark_other_currency_gaps 写入）
+EDGAR_MISSING_OTHER_CURRENCY = "other_currency_only"
+
+
+def _dividend_status(row: Dict[str, Any], absent_means_zero: Optional[Callable]) -> Optional[str]:
+    """已付股东股息的来源状态：reported / not_listed（现金流量表在而未列，按 0 计）/
+    other_currency_only（EDGAR：只以非报告币种披露，不混币取数 → 不可知）/ None（不可知）。"""
+    if row.get("div_paid_owners") is not None:
+        return "reported"
+    if edgar_missing_other_currency(row, "div_paid_owners"):
+        return EDGAR_MISSING_OTHER_CURRENCY
+    if absent_means_zero is not None and absent_means_zero(row):
+        return "not_listed"
+    return None
+
+
+def edgar_missing_other_currency(row: Optional[Dict[str, Any]], field: str) -> bool:
+    """EDGAR 透视行上该科目为空是因为只有非报告币种的事实（而不是发行人没报这个概念）。"""
+    reasons = (row or {}).get("edgar_missing_reasons") or {}
+    return reasons.get(field) == EDGAR_MISSING_OTHER_CURRENCY
+
+
+def _edgar_absent_means_zero(row: Dict[str, Any]) -> bool:
+    return (
+        int(row.get("edgar_chain_version") or 0) >= EDGAR_ZERO_INFERENCE_MIN_VERSION
+        and row.get("n_cashflow_act") is not None
+        and not edgar_missing_other_currency(row, "div_paid_owners")
+    )
+
+
+def _hk_absent_means_zero(row: Dict[str, Any]) -> bool:
+    # 只有当前版本 PDF 抽取行（带 prompt_version，读取侧已过版本门）且现金流量表确实被映射；
+    # 雅虎行不带某序列不能推断公司没付
+    return bool(row.get("prompt_version")) and "cashflow" in (row.get("source_by_kind") or {})
+
+
 def pivot_rows_to_statements(
     pivot_rows: List[Dict[str, Any]],
+    *,
+    dividend_absent_means_zero: Optional[Callable[[Dict[str, Any]], bool]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     """EDGAR/Yahoo 透视行（fp=FY，科目名已对齐）→ A股报表形状的伪行，
     供同一套指标函数复用。
@@ -94,8 +141,9 @@ def pivot_rows_to_statements(
         if str(row.get("fp")) != "FY":
             continue
         end_date = str(row.get("end_date") or "")
-        # fp=FY 标记透传：美股财年不一定止于 12/31，_year_of 依赖它识别年度行
-        base = {"end_date": end_date, "fp": "FY"}
+        # fp=FY 标记透传：美股财年不一定止于 12/31，_year_of 依赖它识别年度行；
+        # currency 供格雷厄姆估值把每股盈利/净资产折成价格币种
+        base = {"end_date": end_date, "fp": "FY", "currency": row.get("currency")}
         income.append({
             **base,
             "total_revenue": row.get("total_revenue"),
@@ -118,14 +166,27 @@ def pivot_rows_to_statements(
             "fix_assets": row.get("fix_assets"),
             # graham_screen 消费：财务强度与净债务
             "total_cur_liab": row.get("total_cur_liab"),
-            "total_debt": row.get("total_debt"),  # 港股 Yahoo 合计口径
+            "total_debt": row.get("total_debt"),  # 港股 合计口径（PDF 映射 / Yahoo）
+            "lt_borr": row.get("lt_borr"),  # 港股 PDF：非流动借款（准则 2 的长期债务）
+            "st_borr": row.get("st_borr"),  # 港股 PDF：流动借款
             "lt_debt": row.get("lt_debt"),  # 美股 EDGAR 长期债务口径
             "money_cap": row.get("money_cap"),
+            # graham_screen 消费：MRQ 每股净资产；EDGAR 概念链版本（「本期无长债 → 0」的前提）
+            "total_hldr_eqy_exc_min_int": row.get("total_hldr_eqy_exc_min_int"),
+            "edgar_chain_version": row.get("edgar_chain_version"),
+            # 只以非报告币种披露的科目（lt_debt 为空时不得按「缺概念 → 0」）
+            "edgar_missing_reasons": row.get("edgar_missing_reasons"),
         })
         cashflow.append({
             **base,
             "n_cashflow_act": row.get("n_cashflow_act"),
             "depr_fa_coga_dpba": row.get("depr_fa_coga_dpba"),
+            # graham_screen 消费：港股/美股的分红记录（已付本公司股东股息，量级）
+            "div_paid_owners": (
+                abs(row["div_paid_owners"])
+                if isinstance(row.get("div_paid_owners"), (int, float)) else None
+            ),
+            "div_paid_status": _dividend_status(row, dividend_absent_means_zero),
         })
         revenue = row.get("total_revenue")
         cost = row.get("cost_of_revenue")
@@ -208,9 +269,14 @@ def market_statements(
     指标与 LLM 输入会对不上。
     """
     if market == "美股":
-        return pivot_rows_to_statements(datasets.get("edgar_companyfacts", []))
+        return pivot_rows_to_statements(
+            datasets.get("edgar_companyfacts", []),
+            dividend_absent_means_zero=_edgar_absent_means_zero,
+        )
     if market == "港股":
-        return pivot_rows_to_statements(merge_hk_statement_rows(datasets))
+        return pivot_rows_to_statements(
+            merge_hk_statement_rows(datasets), dividend_absent_means_zero=_hk_absent_means_zero,
+        )
     return {
         key: datasets.get(key, [])
         for key in ("income", "balancesheet", "cashflow", "fina_indicator")

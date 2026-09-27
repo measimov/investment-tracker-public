@@ -1,5 +1,6 @@
 /**
- * 货币代码列表（汇率管理页的选项源）
+ * 货币代码列表：汇率管理页的选项源，也是 formatCurrency 币种符号的唯一来源。
+ * 日元用 JP¥，避免与人民币 ¥ 混淆。
  */
 export interface CurrencyOption {
   code: string
@@ -14,5 +15,5 @@ export const CURRENCIES: CurrencyOption[] = [
   { code: 'SGD', name: '新加坡元', symbol: 'S$' },
   { code: 'EUR', name: '欧元', symbol: '€' },
   { code: 'GBP', name: '英镑', symbol: '£' },
-  { code: 'JPY', name: '日元', symbol: '¥' }
+  { code: 'JPY', name: '日元', symbol: 'JP¥' }
 ]

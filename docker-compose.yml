@@ -41,6 +41,8 @@ services:
       # 曾经写成 `${...:-8192}`，于是 config.py 把上限提到 16384 后 Docker 部署仍恒为
       # 8192，长报告继续被截断——默认值只能有一个家。
       - LLM_REPORT_MAX_OUTPUT_TOKENS
+      # 港股报表科目映射的输出额度（默认 32768 在 config.py），同为裸键透传
+      - STATEMENT_MAX_OUTPUT_TOKENS
       - TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS=${TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS:-0.35}
       - TUSHARE_COOLDOWN_BASE_SECONDS=${TUSHARE_COOLDOWN_BASE_SECONDS:-65}
       - TUSHARE_COOLDOWN_MAX_SECONDS=${TUSHARE_COOLDOWN_MAX_SECONDS:-900}
@@ -61,11 +63,41 @@ services:
       # COOKIE_FILE 指容器内路径，对应上面的只读挂载。
       - XUEQIU_COOKIE_FILE=${XUEQIU_COOKIE_FILE:-}
       - XUEQIU_COOKIES=${XUEQIU_COOKIES:-}
+      # 雪球采集器开关（Web 进程只用它显示状态、拦截「立即运行」；采集在下面的独立服务里跑）
+      - XUEQIU_COLLECTOR_ENABLED
+      - XUEQIU_COLLECTOR_CYCLE_MINUTES
+      - XUEQIU_COLLECTOR_WAF_COOLDOWN_SECONDS
+      - XUEQIU_COLLECTOR_HEALTH_MAX_AGE_MINUTES
+      - XUEQIU_COLLECTOR_SYMBOLS_ENABLED
+      - XUEQIU_COLLECTOR_SYMBOLS_RUN_AFTER
       - LLM_REPORT_API_KEY=${LLM_REPORT_API_KEY:-}
       - LLM_REPORT_BASE_URL=${LLM_REPORT_BASE_URL:-https://api.deepseek.com}
       - LLM_REPORT_MODEL=${LLM_REPORT_MODEL:-deepseek-flash}
       - APP_VERSION=${APP_VERSION:-1.0.0}
       - BUILD_SHA=${BUILD_SHA:-unknown}
+      # 以下为裸键透传（未在 .env 设置则不下传，config.py 默认值生效）。此前这些旋钮
+      # 只写在 .env.example 里、没进这张列表，改了对容器不生效；
+      # backend/tests/test_deploy_config_sync.py 守着「Settings 字段 ⊆ 本列表」。
+      # Tushare 港股行情单接口间隔 / HTTPS 数据接口地址
+      - TUSHARE_HK_MIN_INTERVAL_SECONDS
+      - TUSHARE_API_BASE_URL
+      # 雪球：上游限速与超时、Cookie 到期告警阈值
+      - XUEQIU_MIN_DELAY_SECONDS
+      - XUEQIU_MAX_DELAY_SECONDS
+      - XUEQIU_TIMEOUT_SECONDS
+      - XUEQIU_COOKIE_WARN_DAYS
+      - XUEQIU_COOKIE_CRITICAL_DAYS
+      # 雪球观点摘要：近期窗口 / 回看深度 / 采集停摆预警阈值
+      - XUEQIU_OPINION_RECENT_DAYS
+      - XUEQIU_OPINION_LOOKBACK_DAYS
+      - XUEQIU_OPINION_STALE_HOURS
+      # 港交所每日行情报表周期同步
+      - HKEX_DAYQUOT_SYNC_ENABLED
+      - HKEX_DAYQUOT_LOOKBACK_DAYS
+      - HKEX_DAYQUOT_MAX_REPORTS_PER_TICK
+      # 标的全集周期同步
+      - SECURITY_CATALOG_SYNC_ENABLED
+      - SECURITY_CATALOG_SYNC_INTERVAL_HOURS
     restart: unless-stopped
     networks:
       - investment-network
@@ -87,6 +119,69 @@ services:
       - NGINX_HTTPS_PORT=${FRONTEND_HTTPS_PORT:-443}
     depends_on:
       - backend
+    restart: unless-stopped
+    networks:
+      - investment-network
+
+  # 雪球发言采集器：与 backend 同一镜像的常驻进程（manage.py xueqiu-collector），
+  # 每小时一轮关注作者采集 + 每天一轮按标的采集（公告/讨论/组合调仓/热帖）。
+  # 与 Web 进程分离——不占 worker 车道，重启互不影响。
+  # XUEQIU_COLLECTOR_ENABLED 未设为 true 时进程只空转写心跳（healthcheck 仍健康）。
+  # 变量一律裸键透传：默认值只在 config.py 一处。
+  xueqiu-collector:
+    build:
+      context: ./backend
+    container_name: investment-tracker-xueqiu-collector
+    command: ["python", "manage.py", "xueqiu-collector"]
+    volumes:
+      # 与 backend 共用日志目录（采集器写自己的 xueqiu-collector.log 与心跳文件）
+      - ${BACKEND_LOG_DIR:-./backend/logs}:/app/logs
+      # 同一份雪球 Cookie（只读，挂目录不挂文件，理由见 backend 服务）
+      - ${XUEQIU_COOKIE_HOST_DIR:-./backend/secrets}:/app/secrets:ro
+    environment:
+      - DATABASE_URL=${DATABASE_URL:?Set DATABASE_URL in .env}
+      # Settings 的必填项（采集器不用，但缺了进程起不来）
+      - SECRET_KEY=${SECRET_KEY:?Set SECRET_KEY in .env}
+      - ADMIN_INITIAL_PASSWORD=${ADMIN_INITIAL_PASSWORD:?Set ADMIN_INITIAL_PASSWORD in .env}
+      - DEMO_INITIAL_PASSWORD=${DEMO_INITIAL_PASSWORD:?Set DEMO_INITIAL_PASSWORD in .env}
+      - DISPLAY_TIMEZONE
+      - XUEQIU_COOKIE_FILE=${XUEQIU_COOKIE_FILE:-}
+      - XUEQIU_COOKIES=${XUEQIU_COOKIES:-}
+      - XUEQIU_COOKIE_WARN_DAYS
+      - XUEQIU_COOKIE_CRITICAL_DAYS
+      - XUEQIU_COLLECTOR_ENABLED
+      - XUEQIU_COLLECTOR_PUSH_URL
+      - XUEQIU_COLLECTOR_CYCLE_MINUTES
+      - XUEQIU_COLLECTOR_MIN_DELAY_SECONDS
+      - XUEQIU_COLLECTOR_MAX_DELAY_SECONDS
+      - XUEQIU_COLLECTOR_TIMEOUT_SECONDS
+      - XUEQIU_COLLECTOR_MAX_AUTHORS_PER_RUN
+      - XUEQIU_COLLECTOR_AUTHOR_GAP_MIN_SECONDS
+      - XUEQIU_COLLECTOR_AUTHOR_GAP_MAX_SECONDS
+      - XUEQIU_COLLECTOR_MONITOR_DAYS
+      - XUEQIU_COLLECTOR_PROFILE_PAGES
+      - XUEQIU_COLLECTOR_MAX_COMMENT_PAGES
+      - XUEQIU_COLLECTOR_STALE_POST_DAYS
+      - XUEQIU_COLLECTOR_STALE_COMMENT_PAGES
+      - XUEQIU_COLLECTOR_RESCAN_COOLDOWN_HOURS
+      - XUEQIU_COLLECTOR_WAF_COOLDOWN_SECONDS
+      - XUEQIU_COLLECTOR_MAX_WAF_HITS
+      - XUEQIU_COLLECTOR_HEALTH_MAX_AGE_MINUTES
+      - XUEQIU_COLLECTOR_SYMBOLS_ENABLED
+      - XUEQIU_COLLECTOR_SYMBOLS_RUN_AFTER
+      - XUEQIU_COLLECTOR_SYMBOL_COUNT
+      - XUEQIU_COLLECTOR_HOTS_SCOPE
+      - XUEQIU_COLLECTOR_SYMBOLS_RETRY_MINUTES
+      - XUEQIU_COLLECTOR_SYMBOLS_MAX_ATTEMPTS
+      # 心跳文件（相对 /app；默认落在挂载的 logs/ 里），healthcheck 读它的 mtime
+      - XUEQIU_COLLECTOR_HEARTBEAT_FILE
+    # 覆盖镜像里的 HTTP 探活（采集器不起 uvicorn）：心跳文件 mtime 在阈值内即健康
+    healthcheck:
+      test: ["CMD", "python", "manage.py", "xueqiu-collector-health"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 2m
     restart: unless-stopped
     networks:
       - investment-network

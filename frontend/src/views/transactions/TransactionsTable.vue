@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useMediaQuery } from '@/composables/useMediaQuery'
-import { formatNumber, formatDate } from '@/utils/helpers'
+import { formatDate, formatPrice, formatQuantity } from '@/utils/helpers'
 import type { BrokerAccount } from '@/types'
 import type { Transaction } from '@/stores/transactions'
 import { brokerAccountLabelById as labelById, isTransfer, typeLabel, typeTagKind } from './shared'
@@ -29,7 +29,8 @@ function brokerAccountLabelById(id: number | null | undefined) {
       <template #empty>
         <el-empty description="暂无交易记录" :image-size="88" />
       </template>
-      <el-table-column prop="transaction_date" label="交易日期" width="120" sortable>
+      <!-- 服务端分页：不开前端 sortable（只会排当前页）；后端固定按日期倒序 -->
+      <el-table-column prop="transaction_date" label="交易日期" width="120">
         <template #default="{ row }">
           {{ formatDate(row.transaction_date) }}
         </template>
@@ -53,17 +54,17 @@ function brokerAccountLabelById(id: number | null | undefined) {
       </el-table-column>
       <el-table-column prop="quantity" label="数量" width="100" align="right">
         <template #default="{ row }">
-          {{ formatNumber(row.quantity, 4) }}
+          {{ formatQuantity(row.quantity) }}
         </template>
       </el-table-column>
       <el-table-column prop="price" label="价格" width="100" align="right">
         <template #default="{ row }">
-          {{ formatNumber(row.price, 4) }}
+          {{ formatPrice(row.price) }}
         </template>
       </el-table-column>
       <el-table-column prop="fee" label="手续费" width="100" align="right">
         <template #default="{ row }">
-          {{ formatNumber(row.fee, 2) }}
+          {{ formatPrice(row.fee) }}
         </template>
       </el-table-column>
       <el-table-column prop="currency" label="币种" width="80" />
@@ -108,14 +109,14 @@ function brokerAccountLabelById(id: number | null | undefined) {
 
       <div class="transaction-amount">
         <span>{{ formatDate(row.transaction_date) }} · {{ row.market }} · {{ row.currency }}</span>
-        <strong>{{ formatNumber(row.quantity, 4) }} × {{ formatNumber(row.price, 4) }}</strong>
+        <strong>{{ formatQuantity(row.quantity) }} × {{ formatPrice(row.price) }}</strong>
       </div>
 
       <div class="mobile-card-meta">
         <span :class="{ 'account-unassigned': !row.broker_account_id }">
           账户：{{ brokerAccountLabelById(row.broker_account_id) }}
         </span>
-        <span>手续费 {{ formatNumber(row.fee, 2) }}</span>
+        <span>手续费 {{ formatPrice(row.fee) }}</span>
         <span v-if="row.notes">{{ row.notes }}</span>
       </div>
 

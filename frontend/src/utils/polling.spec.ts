@@ -73,4 +73,37 @@ describe('pollJobUntilDone', () => {
     ).rejects.toThrow('仍在后台运行')
     expect(fetchJob).toHaveBeenCalledTimes(3)
   })
+
+  test('transient fetch errors (network / 5xx) are retried, not fatal', async () => {
+    let call = 0
+    const fetchJob = vi.fn(async () => {
+      call += 1
+      if (call === 1) throw Object.assign(new Error('网络连接失败'), {})
+      if (call === 2) throw Object.assign(new Error('bad gateway'), { response: { status: 502 } })
+      return { data: { status: 'succeeded' } as BackgroundJob }
+    })
+    const job = await pollJobUntilDone(fetchJob, { intervalMs: 0 })
+    expect(job?.status).toBe('succeeded')
+    expect(fetchJob).toHaveBeenCalledTimes(3)
+  })
+
+  test('client errors (4xx) are not retried', async () => {
+    const notFound = Object.assign(new Error('任务不存在'), { response: { status: 404 } })
+    const fetchJob = vi.fn(async () => {
+      throw notFound
+    })
+    await expect(pollJobUntilDone(fetchJob, { intervalMs: 0 })).rejects.toBe(notFound)
+    expect(fetchJob).toHaveBeenCalledTimes(1)
+  })
+
+  test('gives up after maxConsecutiveFetchErrors transient failures in a row', async () => {
+    const down = Object.assign(new Error('service unavailable'), { response: { status: 503 } })
+    const fetchJob = vi.fn(async () => {
+      throw down
+    })
+    await expect(
+      pollJobUntilDone(fetchJob, { intervalMs: 0, maxConsecutiveFetchErrors: 3 })
+    ).rejects.toBe(down)
+    expect(fetchJob).toHaveBeenCalledTimes(3)
+  })
 })

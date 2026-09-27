@@ -195,3 +195,59 @@ def test_fallback_kicks_in_when_tushare_raises(monkeypatch):
         db.query(SecurityPrice).filter_by(symbol="123266", market="A股").delete()
         db.commit()
         db.close()
+
+
+
+def test_us_history_falls_back_to_tencent_when_tushare_has_no_permission(monkeypatch):
+    """Tushare us_daily_adj 无权限（当前积分档）→ 探测腾讯美股代码（.OQ 命中）→ 不复权日线入库。
+    此前美股没有任何兜底源，历史同步必失败并让整次任务按「配额受限」中止。"""
+    def _no_permission(*a, **k):
+        raise RuntimeError("抱歉，您没有接口(us_daily_adj)访问权限")
+
+    monkeypatch.setattr(mds, "_tushare_history_query", _no_permission)
+    monkeypatch.setattr(mds, "_tencent_us_code_cache", {})
+    requested = []
+    candles = [["2026-09-24", "77.0", "78.1", "79.0", "76.5", "100"], ["2026-09-25", "78.2", "77.57", "79.1", "77.0", "90"]]
+
+    def fake_get(url, params=None, **kwargs):
+        code = params["param"].split(",")[0]
+        requested.append(code)
+        if code == "usPDD.OQ":
+            return _FakeResponse(_tencent_payload(code, candles))
+        return _FakeResponse({"code": 0, "data": {code: {}}})
+
+    monkeypatch.setattr(mds.requests, "get", fake_get)
+    db = SessionLocal()
+    try:
+        db.query(SecurityPrice).filter_by(symbol="PDD", market="美股").delete()
+        db.commit()
+        result = mds.fetch_and_store_security_price_history(
+            db, symbol="PDD", market="美股", start_date=date(2026, 9, 20), end_date=date(2026, 9, 26),
+        )
+        assert result["success"] is True and result["rows"] == 2
+        assert result["source"] == "tencent-kline"
+        stored = db.query(SecurityPrice).filter_by(symbol="PDD", market="美股").order_by(SecurityPrice.price_date).all()
+        assert stored[-1].close_price == Decimal("77.57") and stored[-1].currency == "USD"
+        assert requested[0] == "usPDD.OQ"  # 先探测交易所后缀
+    finally:
+        db.query(SecurityPrice).filter_by(symbol="PDD", market="美股").delete()
+        db.commit()
+        db.close()
+
+
+def test_us_code_probe_tries_exchanges_and_caches(monkeypatch):
+    monkeypatch.setattr(mds, "_tencent_us_code_cache", {})
+    calls = []
+
+    def fake_get(url, params=None, **kwargs):
+        code = params["param"].split(",")[0]
+        calls.append(code)
+        rows = [["2026-09-25", "1", "2", "3", "0.5", "1"]] if code == "usBABA.N" else []
+        return _FakeResponse({"code": 0, "data": {code: {"day": rows}}})
+
+    monkeypatch.setattr(mds.requests, "get", fake_get)
+    assert mds.resolve_tencent_us_kline_code("baba") == "usBABA.N"
+    assert calls == ["usBABA.OQ", "usBABA.N"]
+    assert mds.resolve_tencent_us_kline_code("BABA") == "usBABA.N" and len(calls) == 2  # 缓存
+    assert mds.resolve_tencent_us_kline_code("ZZZZ") is None
+    assert mds.resolve_tencent_us_kline_code("") is None

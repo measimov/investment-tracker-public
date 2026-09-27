@@ -46,10 +46,12 @@
             @change="list.handleSearch"
             @clear="list.handleSearch"
           >
-            <el-option label="买入" value="BUY" />
-            <el-option label="卖出" value="SELL" />
-            <el-option label="转出" value="TRANSFER_OUT" />
-            <el-option label="转入" value="TRANSFER_IN" />
+            <el-option
+              v-for="item in transactionTypeOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="账户">
@@ -60,7 +62,7 @@
             @change="list.handleSearch"
             @clear="list.handleSearch"
           >
-            <el-option label="未分配" value="UNASSIGNED" />
+            <el-option :label="UNASSIGNED_ACCOUNT_LABEL" value="UNASSIGNED" />
             <el-option
               v-for="account in brokerAccounts"
               :key="account.id"
@@ -82,9 +84,7 @@
       />
 
       <div class="pagination-bar">
-        <span class="pagination-info">
-          共 {{ list.pagination.total }} 条，每页只渲染当前页以提升性能
-        </span>
+        <span class="pagination-info"> 共 {{ list.pagination.total }} 条 </span>
         <el-pagination
           v-model:current-page="list.pagination.page"
           v-model:page-size="list.pagination.pageSize"
@@ -115,6 +115,7 @@
 </template>
 
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { Upload, Download, Plus } from '@element-plus/icons-vue'
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -125,6 +126,9 @@ import { getApiErrorMessage } from '../utils/apiErrors'
 import type { BrokerAccount, SecuritySearchItem } from '../types'
 import { downloadFile, todayLocalISODate } from '../utils/helpers'
 import { MARKETS } from '../utils/securities'
+import { TRANSACTION_TYPE_LABELS, UNASSIGNED_ACCOUNT_LABEL, optionsOf } from '../utils/labels'
+
+const transactionTypeOptions = optionsOf(TRANSACTION_TYPE_LABELS)
 import TransactionsTable from './transactions/TransactionsTable.vue'
 import TransactionFormDialog from './transactions/TransactionFormDialog.vue'
 import ImportDialog from './transactions/ImportDialog.vue'
@@ -169,7 +173,7 @@ async function handleExport() {
     downloadFile(response.data, `transactions_${todayLocalISODate()}.xlsx`)
     ElMessage.success('导出成功')
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '导出失败'))
+    showApiError(error, '导出失败')
   }
 }
 

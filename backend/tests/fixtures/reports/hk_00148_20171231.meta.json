@@ -1,0 +1,21 @@
+{
+  "market": "港股",
+  "symbol": "00148",
+  "end_date": "20171231",
+  "report_type": "annual",
+  "title": "00148_20171231",
+  "source_url": null,
+  "source_note": "披露易 2026-09 下载；report_statement_service.baseline_text 逐页抽取，\\x0c 分页；仅保留报表附近页 [(1, 3), (66, 78)]，其余页置空以保住页码。建滔集團 2017 年報（中英双语）：表头标题日期「For the year ended 31 December 2017截至二零一七年十二月三十一日止年度」同一日期中英各一次，v8 把它当列年份行得到 [2017, 2017]，比较列全部缺失；真正的列年份行是「2017 2016」",
+  "pages": 215,
+  "kept_pages": [
+    [
+      1,
+      3
+    ],
+    [
+      66,
+      78
+    ]
+  ],
+  "chars": 26968
+}

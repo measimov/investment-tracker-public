@@ -1,6 +1,9 @@
 /**
  * 画布侧设计令牌：ECharts 等 canvas 场景无法读 CSS 变量，这里的 hex
  * 必须与 styles.css 的 :root 保持一致（唯一允许重复 hex 的地方）。
+ * 键与 CSS 变量一一对应：primary=--app-primary、success=--app-success
+ * （= --el-color-success）、danger=--app-danger（= --el-color-danger）、
+ * warning=--app-warning、info=--app-info、textMuted=--app-text-muted。
  */
 export const COLOR = {
   primary: '#4f46e5',
@@ -8,7 +11,7 @@ export const COLOR = {
   danger: '#e11d48',
   warning: '#d97706',
   info: '#0ea5e9',
-  textMuted: '#64748b'
+  textMuted: '#475569'
 } as const
 
 export const CHART_FONT_FAMILY =

@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import api from '../api'
 
 /**
@@ -13,6 +14,7 @@ import api from '../api'
  * 改完切回来仍能拿到新值）。
  */
 const exchangeRates = ref<Record<string, number>>({})
+const loadFailed = ref(false)
 
 export function useExchangeRates() {
   async function loadExchangeRates(): Promise<void> {
@@ -25,23 +27,36 @@ export function useExchangeRates() {
         }
       )
       exchangeRates.value = rates
+      loadFailed.value = false
     } catch (error) {
       console.error('加载汇率失败', error)
+      // 只提示一次：多个页面/组件同时 load 时不刷屏
+      if (!loadFailed.value) ElMessage.warning('汇率加载失败，外币金额暂无法折算为人民币')
+      loadFailed.value = true
     }
   }
 
-  function convertToCNY(amount: number, currency: string | null | undefined): number {
+  function hasRate(currency: string | null | undefined): boolean {
+    return !currency || currency === 'CNY' || Boolean(exchangeRates.value[currency])
+  }
+
+  /**
+   * 折人民币；缺汇率返回 null（#219）。此前静默返回原币数值，HK$100 会显示成
+   * 「≈¥100」并一起污染合计与占比——调用方要把 null 显示成「—」或剔除并提示。
+   */
+  function convertToCNY(amount: number, currency: string | null | undefined): number | null {
     if (!currency || currency === 'CNY') return amount
     const rate = exchangeRates.value[currency]
-    if (!rate) return amount
+    if (!rate) return null
     return amount * rate
   }
 
-  function convertToUSD(amountCNY: number): number {
+  /** 人民币折美元；缺 USD 汇率返回 null（此前返回 0，合计显示成 $0.00） */
+  function convertToUSD(amountCNY: number): number | null {
     const usdRate = exchangeRates.value['USD']
-    if (!usdRate || usdRate === 0) return 0
+    if (!usdRate) return null
     return amountCNY / usdRate
   }
 
-  return { exchangeRates, loadExchangeRates, convertToCNY, convertToUSD }
+  return { exchangeRates, loadFailed, loadExchangeRates, hasRate, convertToCNY, convertToUSD }
 }

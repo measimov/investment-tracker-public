@@ -137,7 +137,9 @@ def calculate_trade_skill_metrics(realized: Dict[str, Any]) -> Dict[str, Any]:
         "winning_count": len(winners),
         "losing_count": len(losers),
         "has_losses": has_losses,
-        "win_rate": float(win_rate * Decimal("100")),
+        # 无样本时是「无从计算」而不是 0%（#218：区间无平仓时显示 0.00% 像是全亏）；
+        # expectancy 等其余字段保持原口径（无样本时为 0）
+        "win_rate": float(win_rate * Decimal("100")) if active_samples else None,
         "average_win_cny": float(avg_win),
         "average_loss_cny": float(avg_loss),
         "payoff_ratio": payoff_ratio,

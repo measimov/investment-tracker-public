@@ -548,6 +548,17 @@ test('mobile security detail page stays inside the viewport when populated', asy
   const trapped = scrollers.filter((item) => /auto|scroll/.test(item.split(':').pop()!))
   expect(trapped.length, `宽内容没有被关进可滚动容器: ${scrollers.join(' | ')}`).toBeGreaterThan(0)
 
+  // 其余 tab（懒渲染，切过去才建表格）同样不得撑宽整页
+  for (const tab of ['基本面', '报表', '观点']) {
+    await page.getByRole('tab', { name: tab }).click()
+    await page.waitForLoadState('networkidle')
+    const tabOverflow = await page.evaluate(() =>
+      Math.max(document.body.scrollWidth - document.documentElement.clientWidth, 0)
+    )
+    expect(tabOverflow, `「${tab}」tab 横向溢出`).toBeLessThanOrEqual(1)
+  }
+  await page.getByRole('tab', { name: '分析' }).click()
+
   // 关键操作按钮不得被挤出屏幕
   for (const label of ['重新分析', '刷新']) {
     const button = page.getByRole('button', { name: new RegExp(label) }).first()

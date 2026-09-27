@@ -1,0 +1,41 @@
+09 Part III 210 Item 17. 
+Financial Statements 210 Item 18. 
+Financial Statements 210 Item 19. 
+Exhibits 210 SIGNATURES 223 i Table of Contents INTRODUCTION In this annual report, except where the context otherwise requires and for purposes of this annual report only: "ADSs" refer to our American depositary shares, each ADSs representing eight Class A ordinary shares; 
+"Baidu General Business" refers to Baidu Core. 
+Starting from the fourth quarter of 2025, we redefined Baidu Core as Baidu General Business; 
+"China" or "PRC" refers to the People's Republic of China, including Hong Kong, Macau and Taiwan; 
+and "Chinese mainland" refers to the People's Republic of China, excluding Hong Kong, Macau and Taiwan; 
+"Class A ordinary shares" refer to Class A ordinary shares of the share capital of our company with a par value of US$0.000000625 each, conferring a holder of a Class A ordinary share one vote per share on all matters submitted for voting at general meetings of our company; 
+"Class B ordinary shares" refer to Class B ordinary shares of the share capital of our company with a par value of US$0.000000625 each, conferring weighted voting rights in our company such that a holder of a Class B ordinary share is entitled to 10 votes per share on all matters submitted for voting at general meetings of our company; 
+"Hong Kong" or "HK" or "Hong Kong S.A.R." refers to the Hong Kong Special Administrative Region of the PRC; 
+"Hong Kong Listing Rules" refer to the Rules Governing the Listing of Securities on The Stock Exchange of Hong Kong Limited, as amended or supplemented from time to time; 
+"Hong Kong Share Registrar" refers to Computershare Hong Kong Investor Services Limited; 
+"Hong Kong Stock Exchange" refers to The Stock Exchange of Hong Kong Limited; 
+"Main Board" refers to the stock market (excluding the option market) operated by the Hong Kong Stock Exchange which is independent from and operated in parallel with the Growth Enterprise Market of the Hong Kong Stock Exchange; 
+"MAU," or monthly active user, refers to the number of mobile devices that launched our mobile apps during a given month; 
+"our company" refers to Baidu, Inc., which is not a PRC operating company but a Cayman Islands holding company with operations primarily conducted through (i) our Chinese mainland subsidiaries and (ii) contractual arrangements with the variable interest entities, or the VIEs, based in Chinese mainland. 
+This structure entails unique risks to investors, see "Item 3.D. 
+Key Information-Risk Factors-Risks Related to our Corporate Structure" for more details; 
+"RMB" or "Renminbi" refers to the legal currency of Chinese mainland; 
+"SFO" refers to the Securities and Futures Ordinance (Chapter 571 of the Laws of Hong Kong), as amended or supplemented from time to time; 
+"shares" or "ordinary shares" refer to our ordinary shares, which include both Class A ordinary shares and Class B ordinary shares; 
+"user traffic" or "traffic" refers generally to page views of a website, with "page views" measuring the number of web pages viewed by internet users over a specified period of time except that multiple page views of the same page viewed by the same user on the same day are counted only once; 
+"U.S. 
+GAAP" refers to generally accepted accounting principles in the United States; 
+1 Table of Contents "we," "us," "our," or "Baidu" refers to Baidu, Inc., its subsidiaries, and, in the context of describing our operations and consolidated financial information, the variable interest entities established in Chinese mainland and other consolidated affiliated entities in which we do not have any equity ownership but whose financial results have been consolidated into our consolidated financial statements based solely on contractual arrangements in accordance with U.S. 
+GAAP. 
+These variable interest entities include, but are not limited to, Beijing Baidu Netcom Science Technology Co., Ltd., or Baidu Netcom, Beijing Perusal Technology Co., Ltd., or Beijing Perusal, Beijing iQIYI Science & Technology Co., Ltd., or Beijing iQIYI. 
+See "Item 4. 
+Information on the Company-C. 
+Organizational Structure" for an illustrative diagram of our corporate structure; 
+"iQIYI" refers to iQIYI, Inc., a company incorporated in the Cayman Islands listed on Nasdaq under the symbol "IQ" and one of our subsidiaries; 
+"$," "dollars," "US$" or "U.S. 
+dollars" refers to the legal currency of the United States; 
+and all discrepancies in any table between the amounts identified as total amounts and the sum of the amounts listed therein are due to rounding. 
+On March 1, 2021, Baidu, Inc. 
+effected a change to its authorized share capital by 1-to-80 subdivision of shares. 
+Concurrently, Baidu, Inc. 
+effected a proportionate change in ADS to Class A ordinary share ratio from 10 ADSs representing 1 Class A ordinary share to each ADS representing 8 Class A ordinary shares, or the Share Subdivision. 
+Such changes been reflected retroactively throughout this document. 
+FORWARD-LOOKING INFORMATION This ann

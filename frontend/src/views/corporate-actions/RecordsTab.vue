@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { Plus } from '@element-plus/icons-vue'
-import { ref, reactive } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
+import { computed, ref, reactive } from 'vue'
+import { ElMessage, ElMessageBox, type FormInstance, type FormItemRule } from 'element-plus'
 import api from '@/api'
 import SecuritySelect from '@/components/SecuritySelect.vue'
 import { useHoldingsStore } from '@/stores/holdings'
@@ -13,7 +14,10 @@ import type {
   SecurityResolveResponse,
   SecuritySearchItem
 } from '@/types'
-import { formatNumber, formatDate, toNumber } from '@/utils/helpers'
+import { formatCurrency, formatDate, formatQuantity, toNumber } from '@/utils/helpers'
+import { ACTION_TYPE_LABELS, UNASSIGNED_ACCOUNT_LABEL, optionsOf } from '@/utils/labels'
+
+const actionTypeOptions = optionsOf(ACTION_TYPE_LABELS)
 import {
   MARKETS,
   followMarketCurrency,
@@ -24,9 +28,11 @@ import {
 import {
   brokerAccountLabel,
   brokerAccountLabelById as labelById,
+  cashDividendAmounts,
   getActionTypeName,
   getActionTypeTag,
-  openingPositionCostKnown
+  openingPositionCostKnown,
+  taxFromRate
 } from './shared'
 
 // 后端 schema 为准（生成类型；Decimal 序列化为 string，展示经 toNumber）
@@ -85,7 +91,8 @@ const form = reactive<{
   ex_date: string
   dividend_per_share: number | null
   total_dividend: number | null
-  tax_rate_percent: number
+  tax_withheld: number | null
+  tax_rate_percent: number | null
   shares_received: number | null
   distribution_ratio: string
   subscription_price: number | null
@@ -106,7 +113,9 @@ const form = reactive<{
   // 现金股息
   dividend_per_share: null,
   total_dividend: null,
-  tax_rate_percent: 10, // 显示用，实际提交时转换为小数
+  // 录的是实际预扣税额（统计与对账只读税额）；税率只是辅助，可按「总额×税率」填入税额
+  tax_withheld: null,
+  tax_rate_percent: null,
   // 股票股息
   shares_received: null,
   distribution_ratio: '',
@@ -124,11 +133,57 @@ const form = reactive<{
   notes: ''
 })
 
-const rules = {
+// 按类型动态必填：现金股息必须有总额（统计/对账只读总额，只填每股 = 按 0 计）；
+// 期初建仓必须有账户与数量（数量按账户桶加入，NULL 账户会落到「未指定账户」）
+function requiredWhen(
+  types: string[],
+  isMissing: (value: unknown) => boolean,
+  message: string
+): FormItemRule {
+  return {
+    trigger: ['blur', 'change'],
+    validator: (_rule, value, callback) => {
+      if (types.includes(form.action_type) && isMissing(value)) callback(new Error(message))
+      else callback()
+    }
+  }
+}
+const notPositive = (value: unknown) =>
+  value === null || value === undefined || value === '' || !(Number(value) > 0)
+
+const rules: Record<string, FormItemRule[]> = {
   symbol: [{ required: true, message: '请输入股票代码', trigger: 'blur' }],
   market: [{ required: true, message: '请选择市场', trigger: 'change' }],
   action_type: [{ required: true, message: '请选择行动类型', trigger: 'change' }],
-  ex_date: [{ required: true, message: '请选择除权除息日', trigger: 'change' }]
+  ex_date: [{ required: true, message: '请选择除权除息日', trigger: 'change' }],
+  total_dividend: [requiredWhen(['CASH_DIVIDEND'], notPositive, '请输入股息总额（大于 0）')],
+  broker_account_id: [
+    requiredWhen(
+      ['OPENING_POSITION'],
+      (value) => value === null || value === undefined || value === '',
+      '期初建仓必须选择账户'
+    )
+  ],
+  opening_quantity: [requiredWhen(['OPENING_POSITION'], notPositive, '请输入数量（大于 0）')]
+}
+
+const netDividendPreview = computed(() =>
+  form.total_dividend === null
+    ? null
+    : cashDividendAmounts({ total_dividend: form.total_dividend, tax_withheld: form.tax_withheld })
+        .net
+)
+
+// 税率辅助：输入税率或改总额时按「总额 × 税率」回填税额
+function applyTaxRate() {
+  const tax = taxFromRate(form.total_dividend, form.tax_rate_percent)
+  if (tax !== null) form.tax_withheld = tax
+}
+
+// 手工改税额后，与之不再对应的税率清空（避免存下自相矛盾的税率）
+function onTaxWithheldInput() {
+  const expected = taxFromRate(form.total_dividend, form.tax_rate_percent)
+  if (expected !== null && expected !== form.tax_withheld) form.tax_rate_percent = null
 }
 
 function brokerAccountLabelById(accountId: number | null | undefined) {
@@ -140,41 +195,54 @@ function brokerAccountLabelById(accountId: number | null | undefined) {
 // 拆股=比例或拆后股数），所以这里只拼存在的字段——直接模板插值会把
 // 合法的"只填绝对股数"记录显示成 `比例: null`，还会丢掉唯一有效的值。
 // 字段顺序与 portfolio/semantics.py 的优先级一致：决定复算的比例在前。
-function actionDetail(row: Record<string, unknown>): string {
-  const num = (value: unknown, precision: number) => formatNumber(value as number, precision)
+// 金额一律带币种符号（港/美股息不能看起来像人民币）；数量走 formatQuantity
+function actionDetail(row: CorporateActionRow): string {
+  const currency = row.currency || 'CNY'
+  const money = (value: unknown, precision = 2) =>
+    formatCurrency(value as number | string, currency, precision)
+  const qty = (value: unknown) => formatQuantity(value as number | string)
   const has = (value: unknown) => value !== null && value !== undefined && value !== ''
   const parts: string[] = []
 
   switch (row.action_type) {
-    case 'CASH_DIVIDEND':
-      if (has(row.dividend_per_share)) parts.push(`每股: ${num(row.dividend_per_share, 4)}`)
-      if (has(row.total_dividend)) parts.push(`总额: ${num(row.total_dividend, 2)}`)
-      if (has(row.net_dividend)) parts.push(`税后: ${num(row.net_dividend, 2)}`)
+    case 'CASH_DIVIDEND': {
+      if (has(row.dividend_per_share)) parts.push(`每股: ${money(row.dividend_per_share, 4)}`)
+      if (has(row.total_dividend)) parts.push(`总额: ${money(row.total_dividend)}`)
+      const { tax, net } = cashDividendAmounts(row)
+      if (tax > 0) parts.push(`预扣税: ${money(tax)}`)
+      if (has(row.total_dividend) && (tax > 0 || has(row.net_dividend)))
+        parts.push(`税后: ${money(net)}`)
       break
+    }
     case 'STOCK_DIVIDEND':
     case 'BONUS_ISSUE':
       if (has(row.distribution_ratio)) parts.push(`比例: ${row.distribution_ratio}`)
-      if (has(row.shares_received)) parts.push(`获得股数: ${num(row.shares_received, 2)}`)
+      if (has(row.shares_received)) parts.push(`获得股数: ${qty(row.shares_received)}`)
       break
     case 'RIGHTS_ISSUE':
-      if (has(row.subscription_price)) parts.push(`认购价: ${num(row.subscription_price, 2)}`)
-      if (has(row.subscription_quantity)) parts.push(`数量: ${num(row.subscription_quantity, 2)}`)
+      if (has(row.subscription_price)) parts.push(`认购价: ${money(row.subscription_price, 4)}`)
+      if (has(row.subscription_quantity)) parts.push(`数量: ${qty(row.subscription_quantity)}`)
       break
     case 'STOCK_SPLIT':
     case 'REVERSE_SPLIT':
       if (has(row.split_ratio)) parts.push(`拆分比例: ${row.split_ratio}`)
-      if (has(row.new_shares)) parts.push(`拆后股数: ${num(row.new_shares, 2)}`)
+      if (has(row.new_shares)) parts.push(`拆后股数: ${qty(row.new_shares)}`)
       break
     case 'OPENING_POSITION':
-      if (has(row.adjusted_quantity)) parts.push(`数量: ${num(row.adjusted_quantity, 2)}`)
-      if (has(row.cost_basis_adjustment)) parts.push(`总成本: ${num(row.cost_basis_adjustment, 2)}`)
+      if (has(row.adjusted_quantity)) parts.push(`数量: ${qty(row.adjusted_quantity)}`)
+      if (has(row.cost_basis_adjustment)) parts.push(`总成本: ${money(row.cost_basis_adjustment)}`)
       else if (has(row.adjusted_cost_per_share))
-        parts.push(`单位成本: ${num(row.adjusted_cost_per_share, 4)}`)
+        parts.push(`单位成本: ${money(row.adjusted_cost_per_share, 4)}`)
       else parts.push('成本未知')
       break
   }
 
-  return parts.length ? parts.join(' | ') : '-'
+  return parts.length ? parts.join(' | ') : '—'
+}
+
+// 只读判定与后端同一判据：带导入批次，或被券商来源流水引用（后端 read_only 字段）
+function isReadOnly(row: CorporateActionRow): boolean {
+  return Boolean(row.read_only || row.import_batch_id)
 }
 
 async function loadActions() {
@@ -194,7 +262,7 @@ async function loadActions() {
     actions.value = listResponse.data
     pagination.total = countResponse.data.total || 0
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '加载公司行动记录失败'))
+    showApiError(error, '加载公司行动记录失败')
   } finally {
     loading.value = false
   }
@@ -301,7 +369,15 @@ function handleEdit(row: CorporateActionRow) {
     ex_date: row.ex_date,
     dividend_per_share: row.dividend_per_share ? toNumber(row.dividend_per_share) : null,
     total_dividend: row.total_dividend ? toNumber(row.total_dividend) : null,
-    tax_rate_percent: row.tax_rate ? toNumber(row.tax_rate) * 100 : 10,
+    tax_withheld:
+      row.tax_withheld !== null && row.tax_withheld !== undefined
+        ? toNumber(row.tax_withheld)
+        : null,
+    // 税率为 null 时不回填（此前回填 10%，保存会悄悄写入 0.1）
+    tax_rate_percent:
+      row.tax_rate !== null && row.tax_rate !== undefined
+        ? Math.round(toNumber(row.tax_rate) * 10000) / 100
+        : null,
     shares_received: row.shares_received ? toNumber(row.shares_received) : null,
     distribution_ratio: row.distribution_ratio || '',
     subscription_price: row.subscription_price ? toNumber(row.subscription_price) : null,
@@ -369,6 +445,8 @@ function handleActionTypeChange() {
   // 清空特定类型的字段
   form.dividend_per_share = null
   form.total_dividend = null
+  form.tax_withheld = null
+  form.tax_rate_percent = null
   form.shares_received = null
   form.distribution_ratio = ''
   form.subscription_price = null
@@ -377,6 +455,7 @@ function handleActionTypeChange() {
   form.opening_quantity = null
   form.opening_cost_per_share = null
   form.opening_total_cost = null
+  formRef.value?.clearValidate(['total_dividend', 'broker_account_id', 'opening_quantity'])
 }
 
 async function handleSubmit() {
@@ -401,7 +480,11 @@ async function handleSubmit() {
     if (form.action_type === 'CASH_DIVIDEND') {
       submitData.dividend_per_share = form.dividend_per_share
       submitData.total_dividend = form.total_dividend
-      submitData.tax_rate = form.tax_rate_percent / 100 // 转换为小数
+      // 新建时空税额提交为 0（后端只按税额计税）；编辑时原样提交——空税额回写成 0
+      // 在语义上等价，但保持原字段不变更稳妥（PR #228 评审 P2：别让非金额编辑碰金额字段）
+      submitData.tax_withheld = isEdit.value ? form.tax_withheld : (form.tax_withheld ?? 0)
+      submitData.tax_rate =
+        form.tax_rate_percent === null ? null : Math.round(form.tax_rate_percent * 100) / 10000
     } else if (form.action_type === 'STOCK_DIVIDEND' || form.action_type === 'BONUS_ISSUE') {
       submitData.shares_received = form.shares_received
       submitData.distribution_ratio = form.distribution_ratio
@@ -429,7 +512,7 @@ async function handleSubmit() {
     dialogVisible.value = false
     loadActions()
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, isEdit.value ? '更新失败' : '创建失败'))
+    showApiError(error, isEdit.value ? '更新失败' : '创建失败')
     console.error(error)
   } finally {
     submitting.value = false
@@ -448,7 +531,7 @@ function handleDelete(row: CorporateActionRow) {
       ElMessage.success('删除成功')
       loadActions()
     } catch (error) {
-      ElMessage.error(getApiErrorMessage(error, '删除失败'))
+      showApiError(error, '删除失败')
     }
   })
 }
@@ -463,12 +546,16 @@ function resetForm() {
     ex_date: '',
     dividend_per_share: null,
     total_dividend: null,
-    tax_rate_percent: 10,
+    tax_withheld: null,
+    tax_rate_percent: null,
     shares_received: null,
     distribution_ratio: '',
     subscription_price: null,
     subscription_quantity: null,
     split_ratio: '',
+    opening_quantity: null,
+    opening_cost_per_share: null,
+    opening_total_cost: null,
     currency: 'CNY',
     notes: ''
   })
@@ -500,7 +587,7 @@ defineExpose({ reload: loadActions })
           @change="handleSearch"
           @clear="handleSearch"
         >
-          <el-option label="未分配账户" value="unassigned" />
+          <el-option :label="UNASSIGNED_ACCOUNT_LABEL" value="unassigned" />
           <el-option
             v-for="account in brokerAccounts"
             :key="account.id"
@@ -539,13 +626,12 @@ defineExpose({ reload: loadActions })
           @change="handleSearch"
           @clear="handleSearch"
         >
-          <el-option label="现金股息" value="CASH_DIVIDEND" />
-          <el-option label="股票股息" value="STOCK_DIVIDEND" />
-          <el-option label="配股" value="RIGHTS_ISSUE" />
-          <el-option label="拆股" value="STOCK_SPLIT" />
-          <el-option label="合股" value="REVERSE_SPLIT" />
-          <el-option label="送股" value="BONUS_ISSUE" />
-          <el-option label="期初建仓/转托管转入" value="OPENING_POSITION" />
+          <el-option
+            v-for="item in actionTypeOptions"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+          />
         </el-select>
       </el-form-item>
       <el-form-item label="日期">
@@ -612,7 +698,8 @@ defineExpose({ reload: loadActions })
         <template #empty>
           <el-empty description="暂无公司行动记录" :image-size="88" />
         </template>
-        <el-table-column prop="ex_date" label="除权除息日" width="120" sortable>
+        <!-- 服务端分页：不开前端 sortable（只会排当前页）；后端固定按除权除息日倒序 -->
+        <el-table-column prop="ex_date" label="除权除息日" width="120">
           <template #default="{ row }">
             {{ formatDate(row.ex_date) }}
           </template>
@@ -634,13 +721,14 @@ defineExpose({ reload: loadActions })
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="详情" min-width="220">
+        <el-table-column prop="currency" label="币种" width="70" />
+        <el-table-column label="详情" min-width="240">
           <template #default="{ row }">{{ actionDetail(row) }}</template>
         </el-table-column>
         <el-table-column prop="notes" label="备注" min-width="150" show-overflow-tooltip />
         <el-table-column label="操作" width="170">
           <template #default="{ row }">
-            <template v-if="row.import_batch_id">
+            <template v-if="isReadOnly(row)">
               <el-tag type="info" effect="plain" size="small">导入只读</el-tag>
               <el-button
                 v-if="row.action_type === 'OPENING_POSITION' && !openingPositionCostKnown(row)"
@@ -689,7 +777,7 @@ defineExpose({ reload: loadActions })
 
         <div class="mobile-card-meta">
           <span>除权除息日 {{ formatDate(row.ex_date) }}</span>
-          <span>{{ row.market }}</span>
+          <span>{{ row.market }} · {{ row.currency }}</span>
           <span :class="{ 'account-unassigned': !row.broker_account_id }">
             {{ brokerAccountLabelById(row.broker_account_id) }}
           </span>
@@ -697,7 +785,7 @@ defineExpose({ reload: loadActions })
         </div>
 
         <div class="mobile-card-actions">
-          <template v-if="row.import_batch_id">
+          <template v-if="isReadOnly(row)">
             <el-tag type="info" effect="plain" size="small">导入只读</el-tag>
             <el-button
               v-if="row.action_type === 'OPENING_POSITION' && !openingPositionCostKnown(row)"
@@ -740,10 +828,18 @@ defineExpose({ reload: loadActions })
         <!-- 基本信息 -->
         <el-divider content-position="left">基本信息</el-divider>
 
-        <el-form-item label="券商账户">
+        <el-form-item
+          label="券商账户"
+          prop="broker_account_id"
+          :required="form.action_type === 'OPENING_POSITION'"
+        >
           <el-select
             v-model="form.broker_account_id"
-            placeholder="可选；历史记录请按实际来源归属"
+            :placeholder="
+              form.action_type === 'OPENING_POSITION'
+                ? '必选：建仓数量加入该账户'
+                : '可选；历史记录请按实际来源归属'
+            "
             clearable
           >
             <el-option
@@ -782,13 +878,12 @@ defineExpose({ reload: loadActions })
             placeholder="选择类型"
             @change="handleActionTypeChange"
           >
-            <el-option label="现金股息" value="CASH_DIVIDEND" />
-            <el-option label="股票股息/红股" value="STOCK_DIVIDEND" />
-            <el-option label="配股" value="RIGHTS_ISSUE" />
-            <el-option label="拆股" value="STOCK_SPLIT" />
-            <el-option label="合股" value="REVERSE_SPLIT" />
-            <el-option label="送股" value="BONUS_ISSUE" />
-            <el-option label="期初建仓/转托管转入" value="OPENING_POSITION" />
+            <el-option
+              v-for="item in actionTypeOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
           </el-select>
         </el-form-item>
 
@@ -809,13 +904,52 @@ defineExpose({ reload: loadActions })
             <el-input-number v-model="form.dividend_per_share" :min="0" :precision="8" />
           </el-form-item>
 
-          <el-form-item label="股息总额" prop="total_dividend">
-            <el-input-number v-model="form.total_dividend" :min="0" :precision="2" />
+          <el-form-item label="股息总额" prop="total_dividend" required>
+            <el-input-number
+              v-model="form.total_dividend"
+              :min="0"
+              :precision="2"
+              @change="applyTaxRate"
+            />
+            <div class="form-tip">税前总额；统计与对账按总额计入，只填每股不会计入任何金额</div>
           </el-form-item>
 
-          <el-form-item label="税率 (%)" prop="tax_rate">
-            <el-input-number v-model="form.tax_rate_percent" :min="0" :max="100" :precision="2" />
-            <div class="form-tip">常见税率：10% (红利税), 20% (利息税)</div>
+          <el-form-item label="预扣税额" prop="tax_withheld">
+            <div class="tax-inputs">
+              <el-input-number
+                v-model="form.tax_withheld"
+                :min="0"
+                :precision="2"
+                placeholder="0"
+                @change="onTaxWithheldInput"
+              />
+              <span class="tax-rate-label">或按税率</span>
+              <el-input-number
+                v-model="form.tax_rate_percent"
+                :min="0"
+                :max="100"
+                :precision="2"
+                :controls="false"
+                placeholder="%"
+                class="tax-rate-input"
+                @change="applyTaxRate"
+              />
+              <span>%</span>
+            </div>
+            <div class="form-tip">
+              填实际被预扣的税额；输入税率会按「股息总额 × 税率」算出税额。A
+              股券商到账通常为税前全额，税额留空即为 0。
+            </div>
+          </el-form-item>
+
+          <el-form-item label="税后净额">
+            <span class="net-preview">
+              {{
+                netDividendPreview === null
+                  ? '—'
+                  : formatCurrency(netDividendPreview, form.currency || 'CNY')
+              }}
+            </span>
           </el-form-item>
         </template>
 
@@ -867,7 +1001,7 @@ defineExpose({ reload: loadActions })
         <template v-if="form.action_type === 'OPENING_POSITION'">
           <el-divider content-position="left">期初建仓</el-divider>
 
-          <el-form-item label="数量" prop="opening_quantity">
+          <el-form-item label="数量" prop="opening_quantity" required>
             <el-input-number v-model="form.opening_quantity" :min="0" :precision="4" />
           </el-form-item>
 
@@ -878,7 +1012,7 @@ defineExpose({ reload: loadActions })
           <el-form-item label="总成本" prop="opening_total_cost">
             <el-input-number v-model="form.opening_total_cost" :min="0" :precision="2" />
             <div class="form-tip">
-              账户必选；两个成本都留空 = 成本未知，持仓成本与已实现盈亏将标记为估计值
+              两个成本都留空 = 成本未知，持仓成本与已实现盈亏将标记为估计值
             </div>
           </el-form-item>
         </template>
@@ -920,7 +1054,7 @@ defineExpose({ reload: loadActions })
         :closable="false"
         show-icon
         class="cost-dialog-tip"
-        :title="`${costForm.symbol} 数量 ${formatNumber(costForm.quantity, 4)}，来自对账单，不可改`"
+        :title="`${costForm.symbol} 数量 ${formatQuantity(costForm.quantity)}，来自对账单，不可改`"
         description="填写单位成本或总成本其一即可；两者都填时须一致。保存后持仓与已实现盈亏立即重算。"
       />
       <el-form :model="costForm" label-width="100px" label-position="top">
@@ -977,9 +1111,31 @@ defineExpose({ reload: loadActions })
 }
 
 .form-tip {
+  width: 100%;
   font-size: 12px;
   color: var(--app-text-soft);
   margin-top: 5px;
+}
+
+.tax-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tax-rate-label {
+  color: var(--app-text-soft);
+  font-size: 13px;
+}
+
+.tax-rate-input {
+  width: 96px;
+}
+
+.net-preview {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .account-unassigned {

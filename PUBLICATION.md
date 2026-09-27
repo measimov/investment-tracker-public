@@ -4,7 +4,7 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`83abde3` (2026-09-26).
+`f09d256` (2026-09-27).
 
 Before syncing a new public release:
 
@@ -41,3 +41,11 @@ Public-only adaptations:
   source as unavailable instead of failing silently.
 - HKEX daily quotation and 披露易 annual/interim report fixtures are excerpts
   of public exchange data.
+- The built-in Xueqiu collector migration (`20260927_0024`) ships with an empty
+  `SEED_AUTHORS`; the public snapshot carries no personal follow list. Collector
+  tests seed their own synthetic authors, and fixtures derived from public
+  Xueqiu pages use synthetic IDs/names for followed authors and cubes
+  (`1000000001`, `1000000002`, `某作者`, `ZH000001`); signer goldens were
+  regenerated for those URLs with the original signing script.
+- The `xueqiu-collector` compose service builds from the same backend image
+  without BuildKit secrets.

@@ -3,11 +3,12 @@
  * 作者动态流（跨页共用：观点页「作者动态」tab + 标的详情页「相关作者动态」）。
  *
  * 逐作者折叠面板而非整块堆叠：高产作者的上百条会把其他作者压到几屏之外
- * （"只有管我财"反馈的展示侧根因）。默认全部收起，头部露出条数与最新日期，
+ * （"只有某作者"反馈的展示侧根因）。默认全部收起，头部露出条数与最新日期，
  * 一眼可见有哪些作者。
  */
 import { ref, watch } from 'vue'
 import type { OpinionFeedAuthor } from '@/types'
+import { EMPTY, formatDate, formatDateTime } from '@/utils/helpers'
 
 const props = defineProps<{
   authors: OpinionFeedAuthor[]
@@ -25,8 +26,10 @@ watch(
   }
 )
 
+// 发言时间是带时区的 ISO 串：必须按本地时区格式化，切片会让北京时间 0-8 点的发言显示成前一天
 function latestDate(group: OpinionFeedAuthor): string {
-  return group.items[0]?.date?.slice(0, 10) || '—'
+  const date = group.items[0]?.date
+  return date ? formatDate(date) : EMPTY
 }
 </script>
 
@@ -34,7 +37,7 @@ function latestDate(group: OpinionFeedAuthor): string {
   <div v-loading="loading" class="feed" data-testid="opinion-author-feed">
     <el-empty
       v-if="!loading && !authors.length"
-      :description="emptyText || '窗口内没有匹配到标的的发言'"
+      :description="emptyText || '窗口内没有发言'"
       :image-size="60"
     />
     <el-collapse v-else v-model="openPanels">
@@ -50,7 +53,7 @@ function latestDate(group: OpinionFeedAuthor): string {
         </template>
         <div v-for="(item, index) in group.items" :key="index" class="feed-item">
           <div class="feed-meta">
-            <span>{{ item.date ? item.date.slice(0, 10) : '—' }}</span>
+            <span>{{ formatDateTime(item.date) }}</span>
             <el-tag size="small" effect="plain">{{ item.kind }}</el-tag>
             <el-tag
               v-for="ref in item.symbols"

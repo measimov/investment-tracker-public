@@ -31,12 +31,22 @@ class ExchangeRate(ExchangeRateBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ExchangeRateLatestDetail(BaseModel):
+    """单个币种对基准货币的最新汇率及其自身的生效日期/来源"""
+    rate: Decimal = Field(..., description="汇率")
+    effective_date: date = Field(..., description="该币种汇率的生效日期")
+    source: Optional[str] = Field(None, description="该币种汇率的来源")
+
+
 class ExchangeRateLatest(BaseModel):
     """最新汇率响应"""
     base_currency: str = Field(default="CNY", description="基准货币")
     rates: dict[str, Decimal] = Field(..., description="各币种对基准货币的汇率")
-    effective_date: date = Field(..., description="汇率日期")
-    source: str = Field(..., description="数据来源")
+    effective_date: date = Field(..., description="各币种中最新的汇率日期（兼容字段）")
+    source: str = Field(..., description="最新那条汇率的来源（兼容字段）")
+    details: dict[str, ExchangeRateLatestDetail] = Field(
+        default_factory=dict, description="按币种的最新汇率、生效日期与来源（不含基准货币）"
+    )
 
 
 class CurrencyConvertRequest(BaseModel):

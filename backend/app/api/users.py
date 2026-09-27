@@ -65,7 +65,7 @@ def create_user(
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
+            detail="用户名已被注册"
         )
 
     # Check if email already exists (if provided)
@@ -74,7 +74,7 @@ def create_user(
         if existing_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
+                detail="邮箱已被注册"
             )
 
     # Create new user
@@ -104,7 +104,7 @@ def get_user(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="用户不存在"
         )
     return UserSchema.model_validate(user)
 
@@ -183,7 +183,7 @@ def update_user(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="用户不存在"
         )
 
     # Check if new username already exists
@@ -192,7 +192,7 @@ def update_user(
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already registered"
+                detail="用户名已被注册"
             )
         user.username = user_data.username
 
@@ -202,9 +202,12 @@ def update_user(
         if existing_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
+                detail="邮箱已被注册"
             )
         user.email = user_data.email
+    elif user_data.email is None and "email" in user_data.model_fields_set:
+        # 显式传 null = 清空邮箱（邮箱非必填，#219）；不传该字段则保持不变
+        user.email = None
 
     # Update other fields
     deactivated = False
@@ -251,14 +254,14 @@ def delete_user(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="用户不存在"
         )
 
     # Prevent deleting yourself
     if user.id == current_user.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete your own account"
+            detail="不能删除自己的账户"
         )
 
     # 删除同样会缩小活跃管理员集合，必须和 update 走同一把锁重新计数：
@@ -296,7 +299,7 @@ def reset_user_password(
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+            detail="用户不存在"
         )
 
     user.hashed_password = get_password_hash(password_data.new_password)
@@ -305,4 +308,4 @@ def reset_user_password(
     # An admin reset invalidates every outstanding session of that user.
     revoke_user_sessions(db, user.id)
 
-    return {"message": "Password reset successfully"}
+    return {"message": "密码已重置，该用户的所有会话已退出"}

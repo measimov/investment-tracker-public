@@ -16,6 +16,7 @@
  * 不触发解析。attrs（data-testid / @clear / @keyup.enter / size）透传给 el-autocomplete。
  */
 import { ref, watch } from 'vue'
+import type { AutocompleteInstance } from 'element-plus'
 import { useAliveGuard } from '@/composables/useAliveGuard'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { useSecuritySearch } from '@/composables/useSecuritySearch'
@@ -72,6 +73,30 @@ let lastEmitted: string | null = null
 function onInput(value: string | number) {
   lastEmitted = String(value)
   emit('update:modelValue', lastEmitted)
+  if (lastEmitted) scheduleStaleBlurCheck()
+}
+
+/**
+ * ElAutocomplete 的 blur 把 `close()` 推迟到 setTimeout(0) 里，且执行时不复查焦点：
+ * 失焦后还没等到那个宏任务，焦点就回到输入框并输入（程序化聚焦；E2E 的 Tab 之后
+ * 紧接 fill，浏览器把输入任务排在定时器前面），迟到的 close 会把刚被输入激活的下拉
+ * 关掉——候选回来了也不弹，直到下次聚焦。输入后排一个同样 0ms 的定时器（定时器按
+ * 登记顺序执行，必在那个迟到的 close 之后）：焦点仍在框内而下拉已被关，就还回激活态。
+ * 选中候选同样会触发 update:modelValue，由 onSelect 作废本次检查（选完不该再弹）。
+ */
+const autocompleteRef = ref<AutocompleteInstance>()
+let staleBlurCheck = 0
+
+function scheduleStaleBlurCheck() {
+  const token = ++staleBlurCheck
+  setTimeout(() => {
+    const autocomplete = autocompleteRef.value
+    if (token !== staleBlurCheck || isUnmounted() || !autocomplete) return
+    const input = autocomplete.inputRef?.input
+    if (input && document.activeElement === input && !autocomplete.activated) {
+      autocomplete.activated = true
+    }
+  })
 }
 
 watch(
@@ -94,6 +119,7 @@ function isSearchItem(
 }
 
 function onSelect(payload: Record<string, unknown>) {
+  staleBlurCheck++
   if (isSearchItem(payload)) {
     lastPicked.value = payload
     lastCommitted = normalizeSymbolInput(payload.symbol)
@@ -143,6 +169,7 @@ function typeTag(item: { security_type?: string | null }): string | null {
 
 <template>
   <el-autocomplete
+    ref="autocompleteRef"
     :model-value="modelValue"
     v-bind="$attrs"
     :fetch-suggestions="fetchSuggestions"

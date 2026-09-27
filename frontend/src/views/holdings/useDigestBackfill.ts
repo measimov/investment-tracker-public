@@ -8,9 +8,9 @@ import { reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { useBatchJobProgress } from '@/composables/useBatchJobProgress'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { BATCH_POLL_INTERVAL_MS, BATCH_POLL_MAX_ATTEMPTS } from './useBatchAnalysis'
 import type { DigestBatchJob } from './types'
+import { showApiError } from '@/utils/showApiError'
 
 const DIGEST_STATUS_LABELS: Record<string, string> = {
   queued: '财报摘要回填排队中',
@@ -84,7 +84,7 @@ export function useDigestBackfill({ isUnmounted }: { isUnmounted: () => boolean 
     } catch (error) {
       if (!isUnmounted()) {
         starting.value = false
-        ElMessage.error(getApiErrorMessage(error, '获取回填预览失败'))
+        showApiError(error, '获取回填预览失败')
       }
       return
     }
@@ -117,7 +117,7 @@ export function useDigestBackfill({ isUnmounted }: { isUnmounted: () => boolean 
       await watchJob(response.data.id)
     } catch (error) {
       if (isUnmounted()) return
-      ElMessage.error(getApiErrorMessage(error, '批量回填启动失败'))
+      showApiError(error, '批量回填启动失败')
     } finally {
       if (!isUnmounted()) starting.value = false
     }

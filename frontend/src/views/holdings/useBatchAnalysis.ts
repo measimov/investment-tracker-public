@@ -15,9 +15,9 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { useBatchJobProgress } from '@/composables/useBatchJobProgress'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { Holding } from '@/stores/holdings'
 import type { AnalysisBatchJob, BatchResultRow } from './types'
+import { showApiError } from '@/utils/showApiError'
 
 // 与后端 security_profile_service.SUPPORTED_MARKETS 对齐；其余市场后端 409
 const ANALYZABLE_MARKETS = new Set(['A股', '美股', '港股'])
@@ -200,7 +200,7 @@ export function useBatchAnalysis({
       await watchJob(response.data.id)
     } catch (error) {
       if (isUnmounted()) return
-      ElMessage.error(getApiErrorMessage(error, '批量分析启动失败'))
+      showApiError(error, '批量分析启动失败')
     } finally {
       if (!isUnmounted()) starting.value = false
     }

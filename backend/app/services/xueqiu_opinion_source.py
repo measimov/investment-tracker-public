@@ -1,16 +1,22 @@
-"""雪球观点数据源：读取 xueqiu-timeline-archiver 写入同库的关注用户发言。
+"""雪球观点数据源：读取本仓采集器（`services/xueqiu_collector/`）写入的关注作者发言。
 
-**红线**：`xueqiu_archiver_utterances` 归 xueqiu-timeline-archiver 项目所有，
-本应用对它**只读**——不建 ORM 模型、不加 FK、Alembic 永不触碰；一律 raw SQL
-（`sqlalchemy.text()`），只依赖用到的列名，表结构由对方演进。表不存在
-（测试库 / 未部署 archiver）是合法形态：入口显式抛 `OpinionSourceUnavailable`
-（API 层映射 409"数据源未接入"），绝不静默返回空冒充"无观点"。
+`xueqiu_archiver_utterances` 原由独立仓库 xueqiu-timeline-archiver 的 cron 写入，
+2026-09 收纳进本仓（迁移 20260927_0024 纳入 Alembic，表**总是存在**）。这里仍一律
+raw SQL（`sqlalchemy.text()`），只依赖用到的列名。
+
+「数据源未接入」的含义随之改变：不再是"表不存在"，而是**采集器从未成功运行且库里
+没有任何发言**（未启用 / 刚部署 / Cookie 一直无效）。入口显式抛
+`OpinionSourceUnavailable`（API 层映射 409"数据源未接入"），绝不静默返回空冒充"无观点"。
+表缺失（未迁移的库）仍按同一语义降级。
 
 实测过的表事实（2026-08-31，appdb）：
 - `created_at` 列是 **TEXT** 不是 timestamptz——时间一律用 `created_at_ms`
   （bigint，全表零空值），别碰 created_at，更别 COALESCE 两列（类型不匹配）。
-- cron 活性信号 = `max(last_seen_at)`（timestamptz）：archiver 每轮扫描对已见
-  行也会刷新它，作者沉默不影响。`xueqiu_archiver_scan_runs` 是空表，不能用；
+- 采集活性 = 最近一次 status 为 ok/partial 的 `xueqiu_archiver_scan_runs.finished_at`
+  （采集器每位作者每轮写一行；partial = 时间线首页成功、个别页/帖失败，同样证明采集
+  在流动；error/failed/waf 一律不算——把失败响应记成成功会掩盖停摆，PR #236 评审 P2）。
+  尚无成功记录时（刚从 archiver cron 切换过来）退回 `max(last_seen_at)`——每轮扫描
+  对已见行也会刷新它，作者沉默不影响。
   `max(created_at_ms)` 是"最新发言"展示值，不是活性判据。
 
 标的匹配（v1 精确口径，不做名称模糊匹配）：正文/上下文里的
@@ -33,6 +39,9 @@ from ..core.logging import get_app_logger
 logger = get_app_logger(__name__)
 
 UTTERANCE_TABLE = "xueqiu_archiver_utterances"
+SCAN_RUN_TABLE = "xueqiu_archiver_scan_runs"
+# 与 xueqiu_collector.state.LIVE_RUN_STATUSES 同口径（这里不 import 采集器包，reader 保持轻量）
+LIVE_SCAN_STATUSES = "('ok', 'partial')"
 
 # cashtag：$名称(SH600519)$ / $腾讯控股(00700)$ / $苹果(AAPL)$。
 # 内码宽容 [A-Za-z0-9.\-]（覆盖 BRK.A 类 ticker）；精确性由 wanted 集合过滤。
@@ -50,35 +59,70 @@ KIND_LABELS = {
 
 
 class OpinionSourceUnavailable(Exception):
-    """雪球观点数据源未接入（archiver 表不存在）。API 层映射 409。"""
+    """雪球观点数据源未接入（采集器从未成功运行且无发言数据）。API 层映射 409。"""
+
+
+UNAVAILABLE_MESSAGE = (
+    "雪球观点数据源未接入（采集器未启用或尚未成功运行，库中暂无关注作者发言；"
+    "见观点页「采集器」卡片）"
+)
+
+
+def _table_exists(db: Session, name: str) -> bool:
+    return bool(
+        db.execute(text("SELECT to_regclass(:name) IS NOT NULL"), {"name": f"public.{name}"})
+        .scalar()
+    )
 
 
 def is_opinion_source_available(db: Session) -> bool:
-    """探测外部表是否存在。每次现查不缓存：archiver 可能在本进程启动后才部署，
-    缓存"不存在"会把已接入的数据源继续报 409；单条 catalog 查询 <1ms。"""
+    """有发言数据，或采集器成功跑过一轮（哪怕关注作者近期都没发言）。
+
+    每次现查不缓存：采集器可能在本进程启动后才第一次跑成功，缓存"不可用"会把
+    已接入的数据源继续报 409；两条 EXISTS 走主键/小表，<1ms。
+    """
     with db.begin_nested():
-        row = db.execute(
-            text("SELECT to_regclass(:name) IS NOT NULL"),
-            {"name": f"public.{UTTERANCE_TABLE}"},
-        ).scalar()
-    return bool(row)
+        if not _table_exists(db, UTTERANCE_TABLE):
+            return False
+        if db.execute(text(f"SELECT EXISTS (SELECT 1 FROM {UTTERANCE_TABLE})")).scalar():
+            return True
+        if not _table_exists(db, SCAN_RUN_TABLE):
+            return False
+        return bool(
+            db.execute(
+                text(
+                    f"SELECT EXISTS (SELECT 1 FROM {SCAN_RUN_TABLE} "
+                    f"WHERE status IN {LIVE_SCAN_STATUSES})"
+                )
+            ).scalar()
+        )
 
 
 def ensure_opinion_source(db: Session) -> None:
     if not is_opinion_source_available(db):
-        raise OpinionSourceUnavailable(
-            f"雪球观点数据源未接入（未找到 {UTTERANCE_TABLE} 表，"
-            "该表由 xueqiu-timeline-archiver 项目写入）"
-        )
+        raise OpinionSourceUnavailable(UNAVAILABLE_MESSAGE)
+
+
+def latest_successful_scan_at(db: Session) -> Optional[datetime]:
+    """最近一次成功采集的结束时间；无记录返回 None（调用方退回 last_seen_at）。"""
+    with db.begin_nested():
+        if not _table_exists(db, SCAN_RUN_TABLE):
+            return None
+        return db.execute(
+            text(
+                f"SELECT max(finished_at) FROM {SCAN_RUN_TABLE} "
+                f"WHERE status IN {LIVE_SCAN_STATUSES}"
+            )
+        ).scalar()
 
 
 def source_freshness(db: Session) -> Dict[str, Any]:
     """数据源新鲜度：{available, latest_scan_at, latest_utterance_at, stale}。
 
-    stale = max(last_seen_at) 距今超过 xueqiu_opinion_stale_hours——这是
-    "archiver cron 停摆"的预警信号（见模块 docstring：last_seen_at 每轮扫描
-    都刷新）。任何异常按 unavailable 处理不抛：本函数被 Dashboard snapshot
-    顺带调用，观点数据源的故障不配拖垮整个看板。
+    latest_scan_at = 最近一次成功采集（scan_runs），无记录退回 max(last_seen_at)；
+    stale = 它距今超过 xueqiu_opinion_stale_hours——"采集停摆"的预警信号。任何异常
+    按 unavailable 处理不抛：本函数被 Dashboard snapshot 顺带调用，观点数据源的
+    故障不配拖垮整个看板。
     """
     unavailable = {
         "available": False, "latest_scan_at": None,
@@ -99,10 +143,11 @@ def source_freshness(db: Session) -> Dict[str, Any]:
                     f"FROM {UTTERANCE_TABLE}"
                 )
             ).one()
+        successful_scan_at = latest_successful_scan_at(db)
     except Exception as exc:
         logger.warning("雪球观点数据源新鲜度探测失败: %s", str(exc)[:150])
         return unavailable
-    latest_scan_at = row.latest_scan_at
+    latest_scan_at = successful_scan_at or row.latest_scan_at
     stale = False
     if latest_scan_at is not None:
         age = datetime.now(timezone.utc) - latest_scan_at

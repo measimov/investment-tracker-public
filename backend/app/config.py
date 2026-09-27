@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # 档案同步时跳过并如实标注，不拖垮整次分析。
     tushare_cooldown_base_seconds: float = 65.0
     tushare_cooldown_max_seconds: float = 900.0
+    # 港股行情接口（hk_daily / hk_mins）的单接口最小间隔：低积分档是「每分钟 2 次」量级，
+    # 31s 刚好跨过半分钟窗口。只影响这两个接口，与上面的全局闸叠加生效
+    tushare_hk_min_interval_seconds: float = Field(default=31.0, ge=0)
+    # Tushare HTTPS 数据接口地址：SDK 默认走旧的明文 http 端点，这里统一改写成 HTTPS。
+    # 留空同样回退到这个默认值（stock_price_service.get_tushare_api_base_url）
+    tushare_api_base_url: str = "https://api.waditu.com/dataapi"
     # 年报清单缓存 TTL：清单一年只变一次，缓存把批量分析的 cninfo 外呼降为零
     report_target_plan_ttl_hours: int = 24
 
@@ -60,13 +66,62 @@ class Settings(BaseSettings):
     xueqiu_cookie_warn_days: float = 7.0
     xueqiu_cookie_critical_days: float = 3.0
 
-    # 雪球观点摘要（数据来自 xueqiu-timeline-archiver 写入同库的
-    # xueqiu_archiver_utterances 表，本应用只读）
+    # 雪球观点摘要（数据来自本仓采集器 xueqiu_collector 写入的
+    # xueqiu_archiver_utterances 表）
     xueqiu_opinion_recent_days: int = 30  # 近期窗口：转多/转空判断的分界
     xueqiu_opinion_lookback_days: int = 180  # 喂给 LLM 的总回看深度
-    # archiver cron 停摆预警阈值：max(last_seen_at) 超过该时长未刷新即告警。
-    # cron 是日更节奏，48h = 容忍两次失败后再报
+    # 采集停摆预警阈值：最近一次成功的 scan_runs（无记录时退回 max(last_seen_at)）
+    # 超过该时长即告警。采集器每小时一轮，48h = 容忍 WAF 冷却、Cookie 更换这类
+    # 数小时级中断后再报
     xueqiu_opinion_stale_hours: int = 48
+
+    # 雪球发言采集器（`manage.py xueqiu-collector`，compose 独立服务 xueqiu-collector）。
+    # 与 stock.xueqiu.com 行情客户端分开：站点（xueqiu.com 需 md5__1038 签名）与频率
+    # 都不同，只共用同一份 Cookie（XUEQIU_COOKIES / XUEQIU_COOKIE_FILE）。
+    # 默认关闭：关闭时进程只空转写心跳（切换当天再打开）。
+    xueqiu_collector_enabled: bool = False
+    # Uptime Kuma push URL（可选）：每轮结束推送 up/down
+    xueqiu_collector_push_url: str = ""
+    # 每轮作者采集的间隔（分钟）；管理员可在观点页「立即运行」提前触发
+    xueqiu_collector_cycle_minutes: int = 60
+    # 全局礼貌限速：相邻两次请求之间随机停顿 [min, max] 秒，勿调低
+    xueqiu_collector_min_delay_seconds: float = 10.0
+    xueqiu_collector_max_delay_seconds: float = 25.0
+    xueqiu_collector_timeout_seconds: float = 20.0
+    # 每轮最多采集的作者数；作者之间随机间隔 [gap_min, gap_max] 秒
+    xueqiu_collector_max_authors_per_run: int = 5
+    xueqiu_collector_author_gap_min_seconds: int = 180
+    xueqiu_collector_author_gap_max_seconds: int = 600
+    # 回看窗口（天）：主页发言与评论区命中回复都只收这段时间内的
+    xueqiu_collector_monitor_days: int = 30
+    # 主页时间线页数上限；0 = 翻到早于回看窗口为止
+    xueqiu_collector_profile_pages: int = 0
+    # 每帖最多翻几页评论（每页 20 条）；超过 stale_post_days 的旧帖只翻 stale_comment_pages 页
+    xueqiu_collector_max_comment_pages: int = 6
+    xueqiu_collector_stale_post_days: int = 30
+    xueqiu_collector_stale_comment_pages: int = 1
+    # 同一帖在该时长内扫过评论即跳过
+    xueqiu_collector_rescan_cooldown_hours: float = 12.0
+    # 阿里云 WAF 挑战页：命中 max_waf_hits 次即中止本轮，冷却期内不开新一轮
+    xueqiu_collector_waf_cooldown_seconds: int = 1800
+    xueqiu_collector_max_waf_hits: int = 1
+    # 心跳文件（healthcheck 用 mtime 判活），相对路径以进程工作目录为基准
+    xueqiu_collector_heartbeat_file: str = "logs/xueqiu-collector.heartbeat"
+    xueqiu_collector_health_max_age_minutes: int = 30
+    # 每日按标的采集（公告/讨论 + 组合调仓 + 热帖）：同一进程、同一把 advisory lock、
+    # 同一 WAF 冷却。标的范围 = 全体用户持仓∪自选 ∩ OPINION_MARKETS − 排除/现金管理规则。
+    # 业务时区每天 run_after 之后跑一轮（落 state 表，重启不重跑）
+    xueqiu_collector_symbols_enabled: bool = True
+    xueqiu_collector_symbols_run_after: str = "07:30"
+    # 每标的每类取最新几条（原 monitor_symbols 默认 20）
+    xueqiu_collector_symbol_count: int = 20
+    # 热帖口径（day / week）
+    xueqiu_collector_hots_scope: str = "day"
+    # 一轮有失败（含错误对象/未知结构/WAF/Cookie 不可用）时当天不记「已跑」，只把没成功的
+    # 项留作待重试：距上一轮 retry_minutes 后重试，当日最多 max_attempts 轮（含首轮），
+    # 用尽后记当日已跑、剩余失败项明日随整轮再采
+    xueqiu_collector_symbols_retry_minutes: int = 60
+    xueqiu_collector_symbols_max_attempts: int = 3
 
     # 分红公告同步（Tushare dividend；仅 A/B 股）
     dividend_sync_lookback_days: int = 365
@@ -86,6 +141,9 @@ class Settings(BaseSettings):
     # DeepSeek 推理 token 与输出共享此配额：8192 实测被长分析报告吃穿
     # （港股分析要求额外写明数据边界，report_markdown 截断或整体为空）
     llm_report_max_output_tokens: int = 16384
+    # 港股报表科目映射（report_statement_service）单独的输出额度：03900 这类大报表推理会吃穿
+    # 16384（finish_reason=length、content 为空）；映射输出本身很短，额度只是给推理留余量
+    statement_max_output_tokens: int = 32768
 
     # Security settings
     #

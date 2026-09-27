@@ -164,7 +164,9 @@ test('redirects anonymous users to login and supports login', async ({ page }) =
   ).toBeVisible()
 
   // 守卫带上了 ?redirect=（#142：401/未登录不再丢页面）
-  await expect(page).toHaveURL(/redirect=%2Fholdings/)
+  await expect(page).toHaveURL(/redirect=(%2F|\/)holdings/)
+  // 只由守卫跳转一次：此前拦截器同时整页跳转，页面刷两次、这条提示一闪即逝（#219）
+  await expect(page.locator('.el-message').filter({ hasText: '请先登录' })).toBeVisible()
 
   await page.getByPlaceholder('请输入用户名').fill(user.username)
   await page.getByPlaceholder('请输入密码').fill(user.password)
@@ -278,11 +280,14 @@ test('shows created transactions, holdings, and total realized return', async ({
   await expect(page).toHaveURL(/\/securities\//)
   await expect(page.getByText('暂无 AI 分析')).toBeVisible()
   await expect(page.getByTestId('generate-analysis-button')).toBeVisible()
-  // 商业画像/财报摘要/利润质量三区块按 A股 capabilities 渲染（空态不隐藏）
+  // 商业画像/财报摘要/利润质量三区块按 A股 capabilities 渲染（空态不隐藏）；
+  // 详情页按「分析 / 基本面 / 报表 / 观点」分 tab（懒渲染），先切 tab 再断言
   await expect(page.getByTestId('business-profile-section')).toBeVisible()
   await expect(page.getByText('暂无商业画像', { exact: false })).toBeVisible()
+  await page.getByRole('tab', { name: '报表' }).click()
   await expect(page.getByTestId('report-digest-section')).toBeVisible()
   await expect(page.getByTestId('backfill-digests-button')).toBeVisible()
+  await page.getByRole('tab', { name: '基本面' }).click()
   await expect(page.getByTestId('earnings-quality-section')).toBeVisible()
   await page.goBack()
 
@@ -532,8 +537,8 @@ test('corporate action detail renders both fallback shapes on desktop and mobile
   await page.waitForLoadState('networkidle')
 
   for (const [symbol, expected] of [
-    ['FBK001', '获得股数: 12.00'],
-    ['FBK002', '拆后股数: 400.00']
+    ['FBK001', '获得股数: 12'],
+    ['FBK002', '拆后股数: 400']
   ]) {
     const row = page.locator('tr', { hasText: symbol }).first()
     await expect(row, `${symbol} 桌面行未渲染`).toContainText(expected)
@@ -545,8 +550,8 @@ test('corporate action detail renders both fallback shapes on desktop and mobile
   await page.waitForLoadState('networkidle')
 
   for (const [symbol, expected] of [
-    ['FBK001', '获得股数: 12.00'],
-    ['FBK002', '拆后股数: 400.00']
+    ['FBK001', '获得股数: 12'],
+    ['FBK002', '拆后股数: 400']
   ]) {
     const card = page.getByTestId('corporate-action-card').filter({ hasText: symbol }).first()
     await expect(card, `${symbol} 移动卡片未渲染`).toContainText(expected)
@@ -713,11 +718,13 @@ test('transfers a holding between broker accounts through the UI', async ({ page
     await expect(page.locator('.el-table__row', { hasText: 'TRF001' })).toHaveCount(1)
 
     await page.goto('/holdings')
+    // 持仓默认按标的合并；账户与转仓在「按账户」视图（或合并行的展开行）里
+    await page.getByTestId('holdings-view-mode').getByText('按账户').click()
     const row = page.locator('.el-table__row', { hasText: 'TRF001' })
     await expect(row).toContainText('转仓测试-CMB')
 
     // 打开转仓对话框
-    await row.getByRole('button', { name: '转仓' }).click()
+    await row.getByRole('button', { name: '转仓', exact: true }).click()
     const dialog = page.locator('.el-dialog', { hasText: '账户间转仓' })
     await expect(dialog).toBeVisible()
 
@@ -771,6 +778,77 @@ test('transfers a holding between broker accounts through the UI', async ({ page
   }
 })
 
+test('account view: editing one account row of a multi-account holding mounts a single focused editor (#226 P2)', async ({
+  page,
+  request
+}) => {
+  // 按账户视图里同一标的有多行、共用 symbol:market 价格键。编辑态此前也按价格键，
+  // 点第一行会让每一行都挂输入框、焦点落到最后一行；再点回第一行时第二个框失焦提交，
+  // 两个框一起消失，点选的那行没法编辑
+  const { adminToken, createdUser, password } = await createTemporaryUser(request)
+  const token = await loginThroughApi(request, { username: createdUser.username, password })
+  const headers = { Authorization: `Bearer ${token}` }
+
+  try {
+    const accounts = await Promise.all(
+      ['改价测试-A', '改价测试-B'].map(async (name) => {
+        const response = await request.post('http://127.0.0.1:18000/api/broker-accounts', {
+          headers,
+          data: { broker: name, account_name: name, base_currency: 'CNY' }
+        })
+        expect(response.ok()).toBeTruthy()
+        return response.json()
+      })
+    )
+    for (const account of accounts) {
+      const buy = await request.post('http://127.0.0.1:18000/api/transactions', {
+        headers,
+        data: {
+          broker_account_id: account.id,
+          symbol: 'EDT001',
+          name: '改价标的',
+          market: 'A股',
+          transaction_type: 'BUY',
+          quantity: 100,
+          price: 10,
+          fee: 0,
+          transaction_date: '2026-01-05',
+          currency: 'CNY'
+        }
+      })
+      expect(buy.ok()).toBeTruthy()
+    }
+
+    await setAuthenticatedSession(page, token, createdUser)
+    await page.goto('/holdings')
+    await page.getByTestId('holdings-view-mode').getByText('按账户').click()
+    const rows = page.locator('.el-table__row', { hasText: 'EDT001' })
+    await expect(rows).toHaveCount(2)
+
+    const firstRow = rows.filter({ hasText: '改价测试-A' })
+    await firstRow.getByTestId('price-display').click()
+
+    // 只挂一个输入框，且焦点就在被点的那一行
+    const editors = page.getByTestId('price-input')
+    await expect(editors).toHaveCount(1)
+    const input = firstRow.getByTestId('price-input').locator('input')
+    await expect(input).toBeFocused()
+
+    // 再点一次同一个框不会退出编辑
+    await input.click()
+    await expect(editors).toHaveCount(1)
+    await expect(input).toBeFocused()
+
+    await input.fill('12.34')
+    await input.press('Enter')
+    await expect(editors).toHaveCount(0)
+    // 价格按标的共享：两个账户行都显示新价
+    await expect(rows.filter({ hasText: '12.34' })).toHaveCount(2)
+  } finally {
+    await deleteTemporaryUser(request, adminToken, createdUser.id)
+  }
+})
+
 test.describe('positive-UTC timezone', () => {
   test.use({ timezoneId: 'Asia/Shanghai' })
 
@@ -814,8 +892,9 @@ test.describe('positive-UTC timezone', () => {
       // UTC 2026-03-09 23:30 = 上海 2026-03-10 07:30：toISOString 会错取 03-09
       await page.clock.setFixedTime(new Date('2026-03-09T23:30:00Z'))
       await page.goto('/holdings')
+      await page.getByTestId('holdings-view-mode').getByText('按账户').click()
       const row = page.locator('.el-table__row', { hasText: 'TZ0001' })
-      await row.getByRole('button', { name: '转仓' }).click()
+      await row.getByRole('button', { name: '转仓', exact: true }).click()
       const dialog = page.locator('.el-dialog', { hasText: '账户间转仓' })
       await expect(dialog).toBeVisible()
       await expect(dialog.locator('.el-date-editor input')).toHaveValue('2026-03-10')
@@ -1084,7 +1163,13 @@ test('leaving corporate actions mid dividend-sync stops follow-up requests', asy
   })
 
   await page.goto('/corporate-actions')
+  // 先等分红建议 tab 自己的列表请求落地再计数：并行跑满负载时它可能晚于
+  // 同步按钮的首轮轮询到达，被算成「离开后的请求」（假阳性）
+  const listLoaded = page.waitForResponse((response) =>
+    /\/api\/corporate-actions\/suggestions\?/.test(response.url())
+  )
   await page.getByRole('tab', { name: /分红建议/ }).click()
+  await listLoaded
   const firstPoll = page.waitForRequest('**/api/corporate-actions/dividend-sync-jobs/sync-race')
   await page.getByTestId('dividend-sync-button').click()
   await firstPoll // 轮询响应此刻挂在闸上
@@ -1260,7 +1345,7 @@ test('security rules dialog builds per-type payloads and filter ignores stale re
       payload: { event_type: 'DEPOSIT' }
     })
     expect(cmbPayload.market ?? null).toBeNull()
-    await expect(page.locator('.el-table__row', { hasText: '银行转存' })).toContainText('→ DEPOSIT')
+    await expect(page.locator('.el-table__row', { hasText: '银行转存' })).toContainText('→ 入金')
 
     // ---- 竞态回归：慢的未过滤初始加载不得覆盖随后切换的筛选结果 ----
     await page.route('**/api/security-rules*', async (route) => {
@@ -2677,7 +2762,7 @@ test('transaction edit and delete through the dialog', async ({ page, request })
     await dialog.getByRole('button', { name: '确定' }).click()
 
     await expect(page.getByText('更新成功')).toBeVisible()
-    await expect(row).toContainText('12.5000')
+    await expect(row).toContainText('12.50')
     await probeEmptySearch()
     expect(emptySearchCalls).toBe(2) // PUT 后失效
 
@@ -2874,11 +2959,12 @@ test('watchlist add, edit, remove and detail-page integration', async ({ page, r
 })
 
 // ---------------------------------------------------------------------------
-// 雪球观点页：e2e 库没有 archiver 外部表——正好验证"数据源未接入"的显式降级
-// （状态条 + 空表提示 + 批量按钮禁用），页面不得 5xx/白屏。
+// 雪球观点页：e2e 库的归档表由迁移建出但为空、采集器未启用且从未运行——正好验证
+// "数据源未接入"的显式降级（状态条 + 空表提示 + 批量按钮禁用）与采集器卡片
+// （未启用），页面不得 5xx/白屏。
 // ---------------------------------------------------------------------------
 
-test('opinions page degrades explicitly without archiver source', async ({ page, request }) => {
+test('opinions page degrades explicitly without collected data', async ({ page, request }) => {
   const token = await loginThroughApi(request)
   await setAuthenticatedSession(page, token)
 
@@ -2886,15 +2972,26 @@ test('opinions page degrades explicitly without archiver source', async ({ page,
   await expect(page.getByTestId('opinion-source-missing')).toBeVisible()
   await expect(page.getByTestId('opinion-batch-button')).toBeDisabled()
   await expect(page.getByTestId('opinion-symbols-table')).toBeVisible()
+  await expect(page.getByTestId('xueqiu-collector-card')).toBeVisible()
+  await expect(page.getByTestId('collector-health')).toHaveText('未启用')
+  // 按标的采集从未运行：摘要行如实说明、今日热帖卡给空态而不是报错
+  await expect(page.getByTestId('collector-symbols-summary')).toContainText('尚未运行')
+  await expect(page.getByTestId('xueqiu-hots-card')).toContainText('尚无快照')
 
   // 详情页的观点 section：生成按钮点击后收到 409 预检（e2e 环境先命中
   // "未配置 LLM"，配了 key 的环境则是"数据源未接入"），以信息条呈现而非报错弹窗
   await page.goto('/securities/A股/600036')
+  await page.getByRole('tab', { name: '观点' }).click()
   await expect(page.getByTestId('opinion-section')).toBeVisible()
   await page.getByTestId('generate-opinion-button').click()
   await expect(page.getByTestId('opinion-section').locator('.el-alert')).toContainText(
     /未接入|未配置 LLM/
   )
+
+  // 雪球公告/讨论折叠区：展开才拉取，库里没有数据时给空态与「尚未运行」提示
+  await page.getByTestId('xueqiu-symbol-feed').getByText('雪球公告 / 讨论').click()
+  await expect(page.getByTestId('xueqiu-symbol-feed')).toContainText('按标的采集尚未运行过')
+  await expect(page.getByTestId('xueqiu-announcements')).toContainText('暂无雪球公告')
 })
 
 // ---------------------------------------------------------------------------
@@ -3055,4 +3152,63 @@ test('security select fills the transaction form from the catalog and keeps user
   } finally {
     await deleteTemporaryUser(request, adminToken, createdUser.id)
   }
+})
+
+// ElAutocomplete 的 blur 把 close() 推迟到 setTimeout 里且不复查焦点：失焦后同一个宏任务内
+// 回到输入框并输入（上面用例的 Tab → fill 在满载套件里就会落进这个窗口），迟到的 close 曾把
+// 刚激活的下拉关掉、候选回来也不弹。这里在一个任务里完成「失焦 → 回焦 → 输入」，确定性复现。
+test('security select still opens when refocused and typed before the deferred blur fires', async ({
+  page,
+  request
+}) => {
+  const token = await loginThroughApi(request)
+  await setAuthenticatedSession(page, token)
+  await page.route('**/api/securities/search*', async (route) => {
+    const q = new URL(route.request().url()).searchParams.get('q') || ''
+    const items =
+      q === '510300'
+        ? [
+            {
+              symbol: '510300',
+              market: 'A股',
+              name: '沪深300ETF',
+              security_type: 'etf',
+              list_status: 'listed',
+              in_catalog: true,
+              origins: []
+            }
+          ]
+        : []
+    await route.fulfill({
+      json: {
+        items,
+        catalog: {
+          ready: true,
+          stale: false,
+          last_success_at: null,
+          failing_sources: [],
+          capabilities: { pinyin: true, simplified: true }
+        }
+      }
+    })
+  })
+
+  await page.goto('/transactions')
+  await page.getByRole('button', { name: '新增交易' }).click()
+  const dialog = page.locator('.el-dialog', { hasText: '新增交易' })
+  await expect(dialog).toBeVisible()
+  await page.evaluate(() => {
+    const symbol = document.querySelector<HTMLInputElement>(
+      '.el-dialog [data-testid="symbol-autocomplete"]'
+    )
+    const name = document.querySelector<HTMLInputElement>('.el-dialog [placeholder="资产名称"]')
+    if (!symbol || !name) throw new Error('表单输入框未找到')
+    symbol.focus()
+    name.focus() // 失焦：ElAutocomplete 在 setTimeout 里才 close()
+    symbol.focus() // 同一个任务内回焦并输入，赶在那个迟到的 close 之前
+    symbol.value = '510300'
+    symbol.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  const popper = page.locator('.security-select-popper:visible')
+  await expect(popper.getByRole('option', { name: /510300/ })).toContainText('ETF')
 })

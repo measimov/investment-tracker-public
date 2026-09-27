@@ -65,7 +65,7 @@ def _watch(db, symbol, market, user_id=1):
     db.commit()
 
 
-def _utt(author="管我财", days_ago=1.0, body="看好", kind="homepage_post", key=None):
+def _utt(author="某作者", days_ago=1.0, body="看好", kind="homepage_post", key=None):
     at = NOW - timedelta(days=days_ago)
     return {
         "utterance_key": key or f"u-{author}-{days_ago}",
@@ -80,7 +80,7 @@ def _llm_output(tags=None, stances=None):
         "tags": tags or ["偏多"],
         "summary": "总体偏多",
         "author_stances": stances if stances is not None else [
-            {"author": "管我财", "stance": "看多", "recent_change": "无", "evidence": "看好"}
+            {"author": "某作者", "stance": "看多", "recent_change": "无", "evidence": "看好"}
         ],
         "report_markdown": "## 近期观点变化\n无",
     }, ensure_ascii=False)
@@ -96,7 +96,7 @@ def _fake_completion(content):
 # --------------------------------------------------------------------------- #
 # parse_opinion_output 强制规则
 # --------------------------------------------------------------------------- #
-def _stats(recent=2, baseline=3, author="管我财", **extra_authors):
+def _stats(recent=2, baseline=3, author="某作者", **extra_authors):
     """构造 author_stats；extra_authors 形如 甲=(recent, baseline)。"""
     stats = {author: {"recent": recent, "baseline": baseline}}
     for name, (r, b) in extra_authors.items():
@@ -112,7 +112,7 @@ def _parse(content, author_stats=None, **stats_kwargs):
 
 def test_parse_happy_path_truncates_and_normalizes():
     out = json.loads(_llm_output(tags=["近期转多", "多空分歧"], stances=[
-        {"author": "管我财", "stance": "看多", "recent_change": "转多", "evidence": "证" * 200}
+        {"author": "某作者", "stance": "看多", "recent_change": "转多", "evidence": "证" * 200}
     ]))
     out["summary"] = "长" * 500
     parsed = _parse(json.dumps(out, ensure_ascii=False))
@@ -161,7 +161,7 @@ def test_parse_grounding_baseline_rules():
         _parse(_llm_output(tags=["新增关注"]), recent=2, baseline=3)
     # baseline=0 且该作者确实标了「新增」才允许「新增关注」
     newly = _llm_output(tags=["新增关注"], stances=[
-        {"author": "管我财", "stance": "看多", "recent_change": "新增", "evidence": "x"}
+        {"author": "某作者", "stance": "看多", "recent_change": "新增", "evidence": "x"}
     ])
     parsed = _parse(newly, recent=2, baseline=0)
     assert parsed["tags"] == ["新增关注"]
@@ -170,7 +170,7 @@ def test_parse_grounding_baseline_rules():
 
 
 def test_parse_grounding_author_change_needs_own_baseline():
-    stances = [{"author": "管我财", "stance": "看多", "recent_change": "转多", "evidence": "x"}]
+    stances = [{"author": "某作者", "stance": "看多", "recent_change": "转多", "evidence": "x"}]
     with pytest.raises(ValueError, match="不可能「转多」"):
         _parse(_llm_output(stances=stances), recent=2, baseline=0)
 
@@ -211,7 +211,7 @@ def test_parse_top_level_change_tags_need_author_backing():
 
 
 def test_parse_author_new_flag_needs_empty_baseline():
-    stances = [{"author": "管我财", "stance": "看多", "recent_change": "新增", "evidence": "x"}]
+    stances = [{"author": "某作者", "stance": "看多", "recent_change": "新增", "evidence": "x"}]
     with pytest.raises(ValueError, match="不得标「新增」"):
         _parse(_llm_output(tags=["偏多"], stances=stances), recent=2, baseline=3)
 
@@ -281,14 +281,14 @@ def _run_single(db, monkeypatch, *, matched, llm_content=None, user_id=1,
 
 
 def test_single_job_success_persists_all_fields(db, monkeypatch):
-    matched = [_utt(author="管我财", days_ago=2), _utt(author="管我财", days_ago=60)]
+    matched = [_utt(author="某作者", days_ago=2), _utt(author="某作者", days_ago=60)]
     stored, calls = _run_single(db, monkeypatch, matched=matched)
     assert stored.status == "succeeded"
     assert calls["llm"] == 1
     row = db.query(SecurityOpinionSummary).one()
     assert (row.symbol, row.market, row.name) == ("600519", "A股", "测试名称")
     assert row.tags == ["偏多"]
-    assert row.author_stances[0]["author"] == "管我财"
+    assert row.author_stances[0]["author"] == "某作者"
     assert row.model == "test-model"
     assert row.total_tokens == 30
     assert (row.utterance_count, row.recent_utterance_count) == (2, 1)
@@ -583,8 +583,9 @@ async def test_opinion_summaries_counts_and_missing_summary_rows(db, api_user, m
 
 
 @pytest.mark.anyio
-async def test_opinion_endpoints_degrade_without_table(db, api_user, monkeypatch):
-    """表不存在：列表不 5xx 且已存摘要照常返回；启动端点 409。"""
+async def test_opinion_endpoints_degrade_without_data(db, api_user, monkeypatch):
+    """采集器从未成功运行且无发言（测试库的常态）：列表不 5xx 且已存摘要照常返回；
+    启动端点 409。"""
     _hold(db, "600519", "A股", user_id=api_user)
     db.add(SecurityOpinionSummary(
         symbol="600519", market="A股", tags=["偏多"], author_stances=[],
@@ -614,18 +615,23 @@ async def test_opinion_endpoints_degrade_without_table(db, api_user, monkeypatch
 
 
 @pytest.mark.anyio
-async def test_opinion_summaries_degrade_after_real_sql_error(db, api_user):
-    """评审 P2 的端到端口径：外部表列漂移（真实 SQL 错误）后，同一请求里的
+async def test_opinion_summaries_degrade_after_real_sql_error(db, api_user, monkeypatch):
+    """评审 P2 的端到端口径：发言表列漂移（真实 SQL 错误）后，同一请求里的
     后续查询（持仓/自选/最新摘要）必须照常工作并返回降级响应，而非 500。
-    不打任何 monkeypatch——走真实 reader 路径。"""
+    表现由迁移管理不会缺列，这里把 reader 指向一张刻意缺 last_seen_at 的表复现
+    同一类错误——除此之外不打 monkeypatch，走真实 reader 路径。"""
     from sqlalchemy import text as sa_text
+
+    import app.services.xueqiu_opinion_source as src
 
     _hold(db, "600519", "A股", user_id=api_user)
     db.execute(sa_text(
-        "CREATE TABLE IF NOT EXISTS xueqiu_archiver_utterances "
+        "CREATE TABLE IF NOT EXISTS xueqiu_drift_utterances_api_test "
         "(utterance_key text PRIMARY KEY, created_at_ms bigint)"  # 刻意缺 last_seen_at
     ))
+    db.execute(sa_text("INSERT INTO xueqiu_drift_utterances_api_test VALUES ('k', 1)"))
     db.commit()
+    monkeypatch.setattr(src, "UTTERANCE_TABLE", "xueqiu_drift_utterances_api_test")
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -634,14 +640,15 @@ async def test_opinion_summaries_degrade_after_real_sql_error(db, api_user):
         assert listing.status_code == 200
         assert listing.json()["source_available"] is False
     finally:
-        db.execute(sa_text("DROP TABLE IF EXISTS xueqiu_archiver_utterances"))
+        db.rollback()
+        db.execute(sa_text("DROP TABLE IF EXISTS xueqiu_drift_utterances_api_test"))
         db.commit()
 
 
 @pytest.mark.anyio
 async def test_opinion_feed_per_author_cap_and_symbol_filter(db, api_user, monkeypatch):
     """作者动态：逐作者封顶（不做全局截断）、total 如实、作者按最新发言排序、
-    symbol 过滤单标的。全局截断曾让高产作者把其他人整段挤掉（"只有管我财"）。"""
+    symbol 过滤单标的。全局截断曾让高产作者把其他人整段挤掉（"只有某作者"）。"""
     import app.services.xueqiu_opinion_source as src
 
     _hold(db, "600519", "A股", user_id=api_user)

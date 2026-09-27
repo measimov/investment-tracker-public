@@ -63,7 +63,7 @@ def _run(db, monkeypatch, *, outcomes=None, side_effect=None, user_id=1, **start
     """启动并执行一个批量任务；outcomes 按调用顺序返回。"""
     calls: list = []
 
-    def fake_analyze(db_, symbol, market, *, digest_max_new=2, on_stage=None):
+    def fake_analyze(db_, symbol, market, *, digest_max_new=2, on_stage=None, user_id=None):
         calls.append({"symbol": symbol, "market": market, "digest_max_new": digest_max_new})
         if on_stage:
             on_stage("llm_analysis", {})
@@ -712,7 +712,7 @@ def test_losing_ownership_mid_loop_stops_the_batch_immediately(db, monkeypatch):
 
     calls: list = []
 
-    def fake_analyze(db_, symbol, market, *, digest_max_new=2, on_stage=None):
+    def fake_analyze(db_, symbol, market, *, digest_max_new=2, on_stage=None, user_id=None):
         calls.append(symbol)
         state["armed"] = True
         try:

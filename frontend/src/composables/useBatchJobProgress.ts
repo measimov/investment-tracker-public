@@ -1,7 +1,7 @@
 import { computed, ref, type Ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { pollJobUntilDone, type BackgroundJob } from '../utils/polling'
-import { getApiErrorMessage } from '../utils/apiErrors'
+import { showApiError } from '@/utils/showApiError'
 
 /** 批量 job 的公共字段（各 job 的差异字段经索引签名透传） */
 export interface BatchJobBase {
@@ -123,7 +123,7 @@ export function useBatchJobProgress<T extends BatchJobBase>(options: BatchJobPro
         ElMessage.info(options.cancelledMessage)
         return
       }
-      ElMessage.error(getApiErrorMessage(error, options.failureMessage))
+      showApiError(error, options.failureMessage)
     }
   }
 
@@ -143,7 +143,7 @@ export function useBatchJobProgress<T extends BatchJobBase>(options: BatchJobPro
       await options.cancelJob(jobId)
       if (!options.isUnmounted()) ElMessage.info('已请求终止，当前标的完成后停止')
     } catch (error) {
-      if (!options.isUnmounted()) ElMessage.error(getApiErrorMessage(error, '终止失败'))
+      if (!options.isUnmounted()) showApiError(error, '终止失败')
     }
   }
 

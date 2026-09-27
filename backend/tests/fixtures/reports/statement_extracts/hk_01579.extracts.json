@@ -1,0 +1,730 @@
+{
+ "extracts": {
+  "20241231|annual": {
+   "ann_date": "25/04/2025 16:44",
+   "attempts": 1,
+   "end_date": "20241231",
+   "mapping": {
+    "income": {
+     "basic_eps": [
+      "r24"
+     ],
+     "cost_of_revenue": [
+      "r3"
+     ],
+     "diluted_eps": [
+      "r25"
+     ],
+     "gross_profit": [
+      "r4"
+     ],
+     "income_tax": [
+      "r13"
+     ],
+     "int_exp": [
+      "r10"
+     ],
+     "n_income_attr_p": [
+      "r15"
+     ],
+     "operating_income": [
+      "r8"
+     ],
+     "sga_exp": [
+      "r5",
+      "r6"
+     ],
+     "total_profit": [
+      "r12"
+     ],
+     "total_revenue": [
+      "r2"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2025/0425/2025042500952_c.pdf|25/04/2025 16:44",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2025/0425/2025042500952_c.pdf",
+   "statements": {
+    "income": {
+     "column_count": 2,
+     "currency": "CNY",
+     "header": [
+      "綜合損益及其他全面收益表",
+      "Year ended 31 December",
+      "截至12月31日止年度",
+      "Note 2024 2023",
+      "附註 2024年 2023年",
+      "RMB’000 RMB’000",
+      "人民幣千元 人民幣千元",
+      "Revenue 收入 5 6,539,569 6,147,573",
+      "Cost of sales 銷售成本 25 (4,493,756) (4,206,269)",
+      "Gross profit 毛利 2,045,813 1,941,304",
+      "Distribution expenses 經銷開支 25 (771,543) (589,394)",
+      "Administrative expenses 行政開支 25 (276,687) (275,464)"
+     ],
+     "interim_four_columns": false,
+     "kind": "income",
+     "page_end": 227,
+     "page_start": 226,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "Note",
+       "note": "",
+       "values": [
+        "2024",
+        "2023"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "Revenue 收入",
+       "note": "5",
+       "values": [
+        "6539569",
+        "6147573"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "Cost of sales 銷售成本",
+       "note": "25",
+       "values": [
+        "-4493756",
+        "-4206269"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "Gross profit 毛利",
+       "note": "",
+       "values": [
+        "2045813",
+        "1941304"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "Distribution expenses 經銷開支",
+       "note": "25",
+       "values": [
+        "-771543",
+        "-589394"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "Administrative expenses 行政開支",
+       "note": "25",
+       "values": [
+        "-276687",
+        "-275464"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "Other income and gains – net 其他收入及收益淨額",
+       "note": "27",
+       "values": [
+        "110760",
+        "118375"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "Operating profit 經營溢利",
+       "note": "",
+       "values": [
+        "1108343",
+        "1194821"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "Finance income 融資收入",
+       "note": "28",
+       "values": [
+        "74680",
+        "73637"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "Finance costs 融資成本",
+       "note": "28",
+       "values": [
+        "-4910",
+        "-4341"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "Finance income – net 融資收入淨額",
+       "note": "28",
+       "values": [
+        "69770",
+        "69296"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "Profit before income tax 除所得稅前溢利",
+       "note": "",
+       "values": [
+        "1178113",
+        "1264117"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "Income tax expense 所得稅開支",
+       "note": "29",
+       "values": [
+        "-378636",
+        "-357089"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "Profit for the year 年內溢利",
+       "note": "",
+       "values": [
+        "799477",
+        "907028"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "– Owners of the Company －本公司擁有人",
+       "note": "",
+       "values": [
+        "739425",
+        "852696"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "– Non-controlling interests －非控股權益",
+       "note": "",
+       "values": [
+        "60052",
+        "54332"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "",
+       "note": "",
+       "values": [
+        "799477",
+        "907028"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "– Currency translation differences －匯兌差額",
+       "note": "",
+       "values": [
+        "5123",
+        "271"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "for the year, net of tax （扣除稅項）",
+       "note": "",
+       "values": [
+        "5123",
+        "271"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "Total comprehensive income 全面收益總額",
+       "note": "",
+       "values": [
+        "804600",
+        "907299"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "– Owners of the Company －本公司擁有人",
+       "note": "",
+       "values": [
+        "744548",
+        "852967"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "– Non-controlling interests －非控股權益",
+       "note": "",
+       "values": [
+        "60052",
+        "54332"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "",
+       "note": "",
+       "values": [
+        "804600",
+        "907299"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "– Basic －基本",
+       "note": "30",
+       "values": [
+        "76.2",
+        "87.5"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "– Diluted －攤薄",
+       "note": "30",
+       "values": [
+        "76.2",
+        "87.5"
+       ]
+      }
+     ],
+     "title": "綜合損益及其他全面收益表",
+     "unit_multiplier": 1000,
+     "years": [
+      2024,
+      2023
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "2024年度報告"
+  },
+  "20251231|annual": {
+   "ann_date": "24/04/2026 18:44",
+   "attempts": 1,
+   "end_date": "20251231",
+   "mapping": {
+    "income": {
+     "basic_eps": [
+      "r24"
+     ],
+     "cost_of_revenue": [
+      "r3"
+     ],
+     "diluted_eps": [
+      "r25"
+     ],
+     "gross_profit": [
+      "r4"
+     ],
+     "income_tax": [
+      "r13"
+     ],
+     "int_exp": [
+      "r10"
+     ],
+     "n_income_attr_p": [
+      "r15"
+     ],
+     "operating_income": [
+      "r8"
+     ],
+     "sga_exp": [
+      "r5",
+      "r6"
+     ],
+     "total_profit": [
+      "r12"
+     ],
+     "total_revenue": [
+      "r2"
+     ]
+    }
+   },
+   "report_type": "annual",
+   "source_fingerprint": "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0424/2026042402469_c.pdf|24/04/2026 18:44",
+   "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0424/2026042402469_c.pdf",
+   "statements": {
+    "income": {
+     "column_count": 2,
+     "currency": "CNY",
+     "header": [
+      "綜合損益及其他全面收益表",
+      "Year ended 31 December",
+      "截至12月31日止年度",
+      "Note 2025 2024",
+      "附註 2025年 2024年",
+      "RMB’000 RMB’000",
+      "人民幣千元 人民幣千元",
+      "Revenue 收入 5 6,612,566 6,539,569",
+      "Cost of sales 銷售成本 25 (4,447,524) (4,493,756)",
+      "Gross profit 毛利 2,165,042 2,045,813",
+      "Distribution expenses 經銷開支 25 (768,007) (771,543)",
+      "Administrative expenses 行政開支 25 (295,293) (276,687)"
+     ],
+     "interim_four_columns": false,
+     "kind": "income",
+     "page_end": 273,
+     "page_start": 272,
+     "rows": [
+      {
+       "context": [],
+       "id": "r1",
+       "label": "Note",
+       "note": "",
+       "values": [
+        "2025",
+        "2024"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r2",
+       "label": "Revenue 收入",
+       "note": "5",
+       "values": [
+        "6612566",
+        "6539569"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r3",
+       "label": "Cost of sales 銷售成本",
+       "note": "25",
+       "values": [
+        "-4447524",
+        "-4493756"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r4",
+       "label": "Gross profit 毛利",
+       "note": "",
+       "values": [
+        "2165042",
+        "2045813"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r5",
+       "label": "Distribution expenses 經銷開支",
+       "note": "25",
+       "values": [
+        "-768007",
+        "-771543"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r6",
+       "label": "Administrative expenses 行政開支",
+       "note": "25",
+       "values": [
+        "-295293",
+        "-276687"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r7",
+       "label": "Other income and gains – net 其他收入及收益淨額",
+       "note": "27",
+       "values": [
+        "135967",
+        "110760"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r8",
+       "label": "Operating profit 經營溢利",
+       "note": "",
+       "values": [
+        "1237709",
+        "1108343"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r9",
+       "label": "Finance income 融資收入",
+       "note": "28",
+       "values": [
+        "42262",
+        "74680"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r10",
+       "label": "Finance costs 融資成本",
+       "note": "28",
+       "values": [
+        "-4538",
+        "-4910"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r11",
+       "label": "Finance income – net 融資收入淨額",
+       "note": "28",
+       "values": [
+        "37724",
+        "69770"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r12",
+       "label": "Profit before income tax 除所得稅前溢利",
+       "note": "",
+       "values": [
+        "1275433",
+        "1178113"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r13",
+       "label": "Income tax expense 所得稅開支",
+       "note": "29",
+       "values": [
+        "-371948",
+        "-378636"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r14",
+       "label": "Profit for the year 年內溢利",
+       "note": "",
+       "values": [
+        "903485",
+        "799477"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r15",
+       "label": "– Owners of the Company －本公司擁有人",
+       "note": "",
+       "values": [
+        "853964",
+        "739425"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r16",
+       "label": "– Non-controlling interests －非控股權益",
+       "note": "",
+       "values": [
+        "49521",
+        "60052"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r17",
+       "label": "",
+       "note": "",
+       "values": [
+        "903485",
+        "799477"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r18",
+       "label": "– Currency translation differences －匯兌差額",
+       "note": "",
+       "values": [
+        "3823",
+        "5123"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r19",
+       "label": "for the year",
+       "note": "",
+       "values": [
+        "3823",
+        "5123"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r20",
+       "label": "Total comprehensive income 全面收益總額",
+       "note": "",
+       "values": [
+        "907308",
+        "804600"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r21",
+       "label": "– Owners of the Company －本公司擁有人",
+       "note": "",
+       "values": [
+        "857787",
+        "744548"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r22",
+       "label": "– Non-controlling interests －非控股權益",
+       "note": "",
+       "values": [
+        "49521",
+        "60052"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r23",
+       "label": "",
+       "note": "",
+       "values": [
+        "907308",
+        "804600"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r24",
+       "label": "– Basic －基本",
+       "note": "30",
+       "values": [
+        "0.88",
+        "0.76"
+       ]
+      },
+      {
+       "context": [],
+       "id": "r25",
+       "label": "– Diluted －攤薄",
+       "note": "30",
+       "values": [
+        "0.88",
+        "0.76"
+       ]
+      }
+     ],
+     "title": "綜合損益及其他全面收益表",
+     "unit_multiplier": 1000,
+     "years": [
+      2025,
+      2024
+     ]
+    }
+   },
+   "status": "ok",
+   "title": "2025年度報告"
+  }
+ },
+ "market": "港股",
+ "symbol": "01579",
+ "yahoo_fundamentals": {
+  "20241231": {
+   "accounts_receiv": 285405000.0,
+   "basic_eps": 0.762,
+   "capex": -289325000.0,
+   "cost_of_revenue": 4493756000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 205587000.0,
+   "diluted_eps": 0.762,
+   "ebitda": 1388610000.0,
+   "end_date": "20241231",
+   "fix_assets": 2103538000.0,
+   "fp": "FY",
+   "free_cashflow": 628388000.0,
+   "gross_profit": 2045813000.0,
+   "income_tax": 378636000.0,
+   "int_exp": 4910000.0,
+   "inventories": 465531000.0,
+   "money_cap": 1881867000.0,
+   "n_cashflow_act": 917713000.0,
+   "n_income_attr_p": 739425000.0,
+   "operating_income": 1094256000.0,
+   "sga_exp": 1048230000.0,
+   "total_assets": 5799294000.0,
+   "total_cur_assets": 2978939000.0,
+   "total_cur_liab": 903330000.0,
+   "total_debt": 93519000.0,
+   "total_hldr_eqy_exc_min_int": 4569627000.0,
+   "total_liab": 1066134000.0,
+   "total_profit": 1178113000.0,
+   "total_revenue": 6539569000.0
+  },
+  "20251231": {
+   "accounts_receiv": 256349000.0,
+   "basic_eps": 0.88,
+   "capex": -322759000.0,
+   "cost_of_revenue": 4447524000.0,
+   "currency": "CNY",
+   "depr_fa_coga_dpba": 229780000.0,
+   "diluted_eps": 0.88,
+   "ebitda": 1509751000.0,
+   "end_date": "20251231",
+   "fix_assets": 2256404000.0,
+   "fp": "FY",
+   "free_cashflow": 663679000.0,
+   "gross_profit": 2165042000.0,
+   "income_tax": 371948000.0,
+   "int_exp": 4538000.0,
+   "inventories": 521861000.0,
+   "money_cap": 2084546000.0,
+   "n_cashflow_act": 986438000.0,
+   "n_income_attr_p": 853964000.0,
+   "operating_income": 1242502000.0,
+   "sga_exp": 1063300000.0,
+   "total_assets": 5939710000.0,
+   "total_cur_assets": 3068581000.0,
+   "total_cur_liab": 803649000.0,
+   "total_debt": 116570000.0,
+   "total_hldr_eqy_exc_min_int": 4771869000.0,
+   "total_liab": 994787000.0,
+   "total_profit": 1275433000.0,
+   "total_revenue": 6612566000.0
+  }
+ }
+}

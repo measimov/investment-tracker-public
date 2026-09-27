@@ -26,6 +26,7 @@ from .aggregates import (
     get_summary_statistics,
 )
 from .analytics import calculate_performance_analytics
+from .period_pnl import calculate_period_pnl
 from .pricing import PRICE_STALE_DAYS, resolve_server_prices
 from .snapshot import build_portfolio_snapshot
 
@@ -35,6 +36,7 @@ __all__ = [
     "calculate_current_holdings_performance",
     "calculate_performance_analytics",
     "calculate_performance_summary",
+    "calculate_period_pnl",
     "calculate_realized_pnl_fifo",
     "get_dividend_summary",
     "get_holdings_cost_breakdown",

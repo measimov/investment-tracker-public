@@ -1,22 +1,26 @@
 <script setup lang="ts">
+import { showApiError } from '@/utils/showApiError'
 import { reactive, ref } from 'vue'
 import { ElMessage, type FormInstance } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
 import SecuritySelect from '@/components/SecuritySelect.vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
-import { getApiErrorMessage } from '@/utils/apiErrors'
-import { formatDate, formatDateTime, formatNumber } from '@/utils/helpers'
+import { formatDate, formatDateTime, formatNumber, formatQuantity } from '@/utils/helpers'
 import {
   type AccountRow,
   type DialogState,
   type SnapshotRow,
+  LIST_LIMIT,
   accountLabelIn,
   accountName,
   currencyOptions,
+  isAtListLimit,
   makeRemover,
   marketOptions,
-  monthEnd
+  monthEnd,
+  signedDelta,
+  statementScopeLabel
 } from './shared'
 
 const props = defineProps<{
@@ -74,6 +78,12 @@ const DIFF_ITEM_LABELS: Record<string, string> = {
 const diffItemLabel = (status: string) => DIFF_ITEM_LABELS[status] || status
 const diffItemTag = (status: string) => (status === 'MATCH' ? 'success' : 'danger')
 
+// 排除清单内的现金管理标的双侧忽略（summary.excluded_symbols），需在弹窗里说清楚
+const excludedSymbols = (row: SnapshotRow | null) => {
+  const items = row?.diff_detail?.summary?.excluded_symbols
+  return Array.isArray(items) ? (items as Array<{ symbol?: string; market?: string }>) : []
+}
+
 function openDiffDialog(row: SnapshotRow) {
   diffDialog.row = row
   diffDialog.visible = true
@@ -90,7 +100,7 @@ async function compareSnapshot(row: SnapshotRow) {
     )
     await props.reload()
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '比对失败'))
+    showApiError(error, '比对失败')
   } finally {
     comparingSnapshotId.value = null
   }
@@ -182,7 +192,7 @@ async function saveSnapshot() {
     snapshotDialog.visible = false
     await props.reload()
   } catch (error) {
-    ElMessage.error(getApiErrorMessage(error, '核对记录保存失败'))
+    showApiError(error, '核对记录保存失败')
   } finally {
     snapshotDialog.saving = false
   }
@@ -252,7 +262,7 @@ const positionSummary = (value: unknown) => {
     <div class="section-toolbar">
       <div>
         <h2>月末核对</h2>
-        <p>记录“是否和券商对得上”，不在这里重建复杂会计账本。</p>
+        <p>录入券商月结单上的期末现金与持仓，与系统按流水推导的结果自动比对。</p>
       </div>
       <el-button
         type="primary"
@@ -263,6 +273,15 @@ const positionSummary = (value: unknown) => {
         新增核对
       </el-button>
     </div>
+
+    <el-alert
+      v-if="isAtListLimit(snapshots)"
+      type="info"
+      :closable="false"
+      show-icon
+      class="list-limit-alert"
+      :title="`仅显示最近 ${LIST_LIMIT} 条核对记录`"
+    />
 
     <div v-if="!isMobileView" class="responsive-table desktop-data-table">
       <el-table :data="snapshots" v-loading="loading" stripe row-key="id">
@@ -277,13 +296,23 @@ const positionSummary = (value: unknown) => {
             accountLabel(row.broker_account_id || row.account_id)
           }}</template>
         </el-table-column>
+        <el-table-column label="范围" width="100">
+          <template #default="{ row }">{{ statementScopeLabel(row.statement_scope) }}</template>
+        </el-table-column>
         <el-table-column label="状态" width="130">
           <template #default="{ row }">
             <el-tag
               :type="snapshotStatusTag(row.status)"
               size="small"
               :class="{ 'diff-tag-clickable': row.diff_detail }"
+              :role="row.diff_detail ? 'button' : undefined"
+              :tabindex="row.diff_detail ? 0 : undefined"
+              :aria-label="
+                row.diff_detail ? `${snapshotStatusLabel(row)}，查看差异明细` : undefined
+              "
               @click="row.diff_detail && openDiffDialog(row)"
+              @keydown.enter.prevent="row.diff_detail && openDiffDialog(row)"
+              @keydown.space.prevent="row.diff_detail && openDiffDialog(row)"
             >
               {{ snapshotStatusLabel(row) }}
             </el-tag>
@@ -341,7 +370,14 @@ const positionSummary = (value: unknown) => {
               :type="snapshotStatusTag(row.status)"
               size="small"
               :class="{ 'diff-tag-clickable': row.diff_detail }"
+              :role="row.diff_detail ? 'button' : undefined"
+              :tabindex="row.diff_detail ? 0 : undefined"
+              :aria-label="
+                row.diff_detail ? `${snapshotStatusLabel(row)}，查看差异明细` : undefined
+              "
               @click="row.diff_detail && openDiffDialog(row)"
+              @keydown.enter.prevent="row.diff_detail && openDiffDialog(row)"
+              @keydown.space.prevent="row.diff_detail && openDiffDialog(row)"
             >
               {{ snapshotStatusLabel(row) }}
             </el-tag>
@@ -349,6 +385,7 @@ const positionSummary = (value: unknown) => {
         </div>
 
         <div class="mobile-card-meta">
+          <span>范围 {{ statementScopeLabel(row.statement_scope) }}</span>
           <span>现金 {{ jsonSummary(row.cash_balances || row.reported_cash) }}</span>
           <span>持仓 {{ positionSummary(row.positions || row.reported_positions) }}</span>
           <span v-if="row.source_filename">{{ row.source_filename }}</span>
@@ -430,12 +467,12 @@ const positionSummary = (value: unknown) => {
                   :value="currency"
                 />
               </el-select>
+              <!-- 不设下限：融资账户期末现金可以是负数（后端允许） -->
               <el-input-number
                 v-model="item.amount"
-                :min="0"
                 :precision="2"
                 controls-position="right"
-                placeholder="报表余额"
+                placeholder="报表余额（可为负）"
               />
               <el-button
                 type="danger"
@@ -511,13 +548,14 @@ const positionSummary = (value: unknown) => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="diffDialog.visible" title="对账比对详情" width="720px">
+    <el-dialog v-model="diffDialog.visible" title="对账比对详情" width="min(820px, 96vw)">
       <template v-if="diffDialog.row">
         <div class="diff-meta">
           <el-tag :type="snapshotStatusTag(diffDialog.row.status)" size="small">
             {{ snapshotStatusLabel(diffDialog.row) }}
           </el-tag>
           <span>快照日 {{ formatDate(diffDialog.row.snapshot_date) }}</span>
+          <span>范围 {{ statementScopeLabel(diffDialog.row.statement_scope) }}</span>
           <span v-if="diffDialog.row.compared_at"
             >比对于 {{ formatDateTime(diffDialog.row.compared_at) }}</span
           >
@@ -529,10 +567,13 @@ const positionSummary = (value: unknown) => {
           <el-table-column prop="symbol" label="代码" width="110" />
           <el-table-column prop="market" label="市场" width="90" />
           <el-table-column label="快照数量" width="110" align="right">
-            <template #default="{ row }">{{ row.snapshot_quantity ?? '—' }}</template>
+            <template #default="{ row }">{{ formatQuantity(row.snapshot_quantity) }}</template>
           </el-table-column>
           <el-table-column label="系统数量" width="110" align="right">
-            <template #default="{ row }">{{ row.system_quantity ?? '—' }}</template>
+            <template #default="{ row }">{{ formatQuantity(row.system_quantity) }}</template>
+          </el-table-column>
+          <el-table-column label="差额（系统−快照）" width="140" align="right">
+            <template #default="{ row }">{{ signedDelta(row.delta, 4) }}</template>
           </el-table-column>
           <el-table-column label="结果" min-width="120">
             <template #default="{ row }">
@@ -542,6 +583,14 @@ const positionSummary = (value: unknown) => {
             </template>
           </el-table-column>
         </el-table>
+        <p v-if="excludedSymbols(diffDialog.row).length" class="diff-excluded">
+          已按排除规则双侧忽略：
+          {{
+            excludedSymbols(diffDialog.row)
+              .map((item) => `${item.symbol}（${item.market}）`)
+              .join('、')
+          }}
+        </p>
 
         <h4>现金比对</h4>
         <el-alert
@@ -553,8 +602,15 @@ const positionSummary = (value: unknown) => {
         <el-table v-else :data="diffDialog.row.diff_detail?.cash || []" size="small" stripe>
           <template #empty><el-empty description="无现金数据" :image-size="88" /></template>
           <el-table-column prop="currency" label="币种" width="90" />
-          <el-table-column prop="snapshot_balance" label="快照余额" width="130" align="right" />
-          <el-table-column prop="derived_balance" label="推导余额" width="130" align="right" />
+          <el-table-column label="快照余额" width="130" align="right">
+            <template #default="{ row }">{{ formatNumber(row.snapshot_balance, 2) }}</template>
+          </el-table-column>
+          <el-table-column label="推导余额" width="130" align="right">
+            <template #default="{ row }">{{ formatNumber(row.derived_balance, 2) }}</template>
+          </el-table-column>
+          <el-table-column label="差额（推导−快照）" width="140" align="right">
+            <template #default="{ row }">{{ signedDelta(row.delta, 2) }}</template>
+          </el-table-column>
           <el-table-column label="结果" min-width="110">
             <template #default="{ row }">
               <el-tag :type="row.status === 'MATCH' ? 'success' : 'warning'" size="small">
@@ -638,11 +694,22 @@ const positionSummary = (value: unknown) => {
 
 .diff-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   margin-bottom: 8px;
   color: var(--app-text-muted);
   font-size: 13px;
+}
+
+.list-limit-alert {
+  margin-bottom: 12px;
+}
+
+.diff-excluded {
+  margin: 6px 0 0;
+  color: var(--app-text-muted);
+  font-size: 12px;
 }
 
 .diff-notes {
