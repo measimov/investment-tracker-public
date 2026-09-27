@@ -317,6 +317,7 @@ def get_symbol_profile(
         statements["balancesheet"],
         statements["cashflow"],
         statements["fina_indicator"],
+        market=market,
     )
     # 准则取数走年度行专取口径（caps 窗口的季报会挤掉年度行，见
     # load_graham_inputs 注释），与分析输入一致

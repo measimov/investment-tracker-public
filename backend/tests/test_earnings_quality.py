@@ -38,6 +38,7 @@ def test_core_ratios_hand_computed():
         ],
         cashflow_rows=[_cashflow(2026, 150.0), _cashflow(2025, 170.0)],
         fina_indicator_rows=[_fina(2026, 40.0, 18.0, 160.0), _fina(2025, 42.0, 18.0, 150.0)],
+        market="A股",  # Tushare 行不带 currency，按市场即人民币
     )
     assert result["status"] == "ok"
     year = result["per_year"]["2026"]
@@ -65,7 +66,7 @@ def test_beneish_m_score_hand_computed():
 
     result = compute_earnings_quality(
         income_rows=income, balancesheet_rows=balance,
-        cashflow_rows=cashflow, fina_indicator_rows=fina,
+        cashflow_rows=cashflow, fina_indicator_rows=fina, market="A股",
     )
     entry = result["beneish_m_score"]["2026"]
     factors = entry["factors"]

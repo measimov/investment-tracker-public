@@ -246,7 +246,7 @@ def _hk_statements(years, *, total_debt=10_000.0):
     income, balance = [], []
     for idx, year in enumerate(sorted(years)):
         income.append({
-            "end_date": f"{year}1231", "fp": "FY",
+            "end_date": f"{year}1231", "fp": "FY", "currency": "HKD",
             "n_income_attr_p": 8_000.0,
             "basic_eps": 1.0 + 0.2 * idx,
             "operating_income": 9_000.0,
@@ -294,6 +294,7 @@ def _us_statements(years):
     for idx, year in enumerate(sorted(years)):
         income.append({
             "end_date": f"{year}0930", "fp": "FY",  # 美股财年不止于 12/31
+            "currency": "USD",  # 透视行逐行带报告币种（EDGAR 按构造必有）
             "n_income_attr_p": 5_000.0,
             "basic_eps": 2.0 + 0.5 * idx,
             "operating_income": 6_000.0,

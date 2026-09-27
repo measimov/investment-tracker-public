@@ -227,6 +227,7 @@ def build_analysis_input(
         statements["balancesheet"],
         statements["cashflow"],
         statements["fina_indicator"],
+        market=market,
     )
     # 准则取数走年度行专取口径（caps 窗口的季报会把年度行挤到 2-3 个，
     # 十年准则失灵、分红记录截断成错误 fail——真实账本冒烟实锤）
@@ -262,6 +263,9 @@ def build_analysis_input(
             "report_statements=披露易年报/中报 PDF 原文抽取的三张报表核心科目(官方一手，"
             "**可达十年**；fp=FY 年度、fp=H1 中报——中报只送最新一期及其比较列；"
             "is_comparative=true 是下一期报告的比较列而非本期权威行；"
+            "金额与每股盈利的币种见行内 currency 字段——公司可能中途更换报告币种(如 USD→HKD、"
+            "HKD→CNY，切换年见 earnings_quality.currency_changes)，不同币种年份的金额不得直接"
+            "比较或计算增速，跨年结论以预计算指标为准；"
             "validation_status=suspect 表示该期科目校验存疑、存疑科目已置空由雅虎补缺，"
             "对应期见 profile_data_gaps)；yahoo_fundamentals=雅虎年度核心科目(报告币种见"
             "行内 currency 字段，公司间不一致；非官方接口、仅近 3-5 年，只作补缺)；"

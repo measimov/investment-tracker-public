@@ -11,6 +11,14 @@ LLM 读摘要找"会计技巧"不可靠：先从已入库的三大报表/财务�
 - 扣非净利占比：<70% = 依赖非经常性损益
 - Beneish M-score（八因子）：> -1.78 提示存在盈余操纵可能（参考模型，
   非结论；杠杆率用总负债/总资产近似 LVGI，注明口径）
+
+跨年指标与报告币种：港股/美股透视行逐行带 currency，公司可能中途换报告币种（00799 2021 年起
+USD→HKD）。本层没有汇率输入，币种切换处的跨年比值（营收/应收/存货增速 → 增速差、M-score 的
+SGI）一律不计并在 per_year[year].currency_change 标注；近 5 年累计 CFO/净利润只累加与最新年度
+同币种的年份。**币种未知不等于同币种**：任一侧（含两侧）行上无币种即按「无法确认相同」处理，
+只有 A股（Tushare 报表按构造为人民币，STATEMENT_CURRENCY_BY_MARKET）由 market 参数补出币种。
+同年内的比率（CFO/NI、应计率、毛利率、净利率）与币种无关。只在发生切换/无法确认时输出
+currency_changes 等键——单币种序列（含 A股）的输出与改动前逐字节一致。
 """
 
 from typing import Any, Callable, Dict, List, Optional
@@ -76,6 +84,51 @@ def _growth_pct(current: Optional[float], previous: Optional[float]) -> Optional
 
 def _round(value: Optional[float], digits: int = 4) -> Optional[float]:
     return round(value, digits) if value is not None else None
+
+
+# 数据源按构造就确定币种、行上不带 currency 的市场：A股 Tushare 三大报表（合并报表口径，单位
+# 人民币元；格雷厄姆 A股 估值路径同样按 CNY 处理）。**只有这里列出的市场**能把「行上无币种」
+# 解释为已知币种；港股/美股透视行逐行带 currency，缺失即未知（PDF 抽取允许 currency=None，
+# merge_hk_statement_rows 也刻意不猜）——两端都未知不能证明同币种
+STATEMENT_CURRENCY_BY_MARKET: Dict[str, str] = {"A股": "CNY"}
+
+
+def statement_currency(row: Optional[Dict[str, Any]], market: Optional[str]) -> Optional[str]:
+    """报表行的币种：行上 currency 优先，缺失时只对 STATEMENT_CURRENCY_BY_MARKET 的市场按市场
+    补出；其余返回 None（未知）。"""
+    currency = (row or {}).get("currency")
+    if currency:
+        return str(currency)
+    if row is None:
+        return None
+    return STATEMENT_CURRENCY_BY_MARKET.get(market or "")
+
+
+def _currency_of(market: Optional[str], *rows: Optional[Dict[str, Any]]) -> Optional[str]:
+    """该年度各表行的报告币种（取第一个已知的；全部未知 → None）。"""
+    for row in rows:
+        currency = statement_currency(row, market)
+        if currency:
+            return currency
+    return None
+
+
+def _currency_change(
+    tables: List[Dict[str, Dict[str, Any]]], year: str, prev: str, market: Optional[str]
+) -> Optional[str]:
+    """year 与 prev 两年的报告币种不同或**无法确认相同**（任一侧未知，含两侧都未知）→
+    "USD→HKD" / "未知→HKD"；确认同币种或 prev 年无行 → None。
+
+    跨年比值（增速、SGI）在币种切换处不能直接相除——00799 2020 年营收 704.1M USD、2021 年
+    6,050.9M HKD，直接相除是 +759% 的"增长"。本层无汇率输入，切换处的跨年指标一律不计并标注。"""
+    prev_rows = [table.get(prev) for table in tables]
+    if not any(prev_rows):
+        return None
+    ours = _currency_of(market, *(table.get(year) for table in tables))
+    theirs = _currency_of(market, *prev_rows)
+    if ours and ours == theirs:
+        return None
+    return f"{theirs or '未知'}→{ours or '未知'}"
 
 
 # EDGAR 透视行的版本（行上 `edgar_chain_version`）。v2：长期债务扩展链与已付股息链；
@@ -290,8 +343,12 @@ def compute_earnings_quality(
     fina_indicator_rows: List[Dict[str, Any]],
     *,
     max_years: int = 8,
+    market: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """从年度报表行计算利润质量指标；数据不足的指标为 None/缺省。"""
+    """从年度报表行计算利润质量指标；数据不足的指标为 None/缺省。
+
+    market 决定行上无 currency 时能否按市场确定币种（STATEMENT_CURRENCY_BY_MARKET，仅 A股）；
+    其余情况币种未知的相邻年份不做跨年比较。"""
     income = _annual_by_year(income_rows)
     balance = _annual_by_year(balancesheet_rows)
     cashflow = _annual_by_year(cashflow_rows)
@@ -304,17 +361,28 @@ def compute_earnings_quality(
     per_year: Dict[str, Dict[str, Any]] = {}
     cum_cfo = cum_ni = 0.0
     cum_years = 0
+    # 近 5 年累计只累加与最新可累计年度同币种的年份：USD 与 HKD 金额相加没有意义
+    cum_currency: Optional[str] = None
+    cum_stopped_at: Optional[str] = None
+    currency_changes: List[Dict[str, str]] = []
+    tables = [income, balance, cashflow]
     for year in years:
         ni = _num(income.get(year), "n_income_attr_p", "n_income")
         cfo = _num(cashflow.get(year), "n_cashflow_act")
         assets = _num(balance.get(year), "total_assets")
         revenue = _num(income.get(year), "total_revenue", "revenue")
         prev = str(int(year) - 1)
-        revenue_prev = _num(income.get(prev), "total_revenue", "revenue")
+        change = _currency_change(tables, year, prev, market)
+        if change:
+            currency_changes.append({"year": year, "change": change})
+        # 币种切换处的跨年比值不计（上年值置空 → 增速为 None）
+        prev_income = None if change else income.get(prev)
+        prev_balance = None if change else balance.get(prev)
+        revenue_prev = _num(prev_income, "total_revenue", "revenue")
         receivable = _num(balance.get(year), "accounts_receiv")
-        receivable_prev = _num(balance.get(prev), "accounts_receiv")
+        receivable_prev = _num(prev_balance, "accounts_receiv")
         inventory = _num(balance.get(year), "inventories")
-        inventory_prev = _num(balance.get(prev), "inventories")
+        inventory_prev = _num(prev_balance, "inventories")
         deducted = _num(fina.get(year), "profit_dedt")
 
         revenue_growth = _growth_pct(revenue, revenue_prev)
@@ -340,18 +408,27 @@ def compute_earnings_quality(
             "net_margin": _num(fina.get(year), "netprofit_margin"),
             "recurring_profit_share": _round(_ratio(deducted, ni)),
         }
-        if ni is not None and cfo is not None and cum_years < 5:
-            cum_ni += ni
-            cum_cfo += cfo
-            cum_years += 1
+        if change:
+            per_year[year]["currency_change"] = change
+        if ni is not None and cfo is not None and cum_years < 5 and cum_stopped_at is None:
+            currency = _currency_of(market, income.get(year), cashflow.get(year))
+            # 币种未知的年份不能与任何年份相加（首年未知则只取这一年）
+            if cum_years and (currency is None or currency != cum_currency):
+                cum_stopped_at = year
+            else:
+                cum_currency = currency
+                cum_ni += ni
+                cum_cfo += cfo
+                cum_years += 1
 
     m_scores = {
         year: score
         for year in years
-        if (score := _beneish_m_score(income, balance, cashflow, fina, year)) is not None
+        if not per_year[year].get("currency_change")
+        and (score := _beneish_m_score(income, balance, cashflow, fina, year)) is not None
     }
 
-    return {
+    result = {
         "status": "ok",
         "years": years,
         "per_year": per_year,
@@ -359,6 +436,22 @@ def compute_earnings_quality(
         "beneish_m_score": m_scores,
         "metric_semantics": METRIC_SEMANTICS,
     }
+    # 以下键只在报告币种中途切换时出现：单币种序列（含 A股）的输出与改动前逐字节一致
+    if currency_changes:
+        result["currency_changes"] = currency_changes
+        result["currency_change_note"] = (
+            "报告币种在序列中途切换或无法确认相同（年份=切换后第一年；「未知」=行上无币种）："
+            "该年相对上一年的增速差与 Beneish "
+            "M-score 不计（不同币种金额不能直接相除，本层不做汇率折算）；同年内的比率"
+            "（CFO/净利润、应计率、毛利率、净利率）不受影响"
+        )
+    if cum_stopped_at is not None:
+        result["cfo_ni_ratio_5y_years"] = cum_years
+        result["cfo_ni_ratio_5y_note"] = (
+            f"近 5 年累计只含与最新年度同币种（{cum_currency or '币种未知'}）的 {cum_years} 年；"
+            f"{cum_stopped_at} 年起币种不同或无法确认相同，不混币累计"
+        )
+    return result
 
 
 def _beneish_m_score(

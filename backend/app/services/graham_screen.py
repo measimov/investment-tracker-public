@@ -22,12 +22,22 @@ GRAHAM_DEFENSIVE_THRESHOLDS（原著口径注释在旁，个别按市场现实�
 20-F 发行人无季报 → 最新年报），报表币种按价格日汇率折成价格币种；PB 用最近一期资产负债表
 （中报新于年报即用中报）的归母权益 ÷ 隐含股数（同一报告的归母净利 / 基本每股盈利，估算）。
 年报静态 PE 与格雷厄姆原著「三年平均盈利」PE 只作 `supplement` 展示，**不参与判定**。
+
+多年比较一律**恒定币种**：报表行逐行带 currency，公司可能中途换报告币种（00799 2021 年起
+USD→HKD、02669 2023 年起 HKD→CNY）。盈利增长的首尾端点币种不同时按估值那组汇率（价格日、
+首尾共用）折成末端币种再比，缺汇率或端点币种未知（含两端都未知；只有 A股 按市场补 CNY）→
+indeterminate；三年平均 PE 同样逐行按这组
+汇率折价格币种。盈利稳定性（只看正负）与分红记录（只看 > 0）与币种无关。
 """
 
 from datetime import date
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from .earnings_quality import EDGAR_MISSING_OTHER_CURRENCY, edgar_missing_other_currency
+from .earnings_quality import (
+    EDGAR_MISSING_OTHER_CURRENCY,
+    edgar_missing_other_currency,
+    statement_currency,
+)
 
 # 原著防御型标准；dividend_years_min 原著为 20 年不间断，A 股市场史与
 # 注册制前的分红文化撑不起该口径，按"连续 5 年"起判、数值如实展示。
@@ -774,6 +784,67 @@ def _statement_valuation(
     return pe_item, pb_item
 
 
+# ---------------------------------------------------------------------------- 跨年比较（恒定币种）
+
+
+def _constant_currency_endpoints(
+    first: Tuple[int, Optional[Dict[str, Any]], float],
+    last: Tuple[int, Optional[Dict[str, Any]], float],
+    view: _Valuation,
+    market: str,
+) -> Optional[Dict[str, Any]]:
+    """多年比较的两个端点以不同币种披露时，按**同一汇率**把首端折成末端币种。
+
+    00799 2016-2020 以 USD、2021 起以 HKD 披露；02669 2023 起由 HKD 改为 CNY。两端各按自己的
+    披露日汇率折算会把十年汇率变动算成盈利增长，所以两端共用估值那组汇率（价格日，报表币种 →
+    价格币种；首端 × r首 ÷ r末 = 折成末端币种）。两端币种确认相同 → None，调用方原样比较；
+    任一端币种未知（**含两端都未知**——两个 None 证明不了同币种）或缺汇率 → {error}，调用方判
+    indeterminate。行上无 currency 只对 A股 按市场补出 CNY（earnings_quality.statement_currency）。
+    返回 {first_converted, note, basis}。"""
+    (first_year, first_row, first_value), (last_year, last_row, last_value) = first, last
+    first_ccy = statement_currency(first_row, market)
+    last_ccy = statement_currency(last_row, market)
+    if first_ccy and first_ccy == last_ccy:
+        return None
+    if not first_ccy or not last_ccy:
+        return {
+            "error": f"首尾币种无法确认一致（{first_year} 年 {first_ccy or '币种未知'}、"
+            f"{last_year} 年 {last_ccy or '币种未知'}）",
+        }
+    first_rate = 1.0 if first_ccy == view.currency else view.fx_rates.get(first_ccy)
+    last_rate = 1.0 if last_ccy == view.currency else view.fx_rates.get(last_ccy)
+    if not view.currency or not first_rate or not last_rate:
+        return {
+            "error": f"首尾以不同币种披露（{first_year} 年 {first_ccy}、{last_year} 年 {last_ccy}），"
+            f"缺 {first_ccy}→{last_ccy} 汇率",
+        }
+    rate = first_rate / last_rate
+    converted = first_value * rate
+    rate_date = (view.price or {}).get("date")
+    detail = (
+        f"{first_year} 年 {first_value:.4g} {first_ccy} ≈ {converted:.4g} {last_ccy}"
+        f"（{rate_date} 汇率，首尾共用同一汇率，汇率变动不计入增长）；"
+        f"{last_year} 年 {last_value:.4g} {last_ccy}"
+    )
+    return {
+        "first_converted": converted,
+        "note": f"{first_year} 年以 {first_ccy} 披露，按同一汇率折 {last_ccy} 比较",
+        "basis": {
+            "label": detail,
+            "method": "constant_currency",
+            "first_year": first_year,
+            "first_value": first_value,
+            "first_currency": first_ccy,
+            "first_value_converted": round(converted, 6),
+            "last_year": last_year,
+            "last_value": last_value,
+            "currency": last_ccy,
+            "fx_rate": round(rate, 6),
+            "fx_rate_date": rate_date,
+        },
+    }
+
+
 # ---------------------------------------------------------------------------- 分红（港股/美股）
 
 
@@ -1115,7 +1186,22 @@ def compute_graham_screen(
     if first is None or last is None:
         first, last = _growth_endpoints("n_income_attr_p", "n_income")
         growth_basis = "净利润（缺 EPS 端点，未剔除股本变动）"
-    if (first is None or last is None) and short_history:
+    # 报告币种中途切换（00799 2016-2020 USD → 2021 起 HKD）：首尾按同一汇率折同一币种再比
+    growth_fx: Optional[Dict[str, Any]] = None
+    if first is not None and last is not None:
+        growth_fx = _constant_currency_endpoints(
+            (growth_first_year, income.get(str(growth_first_year)), first),
+            (anchor_year, income.get(str(anchor_year)), last),
+            _Valuation(market, valuation or {}),
+            market,
+        )
+    if growth_fx is not None and "error" in growth_fx:
+        criteria.append(_criterion(
+            "earnings_growth", "indeterminate",
+            f"{growth_first_year}→{anchor_year} {growth_basis}{growth_fx['error']}，"
+            "无法按同一币种比较增幅",
+        ))
+    elif (first is None or last is None) and short_history:
         criteria.append(_criterion(
             "earnings_growth", "indeterminate",
             f"{short_history_reason}，无法按十年窗口（{growth_first_year}→{anchor_year}）计算增幅",
@@ -1132,13 +1218,17 @@ def compute_graham_screen(
             f"期初（{growth_first_year}）{growth_basis}非正，增幅无意义",
         ))
     else:
+        if growth_fx is not None:
+            first = growth_fx["first_converted"]
         growth_pct = (last / first - 1) * 100
         verdict = "pass" if growth_pct >= thresholds["earnings_growth_min_pct"] else "fail"
         criteria.append(_criterion(
             "earnings_growth", verdict,
             f"{growth_first_year}→{anchor_year} {growth_basis}累计增幅 {growth_pct:.1f}%"
-            f"（阈值 ≥ {thresholds['earnings_growth_min_pct']:.0f}%，十年窗口）",
+            f"（阈值 ≥ {thresholds['earnings_growth_min_pct']:.0f}%，十年窗口"
+            + (f"；{growth_fx['note']}" if growth_fx else "") + "）",
             growth_pct,
+            basis=growth_fx["basis"] if growth_fx else None,
         ))
 
     # 6/7. 估值：A股 = daily_basic 快照（pe_ttm/pb，判定口径不变）；港股/美股 = 行情价 ÷ 报表 TTM

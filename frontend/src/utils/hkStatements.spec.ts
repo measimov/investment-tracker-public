@@ -4,6 +4,7 @@ import {
   HK_NUMERIC_FIELDS,
   buildNotes,
   buildNotesText,
+  currencySwitchText,
   epsNoteText,
   formatStatementPeriodKey,
   isCurrencyOutlier,
@@ -345,5 +346,46 @@ describe('构建层标注（PR-A：EPS 折元 / 小计修复 / 已重列）', ()
       }
     })
     expect(buildNotesText(dropped)).toContain('行 r33（附注号 14）→ 弃用（由雅虎补缺）')
+  })
+})
+
+describe('currencySwitchText（报告币种切换点）', () => {
+  it('标出时间上紧邻更早一期币种不同的那一行，其余为空', () => {
+    const rows = [
+      { end_date: '20221231', fp: 'FY', currency: 'HKD' },
+      { end_date: '20210630', fp: 'H1', currency: 'HKD' },
+      { end_date: '20211231', fp: 'FY', currency: 'HKD' },
+      { end_date: '20201231', fp: 'FY', currency: 'USD' },
+      { end_date: '20191231', fp: 'FY', currency: 'USD' }
+    ]
+    expect(currencySwitchText(rows, rows[0])).toBe('')
+    expect(currencySwitchText(rows, rows[2])).toBe('')
+    // 含中报时切换后的第一期是 2021 中报（紧接 2020-12-31）
+    expect(currencySwitchText(rows, rows[1])).toContain('由 USD 改为 HKD')
+    expect(currencySwitchText(rows, rows[3])).toBe('')
+    expect(currencySwitchText(rows, rows[4])).toBe('')
+    // 只看年报时切换点落在 2021 年报
+    const annual = rows.filter((row) => row.fp === 'FY')
+    expect(currencySwitchText(annual, annual[1])).toContain('由 USD 改为 HKD')
+  })
+
+  it('币种未知不等于同币种：任一侧（含两侧）未知都标出；单币种序列全为空', () => {
+    const rows = [
+      { end_date: '20251231', currency: 'CNY' },
+      { end_date: '20241231', currency: null },
+      { end_date: '20231231', currency: 'HKD' }
+    ]
+    expect(currencySwitchText(rows, rows[0])).toContain('无法确认同币种')
+    expect(currencySwitchText(rows, rows[0])).toContain('未知 → CNY')
+    expect(currencySwitchText(rows, rows[1])).toContain('HKD → 未知')
+    // 最早一期没有可比对象
+    expect(currencySwitchText(rows, rows[2])).toBe('')
+    const bothUnknown = [{ end_date: '20251231' }, { end_date: '20241231', currency: '' }]
+    expect(currencySwitchText(bothUnknown, bothUnknown[0])).toContain('无法确认同币种')
+    const uniform = [
+      { end_date: '20251231', currency: 'HKD' },
+      { end_date: '20241231', currency: 'HKD' }
+    ]
+    expect(uniform.map((row) => currencySwitchText(uniform, row))).toEqual(['', ''])
   })
 })

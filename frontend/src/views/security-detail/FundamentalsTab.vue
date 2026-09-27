@@ -77,6 +77,16 @@ const cfoNi5y = computed<number | null>(() => {
   const value = props.state.earningsQuality.cfo_ni_ratio_5y
   return isNum(value) ? value : null
 })
+// 报告币种中途切换（后端只在切换时给出）：切换年的跨年指标不计，近 5 年累计只含同币种年份
+const qualityCurrencyNotes = computed<string[]>(() => {
+  const quality = props.state.earningsQuality
+  const changes = (quality.currency_changes || []) as Array<{ year: string; change: string }>
+  const notes = changes.map(
+    (item) => `${item.year} 年起报告币种 ${item.change}：该年相对上一年的增速差与 M-score 不计`
+  )
+  if (quality.cfo_ni_ratio_5y_note) notes.push(String(quality.cfo_ni_ratio_5y_note))
+  return notes
+})
 
 // ---- 分红历史（A股，只列已实施）----
 const dividendRows = computed(() =>
@@ -302,6 +312,14 @@ function eventDetail(row: ProfileRow): string {
     <div v-if="isNum(cfoNi5y)" class="sd-footnote">
       近 5 年累计 CFO/净利润：
       <span :class="{ 'sd-red-flag': cfoNi5y! < 0.8 }">{{ formatRatio(cfoNi5y) }}</span>
+    </div>
+    <div
+      v-for="note in qualityCurrencyNotes"
+      :key="note"
+      class="sd-footnote"
+      data-testid="quality-currency-note"
+    >
+      {{ note }}
     </div>
   </section>
 

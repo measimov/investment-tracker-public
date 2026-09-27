@@ -8,6 +8,7 @@ import { InfoFilled, Link } from '@element-plus/icons-vue'
 import { EMPTY, formatDateTime } from '@/utils/helpers'
 import {
   buildNotesText,
+  currencySwitchText,
   epsNoteText,
   formatStatementPeriodKey,
   isCurrencyOutlier,
@@ -363,11 +364,17 @@ const statementRows = computed(() => {
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="币种" width="64">
+      <el-table-column label="币种" width="84">
         <template #default="{ row }">
           <span :class="{ 'sd-currency-outlier': isCurrencyOutlier(row, currencySummary) }">
             {{ row.currency || EMPTY }}
           </span>
+          <el-tooltip
+            v-if="currencySwitchText(pivotRows, row)"
+            :content="currencySwitchText(pivotRows, row)"
+          >
+            <span class="sd-period-badge" data-testid="pivot-currency-switch">换币</span>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column

@@ -1,0 +1,1439 @@
+{
+ "cases": {
+  "A股:000333": {
+   "earnings_quality": {
+    "beneish_m_score": {},
+    "cfo_ni_ratio_5y": null,
+    "metric_semantics": {
+     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
+     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
+     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
+     "net_margin_series": "净利率逐年序列",
+     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+    },
+    "per_year": {
+     "2018": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2019": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2020": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2021": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2022": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2023": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2024": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2025": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     }
+    },
+    "status": "ok",
+    "years": [
+     "2025",
+     "2024",
+     "2023",
+     "2022",
+     "2021",
+     "2020",
+     "2019",
+     "2018"
+    ]
+   },
+   "graham": {
+    "as_of_year": "2025",
+    "criteria": [
+     {
+      "criterion": "current_ratio",
+      "reason": "2025 年流动比率 1.21（阈值 ≥ 2.0）",
+      "value": 1.2134,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "lt_debt_vs_net_current_assets",
+      "reason": "2025 年有息负债（短借+长借+应付债券+一年内到期非流动负债）65,579,944,000 ≤ 净流动资产 73,278,641,000",
+      "value": 65579944000.0,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "earnings_stability",
+      "reason": "2016→2025 连续 10 年净利润均为正",
+      "value": null,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "dividend_record",
+      "reason": "截至 2025 年连续现金分红 13 年（阈值 ≥ 5 年；原著为 20 年）",
+      "value": 13.0,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "earnings_growth",
+      "reason": "2016→2025 每股盈利累计增幅 153.3%（阈值 ≥ 33%，十年窗口）",
+      "value": 153.2751,
+      "verdict": "pass"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 82.65,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pe",
+      "reason": "PE 14.21（阈值 ≤ 15，快照 20260924）",
+      "supplement": {
+       "avg3_basis": "FY2023–FY2025 平均每股盈利 5.39",
+       "basis": "年报口径，仅供参考，不参与判定",
+       "graham_avg3_pe": 15.33,
+       "static_basis": "FY2025 每股盈利 5.8",
+       "static_pe": 14.25
+      },
+      "value": 14.208,
+      "verdict": "pass"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 82.65,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pb_or_product",
+      "reason": "PB 2.98 > 1.5 且 PE×PB 42.3 超限",
+      "value": 2.9772,
+      "verdict": "fail"
+     }
+    ],
+    "criteria_semantics": {
+     "current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2",
+     "dividend_record": "锚定最新报告年度的连续现金分红年数（允许 1 年披露滞后；最近一次分红更早即视为中断 fail）。A股=分红实施记录；港股/美股=现金流量表「已付本公司股东股息」逐年大于 0（现金流量表在而未列该项按 0 计）",
+     "earnings_growth": "锚定十年窗口 [最新报告年度-9, 最新报告年度] 首尾每股盈利（缺 EPS 端点用净利润）累计增幅 ≥ 1/3；任一端点缺失为 indeterminate",
+     "earnings_stability": "以最新报告年度为锚、逐年无缺口的连续十年归母净利润为正；任一年亏损即 fail，有缺年/覆盖不足为 indeterminate（缺数不冒充稳定）",
+     "lt_debt_vs_net_current_assets": "长期债务 ≤ 净流动资产（流动资产−流动负债）",
+     "pb_or_product": "市净率 ≤ 1.5，或 PE×PB ≤ 22.5（放宽条款：盈利便宜可容忍 PB 略高）；港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
+     "pe": "市盈率 ≤ 15，按 TTM 判定（A股 daily_basic pe_ttm；港股/美股 = 最新收盘价 ÷ 报表推算的 TTM 每股盈利，basis 注明构成、价格日期与汇率）；supplement 中的年报静态 PE 与原著三年平均盈利 PE 仅供参考、不参与判定"
+    },
+    "failed": 2,
+    "fragility": {
+     "debt_to_assets": 0.6117,
+     "interest_coverage": 192650.08,
+     "net_cash_to_market_cap": 0.0312,
+     "net_debt_basis": "短借+长借+应付债券+一年内到期非流动负债",
+     "net_debt_to_assets": -0.0323
+    },
+    "fragility_semantics": {
+     "debt_to_assets": "总负债/总资产；杠杆越高对融资环境的隐性依赖越强",
+     "interest_coverage": "息税前利润/利息支出；薄覆盖=利率或盈利小幅波动即可致损的脆弱结构",
+     "net_cash_to_market_cap": "净现金/总市值（仅 A股有市值快照）；比例高=市价接近清算保护",
+     "net_debt_to_assets": "(有息负债−货币资金)/总资产；负值=净现金，是下行保护的第一层（塔勒布：先保证不死）"
+    },
+    "indeterminate": 0,
+    "passed": 5,
+    "status": "ok",
+    "thresholds": {
+     "current_ratio_min": 2.0,
+     "dividend_years_min": 5,
+     "earnings_growth_min_pct": 33.0,
+     "earnings_stability_years": 10,
+     "pb_max": 1.5,
+     "pe_max": 15.0,
+     "pe_pb_product_max": 22.5
+    }
+   }
+  },
+  "A股:300759": {
+   "earnings_quality": {
+    "beneish_m_score": {},
+    "cfo_ni_ratio_5y": null,
+    "metric_semantics": {
+     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
+     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
+     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
+     "net_margin_series": "净利率逐年序列",
+     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+    },
+    "per_year": {
+     "2018": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2019": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2020": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2021": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2022": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2023": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2024": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2025": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     }
+    },
+    "status": "ok",
+    "years": [
+     "2025",
+     "2024",
+     "2023",
+     "2022",
+     "2021",
+     "2020",
+     "2019",
+     "2018"
+    ]
+   },
+   "graham": {
+    "as_of_year": "2025",
+    "criteria": [
+     {
+      "criterion": "current_ratio",
+      "reason": "2025 年流动比率 0.93（阈值 ≥ 2.0）",
+      "value": 0.93,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "lt_debt_vs_net_current_assets",
+      "reason": "2025 年有息负债（短借+长借+应付债券+一年内到期非流动负债（缺 bond_payable，按 0 计））6,660,992,031 > 净流动资产 -585,836,709",
+      "value": 6660992030.95,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "earnings_stability",
+      "reason": "2016→2025 连续 10 年净利润均为正",
+      "value": null,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "dividend_record",
+      "reason": "截至 2025 年连续现金分红 8 年（阈值 ≥ 5 年；原著为 20 年）",
+      "value": 8.0,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "earnings_growth",
+      "reason": "2016→2025 每股盈利累计增幅 169.8%（阈值 ≥ 33%，十年窗口）",
+      "value": 169.8,
+      "verdict": "pass"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 43.5,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pe",
+      "reason": "PE 46.66（阈值 ≤ 15，快照 20260924）",
+      "supplement": {
+       "avg3_basis": "FY2023–FY2025 平均每股盈利 0.9536",
+       "basis": "年报口径，仅供参考，不参与判定",
+       "graham_avg3_pe": 45.62,
+       "static_basis": "FY2025 每股盈利 0.9443",
+       "static_pe": 46.07
+      },
+      "value": 46.6643,
+      "verdict": "fail"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 43.5,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pb_or_product",
+      "reason": "PB 4.89 > 1.5 且 PE×PB 228.1 超限",
+      "value": 4.8886,
+      "verdict": "fail"
+     }
+    ],
+    "criteria_semantics": {
+     "current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2",
+     "dividend_record": "锚定最新报告年度的连续现金分红年数（允许 1 年披露滞后；最近一次分红更早即视为中断 fail）。A股=分红实施记录；港股/美股=现金流量表「已付本公司股东股息」逐年大于 0（现金流量表在而未列该项按 0 计）",
+     "earnings_growth": "锚定十年窗口 [最新报告年度-9, 最新报告年度] 首尾每股盈利（缺 EPS 端点用净利润）累计增幅 ≥ 1/3；任一端点缺失为 indeterminate",
+     "earnings_stability": "以最新报告年度为锚、逐年无缺口的连续十年归母净利润为正；任一年亏损即 fail，有缺年/覆盖不足为 indeterminate（缺数不冒充稳定）",
+     "lt_debt_vs_net_current_assets": "长期债务 ≤ 净流动资产（流动资产−流动负债）",
+     "pb_or_product": "市净率 ≤ 1.5，或 PE×PB ≤ 22.5（放宽条款：盈利便宜可容忍 PB 略高）；港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
+     "pe": "市盈率 ≤ 15，按 TTM 判定（A股 daily_basic pe_ttm；港股/美股 = 最新收盘价 ÷ 报表推算的 TTM 每股盈利，basis 注明构成、价格日期与汇率）；supplement 中的年报静态 PE 与原著三年平均盈利 PE 仅供参考、不参与判定"
+    },
+    "failed": 4,
+    "fragility": {
+     "debt_to_assets": 0.4191,
+     "interest_coverage": 12.35,
+     "net_cash_to_market_cap": -0.0706,
+     "net_debt_basis": "短借+长借+应付债券+一年内到期非流动负债（缺 bond_payable，按 0 计）",
+     "net_debt_to_assets": 0.2083
+    },
+    "fragility_semantics": {
+     "debt_to_assets": "总负债/总资产；杠杆越高对融资环境的隐性依赖越强",
+     "interest_coverage": "息税前利润/利息支出；薄覆盖=利率或盈利小幅波动即可致损的脆弱结构",
+     "net_cash_to_market_cap": "净现金/总市值（仅 A股有市值快照）；比例高=市价接近清算保护",
+     "net_debt_to_assets": "(有息负债−货币资金)/总资产；负值=净现金，是下行保护的第一层（塔勒布：先保证不死）"
+    },
+    "indeterminate": 0,
+    "passed": 3,
+    "status": "ok",
+    "thresholds": {
+     "current_ratio_min": 2.0,
+     "dividend_years_min": 5,
+     "earnings_growth_min_pct": 33.0,
+     "earnings_stability_years": 10,
+     "pb_max": 1.5,
+     "pe_max": 15.0,
+     "pe_pb_product_max": 22.5
+    }
+   }
+  },
+  "A股:600900": {
+   "earnings_quality": {
+    "beneish_m_score": {},
+    "cfo_ni_ratio_5y": null,
+    "metric_semantics": {
+     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
+     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
+     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
+     "net_margin_series": "净利率逐年序列",
+     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+    },
+    "per_year": {
+     "2018": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2019": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2020": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2021": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2022": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2023": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2024": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2025": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     }
+    },
+    "status": "ok",
+    "years": [
+     "2025",
+     "2024",
+     "2023",
+     "2022",
+     "2021",
+     "2020",
+     "2019",
+     "2018"
+    ]
+   },
+   "graham": {
+    "as_of_year": "2025",
+    "criteria": [
+     {
+      "criterion": "current_ratio",
+      "reason": "2025 年流动比率 0.12（阈值 ≥ 2.0）",
+      "value": 0.1159,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "lt_debt_vs_net_current_assets",
+      "reason": "2025 年有息负债（短借+长借+应付债券+一年内到期非流动负债）287,477,185,087 > 净流动资产 -105,151,411,796",
+      "value": 287477185087.21,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "earnings_stability",
+      "reason": "2016→2025 连续 10 年净利润均为正",
+      "value": null,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "dividend_record",
+      "reason": "截至 2025 年连续现金分红 23 年（阈值 ≥ 5 年；原著为 20 年）",
+      "value": 23.0,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "earnings_growth",
+      "reason": "2016→2025 每股盈利累计增幅 49.3%（阈值 ≥ 33%，十年窗口）",
+      "value": 49.2801,
+      "verdict": "pass"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 28.36,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pe",
+      "reason": "PE 19.17（阈值 ≤ 15，快照 20260924）",
+      "supplement": {
+       "avg3_basis": "FY2023–FY2025 平均每股盈利 1.284",
+       "basis": "年报口径，仅供参考，不参与判定",
+       "graham_avg3_pe": 22.09,
+       "static_basis": "FY2025 每股盈利 1.41",
+       "static_pe": 20.11
+      },
+      "value": 19.1679,
+      "verdict": "fail"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 28.36,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pb_or_product",
+      "reason": "PB 3.21 > 1.5 且 PE×PB 61.5 超限",
+      "value": 3.2106,
+      "verdict": "fail"
+     }
+    ],
+    "criteria_semantics": {
+     "current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2",
+     "dividend_record": "锚定最新报告年度的连续现金分红年数（允许 1 年披露滞后；最近一次分红更早即视为中断 fail）。A股=分红实施记录；港股/美股=现金流量表「已付本公司股东股息」逐年大于 0（现金流量表在而未列该项按 0 计）",
+     "earnings_growth": "锚定十年窗口 [最新报告年度-9, 最新报告年度] 首尾每股盈利（缺 EPS 端点用净利润）累计增幅 ≥ 1/3；任一端点缺失为 indeterminate",
+     "earnings_stability": "以最新报告年度为锚、逐年无缺口的连续十年归母净利润为正；任一年亏损即 fail，有缺年/覆盖不足为 indeterminate（缺数不冒充稳定）",
+     "lt_debt_vs_net_current_assets": "长期债务 ≤ 净流动资产（流动资产−流动负债）",
+     "pb_or_product": "市净率 ≤ 1.5，或 PE×PB ≤ 22.5（放宽条款：盈利便宜可容忍 PB 略高）；港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
+     "pe": "市盈率 ≤ 15，按 TTM 判定（A股 daily_basic pe_ttm；港股/美股 = 最新收盘价 ÷ 报表推算的 TTM 每股盈利，basis 注明构成、价格日期与汇率）；supplement 中的年报静态 PE 与原著三年平均盈利 PE 仅供参考、不参与判定"
+    },
+    "failed": 4,
+    "fragility": {
+     "debt_to_assets": 0.5827,
+     "interest_coverage": 4.55,
+     "net_cash_to_market_cap": -0.4077,
+     "net_debt_basis": "短借+长借+应付债券+一年内到期非流动负债",
+     "net_debt_to_assets": 0.5059
+    },
+    "fragility_semantics": {
+     "debt_to_assets": "总负债/总资产；杠杆越高对融资环境的隐性依赖越强",
+     "interest_coverage": "息税前利润/利息支出；薄覆盖=利率或盈利小幅波动即可致损的脆弱结构",
+     "net_cash_to_market_cap": "净现金/总市值（仅 A股有市值快照）；比例高=市价接近清算保护",
+     "net_debt_to_assets": "(有息负债−货币资金)/总资产；负值=净现金，是下行保护的第一层（塔勒布：先保证不死）"
+    },
+    "indeterminate": 0,
+    "passed": 3,
+    "status": "ok",
+    "thresholds": {
+     "current_ratio_min": 2.0,
+     "dividend_years_min": 5,
+     "earnings_growth_min_pct": 33.0,
+     "earnings_stability_years": 10,
+     "pb_max": 1.5,
+     "pe_max": 15.0,
+     "pe_pb_product_max": 22.5
+    }
+   }
+  },
+  "A股:600941": {
+   "earnings_quality": {
+    "beneish_m_score": {},
+    "cfo_ni_ratio_5y": null,
+    "metric_semantics": {
+     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
+     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
+     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
+     "net_margin_series": "净利率逐年序列",
+     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+    },
+    "per_year": {
+     "2018": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2019": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2020": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2021": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2022": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2023": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2024": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2025": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     }
+    },
+    "status": "ok",
+    "years": [
+     "2025",
+     "2024",
+     "2023",
+     "2022",
+     "2021",
+     "2020",
+     "2019",
+     "2018"
+    ]
+   },
+   "graham": {
+    "as_of_year": "2025",
+    "criteria": [
+     {
+      "criterion": "current_ratio",
+      "reason": "2025 年流动比率 0.81（阈值 ≥ 2.0）",
+      "value": 0.8111,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "lt_debt_vs_net_current_assets",
+      "reason": "2025 年有息负债（短借+长借+应付债券+一年内到期非流动负债（缺 bond_payable/st_borr，按 0 计））52,255,000,000 > 净流动资产 -115,914,000,000",
+      "value": 52255000000.0,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "earnings_stability",
+      "reason": "披露历史仅 8 年（最早 2018），不足原著十年；2018→2025 净利润均为正",
+      "value": null,
+      "verdict": "indeterminate"
+     },
+     {
+      "criterion": "dividend_record",
+      "reason": "截至 2026 年连续现金分红 6 年（阈值 ≥ 5 年；原著为 20 年）",
+      "value": 6.0,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "earnings_growth",
+      "reason": "披露历史仅 8 年（最早 2018），不足原著十年，无法按十年窗口（2016→2025）计算增幅",
+      "value": null,
+      "verdict": "indeterminate"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 97.45,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pe",
+      "reason": "PE 16.04（阈值 ≤ 15，快照 20260924）",
+      "supplement": {
+       "avg3_basis": "FY2023–FY2025 平均每股盈利 6.32",
+       "basis": "年报口径，仅供参考，不参与判定",
+       "graham_avg3_pe": 15.42,
+       "static_basis": "FY2025 每股盈利 6.35",
+       "static_pe": 15.35
+      },
+      "value": 16.0385,
+      "verdict": "fail"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 97.45,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pb_or_product",
+      "reason": "PB 1.49 ≤ 1.5（快照 20260924）",
+      "value": 1.487,
+      "verdict": "pass"
+     }
+    ],
+    "criteria_semantics": {
+     "current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2",
+     "dividend_record": "锚定最新报告年度的连续现金分红年数（允许 1 年披露滞后；最近一次分红更早即视为中断 fail）。A股=分红实施记录；港股/美股=现金流量表「已付本公司股东股息」逐年大于 0（现金流量表在而未列该项按 0 计）",
+     "earnings_growth": "锚定十年窗口 [最新报告年度-9, 最新报告年度] 首尾每股盈利（缺 EPS 端点用净利润）累计增幅 ≥ 1/3；任一端点缺失为 indeterminate",
+     "earnings_stability": "以最新报告年度为锚、逐年无缺口的连续十年归母净利润为正；任一年亏损即 fail，有缺年/覆盖不足为 indeterminate（缺数不冒充稳定）",
+     "lt_debt_vs_net_current_assets": "长期债务 ≤ 净流动资产（流动资产−流动负债）",
+     "pb_or_product": "市净率 ≤ 1.5，或 PE×PB ≤ 22.5（放宽条款：盈利便宜可容忍 PB 略高）；港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
+     "pe": "市盈率 ≤ 15，按 TTM 判定（A股 daily_basic pe_ttm；港股/美股 = 最新收盘价 ÷ 报表推算的 TTM 每股盈利，basis 注明构成、价格日期与汇率）；supplement 中的年报静态 PE 与原著三年平均盈利 PE 仅供参考、不参与判定"
+    },
+    "failed": 3,
+    "fragility": {
+     "debt_to_assets": 0.3322,
+     "interest_coverage_note": "利息支出为零或净收益，覆盖倍数无意义",
+     "net_cash_to_market_cap": 0.0562,
+     "net_debt_basis": "短借+长借+应付债券+一年内到期非流动负债（缺 bond_payable/st_borr，按 0 计）",
+     "net_debt_to_assets": -0.0568
+    },
+    "fragility_semantics": {
+     "debt_to_assets": "总负债/总资产；杠杆越高对融资环境的隐性依赖越强",
+     "interest_coverage": "息税前利润/利息支出；薄覆盖=利率或盈利小幅波动即可致损的脆弱结构",
+     "net_cash_to_market_cap": "净现金/总市值（仅 A股有市值快照）；比例高=市价接近清算保护",
+     "net_debt_to_assets": "(有息负债−货币资金)/总资产；负值=净现金，是下行保护的第一层（塔勒布：先保证不死）"
+    },
+    "indeterminate": 2,
+    "passed": 2,
+    "status": "ok",
+    "thresholds": {
+     "current_ratio_min": 2.0,
+     "dividend_years_min": 5,
+     "earnings_growth_min_pct": 33.0,
+     "earnings_stability_years": 10,
+     "pb_max": 1.5,
+     "pe_max": 15.0,
+     "pe_pb_product_max": 22.5
+    }
+   }
+  },
+  "A股:601899": {
+   "earnings_quality": {
+    "beneish_m_score": {},
+    "cfo_ni_ratio_5y": null,
+    "metric_semantics": {
+     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
+     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
+     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
+     "net_margin_series": "净利率逐年序列",
+     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+    },
+    "per_year": {
+     "2018": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2019": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2020": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2021": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2022": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2023": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2024": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2025": {
+      "accruals_ratio": null,
+      "cfo_ni_ratio": null,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": null,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     }
+    },
+    "status": "ok",
+    "years": [
+     "2025",
+     "2024",
+     "2023",
+     "2022",
+     "2021",
+     "2020",
+     "2019",
+     "2018"
+    ]
+   },
+   "graham": {
+    "as_of_year": "2025",
+    "criteria": [
+     {
+      "criterion": "current_ratio",
+      "reason": "2025 年流动比率 1.14（阈值 ≥ 2.0）",
+      "value": 1.1446,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "lt_debt_vs_net_current_assets",
+      "reason": "2025 年有息负债（短借+长借+应付债券+一年内到期非流动负债）164,212,818,274 > 净流动资产 18,723,156,672",
+      "value": 164212818274.0,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "earnings_stability",
+      "reason": "2016→2025 连续 10 年净利润均为正",
+      "value": null,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "dividend_record",
+      "reason": "截至 2026 年连续现金分红 20 年（阈值 ≥ 5 年；原著为 20 年）",
+      "value": 20.0,
+      "verdict": "pass"
+     },
+     {
+      "criterion": "earnings_growth",
+      "reason": "2016→2025 每股盈利累计增幅 2066.7%（阈值 ≥ 33%，十年窗口）",
+      "value": 2066.6667,
+      "verdict": "pass"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 30.01,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pe",
+      "reason": "PE 11.79（阈值 ≤ 15，快照 20260924）",
+      "supplement": {
+       "avg3_basis": "FY2023–FY2025 平均每股盈利 1.32",
+       "basis": "年报口径，仅供参考，不参与判定",
+       "graham_avg3_pe": 22.73,
+       "static_basis": "FY2025 每股盈利 1.95",
+       "static_pe": 15.39
+      },
+      "value": 11.7949,
+      "verdict": "pass"
+     },
+     {
+      "basis": {
+       "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+       "price": 30.01,
+       "price_currency": "CNY",
+       "price_date": "20260924",
+       "valuation_method": "snapshot"
+      },
+      "criterion": "pb_or_product",
+      "reason": "PB 3.95 > 1.5 且 PE×PB 46.6 超限",
+      "value": 3.9511,
+      "verdict": "fail"
+     }
+    ],
+    "criteria_semantics": {
+     "current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2",
+     "dividend_record": "锚定最新报告年度的连续现金分红年数（允许 1 年披露滞后；最近一次分红更早即视为中断 fail）。A股=分红实施记录；港股/美股=现金流量表「已付本公司股东股息」逐年大于 0（现金流量表在而未列该项按 0 计）",
+     "earnings_growth": "锚定十年窗口 [最新报告年度-9, 最新报告年度] 首尾每股盈利（缺 EPS 端点用净利润）累计增幅 ≥ 1/3；任一端点缺失为 indeterminate",
+     "earnings_stability": "以最新报告年度为锚、逐年无缺口的连续十年归母净利润为正；任一年亏损即 fail，有缺年/覆盖不足为 indeterminate（缺数不冒充稳定）",
+     "lt_debt_vs_net_current_assets": "长期债务 ≤ 净流动资产（流动资产−流动负债）",
+     "pb_or_product": "市净率 ≤ 1.5，或 PE×PB ≤ 22.5（放宽条款：盈利便宜可容忍 PB 略高）；港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
+     "pe": "市盈率 ≤ 15，按 TTM 判定（A股 daily_basic pe_ttm；港股/美股 = 最新收盘价 ÷ 报表推算的 TTM 每股盈利，basis 注明构成、价格日期与汇率）；supplement 中的年报静态 PE 与原著三年平均盈利 PE 仅供参考、不参与判定"
+    },
+    "failed": 3,
+    "fragility": {
+     "debt_to_assets": 0.5156,
+     "interest_coverage": 39.42,
+     "net_cash_to_market_cap": -0.1236,
+     "net_debt_basis": "短借+长借+应付债券+一年内到期非流动负债",
+     "net_debt_to_assets": 0.1926
+    },
+    "fragility_semantics": {
+     "debt_to_assets": "总负债/总资产；杠杆越高对融资环境的隐性依赖越强",
+     "interest_coverage": "息税前利润/利息支出；薄覆盖=利率或盈利小幅波动即可致损的脆弱结构",
+     "net_cash_to_market_cap": "净现金/总市值（仅 A股有市值快照）；比例高=市价接近清算保护",
+     "net_debt_to_assets": "(有息负债−货币资金)/总资产；负值=净现金，是下行保护的第一层（塔勒布：先保证不死）"
+    },
+    "indeterminate": 0,
+    "passed": 4,
+    "status": "ok",
+    "thresholds": {
+     "current_ratio_min": 2.0,
+     "dividend_years_min": 5,
+     "earnings_growth_min_pct": 33.0,
+     "earnings_stability_years": 10,
+     "pb_max": 1.5,
+     "pe_max": 15.0,
+     "pe_pb_product_max": 22.5
+    }
+   }
+  },
+  "港股:00700": {
+   "earnings_quality": {
+    "beneish_m_score": {},
+    "cfo_ni_ratio_5y": 1.1664,
+    "metric_semantics": {
+     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
+     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
+     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
+     "net_margin_series": "净利率逐年序列",
+     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+    },
+    "per_year": {
+     "2021": {
+      "accruals_ratio": 0.0308,
+      "cfo_ni_ratio": 0.7792,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 40.138327995172446,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2022": {
+      "accruals_ratio": 0.0267,
+      "cfo_ni_ratio": 0.7761,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 33.9450583534096,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2023": {
+      "accruals_ratio": -0.0677,
+      "cfo_ni_ratio": 1.9265,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 18.91841744456212,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2024": {
+      "accruals_ratio": -0.0362,
+      "cfo_ni_ratio": 1.3321,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 29.393554328087397,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2025": {
+      "accruals_ratio": -0.0384,
+      "cfo_ni_ratio": 1.3478,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 29.908508764695398,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     }
+    },
+    "status": "ok",
+    "years": [
+     "2025",
+     "2024",
+     "2023",
+     "2022",
+     "2021"
+    ]
+   },
+   "graham": {
+    "as_of_year": "2025",
+    "criteria": [
+     {
+      "criterion": "current_ratio",
+      "reason": "2025 年流动比率 1.44（阈值 ≥ 2.0）",
+      "value": 1.4427,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "lt_debt_vs_net_current_assets",
+      "reason": "总有息负债 387,733,000,000 > 净流动资产 182,709,000,000，但数据源只有含短债的合计，无法单独判定长期债务",
+      "value": 387733000000.0,
+      "verdict": "indeterminate"
+     },
+     {
+      "criterion": "earnings_stability",
+      "reason": "披露历史仅 5 年（最早 2021），不足原著十年；2021→2025 净利润均为正",
+      "value": null,
+      "verdict": "indeterminate"
+     },
+     {
+      "criterion": "dividend_record",
+      "reason": "2021–2025 年现金流量表均未列已付股东股息（按 0 计）",
+      "value": 0.0,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "earnings_growth",
+      "reason": "披露历史仅 5 年（最早 2021），不足原著十年，无法按十年窗口（2016→2025）计算增幅",
+      "value": null,
+      "verdict": "indeterminate"
+     },
+     {
+      "basis": {
+       "components": [
+        {
+         "currency": "CNY",
+         "eps": 24.749,
+         "eps_in_price_currency": 26.97641,
+         "period": "20251231|FY",
+         "sign": "+"
+        },
+        {
+         "currency": "CNY",
+         "eps": 12.639,
+         "eps_in_price_currency": 13.77651,
+         "period": "20260630|H1",
+         "sign": "+"
+        },
+        {
+         "currency": "CNY",
+         "eps": 11.367,
+         "eps_in_price_currency": 12.39003,
+         "period": "20250630|H1",
+         "sign": "-"
+        }
+       ],
+       "eps_ttm": 28.36289,
+       "label": "TTM = 20251231 年报 + 20260630 中报 − 上年同期中报",
+       "method": "ttm",
+       "price": 436.6,
+       "price_age_days": 2,
+       "price_currency": "HKD",
+       "price_date": "2026-09-25",
+       "price_source": "hkex-dayquot",
+       "price_stale": false,
+       "valuation_method": "estimated"
+      },
+      "criterion": "pe",
+      "reason": "PE(TTM) 15.39（阈值 ≤ 15；每股盈利 28.36 HKD，TTM = 20251231 年报 + 20260630 中报 − 上年同期中报；价格 436.6 HKD（2026-09-25））",
+      "supplement": {
+       "avg3_basis": "FY2023–FY2025 平均每股盈利 21.03",
+       "basis": "年报口径，仅供参考，不参与判定",
+       "graham_avg3_pe": 20.76,
+       "static_basis": "FY2025 每股盈利 26.98",
+       "static_pe": 16.18
+      },
+      "value": 15.3934,
+      "verdict": "fail"
+     },
+     {
+      "basis": {
+       "bvps": 137.125621,
+       "bvps_period": "20260630|H1",
+       "equity": 1135853000000.0,
+       "equity_currency": "CNY",
+       "implied_shares": 9028799747,
+       "label": "MRQ 20260630|H1 归母权益 ÷ 隐含股数（估算）",
+       "price": 436.6,
+       "price_age_days": 2,
+       "price_currency": "HKD",
+       "price_date": "2026-09-25",
+       "price_source": "hkex-dayquot",
+       "price_stale": false,
+       "shares_from": "20260630|H1",
+       "valuation_method": "estimated"
+      },
+      "criterion": "pb_or_product",
+      "reason": "PB 3.18 > 1.5 且 PE(TTM)×PB 49.0 超限（每股净资产 137.1 HKD（20260630|H1，隐含股数估算）；价格 436.6 HKD（2026-09-25））",
+      "value": 3.1839,
+      "verdict": "fail"
+     }
+    ],
+    "criteria_semantics": {
+     "current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2",
+     "dividend_record": "锚定最新报告年度的连续现金分红年数（允许 1 年披露滞后；最近一次分红更早即视为中断 fail）。A股=分红实施记录；港股/美股=现金流量表「已付本公司股东股息」逐年大于 0（现金流量表在而未列该项按 0 计）",
+     "earnings_growth": "锚定十年窗口 [最新报告年度-9, 最新报告年度] 首尾每股盈利（缺 EPS 端点用净利润）累计增幅 ≥ 1/3；任一端点缺失为 indeterminate",
+     "earnings_stability": "以最新报告年度为锚、逐年无缺口的连续十年归母净利润为正；任一年亏损即 fail，有缺年/覆盖不足为 indeterminate（缺数不冒充稳定）",
+     "lt_debt_vs_net_current_assets": "长期债务 ≤ 净流动资产（流动资产−流动负债）",
+     "pb_or_product": "市净率 ≤ 1.5，或 PE×PB ≤ 22.5（放宽条款：盈利便宜可容忍 PB 略高）；港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
+     "pe": "市盈率 ≤ 15，按 TTM 判定（A股 daily_basic pe_ttm；港股/美股 = 最新收盘价 ÷ 报表推算的 TTM 每股盈利，basis 注明构成、价格日期与汇率）；supplement 中的年报静态 PE 与原著三年平均盈利 PE 仅供参考、不参与判定"
+    },
+    "failed": 4,
+    "fragility": {
+     "debt_to_assets": 0.3913,
+     "interest_coverage": 15.97,
+     "net_debt_basis": "total_debt(含短债)",
+     "net_debt_to_assets": 0.121
+    },
+    "fragility_semantics": {
+     "debt_to_assets": "总负债/总资产；杠杆越高对融资环境的隐性依赖越强",
+     "interest_coverage": "息税前利润/利息支出；薄覆盖=利率或盈利小幅波动即可致损的脆弱结构",
+     "net_cash_to_market_cap": "净现金/总市值（仅 A股有市值快照）；比例高=市价接近清算保护",
+     "net_debt_to_assets": "(有息负债−货币资金)/总资产；负值=净现金，是下行保护的第一层（塔勒布：先保证不死）"
+    },
+    "indeterminate": 3,
+    "passed": 0,
+    "status": "ok",
+    "thresholds": {
+     "current_ratio_min": 2.0,
+     "dividend_years_min": 5,
+     "earnings_growth_min_pct": 33.0,
+     "earnings_stability_years": 10,
+     "pb_max": 1.5,
+     "pe_max": 15.0,
+     "pe_pb_product_max": 22.5
+    }
+   }
+  },
+  "港股:00728": {
+   "earnings_quality": {
+    "beneish_m_score": {},
+    "cfo_ni_ratio_5y": 4.5384,
+    "metric_semantics": {
+     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
+     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
+     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
+     "net_margin_series": "净利率逐年序列",
+     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+    },
+    "per_year": {
+     "2021": {
+      "accruals_ratio": -0.1464,
+      "cfo_ni_ratio": 5.3003,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 5.9032833430401865,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2022": {
+      "accruals_ratio": -0.1348,
+      "cfo_ni_ratio": 4.9444,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 5.73125238862764,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2023": {
+      "accruals_ratio": -0.1281,
+      "cfo_ni_ratio": 4.5165,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 5.928525112403637,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2024": {
+      "accruals_ratio": -0.1293,
+      "cfo_ni_ratio": 4.3938,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 6.235538337454218,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     },
+     "2025": {
+      "accruals_ratio": -0.1055,
+      "cfo_ni_ratio": 3.7688,
+      "gross_margin": null,
+      "inventory_vs_revenue_gap_pp": null,
+      "net_margin": 6.266534984770347,
+      "receivable_vs_revenue_gap_pp": null,
+      "recurring_profit_share": null
+     }
+    },
+    "status": "ok",
+    "years": [
+     "2025",
+     "2024",
+     "2023",
+     "2022",
+     "2021"
+    ]
+   },
+   "graham": {
+    "as_of_year": "2025",
+    "criteria": [
+     {
+      "criterion": "current_ratio",
+      "reason": "2025 年流动比率 0.64（阈值 ≥ 2.0）",
+      "value": 0.6368,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "lt_debt_vs_net_current_assets",
+      "reason": "2025 年净流动资产为负（-117,578,000,000），任何非负的长期债务都超过它（数据源只有含短债的合计，不影响结论）",
+      "value": 10023000000.0,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "earnings_stability",
+      "reason": "披露历史仅 5 年（最早 2021），不足原著十年；2021→2025 净利润均为正",
+      "value": null,
+      "verdict": "indeterminate"
+     },
+     {
+      "criterion": "dividend_record",
+      "reason": "2021–2025 年现金流量表均未列已付股东股息（按 0 计）",
+      "value": 0.0,
+      "verdict": "fail"
+     },
+     {
+      "criterion": "earnings_growth",
+      "reason": "披露历史仅 5 年（最早 2021），不足原著十年，无法按十年窗口（2016→2025）计算增幅",
+      "value": null,
+      "verdict": "indeterminate"
+     },
+     {
+      "basis": {
+       "components": [
+        {
+         "currency": "CNY",
+         "eps": 0.36,
+         "eps_in_price_currency": 0.3924,
+         "period": "20251231|FY",
+         "sign": "+"
+        }
+       ],
+       "eps_ttm": 0.3924,
+       "label": "20251231 年报（中报数据不可用，未滚动）",
+       "method": "annual",
+       "note": "20250630 中报每股盈利与净利润不自洽（隐含股数为年报的 0.12 倍）",
+       "price": 3.2,
+       "price_age_days": 2,
+       "price_currency": "HKD",
+       "price_date": "2026-09-25",
+       "price_source": "hkex-dayquot",
+       "price_stale": false,
+       "valuation_method": "estimated"
+      },
+      "criterion": "pe",
+      "reason": "PE(TTM) 8.15（阈值 ≤ 15；每股盈利 0.3924 HKD，20251231 年报（中报数据不可用，未滚动）；价格 3.2 HKD（2026-09-25））",
+      "supplement": {
+       "avg3_basis": "FY2023–FY2025 平均每股盈利 0.3815",
+       "basis": "年报口径，仅供参考，不参与判定",
+       "graham_avg3_pe": 8.39,
+       "static_basis": "FY2025 每股盈利 0.3924",
+       "static_pe": 8.15
+      },
+      "value": 8.1549,
+      "verdict": "pass"
+     },
+     {
+      "basis": {
+       "bvps": 5.514295,
+       "bvps_period": "20260630|H1",
+       "equity": 471883000000.0,
+       "equity_currency": "CNY",
+       "implied_shares": 93276190476,
+       "label": "MRQ 20260630|H1 归母权益 ÷ 隐含股数（估算）",
+       "price": 3.2,
+       "price_age_days": 2,
+       "price_currency": "HKD",
+       "price_date": "2026-09-25",
+       "price_source": "hkex-dayquot",
+       "price_stale": false,
+       "shares_from": "20260630|H1",
+       "valuation_method": "estimated"
+      },
+      "criterion": "pb_or_product",
+      "reason": "PB 0.58 ≤ 1.5（每股净资产 5.514 HKD（20260630|H1，隐含股数估算）；价格 3.2 HKD（2026-09-25））",
+      "value": 0.5803,
+      "verdict": "pass"
+     }
+    ],
+    "criteria_semantics": {
+     "current_ratio": "流动比率=流动资产/流动负债；防御型标准 ≥ 2",
+     "dividend_record": "锚定最新报告年度的连续现金分红年数（允许 1 年披露滞后；最近一次分红更早即视为中断 fail）。A股=分红实施记录；港股/美股=现金流量表「已付本公司股东股息」逐年大于 0（现金流量表在而未列该项按 0 计）",
+     "earnings_growth": "锚定十年窗口 [最新报告年度-9, 最新报告年度] 首尾每股盈利（缺 EPS 端点用净利润）累计增幅 ≥ 1/3；任一端点缺失为 indeterminate",
+     "earnings_stability": "以最新报告年度为锚、逐年无缺口的连续十年归母净利润为正；任一年亏损即 fail，有缺年/覆盖不足为 indeterminate（缺数不冒充稳定）",
+     "lt_debt_vs_net_current_assets": "长期债务 ≤ 净流动资产（流动资产−流动负债）",
+     "pb_or_product": "市净率 ≤ 1.5，或 PE×PB ≤ 22.5（放宽条款：盈利便宜可容忍 PB 略高）；港股/美股 PB = 收盘价 ÷ 最近一期（MRQ）每股归母净资产（隐含股数估算）",
+     "pe": "市盈率 ≤ 15，按 TTM 判定（A股 daily_basic pe_ttm；港股/美股 = 最新收盘价 ÷ 报表推算的 TTM 每股盈利，basis 注明构成、价格日期与汇率）；supplement 中的年报静态 PE 与原著三年平均盈利 PE 仅供参考、不参与判定"
+    },
+    "failed": 3,
+    "fragility": {
+     "debt_to_assets": 0.4622,
+     "interest_coverage": 102.25,
+     "net_debt_basis": "total_debt(含短债)",
+     "net_debt_to_assets": -0.059
+    },
+    "fragility_semantics": {
+     "debt_to_assets": "总负债/总资产；杠杆越高对融资环境的隐性依赖越强",
+     "interest_coverage": "息税前利润/利息支出；薄覆盖=利率或盈利小幅波动即可致损的脆弱结构",
+     "net_cash_to_market_cap": "净现金/总市值（仅 A股有市值快照）；比例高=市价接近清算保护",
+     "net_debt_to_assets": "(有息负债−货币资金)/总资产；负值=净现金，是下行保护的第一层（塔勒布：先保证不死）"
+    },
+    "indeterminate": 2,
+    "passed": 2,
+    "status": "ok",
+    "thresholds": {
+     "current_ratio_min": 2.0,
+     "dividend_years_min": 5,
+     "earnings_growth_min_pct": 33.0,
+     "earnings_stability_years": 10,
+     "pb_max": 1.5,
+     "pe_max": 15.0,
+     "pe_pb_product_max": 22.5
+    }
+   }
+  }
+ },
+ "note": "改动前（main 837b905）对单币种序列的完整输出：A股 5 只 + 港股 00700/00728。跨币种修复不得改变其中任何一个字节（tests/test_cross_currency_series.py）"
+}

@@ -501,3 +501,28 @@ export function isCurrencyOutlier(row: StatementRow, summary: PivotCurrencySumma
   if (summary.uniform) return false
   return !row.currency || String(row.currency) !== summary.majority
 }
+
+/**
+ * 报告币种切换点：行的币种与**时间上紧邻的更早一期**（按 end_date，任一 fp）不同 → 说明文案，
+ * 否则空串。00799 2016-2020 以 USD、2021 起以 HKD 披露：不标出来的话 2021 那行看起来像营收
+ * 暴增 8 倍。**币种未知不等于同币种**（与后端 earnings_quality 同口径）：任一侧（含两侧）未知
+ * 也标出「无法确认同币种」。没有更早一期 → 空串。
+ */
+export function currencySwitchText(rows: StatementRow[], row: StatementRow): string {
+  const currency = row.currency ? String(row.currency) : ''
+  const end = String(row.end_date || '')
+  if (!end) return ''
+  let previous: StatementRow | null = null
+  for (const other of rows) {
+    const otherEnd = String(other.end_date || '')
+    if (!otherEnd || otherEnd >= end) continue
+    if (!previous || otherEnd > String(previous.end_date || '')) previous = other
+  }
+  if (!previous) return ''
+  const before = previous.currency ? String(previous.currency) : ''
+  if (currency && before === currency) return ''
+  if (!currency || !before) {
+    return `本期或更早一期币种未知（${before || '未知'} → ${currency || '未知'}）：无法确认同币种，金额不可直接比较`
+  }
+  return `报告币种自此期由 ${before} 改为 ${currency}：与更早期间的金额不可直接比较（增速须按同一汇率折算）`
+}
