@@ -125,3 +125,24 @@ def get_ads_ratios(
         if ratio.is_finite() and ratio > 0:
             result[rule.symbol] = ratio
     return result
+
+
+def get_industry_overrides(
+    db: Session, user_id: int, keys: Optional[Iterable[Tuple[str, str]]] = None
+) -> Dict[Tuple[str, str], str]:
+    """手工行业分类 (symbol, market) → 行业名；优先于官方与东方财富来源。
+
+    规则的代码只做了大写（security_rules API 口径），港股「700」这类未补零的写法
+    按 normalize_manual_symbol 归一后再匹配账本键。"""
+    from .symbol_normalization import normalize_manual_symbol
+
+    wanted = set(keys) if keys is not None else None
+    result: Dict[Tuple[str, str], str] = {}
+    for rule in _rules(db, user_id, "INDUSTRY"):
+        industry = str((rule.payload or {}).get("industry") or "").strip()
+        if rule.market is None or not industry:
+            continue
+        key = (normalize_manual_symbol(rule.symbol, rule.market), rule.market)
+        if wanted is None or key in wanted:
+            result[key] = industry
+    return result

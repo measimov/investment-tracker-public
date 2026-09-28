@@ -1,6 +1,10 @@
-"""分红公告同步：Tushare dividend → 建议表 + 标的事件表（绝不自动入账）。
+"""分红公告同步 → 建议表 + 标的事件表（绝不自动入账）。
 
-仅支持 A/B 股（Tushare 无港/美股分红公开接口，港美股仍以券商对账单导入为准）。
+按市场分派数据源：
+- A/B 股：Tushare `dividend`（`div_proc="实施"` 白名单），需要 TUSHARE_TOKEN；
+- 港股：披露易「股票發行人現金股息公告」表格（`hkex_dividend_source`，官方、免 token）。
+  未配置 TUSHARE_TOKEN 时 A/B 股整体跳过并在结果里说明，港股照常同步。
+美股仍以券商对账单导入为准。
 建议入账只发生在用户显式"接受"时，与对账"报告不修复"哲学一致。
 
 判重窗口刻意放宽：三个券商导入器写入的 CASH_DIVIDEND 的 ex_date 实为资金
@@ -8,9 +12,10 @@
 [公告除权日−3天, 派息日+match_window] 的日期窗 + 税前口径金额容差匹配。
 """
 
+import os
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import literal_column
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -19,12 +24,17 @@ from sqlalchemy.sql import func
 
 from ..config import settings
 from ..core.logging import get_app_logger
+from ..core.timeutil import local_today
 from ..models.corporate_action import CorporateAction
 from ..models.corporate_action_suggestion import CorporateActionSuggestion
 from ..models.holding import Holding
 from ..models.security_event import SecurityEvent
+from ..models.security_price import SecurityPrice
 from ..models.transaction import Transaction
 from ..models.user import User
+from . import hkex_dividend_source
+from .background_job_store import JobOwnershipLostError
+from .hk_adjustment_factors import recompute_hk_adj_factors
 from .holding_service import (
     AccountReplayError,
     lock_record,
@@ -38,7 +48,9 @@ from .stock_price_service import to_tushare_a_code, tushare_query
 
 logger = get_app_logger(__name__)
 
-SUPPORTED_MARKETS = ("A股", "B股")
+TUSHARE_MARKETS = ("A股", "B股")
+HKEX_MARKETS = ("港股",)
+SUPPORTED_MARKETS = TUSHARE_MARKETS + HKEX_MARKETS
 
 # 判重日期窗：既有记录 ex_date（实为到账日）允许早于公告除权日的回拨天数
 MATCH_WINDOW_BEFORE_DAYS = 3
@@ -48,6 +60,15 @@ AMOUNT_ABSOLUTE_TOLERANCE = Decimal("1")
 
 # 送转判重窗（送转记录通常按真实除权日录入）
 STOCK_MATCH_WINDOW_DAYS = 7
+
+# 港股表格清单检索起点：公告日早于除净日（末期股息约提前 2-3 个月），向前多看半年；
+# 复权因子要全部历史，所以还会延伸到该标的最早一根价格，但不早于 EF001 表格出现之前
+HK_FORM_LIST_LEAD_DAYS = 180
+HK_FORM_EARLIEST = date(2021, 1, 1)
+
+
+def tushare_configured() -> bool:
+    return bool(os.environ.get("TUSHARE_TOKEN") or settings.tushare_token)
 
 
 def _parse_ts_date(value: Any) -> Optional[date]:
@@ -181,6 +202,7 @@ def match_existing_action(
     *,
     match_window_days: int,
     broker_account_id: Optional[int] = None,
+    currency: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """纯函数判重：公告 vs 既有账本记录（按建议的账户归属过滤候选）。
 
@@ -189,6 +211,12 @@ def match_existing_action(
     现金分红：日期窗 [ex_date−3d, (pay_date or ex_date)+window] 命中即 MATCHED；
     金额超容差仍 MATCHED 但携带 amount_diff（前端标黄提示核对）。
     送转：±7 天窗口、STOCK_DIVIDEND/BONUS_ISSUE 均视为已录。
+
+    `currency`（港股路径传入；A/B 股不传、口径不变）：
+    - 账本记录币种与建议币种不同（券商按 USD/CNY 入账港股股息）→ 仍按日期 MATCHED，
+      但金额不可比，记 currency_mismatch 而不是 amount_diff；
+    - 同币种时金额按「与命中记录同一 ex_date 的全部同币种候选」合计比较——港股同一
+      除净日常有末期 + 特別两笔，券商分两行入账，建议按除净日合并成一条。
     """
     ex_date = announcement["ex_date"]
     if action_type == "CASH_DIVIDEND":
@@ -203,6 +231,7 @@ def match_existing_action(
         candidate_types = {"STOCK_DIVIDEND", "BONUS_ISSUE"}
 
     best: Optional[Dict[str, Any]] = None
+    in_window: List[CorporateAction] = []
     for action in existing_actions:
         if action.action_type not in candidate_types:
             continue
@@ -214,12 +243,23 @@ def match_existing_action(
             continue
         if action.ex_date is None or not (window_start <= action.ex_date <= window_end):
             continue
+        in_window.append(action)
         detail: Dict[str, Any] = {
             "matched_by": "date_window",
             "matched_action_id": action.id,
             "date_gap_days": abs((action.ex_date - ex_date).days),
         }
-        if action_type == "CASH_DIVIDEND" and estimated_total is not None:
+        if action_type == "CASH_DIVIDEND" and estimated_total is not None and currency:
+            recorded_currency = (action.currency or "").upper()
+            if recorded_currency != currency.upper():
+                detail["currency_mismatch"] = {
+                    "recorded_currency": recorded_currency or None,
+                    "suggested_currency": currency,
+                    "recorded_total": float(Decimal(str(action.total_dividend or 0))),
+                }
+            else:
+                detail["_same_currency"] = True
+        elif action_type == "CASH_DIVIDEND" and estimated_total is not None:
             recorded_total = Decimal(str(action.total_dividend or 0))
             diff = abs(recorded_total - estimated_total)
             tolerance = max(
@@ -232,6 +272,25 @@ def match_existing_action(
         # 取日期差最小的候选
         if best is None or detail["date_gap_days"] < best["date_gap_days"]:
             best = detail
+    if best is not None and best.pop("_same_currency", False) and estimated_total is not None:
+        # 港股：与命中记录同一入账日、同币种的全部候选合计比较（末期 + 特別分两行入账）
+        anchor = next(a for a in in_window if a.id == best["matched_action_id"])
+        siblings = [
+            a for a in in_window
+            if a.ex_date == anchor.ex_date
+            and (a.currency or "").upper() == (anchor.currency or "").upper()
+        ]
+        recorded_total = sum(
+            (Decimal(str(a.total_dividend or 0)) for a in siblings), Decimal("0")
+        )
+        if len(siblings) > 1:
+            best["matched_action_ids"] = sorted(a.id for a in siblings)
+        diff = abs(recorded_total - estimated_total)
+        tolerance = max(estimated_total * AMOUNT_RELATIVE_TOLERANCE, AMOUNT_ABSOLUTE_TOLERANCE)
+        if diff > tolerance:
+            best["amount_diff"] = float(diff)
+            best["recorded_total"] = float(recorded_total)
+            best["estimated_total"] = float(estimated_total)
     return best
 
 
@@ -395,11 +454,474 @@ def _sync_symbol_events(
     return events_upserted
 
 
-def sync_dividends_for_user(db: Session, user_id: int) -> Dict[str, Any]:
-    """主流程：持仓收集 → 拉公告 → 建议判重 upsert + 事件落库。
+def _cash_suggestion_values(
+    announcement: Dict[str, Any],
+    *,
+    currency: str,
+    per_share_pre_tax: Decimal,
+    per_share_after_tax: Optional[Decimal],
+    extra_values: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    values = {
+        "ann_date": announcement["ann_date"],
+        "record_date": announcement["record_date"],
+        "pay_date": announcement["pay_date"],
+        "currency": currency,
+        "cash_div_pre_tax": per_share_pre_tax,
+        "cash_div_after_tax": per_share_after_tax,
+    }
+    values.update(extra_values or {})
+    return values
+
+
+def _upsert_cash_suggestions(
+    db: Session,
+    user_id: int,
+    symbol: str,
+    market: str,
+    announcement: Dict[str, Any],
+    breakdown: Dict[Optional[int], Decimal],
+    basis: str,
+    existing_actions: List[CorporateAction],
+    result: Dict[str, Any],
+    *,
+    base_values: Dict[str, Any],
+    per_share_pre_tax: Decimal,
+    match_currency: Optional[str] = None,
+) -> Set[Tuple[str, Optional[int]]]:
+    """现金分红是账户域收入 → 每账户一条建议（NULL 桶 = 未指定账户或合并降级）。
+
+    返回本轮仍然有效的建议身份，供公告级 reconciliation 撤销失效的旧建议。
+    """
+    valid_identities: Set[Tuple[str, Optional[int]]] = set()
+    for account_id, quantity in sorted(
+        breakdown.items(),
+        key=lambda item: (item[0] is None, item[0] or 0),
+    ):
+        valid_identities.add(("CASH_DIVIDEND", account_id))
+        estimated_total = per_share_pre_tax * quantity
+        match = match_existing_action(
+            announcement, "CASH_DIVIDEND", estimated_total, existing_actions,
+            match_window_days=settings.dividend_sync_match_window_days,
+            broker_account_id=account_id,
+            currency=match_currency,
+        )
+        outcome = _upsert_suggestion(
+            db, user_id,
+            identity={
+                "symbol": symbol, "market": market,
+                "action_type": "CASH_DIVIDEND",
+                "ex_date": announcement["ex_date"],
+                "broker_account_id": account_id,
+            },
+            values={
+                **base_values,
+                "record_date_quantity": quantity,
+                "quantity_basis": basis,
+                "estimated_total_dividend": estimated_total,
+                "status": "MATCHED" if match else "NEW",
+                "matched_corporate_action_id": (
+                    match["matched_action_id"] if match else None
+                ),
+                "match_detail": match,
+            },
+        )
+        _count_outcome(result, outcome, match)
+    return valid_identities
+
+
+def _sync_tushare_symbol(
+    db: Session,
+    user_id: int,
+    symbol: str,
+    market: str,
+    *,
+    lookback_start: date,
+    result: Dict[str, Any],
+) -> None:
+    """A/B 股：Tushare dividend（div_proc="实施"）→ 建议；非实施阶段 → 事件。"""
+    rows = fetch_dividend_announcements(symbol, market)
+    result["symbols_scanned"] += 1
+
+    existing_actions = db.query(CorporateAction).filter(
+        CorporateAction.user_id == user_id,
+        CorporateAction.symbol == symbol,
+        CorporateAction.market == market,
+    ).all()
+
+    for row in rows:
+        if row["div_proc"] != "实施" or row["ex_date"] is None:
+            continue
+        if row["ex_date"] < lookback_start:
+            continue
+        result["announcements"] += 1
+
+        entitle_date = row["record_date"] or (row["ex_date"] - timedelta(days=1))
+        breakdown, basis = quantity_on_record_date(
+            db, user_id, symbol, market, entitle_date
+        )
+        if not breakdown:
+            result["skipped_no_position"] += 1
+
+        # 现金分红每账户一条建议；送转是比例行动、重放时作用于所有账户桶
+        # → 每公告仅一条账户无关建议，避免因子按账户重复应用。
+        # valid_identities 记录本轮仍然有效的建议身份，处理完公告后
+        # 撤销已失效的旧 NEW/MATCHED（如账户桶消失、权益归零）。
+        valid_identities: Set[Tuple[str, Optional[int]]] = set()
+        per_share_pre_tax = row["cash_div_tax"] or row["cash_div"]
+        if breakdown and per_share_pre_tax and per_share_pre_tax > 0:
+            valid_identities |= _upsert_cash_suggestions(
+                db, user_id, symbol, market, row, breakdown, basis,
+                existing_actions, result,
+                base_values=_cash_suggestion_values(
+                    row, currency="CNY", per_share_pre_tax=per_share_pre_tax,
+                    per_share_after_tax=row["cash_div"],
+                ),
+                per_share_pre_tax=per_share_pre_tax,
+            )
+
+        if breakdown and row["stk_div"] and row["stk_div"] > 0:
+            valid_identities.add(("STOCK_DIVIDEND", None))
+            total_quantity = sum(breakdown.values(), Decimal("0"))
+            match = match_existing_action(
+                row, "STOCK_DIVIDEND", None, existing_actions,
+                match_window_days=settings.dividend_sync_match_window_days,
+                broker_account_id=None,
+            )
+            outcome = _upsert_suggestion(
+                db, user_id,
+                identity={
+                    "symbol": symbol, "market": market,
+                    "action_type": "STOCK_DIVIDEND",
+                    "ex_date": row["ex_date"],
+                    "broker_account_id": None,
+                },
+                values={
+                    "ann_date": row["ann_date"],
+                    "record_date": row["record_date"],
+                    "pay_date": row["pay_date"],
+                    "currency": "CNY",
+                    "stk_div_per_share": row["stk_div"],
+                    "record_date_quantity": total_quantity,
+                    "quantity_basis": basis,
+                    "status": "MATCHED" if match else "NEW",
+                    "matched_corporate_action_id": (
+                        match["matched_action_id"] if match else None
+                    ),
+                    "match_detail": match,
+                },
+            )
+            _count_outcome(result, outcome, match)
+
+        # 公告级 reconciliation：本轮无效的旧 NEW/MATCHED 建议撤销
+        result["stale_removed"] += _remove_stale_suggestions(
+            db, user_id, symbol, market, row["ex_date"], valid_identities
+        )
+
+    result["events_upserted"] += _sync_symbol_events(
+        db, symbol, market, rows, lookback_start=lookback_start
+    )
+
+
+# ---------------------------------------------------------------------------
+# 港股（披露易现金股息公告表格）
+# ---------------------------------------------------------------------------
+
+
+def _decimal_text(value: Optional[Decimal]) -> Optional[str]:
+    return format(value.normalize(), "f") if value is not None else None
+
+
+def _component_detail(entry: Dict[str, Any]) -> Dict[str, Any]:
+    form = entry["form"]
+    return {
+        "dividend_type": form["dividend_type"],
+        "dividend_nature": form["dividend_nature"],
+        "period_end": form["period_end"].isoformat() if form["period_end"] else None,
+        "amount": _decimal_text(form["payment"]["amount"]),
+        "currency": form["payment"]["currency"],
+        "declared_amount": _decimal_text((form.get("declared") or {}).get("amount")),
+        "declared_currency": (form.get("declared") or {}).get("currency"),
+        "exchange_rate": (
+            {**form["exchange_rate"], "rate": _decimal_text(form["exchange_rate"]["rate"])}
+            if form.get("exchange_rate") else None
+        ),
+        "status": form["status"],
+        "announcement_date": form["announcement_date"].isoformat(),
+        "record_date": form["record_date"].isoformat() if form["record_date"] else None,
+        "pay_date": form["pay_date"].isoformat() if form["pay_date"] else None,
+        "url": entry.get("url"),
+        "withholding": {
+            "applicable": form["withholding"].get("applicable"),
+            "rates_percent": [
+                _decimal_text(rate) for rate in form["withholding"].get("rates_percent") or []
+            ],
+            "non_resident_enterprise_percent": _decimal_text(
+                form["withholding"].get("non_resident_enterprise_percent")
+            ),
+            "southbound_individual_percent": _decimal_text(
+                form["withholding"].get("southbound_individual_percent")
+            ),
+        },
+        "scrip_option": form["scrip_option"],
+        "currency_election": form["currency_election"],
+    }
+
+
+def group_hk_dividends_by_ex_date(
+    current: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """现行股息按除净日合并（建议与事件的身份键都含除净日，末期 + 特別同日即一条）。
+
+    返回 (groups, conflicts)：同一除净日的派发币种不一致时无法相加，整组进
+    conflicts 不生成建议（不猜汇率）。group = 公告形状 dict + per_share/currency/detail。
+    """
+    by_ex_date: Dict[date, List[Dict[str, Any]]] = {}
+    for entry in current:
+        by_ex_date.setdefault(entry["form"]["ex_date"], []).append(entry)
+    groups: List[Dict[str, Any]] = []
+    conflicts: List[Dict[str, Any]] = []
+    for ex_date in sorted(by_ex_date):
+        entries = sorted(by_ex_date[ex_date], key=lambda e: e["sort_key"])
+        currencies = {e["form"]["payment"]["currency"] for e in entries}
+        if len(currencies) != 1:
+            conflicts.append({
+                "ex_date": ex_date.isoformat(),
+                "reason": f"同一除净日派发币种不一致：{'/'.join(sorted(currencies))}",
+            })
+            continue
+        forms = [e["form"] for e in entries]
+        record_dates = sorted({f["record_date"] for f in forms if f["record_date"]})
+        pay_dates = sorted({f["pay_date"] for f in forms if f["pay_date"]})
+        components = [_component_detail(e) for e in entries]
+        groups.append({
+            "ex_date": ex_date,
+            "ann_date": max(f["announcement_date"] for f in forms),
+            "record_date": record_dates[-1] if record_dates else None,
+            # 判重窗口右端用最晚的派息日（两笔股息派息日不同时覆盖两者）
+            "pay_date": pay_dates[-1] if pay_dates else None,
+            "per_share": sum((f["payment"]["amount"] for f in forms), Decimal("0")),
+            "currency": currencies.pop(),
+            "detail": {
+                "source": "hkexnews",
+                "components": components,
+                "scrip_option": any(f["scrip_option"] for f in forms),
+                "currency_election": any(f["currency_election"] for f in forms),
+                "withholding_applicable": (
+                    True if any(c["withholding"]["applicable"] for c in components)
+                    else False if all(c["withholding"]["applicable"] is False
+                                      for c in components)
+                    else None
+                ),
+                "entitlement_basis": "ex_date_minus_1",
+                "after_tax_policy": "unknown_depends_on_holder_channel",
+            },
+        })
+    return groups, conflicts
+
+
+def _hk_form_list_start(db: Session, symbol: str, market: str, lookback_start: date) -> date:
+    earliest_price = db.query(func.min(SecurityPrice.price_date)).filter(
+        SecurityPrice.symbol == symbol, SecurityPrice.market == market
+    ).scalar()
+    start = lookback_start - timedelta(days=HK_FORM_LIST_LEAD_DAYS)
+    if earliest_price is not None:
+        start = min(start, earliest_price)
+    return max(start, HK_FORM_EARLIEST)
+
+
+def _remove_superseded_hk_rows(
+    db: Session,
+    user_id: int,
+    symbol: str,
+    market: str,
+    keep_ex_dates: Set[date],
+    lookback_start: date,
+) -> Tuple[int, int]:
+    """更新公告改了除净日 / 撤回公告：该标的窗口内不再对应任何现行股息的
+    NEW/MATCHED 建议与本源事件撤销（ACCEPTED/IGNORED 保留，与重同步口径一致）。"""
+    removed = 0
+    stale_dates = {
+        row[0]
+        for row in db.query(CorporateActionSuggestion.ex_date).filter(
+            CorporateActionSuggestion.user_id == user_id,
+            CorporateActionSuggestion.symbol == symbol,
+            CorporateActionSuggestion.market == market,
+            CorporateActionSuggestion.source == hkex_dividend_source.SOURCE,
+            CorporateActionSuggestion.ex_date >= lookback_start,
+            CorporateActionSuggestion.status.in_(("NEW", "MATCHED")),
+        ).distinct().all()
+    } - keep_ex_dates
+    for ex_date in sorted(stale_dates):
+        removed += _remove_stale_suggestions(db, user_id, symbol, market, ex_date, set())
+    event_query = db.query(SecurityEvent).filter(
+        SecurityEvent.symbol == symbol,
+        SecurityEvent.market == market,
+        SecurityEvent.event_type == "DIVIDEND_PLAN",
+        SecurityEvent.source == hkex_dividend_source.SOURCE,
+        SecurityEvent.event_date >= lookback_start,
+    )
+    if keep_ex_dates:
+        event_query = event_query.filter(SecurityEvent.event_date.notin_(keep_ex_dates))
+    events_removed = event_query.delete(synchronize_session=False)
+    return removed, events_removed
+
+
+def _sync_hkex_symbol(
+    db: Session,
+    user_id: int,
+    symbol: str,
+    market: str,
+    *,
+    lookback_start: date,
+    result: Dict[str, Any],
+    on_download: Optional[Callable[[], None]] = None,
+) -> None:
+    """港股：披露易现金股息公告表格 → 建议 + DIVIDEND_PLAN 事件 + 复权因子。
+
+    - 登记日权益按**除净日前一天（交易日口径）**推算，不按记录日期：港股 T+2 交收，
+      除净日当天及之后的买入即使在记录日期前交收也不享有股息，而本账本按成交日记录；
+    - 每股金额 = 预设派发货币金额（宣派 RMB、派发 HKD 的取 HKD 金额），建议币种即派发
+      币种；税后金额一律留空：代扣税取决于持有渠道（H 股/红筹经 HKSCC 代理人按非居民
+      企业 10%、港股通个人 20%、直接登记的个人可能不扣），公告只能提示、不能定论，
+      入账时由用户按券商到账填写，公告的代扣信息放在 announcement_detail；
+    - 同一除净日的多笔（末期 + 特別）合并成一条建议，组成见 announcement_detail.components。
+    """
+    fetched = hkex_dividend_source.ensure_dividend_forms(
+        db, symbol, market,
+        from_date=_hk_form_list_start(db, symbol, market, lookback_start),
+        to_date=local_today() + timedelta(days=1),
+        on_download=on_download,
+    )
+    result["symbols_scanned"] += 1
+    result["hk_forms_downloaded"] += fetched["downloaded"]
+    # 告警只报回看窗口内的公告（缓存里更早的历史表格照样参与复权，但不每次重复告警）
+    for item in fetched["unparsed"]:
+        if (item.get("listed_at") or "") >= lookback_start.isoformat():
+            result["hk_unparsed_forms"].append({"symbol": symbol, **item})
+
+    resolution = hkex_dividend_source.resolve_dividend_resolution(fetched["entries"])
+    if resolution.unscoped:
+        # 有公告认不出、也认不出是哪一笔股息（可能是任一笔的更新或撤回）：本标的这次
+        # 不写建议/事件/复权因子，也不删旧行，等解析器修好或人工核对（PR #249 评审 P2）
+        result["hk_blocked"].append({
+            "symbol": symbol,
+            "scope": "symbol",
+            "forms": [
+                {"doc_id": e.get("doc_id"), "url": e.get("url"), "reason": e.get("reason")}
+                for e in resolution.unscoped
+            ],
+        })
+        return
+    for item in resolution.blocked:
+        period_end, dividend_type, dividend_nature = item["identity"]
+        result["hk_blocked"].append({
+            "symbol": symbol,
+            "scope": "dividend",
+            "period_end": period_end.isoformat() if period_end else None,
+            "dividend_type": dividend_type,
+            "dividend_nature": dividend_nature,
+            "ex_dates": [day.isoformat() for day in item["ex_dates"]],
+            "doc_id": item["entry"].get("doc_id"),
+            "url": item["entry"].get("url"),
+            "reason": item["entry"].get("reason"),
+        })
+    # 挂起股息出现过的除净日：既不改写也不删除该日已有的建议与事件（同日另一笔现行股息
+    # 也跳过——只写一半会让合并后的金额变小）
+    protected = resolution.protected_ex_dates
+    current, pending = resolution.current, resolution.pending
+    for entry in pending:
+        form = entry["form"]
+        if form["announcement_date"] < lookback_start:
+            continue
+        result["hk_pending"].append({
+            "symbol": symbol,
+            "dividend_type": form["dividend_type"],
+            "dividend_nature": form["dividend_nature"],
+            "period_end": form["period_end"].isoformat() if form["period_end"] else None,
+            "announcement_date": form["announcement_date"].isoformat(),
+        })
+    groups, conflicts = group_hk_dividends_by_ex_date(current)
+    for conflict in conflicts:
+        result["hk_conflicts"].append({"symbol": symbol, **conflict})
+
+    existing_actions = db.query(CorporateAction).filter(
+        CorporateAction.user_id == user_id,
+        CorporateAction.symbol == symbol,
+        CorporateAction.market == market,
+    ).all()
+
+    in_window = [
+        group for group in groups
+        if group["ex_date"] >= lookback_start and group["ex_date"] not in protected
+    ]
+    for group in in_window:
+        result["announcements"] += 1
+        breakdown, basis = quantity_on_record_date(
+            db, user_id, symbol, market, group["ex_date"] - timedelta(days=1)
+        )
+        if not breakdown:
+            result["skipped_no_position"] += 1
+        valid_identities: Set[Tuple[str, Optional[int]]] = set()
+        if breakdown:
+            valid_identities = _upsert_cash_suggestions(
+                db, user_id, symbol, market, group, breakdown, basis,
+                existing_actions, result,
+                base_values=_cash_suggestion_values(
+                    group, currency=group["currency"], per_share_pre_tax=group["per_share"],
+                    per_share_after_tax=None,
+                    extra_values={
+                        "source": hkex_dividend_source.SOURCE,
+                        "announcement_detail": group["detail"],
+                    },
+                ),
+                per_share_pre_tax=group["per_share"],
+                match_currency=group["currency"],
+            )
+        result["stale_removed"] += _remove_stale_suggestions(
+            db, user_id, symbol, market, group["ex_date"], valid_identities
+        )
+        if upsert_security_event(
+            db, symbol, market, "DIVIDEND_PLAN", group["ex_date"],
+            hkex_dividend_source.SOURCE,
+            payload={
+                "div_proc": "披露易公告",
+                "cash_div_tax": float(group["per_share"]),
+                "currency": group["currency"],
+                "record_date": group["record_date"].isoformat() if group["record_date"] else None,
+                "pay_date": group["pay_date"].isoformat() if group["pay_date"] else None,
+                "dividend_types": [
+                    " ".join(filter(None, [c["dividend_type"], c["dividend_nature"]]))
+                    for c in group["detail"]["components"]
+                ],
+            },
+        ):
+            result["events_upserted"] += 1
+
+    stale_removed, events_removed = _remove_superseded_hk_rows(
+        db, user_id, symbol, market, {g["ex_date"] for g in in_window} | protected,
+        lookback_start,
+    )
+    result["stale_removed"] += stale_removed
+    result["events_removed"] += events_removed
+
+    adj = recompute_hk_adj_factors(db, symbol)
+    result["hk_adj_rows_updated"] += adj["updated"]
+
+
+def sync_dividends_for_user(
+    db: Session,
+    user_id: int,
+    *,
+    progress: Optional[Callable[..., None]] = None,
+) -> Dict[str, Any]:
+    """主流程：持仓收集 → 按市场拉公告 → 建议判重 upsert + 事件落库。
 
     单 symbol 失败只记入 failed_list，不中断整个 job；配额类错误由
     tushare_query 抛出后同样按单标的失败处理（下一标的会再次触发并快速失败）。
+    未配置 TUSHARE_TOKEN 时 A/B 股整体跳过（`tushare_unavailable` + 跳过数），
+    港股不依赖 Tushare 照常同步。`progress(completed=, total=, current_symbol=)`
+    每个标的前后及每下载一份港股表格回调一次（job 续租）。
     """
     lookback_start = date.today() - timedelta(days=settings.dividend_sync_lookback_days)
     excluded = get_excluded_keys(db, user_id)
@@ -424,13 +946,17 @@ def sync_dividends_for_user(db: Session, user_id: int) -> Dict[str, Any]:
         .all()
     )
     candidate_keys = set(holding_keys) | set(traded_keys)
-    targets = sorted({
+    eligible = sorted({
         (symbol, market)
         for symbol, market in candidate_keys
         if market in SUPPORTED_MARKETS
         and (symbol, market) not in excluded
         and symbol not in cash_management
     })
+    has_tushare = tushare_configured()
+    targets = [
+        key for key in eligible if has_tushare or key[1] not in TUSHARE_MARKETS
+    ]
     unsupported_markets = sorted({
         market for _, market in candidate_keys if market not in SUPPORTED_MARKETS
     })
@@ -444,127 +970,47 @@ def sync_dividends_for_user(db: Session, user_id: int) -> Dict[str, Any]:
         "skipped_no_position": 0,
         "stale_removed": 0,
         "events_upserted": 0,
+        "events_removed": 0,
         "failed": [],
         "unsupported_markets": unsupported_markets,
+        "tushare_unavailable": not has_tushare,
+        "skipped_no_tushare": len(eligible) - len(targets),
+        "hk_forms_downloaded": 0,
+        "hk_unparsed_forms": [],
+        "hk_conflicts": [],
+        "hk_pending": [],
+        # 最新公告无法解析而挂起的股息（scope=dividend）或整个标的（scope=symbol）
+        "hk_blocked": [],
+        "hk_adj_rows_updated": 0,
     }
 
-    for symbol, market in targets:
+    def report(**fields: Any) -> None:
+        if progress:
+            progress(total=len(targets), **fields)
+
+    for index, (symbol, market) in enumerate(targets):
+        report(completed=index, current_symbol=symbol)
         try:
-            rows = fetch_dividend_announcements(symbol, market)
-            result["symbols_scanned"] += 1
-
-            existing_actions = db.query(CorporateAction).filter(
-                CorporateAction.user_id == user_id,
-                CorporateAction.symbol == symbol,
-                CorporateAction.market == market,
-            ).all()
-
-            for row in rows:
-                if row["div_proc"] != "实施" or row["ex_date"] is None:
-                    continue
-                if row["ex_date"] < lookback_start:
-                    continue
-                result["announcements"] += 1
-
-                entitle_date = row["record_date"] or (row["ex_date"] - timedelta(days=1))
-                breakdown, basis = quantity_on_record_date(
-                    db, user_id, symbol, market, entitle_date
+            if market in HKEX_MARKETS:
+                _sync_hkex_symbol(
+                    db, user_id, symbol, market,
+                    lookback_start=lookback_start, result=result,
+                    on_download=lambda: report(completed=index, current_symbol=symbol),
                 )
-                if not breakdown:
-                    result["skipped_no_position"] += 1
-
-                # 现金分红是账户域收入 → 每账户一条建议（NULL 桶 = 未指定
-                # 账户或合并降级）；送转是比例行动、重放时作用于所有账户桶
-                # → 每公告仅一条账户无关建议，避免因子按账户重复应用。
-                # valid_identities 记录本轮仍然有效的建议身份，处理完公告后
-                # 撤销已失效的旧 NEW/MATCHED（如账户桶消失、权益归零）。
-                valid_identities: Set[Tuple[str, Optional[int]]] = set()
-                per_share_pre_tax = row["cash_div_tax"] or row["cash_div"]
-                if breakdown and per_share_pre_tax and per_share_pre_tax > 0:
-                    for account_id, quantity in sorted(
-                        breakdown.items(),
-                        key=lambda item: (item[0] is None, item[0] or 0),
-                    ):
-                        valid_identities.add(("CASH_DIVIDEND", account_id))
-                        estimated_total = per_share_pre_tax * quantity
-                        match = match_existing_action(
-                            row, "CASH_DIVIDEND", estimated_total, existing_actions,
-                            match_window_days=settings.dividend_sync_match_window_days,
-                            broker_account_id=account_id,
-                        )
-                        outcome = _upsert_suggestion(
-                            db, user_id,
-                            identity={
-                                "symbol": symbol, "market": market,
-                                "action_type": "CASH_DIVIDEND",
-                                "ex_date": row["ex_date"],
-                                "broker_account_id": account_id,
-                            },
-                            values={
-                                "ann_date": row["ann_date"],
-                                "record_date": row["record_date"],
-                                "pay_date": row["pay_date"],
-                                "currency": "CNY",
-                                "cash_div_pre_tax": per_share_pre_tax,
-                                "cash_div_after_tax": row["cash_div"],
-                                "record_date_quantity": quantity,
-                                "quantity_basis": basis,
-                                "estimated_total_dividend": estimated_total,
-                                "status": "MATCHED" if match else "NEW",
-                                "matched_corporate_action_id": (
-                                    match["matched_action_id"] if match else None
-                                ),
-                                "match_detail": match,
-                            },
-                        )
-                        _count_outcome(result, outcome, match)
-
-                if breakdown and row["stk_div"] and row["stk_div"] > 0:
-                    valid_identities.add(("STOCK_DIVIDEND", None))
-                    total_quantity = sum(breakdown.values(), Decimal("0"))
-                    match = match_existing_action(
-                        row, "STOCK_DIVIDEND", None, existing_actions,
-                        match_window_days=settings.dividend_sync_match_window_days,
-                        broker_account_id=None,
-                    )
-                    outcome = _upsert_suggestion(
-                        db, user_id,
-                        identity={
-                            "symbol": symbol, "market": market,
-                            "action_type": "STOCK_DIVIDEND",
-                            "ex_date": row["ex_date"],
-                            "broker_account_id": None,
-                        },
-                        values={
-                            "ann_date": row["ann_date"],
-                            "record_date": row["record_date"],
-                            "pay_date": row["pay_date"],
-                            "currency": "CNY",
-                            "stk_div_per_share": row["stk_div"],
-                            "record_date_quantity": total_quantity,
-                            "quantity_basis": basis,
-                            "status": "MATCHED" if match else "NEW",
-                            "matched_corporate_action_id": (
-                                match["matched_action_id"] if match else None
-                            ),
-                            "match_detail": match,
-                        },
-                    )
-                    _count_outcome(result, outcome, match)
-
-                # 公告级 reconciliation：本轮无效的旧 NEW/MATCHED 建议撤销
-                result["stale_removed"] += _remove_stale_suggestions(
-                    db, user_id, symbol, market, row["ex_date"], valid_identities
+            else:
+                _sync_tushare_symbol(
+                    db, user_id, symbol, market,
+                    lookback_start=lookback_start, result=result,
                 )
-
-            result["events_upserted"] += _sync_symbol_events(
-                db, symbol, market, rows, lookback_start=lookback_start
-            )
             db.commit()
+        except JobOwnershipLostError:
+            db.rollback()  # 被接管：整个同步立即停手，不算单标的失败
+            raise
         except Exception as exc:  # 单标的失败不中断
             db.rollback()
             logger.warning("Dividend sync failed for %s (%s): %s", symbol, market, exc)
             result["failed"].append({"symbol": symbol, "market": market, "error": str(exc)[:200]})
+    report(completed=len(targets), current_symbol=None)
 
     return result
 
@@ -647,6 +1093,12 @@ def accept_suggestion(
         current_actions,
         match_window_days=settings.dividend_sync_match_window_days,
         broker_account_id=broker_account_id,
+        # 港股建议与同步时同一判重口径（跨币种不比金额、同日多行合计）
+        currency=(
+            suggestion.currency
+            if suggestion.source == hkex_dividend_source.SOURCE
+            else None
+        ),
     )
     if late_match:
         suggestion.status = "MATCHED"

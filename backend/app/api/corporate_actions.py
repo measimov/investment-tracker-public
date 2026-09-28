@@ -1,12 +1,9 @@
-import os
-
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from datetime import date, timedelta
 from decimal import Decimal
-from ..config import settings
 from ..services.symbol_normalization import normalize_manual_symbol
 from ..database import get_db
 from ..models.corporate_action import CorporateAction
@@ -51,14 +48,6 @@ from ..core.deps import get_current_active_user
 from ._ownership import ensure_record_is_mutable, get_owned_record, validate_owned_references
 
 router = APIRouter()
-
-
-def _require_tushare_configured() -> None:
-    if not (os.environ.get("TUSHARE_TOKEN") or settings.tushare_token):
-        raise HTTPException(
-            status_code=409,
-            detail="未配置 TUSHARE_TOKEN，无法同步分红公告；请在 backend/.env 中配置后重启。",
-        )
 
 
 IMMUTABLE_IMPORTED_ACTION_DETAIL = (
@@ -535,7 +524,7 @@ def get_actions_by_symbol(
 
 
 # ---------------------------------------------------------------------------
-# 分红公告建议（Tushare 同步；仅 A/B 股）与标的事件
+# 分红公告建议（A/B 股 Tushare、港股披露易）与标的事件
 # ---------------------------------------------------------------------------
 
 
@@ -544,8 +533,11 @@ def start_dividend_sync(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    """启动分红公告同步 job（去重：每用户单活跃任务）。"""
-    _require_tushare_configured()
+    """启动分红公告同步 job（去重：每用户单活跃任务）。
+
+    不再要求 TUSHARE_TOKEN：港股走披露易（免 token）；未配置时 A/B 股在 job 内整体
+    跳过并在结果里标注 tushare_unavailable，由前端提示。
+    """
     job = start_dividend_sync_job(current_user.id)
     if job["status"] == "queued":
         background_tasks.add_task(run_dividend_sync_job, job["id"])

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
 from ..models.security_price import SecurityPrice
+from . import tiingo_source
 from .stock_price_service import (
     get_exchange_type,
     get_tushare_pro,
@@ -272,6 +273,80 @@ def _fetch_and_store_tencent_history(
         "success": True,
         "rows": changed,
         "source": "tencent-kline",
+        **_history_coverage_payload(start_date, end_date, rows),
+    }
+
+
+def _normalize_tiingo_eod_bars(
+    bars: List[Dict[str, Any]],
+    *,
+    symbol: str,
+    market: str,
+    ticker: str,
+    currency: str,
+) -> List[SecurityPrice]:
+    """Tiingo EOD bar -> SecurityPrice，口径与 Yahoo 归一化一致：close_price 存不复权
+    收盘，adj_close_price 存源给出的复权收盘（拆股+分红），adj_factor = adjClose / close；
+    pre_close 取序列内前一根的收盘（区间首根没有前值留空）。"""
+    rows: List[SecurityPrice] = []
+    previous_close: Optional[Decimal] = None
+    for bar in bars:
+        close_price = bar["close"]
+        adj_close_price = bar.get("adj_close")
+        rows.append(
+            SecurityPrice(
+                symbol=symbol,
+                market=market,
+                ts_code=ticker,
+                price_date=bar["date"],
+                currency=currency,
+                open_price=bar.get("open"),
+                high_price=bar.get("high"),
+                low_price=bar.get("low"),
+                close_price=close_price,
+                pre_close_price=previous_close,
+                adj_factor=(adj_close_price / close_price) if adj_close_price and close_price else None,
+                adj_close_price=adj_close_price,
+                source=tiingo_source.EOD_SOURCE,
+            )
+        )
+        previous_close = close_price
+    return rows
+
+
+def _fetch_and_store_tiingo_history(
+    db: Session,
+    *,
+    symbol: str,
+    market: str,
+    start_date: date,
+    end_date: date,
+    currency: Optional[str],
+) -> Dict[str, Any]:
+    """Tiingo EOD 区间日线入库；外呼/解析失败抛 TiingoError 家族，由调用方决定兜底。"""
+    bars = tiingo_source.fetch_eod_history(symbol, start_date, end_date)
+    rows = _normalize_tiingo_eod_bars(
+        [bar for bar in bars if start_date <= bar["date"] <= end_date],
+        symbol=symbol,
+        market=market,
+        ticker=tiingo_source.to_tiingo_ticker(symbol),
+        currency=infer_price_currency(market, currency),
+    )
+    if not rows:
+        return _empty_external_history_result(
+            symbol=symbol,
+            market=market,
+            source=tiingo_source.EOD_SOURCE,
+            start_date=start_date,
+            end_date=end_date,
+        )
+    changed = upsert_security_prices(db, rows)
+    return {
+        "symbol": symbol,
+        "market": market,
+        "success": True,
+        "rows": changed,
+        "source": tiingo_source.EOD_SOURCE,
         **_history_coverage_payload(start_date, end_date, rows),
     }
 
@@ -831,6 +906,38 @@ def fetch_and_store_security_price_history(
             return resolve_tencent_us_kline_code(symbol)
         return None
 
+    fallback_errors: List[str] = []
+    tiingo_tried: List[bool] = []
+
+    def try_tiingo() -> Optional[Dict[str, Any]]:
+        """美股第二顺位：Tiingo EOD（带复权收盘）。成功（含短区间无交易日）直接采用；
+        未配置 / 失败 / 长区间空返回记下原因后返回 None，交给腾讯 K 线。
+        每次同步最多外呼一次（空返回分支里的腾讯兜底抛错会再落到 except 分支）。"""
+        if market != "美股" or tiingo_tried:
+            return None
+        tiingo_tried.append(True)
+        if not tiingo_source.is_configured():
+            logger.debug("未配置 TIINGO_API_TOKEN，美股 %s 历史行情跳过 Tiingo", symbol)
+            return None
+        try:
+            result = _fetch_and_store_tiingo_history(
+                db,
+                symbol=symbol,
+                market=market,
+                start_date=start_date,
+                end_date=end_date,
+                currency=currency,
+            )
+        except Exception as tiingo_exc:  # noqa: BLE001 - 兜底源失败交给下一源
+            db.rollback()
+            logger.warning("Tiingo 日线同步 %s %s 失败: %s", market, symbol, tiingo_exc)
+            fallback_errors.append(f"Tiingo: {str(tiingo_exc)[:160]}")
+            return None
+        if result.get("success"):
+            return result
+        fallback_errors.append(f"Tiingo: {result.get('error')}")
+        return None
+
     try:
         df = _tushare_history_query(
             resolved["api"],
@@ -841,7 +948,10 @@ def fetch_and_store_security_price_history(
         if df is None or df.empty:
             # Tushare 空返回可能是真无交易日，也可能是覆盖空洞
             # （daily 不含 B 股/可转债、hk_daily 不含港股 ETF/REIT）。
-            # 有腾讯映射就再问一次兜底源，仍为空才视为无数据。
+            # 美股先问 Tiingo；有腾讯映射就再问一次兜底源，仍为空才视为无数据。
+            tiingo_result = try_tiingo()
+            if tiingo_result is not None:
+                return tiingo_result
             code = fallback_code()
             if code:
                 return _fetch_and_store_tencent_history(
@@ -888,6 +998,9 @@ def fetch_and_store_security_price_history(
     except Exception as exc:
         db.rollback()
         logger.warning("同步 %s %s 历史行情失败: %s", market, symbol, exc)
+        tiingo_result = try_tiingo()
+        if tiingo_result is not None:
+            return tiingo_result
         code = fallback_code()
         if code:
             try:
@@ -905,13 +1018,19 @@ def fetch_and_store_security_price_history(
                 logger.warning(
                     "腾讯K线兜底同步 %s %s 也失败: %s", market, symbol, fallback_exc
                 )
-        return {
+                fallback_errors.append(f"腾讯K线: {str(fallback_exc)[:160]}")
+        # error 保持主源（Tushare）原文：performance_history_jobs 按它识别配额/权限类
+        # 错误并中止整批；兜底源的失败原因另列，不混进去改变判定
+        failure = {
             "symbol": symbol,
             "market": market,
             "success": False,
             "rows": 0,
             "error": str(exc)[:240],
         }
+        if fallback_errors:
+            failure["fallback_errors"] = fallback_errors
+        return failure
 
 
 def _today() -> date:

@@ -126,6 +126,11 @@ function eventTypeLabel(type: string) {
 function eventDetail(row: ProfileRow): string {
   const payload = row.payload || {}
   if (row.event_type === 'DIVIDEND_PLAN') {
+    // 港股（披露易）事件带派发币种与股息类型；A/B 股（Tushare）为人民币元
+    if (payload.currency) {
+      const kinds = Array.isArray(payload.dividend_types) ? payload.dividend_types.join('+') : ''
+      return `每股 ${formatPerShare(payload.cash_div_tax)} ${payload.currency}（${kinds || payload.div_proc || '公告'}）`
+    }
     return `每股税前 ${formatPerShare(payload.cash_div_tax)} 元（${payload.div_proc || '预案'}）`
   }
   if (row.event_type === 'SHARE_UNLOCK') {

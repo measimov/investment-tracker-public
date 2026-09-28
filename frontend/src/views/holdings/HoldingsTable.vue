@@ -16,7 +16,7 @@ import type { Holding } from '@/stores/holdings'
 import type { HoldingRow, HoldingsTableFeature } from './useHoldingsTable'
 import type { SecurityBadgesFeature } from './useSecurityBadges'
 import type { SortOrder } from './display'
-import { displayAnalysisTag } from './display'
+import { displayAnalysisTag, industryTooltip } from './display'
 
 const props = defineProps<{ table: HoldingsTableFeature; badges: SecurityBadgesFeature }>()
 
@@ -161,6 +161,22 @@ function riskText(level: string) {
           </div>
           <div class="cell-sub">
             {{ row.symbol }} · {{ row.market }}
+            <template v-if="badges.industryFor(row)">
+              ·
+              <el-tooltip
+                :content="industryTooltip(badges.industryFor(row)!.source)"
+                placement="top"
+              >
+                <span
+                  class="industry-text"
+                  :class="{
+                    'industry-unofficial': badges.industryFor(row)!.source === 'eastmoney'
+                  }"
+                  data-testid="holding-industry"
+                  >{{ badges.industryFor(row)!.industry }}</span
+                >
+              </el-tooltip>
+            </template>
             <template v-if="isAccountView() || row.accounts.length === 1">
               ·
               <span :class="{ 'account-unassigned': !row.accounts[0]?.broker_account_id }">
@@ -405,6 +421,15 @@ function riskText(level: string) {
         <div class="mobile-card-tags">
           <!-- 第一个 tag 必须是市场（移动端 E2E 据此拼标的档案路由） -->
           <el-tag size="small" effect="plain">{{ row.market }}</el-tag>
+          <el-tooltip
+            v-if="badges.industryFor(row)"
+            :content="industryTooltip(badges.industryFor(row)!.source)"
+            placement="top"
+          >
+            <el-tag size="small" type="info" effect="plain" data-testid="holding-card-industry">
+              {{ badges.industryFor(row)!.industry }}
+            </el-tag>
+          </el-tooltip>
           <el-tag v-if="badges.upcomingEvent(row)" type="warning" size="small" effect="plain">
             {{ badges.upcomingEvent(row)!.label }}·{{ badges.upcomingEvent(row)!.daysText }}
           </el-tag>
@@ -586,6 +611,15 @@ function riskText(level: string) {
 
 .event-badge {
   cursor: help;
+}
+
+.industry-text {
+  cursor: help;
+}
+
+/* 东方财富（非官方补缺）的行业加虚线下划线，悬浮看来源 */
+.industry-unofficial {
+  border-bottom: 1px dashed currentColor;
 }
 
 .account-unassigned {

@@ -2,7 +2,7 @@
 挂在 /api/securities 下；security_profiles 的动态路由全是三段 `/{market}/{symbol}/x`，
 这里的一段静态路径不会被吞。"""
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -16,8 +16,10 @@ from ..schemas.security_catalog import (
     SecurityResolveResponse,
     SecuritySearchResponse,
 )
+from ..schemas.security_industry import SecurityIndustryItem
 from ..schemas.security_rule import VALID_MARKETS
 from ..services import security_catalog_service as catalog
+from ..services import security_industry_service as industries
 
 router = APIRouter()
 
@@ -85,3 +87,20 @@ def trigger_catalog_sync(
     ]
     background_tasks.add_task(catalog.run_sync_in_background, markets=markets, force=force)
     return CatalogSyncAccepted(started=True, sources=sources)
+
+
+@router.get("/industries", response_model=List[SecurityIndustryItem])
+def list_security_industries(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+) -> List[SecurityIndustryItem]:
+    """当前用户持仓 ∪ 观察清单的行业分类（只读库，不外呼）。
+
+    优先级：本人特例规则 INDUSTRY > 官方（Tushare / EDGAR SIC）> 东方财富 F10；
+    取不到的标的 industry/source 为 null。"""
+    keys = industries.user_keys(db, current_user.id)
+    resolved = industries.resolve_industries(db, keys, current_user.id)
+    return [
+        SecurityIndustryItem(symbol=symbol, market=market, **resolved[(symbol, market)])
+        for symbol, market in keys
+    ]

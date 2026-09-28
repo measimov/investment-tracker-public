@@ -337,6 +337,9 @@ export interface paths {
     /**
      * Start Dividend Sync
      * @description 启动分红公告同步 job（去重：每用户单活跃任务）。
+     *
+     *     不再要求 TUSHARE_TOKEN：港股走披露易（免 token）；未配置时 A/B 股在 job 内整体
+     *     跳过并在结果里标注 tushare_unavailable，由前端提示。
      */
     post: operations['start_dividend_sync_api_corporate_actions_dividend_sync_jobs_post']
     delete?: never
@@ -1640,6 +1643,29 @@ export interface paths {
      * @description 批量回填确认框数据（纯 DB 统计，不打任何外部数据源）。
      */
     get: operations['preview_digest_backfill_targets_api_securities_digest_backfill_preview_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/securities/industries': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List Security Industries
+     * @description 当前用户持仓 ∪ 观察清单的行业分类（只读库，不外呼）。
+     *
+     *     优先级：本人特例规则 INDUSTRY > 官方（Tushare / EDGAR SIC）> 东方财富 F10；
+     *     取不到的标的 industry/source 为 null。
+     */
+    get: operations['list_security_industries_api_securities_industries_get']
     put?: never
     post?: never
     delete?: never
@@ -4701,6 +4727,19 @@ export interface components {
       /** Symbol */
       symbol: string
     }
+    /** SecurityIndustryItem */
+    SecurityIndustryItem: {
+      /** Fetched At */
+      fetched_at?: string | null
+      /** Industry */
+      industry?: string | null
+      /** Market */
+      market: string
+      /** Source */
+      source?: ('rule' | 'tushare' | 'edgar' | 'eastmoney') | null
+      /** Symbol */
+      symbol: string
+    }
     /** SecurityResolveResponse */
     SecurityResolveResponse: {
       /** Currency */
@@ -4873,6 +4912,8 @@ export interface components {
       action_type: string
       /** Ann Date */
       ann_date: string | null
+      /** Announcement Detail */
+      announcement_detail?: Record<string, unknown> | null
       /** Broker Account Id */
       broker_account_id: number | null
       /** Cash Div After Tax */
@@ -8368,6 +8409,26 @@ export interface operations {
         }
         content: {
           'application/json': Record<string, unknown>
+        }
+      }
+    }
+  }
+  list_security_industries_api_securities_industries_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SecurityIndustryItem'][]
         }
       }
     }

@@ -1,0 +1,5 @@
+{
+  "not_found": {"detail": "Error: Ticker 'ZZZZQ' not found"},
+  "invalid_token": {"detail": "Invalid token."},
+  "rate_limit": {"detail": "Error: You have run over your 50 requests per hour allocation. Please upgrade at https://api.tiingo.com/pricing to have your limits increased."}
+}

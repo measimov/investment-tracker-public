@@ -18,7 +18,9 @@ class SecurityEvent(Base):
 
     来源：分红同步 job 顺带落库——财报披露计划（disclosure_date.pre_date）、
     分红预案/股东大会通过阶段的除权/派息日（dividend 非"实施"行）、限售解禁
-    （share_float.float_date）。过期事件保留：历史事件是标的档案 LLM 分析的输入。
+    （share_float.float_date）；港股为披露易现金股息公告的除净日（DIVIDEND_PLAN，
+    source=hkexnews-dividend，payload 带 currency/dividend_types）。过期事件保留：
+    历史事件是标的档案 LLM 分析的输入。
     """
 
     __tablename__ = "security_events"

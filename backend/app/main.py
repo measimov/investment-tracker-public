@@ -82,6 +82,16 @@ register_periodic_task(
     refresh_security_catalog, interval_seconds=SECURITY_CATALOG_REFRESH_SECONDS
 )
 
+# 行业分类：官方为主 + 东方财富补缺；24h 一查，按 fetched_at 判新鲜（超过刷新天数才重拉）
+from .services.security_industry_service import (  # noqa: E402
+    PERIODIC_INTERVAL_SECONDS as SECURITY_INDUSTRY_REFRESH_SECONDS,
+    refresh_security_industries,
+)
+
+register_periodic_task(
+    refresh_security_industries, interval_seconds=SECURITY_INDUSTRY_REFRESH_SECONDS
+)
+
 
 configure_logging()
 logger = get_app_logger(__name__)

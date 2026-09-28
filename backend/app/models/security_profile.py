@@ -47,7 +47,7 @@ class SecurityProfileData(Base):
             "'edgar_companyfacts', 'yahoo_fundamentals', 'report_target_plan', "
             "'xueqiu_income', 'xueqiu_capital_flow', 'xueqiu_holders', "
             "'report_statement_extract', 'report_statements', 'report_statement_plan', "
-            "'ads_ratio'"
+            "'ads_ratio', 'hkex_dividend_form'"
             ")",
             name="ck_security_profile_dataset",
         ),

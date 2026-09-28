@@ -23,6 +23,7 @@ from .security_profile import SecurityAnalysis, SecurityProfileData
 from .security_opinion import SecurityOpinionSummary
 from .hkex_dayquot_report import HkexDayquotReport
 from .security_catalog import SecurityCatalogEntry, SecurityCatalogSync
+from .security_industry import SecurityIndustry
 from .xueqiu_collector import (
     XueqiuArchiverPost,
     XueqiuArchiverPostScanState,
@@ -67,6 +68,7 @@ __all__ = [
     "HkexDayquotReport",
     "SecurityCatalogEntry",
     "SecurityCatalogSync",
+    "SecurityIndustry",
     "XueqiuArchiverPost",
     "XueqiuArchiverPostScanState",
     "XueqiuArchiverReply",

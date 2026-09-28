@@ -185,6 +185,7 @@ describe('useHoldingsTable merged rows', () => {
     const table = useHoldingsTable({
       isUnmounted: () => false,
       tagSourceOf: (r) => ({
+        industry: r.symbol === '600036' ? '银行' : '软件服务',
         aiTags: r.symbol === '600036' ? ['高股息', '估值偏低'] : ['业绩增长'],
         riskLevel: r.symbol === '600036' ? 'low' : 'high',
         opinionTags: [],
@@ -213,6 +214,13 @@ describe('useHoldingsTable merged rows', () => {
     expect(table.rows.map((r) => r.symbol)).toEqual(['600036'])
     table.state.selectedTags = ['ai:估值偏低', 'ai:业绩增长', 'risk:high']
     expect(table.rows.map((r) => r.symbol)).toEqual(['00700'])
+    // 行业组：选项来自当前持仓，与其他组 AND
+    const industry = table.tagOptions.find((group) => group.group === 'industry')!
+    expect(industry.options.map((o) => o.label).sort()).toEqual(['软件服务', '银行'].sort())
+    table.state.selectedTags = ['industry:银行']
+    expect(table.rows.map((r) => r.symbol)).toEqual(['600036'])
+    table.state.selectedTags = ['industry:银行', 'risk:high']
+    expect(table.rows).toHaveLength(0)
 
     // 汇总不受筛选影响
     expect(table.securityCount).toBe(2)

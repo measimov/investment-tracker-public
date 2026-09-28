@@ -50,6 +50,12 @@ def db():
         session.close()
 
 
+@pytest.fixture(autouse=True)
+def _tushare_token(monkeypatch):
+    """A/B 股路径要求配置 TUSHARE_TOKEN（未配置时整体跳过，见港股测试）；fetch 层全 mock。"""
+    monkeypatch.setattr(svc.settings, "tushare_token", "fake-token")
+
+
 def _announcement(**overrides):
     row = {
         "end_date": date(2025, 12, 31),
@@ -841,12 +847,13 @@ def test_excluded_and_cash_management_symbols_are_skipped(db, monkeypatch):
     assert result["symbols_scanned"] == 0
 
 
-def test_non_a_share_markets_are_reported_unsupported(db, monkeypatch):
-    _seed_holding(db, symbol="00700", market="港股")
+def test_us_market_is_reported_unsupported(db, monkeypatch):
+    """港股已接入披露易；美股仍以券商对账单为准。"""
+    _seed_holding(db, symbol="AAPL", market="美股")
     _patch_fetchers(monkeypatch)
 
     result = svc.sync_dividends_for_user(db, 1)
-    assert result["unsupported_markets"] == ["港股"]
+    assert result["unsupported_markets"] == ["美股"]
     assert result["symbols_scanned"] == 0
 
 

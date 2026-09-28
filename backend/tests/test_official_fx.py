@@ -203,8 +203,13 @@ def test_both_sources_down_returns_existing_official_only(db, patched):
 
 
 def test_large_diff_surfaces_as_data_quality_warning(db, patched):
-    patched["third"] = ("api-ecb", {"USD": Decimal("6.8500")})  # +1.5%
+    # 常态差异（即期与中间价差 0.5%~1.5%）不告警：阈值取中间价 ±2% 的波动区间
+    patched["third"] = ("api-ecb", {"USD": Decimal("6.8500")})  # +1.50%
+    fx.fetch_latest_rates_from_api(db)
+    assert fx.fx_source_warnings(db) == []
+
+    patched["third"] = ("api-ecb", {"USD": Decimal("6.9000")})  # +2.24%
     fx.fetch_latest_rates_from_api(db)
     warnings = fx.fx_source_warnings(db)
-    assert any("USD/CNY 第三方报价（api-ecb）与官方中间价（2026-09-24）相差 +1.50%" in w for w in warnings)
+    assert any("USD/CNY 第三方报价（api-ecb）与官方中间价（2026-09-24）相差 +2.24%" in w for w in warnings)
     assert not any("HKD" in w for w in warnings)

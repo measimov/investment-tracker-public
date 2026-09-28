@@ -10,13 +10,14 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from ..database import Base
 
 
 class CorporateActionSuggestion(Base):
-    """分红公告建议表（Tushare dividend 同步产物，绝不自动入账）。
+    """分红公告建议表（Tushare dividend / 披露易现金股息公告同步产物，绝不自动入账）。
 
     与 corporate_actions 物理隔离：账本表被持仓重算 / FIFO / TTWR 三处重放
     无差别读取，建议的生命周期噪音（NEW/IGNORED/公告修订刷新）不应进入账本。
@@ -87,6 +88,10 @@ class CorporateActionSuggestion(Base):
     source = Column(
         String(30), nullable=False, default="tushare-dividend",
         server_default="tushare-dividend",
+    )
+    announcement_detail = Column(
+        JSONB,
+        comment="公告明细（港股披露易：股息组成/宣派与派发币种/汇率/代扣税/以股代息标记）",
     )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

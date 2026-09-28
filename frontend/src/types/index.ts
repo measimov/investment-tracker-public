@@ -66,6 +66,7 @@ export type SecuritySearchItem = components['schemas']['SecuritySearchItem']
 export type SecuritySearchResponse = components['schemas']['SecuritySearchResponse']
 export type SecurityResolveResponse = components['schemas']['SecurityResolveResponse']
 export type CatalogHealth = components['schemas']['CatalogHealth']
+export type SecurityIndustryItem = components['schemas']['SecurityIndustryItem']
 
 // ---------------------------------------------------------------------------
 // 手写共享形状（后端 Dict[str, Any] 端点；本文件是前端形状的唯一权威副本）

@@ -32,6 +32,9 @@ class SuggestionResponse(BaseModel):
     created_corporate_action_id: Optional[int]
     match_detail: Optional[dict]
     source: str
+    # 港股（披露易）公告明细：components / declared / exchange_rate / withholding /
+    # scrip_option / currency_election；A/B 股为 None
+    announcement_detail: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
 

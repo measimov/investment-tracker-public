@@ -374,6 +374,7 @@ onMounted(async () => {
   badges.loadEvents()
   badges.loadAnalyses()
   badges.loadOpinions()
+  badges.loadIndustries()
   batch.loadTargetCount()
   attachToActiveBatchJob()
 })

@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     # SEC EDGAR（美股基本面/10-K）：合规要求 UA 携带联系方式
     edgar_user_agent: str = ""
 
+    # Tiingo（api.tiingo.com，免费档）：美股报价与日线。报价链 Tushare → Tiingo → 雪球，
+    # 日线链 Tushare → Tiingo EOD → 腾讯 K 线。留空 = 关闭该数据源（显式降级，直接走下一源）。
+    # 免费档额度约 50 次/小时、1000 次/天、每月 500 个不同 ticker：进程级最小间隔之外，
+    # 撞 429 后进程内冷却一段时间不再外呼（tiingo_source.RATE_LIMIT_COOLDOWN_SECONDS）
+    tiingo_api_token: str = ""
+    tiingo_min_interval_seconds: float = Field(default=1.0, ge=0)
+    tiingo_timeout_seconds: float = Field(default=15.0, gt=0)
+
     # 雪球数据源（stock.xueqiu.com）：免签名，但需登录态 Cookie，且不自动刷新。
     # 二选一，XUEQIU_COOKIES 优先；两者都空 = 关闭该数据源（所有入口显式降级）。
     #
@@ -181,9 +189,12 @@ class Settings(BaseSettings):
     hkex_dayquot_lookback_days: int = 10
     hkex_dayquot_max_reports_per_tick: int = 5
     # 汇率（#200）：人民币汇率中间价（中国货币网）为主源，第三方只比对。某币种最近一期
-    # 中间价超过 N 天（覆盖国庆长假）才降级写入第三方报价；比对差异超过阈值（%）告警
+    # 中间价超过 N 天（覆盖国庆长假）才降级写入第三方报价；比对差异超过阈值（%）告警。
+    # 阈值取 2：境内人民币即期可在中间价上下 2% 内波动，第三方（欧洲央行参考价）贴近市场价，
+    # 与中间价差 0.5% 上下是常态（2026-09 上线实测 USD −0.53%、HKD −0.55%），只有超出
+    # 波动区间才像数据错误（币种错配、陈旧值、单位错）
     fx_official_max_stale_days: int = 10
-    fx_check_warn_pct: float = 0.5
+    fx_check_warn_pct: float = 2.0
     # 无风险利率（#200）：参考利率日序列的周期同步开关；夏普/索提诺默认使用的序列
     # （SHIBOR_3M = 本币 CNY；UST_3M 只展示）。请求显式传 risk_free_rate 时仍按常量计算
     reference_rate_sync_enabled: bool = True
@@ -192,6 +203,11 @@ class Settings(BaseSettings):
     # （6h tick 按 last_success_at 判新鲜，重启不重拉）；manage.py sync-security-catalog 手动
     security_catalog_sync_enabled: bool = True
     security_catalog_sync_interval_hours: int = 168
+    # 行业分类（security_industries）：官方为主（A股 Tushare stock_basic / 美股 EDGAR SIC）+
+    # 东方财富 F10 补缺（港股、B股、官方缺失的 A股/美股）；24h tick，按 fetched_at 判新鲜，
+    # 超过刷新天数才重拉；manage.py sync-security-industries [--force] 手动
+    security_industry_sync_enabled: bool = True
+    security_industry_refresh_days: int = Field(default=30, gt=0)
     price_refresh_max_workers: int = 4
     # 主动刷新股价的新鲜度窗口：窗口内重复请求跳过（防连点浪费配额）
     price_refresh_freshness_seconds: int = 600

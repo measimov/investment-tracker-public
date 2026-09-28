@@ -160,3 +160,22 @@ const NOISE_TAGS = new Set(['数据不足', 'ETF'])
 export function displayAnalysisTag(tags: string[] | null | undefined): string | null {
   return (tags || []).find((tag) => !NOISE_TAGS.has(tag)) ?? null
 }
+
+/** 行业来源（后端 GET /securities/industries 的 source）→ 提示文案：手工 / 官方 / 东方财富 */
+const INDUSTRY_SOURCE_LABELS: Record<string, string> = {
+  rule: '手工（特例规则）',
+  tushare: '官方 · Tushare 行业分类',
+  edgar: '官方 · SEC EDGAR 行业代码（SIC）',
+  eastmoney: '东方财富 F10（非官方，补缺）'
+}
+
+export function industrySourceLabel(source: string | null | undefined): string {
+  if (!source) return '未知'
+  return INDUSTRY_SOURCE_LABELS[source] ?? source
+}
+
+/** 行业的悬浮提示：来源 + 如何覆盖 */
+export function industryTooltip(source: string | null | undefined): string {
+  const origin = `行业来源：${industrySourceLabel(source)}`
+  return source === 'rule' ? origin : `${origin}。可在「账户数据 → 特例规则」用「行业分类」覆盖`
+}

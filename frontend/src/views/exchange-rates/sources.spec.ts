@@ -16,9 +16,10 @@ describe('汇率来源展示', () => {
     expect(sourceTagType(undefined)).toBe('info')
   })
 
-  it('比对差异超过 0.5% 视为异常，字符串数值同样处理', () => {
+  it('比对差异超过 2%（中间价波动区间）才视为异常，字符串数值同样处理', () => {
     expect(isDiffAbnormal('0.1234')).toBe(false)
-    expect(isDiffAbnormal(-0.51)).toBe(true)
+    expect(isDiffAbnormal(-0.53)).toBe(false)
+    expect(isDiffAbnormal(-2.01)).toBe(true)
     expect(isDiffAbnormal(null)).toBe(false)
   })
 })

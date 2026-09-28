@@ -4,7 +4,7 @@ Stock Price Service Module
 Fetches real-time stock prices from different sources:
 - A股/B股: Tushare rt_k
 - 港股: Tushare hk_daily latest bar
-- 美股: Tushare us_daily latest bar
+- 美股: Tushare us_daily latest bar → Tiingo (IEX / EOD) → 雪球
 - 加密货币: Tushare coin_bar latest bar
 
 Optimizations:
@@ -761,15 +761,21 @@ def fetch_us_stock_price_tushare(symbol: str) -> PriceResult:
 
 
 def fetch_us_stock_price(symbol: str) -> PriceResult:
-    """美股：Tushare us_daily 优先，雪球实时报价兜底。
+    """美股：Tushare us_daily → Tiingo（IEX 最新价 / 最新日线收盘）→ 雪球实时报价。
 
-    腾讯行情不支持美股，所以在雪球接入前美股是唯一没有任何 fallback 的市场
-    （us_daily 还只是日线收盘，盘中并不实时）。雪球每次请求限速 2-4s 且全局
-    串行，因此只作兜底、不作首选。
+    腾讯行情不支持美股。Tiingo 免费档只要一个 API Token、不会过期，排在雪球之前；
+    雪球 Cookie 约 15 天过期且每次请求限速 2-4s、全局串行，降为最后兜底。
+    未配置 TIINGO_API_TOKEN 时 Tiingo 显式返回失败（不外呼），链条照常走到雪球。
     """
     tushare_result = fetch_us_stock_price_tushare(symbol)
     if tushare_result["success"]:
         return tushare_result
+
+    from .tiingo_source import fetch_tiingo_stock_price
+
+    tiingo_result = fetch_tiingo_stock_price(symbol)
+    if tiingo_result["success"]:
+        return tiingo_result
 
     from .xueqiu_source import fetch_xueqiu_stock_price
 
@@ -781,7 +787,10 @@ def fetch_us_stock_price(symbol: str) -> PriceResult:
         price=None,
         source="all-failed",
         success=False,
-        error=f"{tushare_result.get('error')}; {xueqiu_result.get('error')}",
+        error=(
+            f"{tushare_result.get('error')}; {tiingo_result.get('error')}; "
+            f"{xueqiu_result.get('error')}"
+        ),
     )
 
 

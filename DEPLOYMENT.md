@@ -132,13 +132,15 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `TUSHARE_TOKEN` | 空 | Tushare token：行情刷新、A股档案、分红同步、标的全集都依赖它；留空则这些功能不可用 |
+| `TUSHARE_TOKEN` | 空 | Tushare token：行情刷新、A股档案、A/B 股分红同步、标的全集都依赖它（港股分红走披露易，不需要）；留空则这些功能不可用 |
 | `TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS` | `0.35` | 所有 Tushare 调用共享的最小间隔（≈170 次/分）；0 = 关闭全局闸 |
 | `TUSHARE_COOLDOWN_BASE_SECONDS` | `65` | 接口级频率错误的首次冷却秒数（只有真撞限才生效） |
 | `TUSHARE_COOLDOWN_MAX_SECONDS` | `900` | 冷却指数退避上限 |
 | `TUSHARE_HK_MIN_INTERVAL_SECONDS` | `31` | 港股行情接口 `hk_daily`/`hk_mins` 的单接口最小间隔 |
 | `TUSHARE_API_BASE_URL` | `https://api.waditu.com/dataapi` | Tushare HTTPS 数据接口地址；留空 = 默认 |
 | `EDGAR_USER_AGENT` | 空 | SEC EDGAR（美股档案、10-K/20-F）要求 UA 带联系方式，形如 `your-app your-email@example.com`；留空用占位 UA 并告警，SEC 可能 403 |
+| `TIINGO_API_TOKEN` | 空 | Tiingo 免费档 API Token（tiingo.com 注册后 Account → API → Token）：美股报价链 Tushare → **Tiingo**（IEX 最新价，陈旧或缺失时取最新日线收盘）→ 雪球，美股日线链 Tushare → **Tiingo EOD**（含复权收盘）→ 腾讯 K 线。留空 = 关闭该源（显式降级，报价失败原因写「未配置 TIINGO_API_TOKEN」，日线直接走腾讯），不影响其他源。免费档约 50 次/小时、1000 次/天、每月 500 个不同 ticker，撞 429 后进程内冷却 10 分钟不再外呼 |
+| `TIINGO_MIN_INTERVAL_SECONDS` / `TIINGO_TIMEOUT_SECONDS` | `1.0` / `15.0` | Tiingo 进程级最小请求间隔与单次请求超时（秒） |
 | `XUEQIU_COOKIE_FILE` | 空 | 雪球 Cookie 文件的**容器内**路径，如 `/app/secrets/xueqiu.com.json` |
 | `XUEQIU_COOKIES` | 空 | 直接给 Cookie JSON；与 `XUEQIU_COOKIE_FILE` 二选一，优先；两者都空 = 关闭雪球数据源（显式降级） |
 | `XUEQIU_MIN_DELAY_SECONDS` / `XUEQIU_MAX_DELAY_SECONDS` | `2` / `4` | 雪球请求间的随机间隔；调低会更快撞 WAF |
@@ -182,6 +184,8 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `HKEX_DAYQUOT_MAX_REPORTS_PER_TICK` | `5` | 每次最多下载份数（约 25MB/份） |
 | `SECURITY_CATALOG_SYNC_ENABLED` | `true` | 标的全集周期同步 |
 | `SECURITY_CATALOG_SYNC_INTERVAL_HOURS` | `168` | 标的全集新鲜度（按上次成功时间判断，重启不重拉） |
+| `SECURITY_INDUSTRY_SYNC_ENABLED` | `true` | 行业分类周期同步（每天一查；官方 Tushare/EDGAR 为主、东方财富 F10 补缺） |
+| `SECURITY_INDUSTRY_REFRESH_DAYS` | `30` | 行业分类新鲜度：超过该天数的行才重拉 |
 | `DIVIDEND_SYNC_LOOKBACK_DAYS` | `365` | 分红公告同步回看天数 |
 | `DIVIDEND_SYNC_MATCH_WINDOW_DAYS` | `30` | 分红建议与已入账股息的判重窗口 |
 | `DIVIDEND_SYNC_PERIODIC_ENABLED` | `false` | 分红公告每周自动同步；开启前确认 Tushare 积分配额充足 |
@@ -453,9 +457,10 @@ curl --cacert certs/lan/fullchain.pem https://<app-host>/health
 ### 4.6 可选：数据源与 AI
 
 - **美股档案**：填 `EDGAR_USER_AGENT`。
+- **美股行情**：填 `TIINGO_API_TOKEN`（免费档即可），美股报价与日线不再依赖会过期的雪球 Cookie。
 - **雪球**：把浏览器插件导出的 Cookie JSON 放进 `XUEQIU_COOKIE_HOST_DIR`，`XUEQIU_COOKIE_FILE`
   填容器内路径，见 [雪球运维](#8-雪球运维)。
-- **Tushare**：`TUSHARE_TOKEN` 可留空；此时不能主动从 Tushare 刷新行情，分红公告与基本面档案同步也不可用。
+- **Tushare**：`TUSHARE_TOKEN` 可留空；此时不能主动从 Tushare 刷新行情，A/B 股分红公告与基本面档案同步也不可用（港股分红同步走披露易，不受影响）。
 - **AI 功能**：填 `LLM_REPORT_API_KEY`。留空时 AI 复盘和标的分析接口保持禁用，定期计划不会调用外部模型。
   启用后，生成报告、追问和标的分析会把相应的账本或公开行情输入发送给 `LLM_REPORT_BASE_URL`
   指向的外部服务；上线前应确认数据范围、供应商条款和隐私要求。
@@ -691,6 +696,8 @@ docker compose up -d --remove-orphans
 | `EDGAR_PIVOT_VERSION` | `earnings_quality.py` | 重新同步美股档案（下方命令） | 只打 EDGAR，无 LLM；每只几秒 |
 | `ADS_PARSER_VERSION`，或新增 ADS 换算比的迁移（`…_0023_ads_ratio`） | `ads_ratio_service.py` | `scripts/sync_ads_ratios.py --all`（`--force` 忽略缓存重解析） | 每只 20-F 发行人下载一次年报主文档，无 LLM |
 | 标的全集加载逻辑 | `security_catalog_service.py` | 周期任务自动跑；要立即生效：`manage.py sync-security-catalog` | 约 1 分钟 |
+| 新增行业分类的迁移（`…_0031_security_industries`），或行业来源/映射逻辑（SIC 映射表、东方财富解析） | `security_industry_service.py` | 首次部署：`manage.py sync-security-industries`（周期任务启动时也会跑，手动是为了立刻看到结果并核对输出的失败来源）；改映射后加 `--force` 重拉全部 | 持仓∪自选范围：Tushare stock_basic 一次 + 每只美股一次 EDGAR submissions + 东方财富每 20 只一次请求，秒级到分钟级，无 LLM；未取得行业的标的逐个列出，可在特例规则里补「行业分类」 |
+| `HKEX_DIVIDEND_PARSER_VERSION`，或新增港股分红同步的迁移（`…_0032_hk_dividend_forms`） | `hkex_dividend_source.py` / `hk_adjustment_factors.py` | 不需要立即跑：用户在公司行动页点「同步分红公告」时下载缺失的表格，解析器升版在下次同步时从缓存原文重解析；港股复权因子要立即刷新：`manage.py recompute-hk-adj-factors`（只用已缓存的表格，零网络） | 首次同步每只港股下载其 2021 年起的全部现金股息表格（每份约 100KB、披露易限速 1 秒/份，常见 5–20 份/只），之后只下新表格；复权重算秒级 |
 | 港交所日报解析 / 需要补历史 | `hkex_dayquot_source.py` | 周期任务自动推进；补跑：`manage.py sync-hkex-dayquot --days N`（站点只存约一个月） | 每份约 25MB |
 | 持仓重放口径（公司行动语义、持仓计算） | `holding_service.py`、`portfolio/semantics.py` | `manage.py rebuild-holdings` | 分钟级；输出 Failures = 真实超卖数据 |
 | 收益/统计口径 | `services/statistics/`、`services/portfolio/` | 5.3 / 5.7 的 metrics 快照对比 | 只读 |

@@ -1,5 +1,10 @@
 import axios, { type AxiosError, type AxiosRequestConfig } from 'axios'
-import type { PeriodPnlResponse, SecurityResolveResponse, SecuritySearchResponse } from '@/types'
+import type {
+  PeriodPnlResponse,
+  SecurityIndustryItem,
+  SecurityResolveResponse,
+  SecuritySearchResponse
+} from '@/types'
 import type {
   AdminHolding,
   BrokerAccount,
@@ -557,6 +562,12 @@ const api = {
   searchSecurities(params: { q?: string; market?: string; limit?: number }) {
     return apiClient.get<SecuritySearchResponse>('/securities/search', {
       params,
+      skipGlobalErrorNotification: true
+    })
+  },
+  // 持仓 ∪ 观察清单的行业分类（规则 > 官方 > 东方财富）；只读库不外呼，失败由调用方静默
+  listSecurityIndustries() {
+    return apiClient.get<SecurityIndustryItem[]>('/securities/industries', {
       skipGlobalErrorNotification: true
     })
   },

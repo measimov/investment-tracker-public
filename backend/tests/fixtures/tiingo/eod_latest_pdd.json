@@ -1,0 +1,17 @@
+[
+  {
+    "date": "2026-09-25T00:00:00.000Z",
+    "close": 120.0,
+    "high": 122.4,
+    "low": 119.55,
+    "open": 121.1,
+    "volume": 6540000,
+    "adjClose": 120.0,
+    "adjHigh": 122.4,
+    "adjLow": 119.55,
+    "adjOpen": 121.1,
+    "adjVolume": 6540000,
+    "divCash": 0.0,
+    "splitFactor": 1.0
+  }
+]

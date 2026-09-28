@@ -12,7 +12,10 @@ import {
   brokerAccountLabel,
   brokerAccountLabelById as labelById,
   getActionTypeName,
-  getActionTypeTag
+  getActionTypeTag,
+  hkDividendNotes,
+  suggestionSourceLabel,
+  type HkAnnouncementDetail
 } from './shared'
 
 // 后端 schema 为准（此前手写副本把 status 枚举放宽为 string）
@@ -57,6 +60,14 @@ function suggestionStatusLabel(status: string) {
   )
 }
 
+function hkNotes(row: SuggestionRow): string[] {
+  return hkDividendNotes(row.announcement_detail as HkAnnouncementDetail | null | undefined)
+}
+
+function isHkRow(row: SuggestionRow | null | undefined): boolean {
+  return row?.source === 'hkexnews-dividend'
+}
+
 function suggestionStatusTag(status: string) {
   if (status === 'NEW') return 'primary'
   if (status === 'ACCEPTED') return 'success'
@@ -92,13 +103,28 @@ async function syncDividends() {
     // 若继续落到下面的列表刷新，会产生卸载后的请求与状态写入，失败时还会
     // 在别的页面弹迟到错误（PR #171 复审）。
     if (!job || isUnmounted()) return
-    const result = (job.result || {}) as Record<string, number | unknown[]>
-    const failed = Array.isArray(result.failed) ? result.failed.length : 0
-    ElMessage.success(
-      `同步完成：扫描 ${result.symbols_scanned ?? 0} 只标的，新建议 ${result.new ?? 0} 条、` +
-        `已匹配 ${result.matched ?? 0} 条、事件 ${result.events_upserted ?? 0} 条` +
-        (failed ? `；${failed} 只标的失败` : '')
+    const result = (job.result || {}) as Record<string, unknown>
+    const count = (value: unknown) => (Array.isArray(value) ? value.length : 0)
+    const failed = count(result.failed)
+    const unparsed = count(result.hk_unparsed_forms)
+    const pending = count(result.hk_pending)
+    const blocked = count(result.hk_blocked)
+    const skippedNoTushare = Number(result.skipped_no_tushare || 0)
+    const warnings = [
+      failed ? `${failed} 只标的失败` : '',
+      unparsed ? `${unparsed} 份港股公告未能识别` : '',
+      blocked ? `${blocked} 处港股股息因最新公告无法识别而暂停更新（沿用现有建议，未改写）` : '',
+      skippedNoTushare ? `未配置 TUSHARE_TOKEN，跳过 ${skippedNoTushare} 只 A/B 股` : ''
+    ].filter(Boolean)
+    const notes = [...warnings, pending ? `${pending} 笔港股股息金额/除净日有待公布` : ''].filter(
+      Boolean
     )
+    const message =
+      `同步完成：扫描 ${result.symbols_scanned ?? 0} 只标的，新建议 ${result.new ?? 0} 条、` +
+      `已匹配 ${result.matched ?? 0} 条、事件 ${result.events_upserted ?? 0} 条` +
+      (notes.length ? `；${notes.join('；')}` : '')
+    if (warnings.length) ElMessage.warning(message)
+    else ElMessage.success(message)
     await loadSuggestions()
     emit('counts-changed')
   } catch (error) {
@@ -205,14 +231,14 @@ watch(
             data-testid="dividend-sync-button"
             @click="syncDividends"
           >
-            同步 A 股分红公告
+            同步分红公告
           </el-button>
         </div>
       </div>
     </template>
 
     <el-alert
-      title="仅同步 A/B 股公告（Tushare）；港股/美股分红仍以券商对账单导入为准。建议不会自动入账——点“接受”才会创建正式公司行动记录。"
+      title="A/B 股同步 Tushare 分红公告（需配置 TUSHARE_TOKEN），港股同步披露易「现金股息公告」表格；美股分红仍以券商对账单导入为准。建议不会自动入账——点“接受”才会创建正式公司行动记录。"
       type="info"
       :closable="false"
       show-icon
@@ -233,6 +259,15 @@ watch(
           <template #default="{ row }">
             <span class="suggestion-symbol">{{ row.symbol }}</span>
             <span v-if="row.name" class="suggestion-name">{{ row.name }}</span>
+            <el-tag
+              v-if="isHkRow(row)"
+              size="small"
+              effect="plain"
+              class="suggestion-source"
+              data-testid="suggestion-source-hkex"
+            >
+              {{ suggestionSourceLabel(row.source) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="100">
@@ -267,9 +302,20 @@ watch(
           <template #default="{ row }">
             <template v-if="row.action_type === 'CASH_DIVIDEND'">
               {{ formatNumber(toNumber(row.cash_div_pre_tax), 4) }}
+              <span v-if="row.currency !== 'CNY'" class="suggestion-currency">{{
+                row.currency
+              }}</span>
               <span v-if="row.cash_div_after_tax" class="after-tax">
                 ({{ formatNumber(toNumber(row.cash_div_after_tax), 4) }})
               </span>
+              <el-tooltip v-if="hkNotes(row).length" placement="top">
+                <template #content>
+                  <div v-for="(line, index) in hkNotes(row)" :key="index">{{ line }}</div>
+                </template>
+                <el-tag size="small" type="info" effect="plain" class="suggestion-detail-tag">
+                  公告
+                </el-tag>
+              </el-tooltip>
             </template>
             <template v-else>每股送转 {{ formatQuantity(row.stk_div_per_share) }}</template>
           </template>
@@ -292,6 +338,11 @@ watch(
                 ? formatNumber(toNumber(row.estimated_total_dividend), 2)
                 : '—'
             }}
+            <span
+              v-if="row.estimated_total_dividend != null && row.currency !== 'CNY'"
+              class="suggestion-currency"
+              >{{ row.currency }}</span
+            >
           </template>
         </el-table-column>
         <el-table-column label="状态" width="110">
@@ -301,6 +352,12 @@ watch(
               :content="`已按日期匹配到账本记录，但金额差 ${formatNumber(row.match_detail.amount_diff, 2)}，请核对`"
             >
               <el-tag type="warning" size="small">已匹配·金额差</el-tag>
+            </el-tooltip>
+            <el-tooltip
+              v-else-if="row.match_detail && row.match_detail.currency_mismatch"
+              :content="`已按日期匹配到账本记录（账本以 ${row.match_detail.currency_mismatch.recorded_currency || '其他币种'} 入账，与公告 ${row.currency} 币种不同，未比较金额）`"
+            >
+              <el-tag type="info" size="small">已匹配·币种不同</el-tag>
             </el-tooltip>
             <el-tag v-else :type="suggestionStatusTag(row.status)" size="small">
               {{ suggestionStatusLabel(row.status) }}
@@ -369,6 +426,9 @@ watch(
           </el-select>
         </el-form-item>
         <template v-if="acceptDialog.row?.action_type === 'CASH_DIVIDEND'">
+          <el-form-item v-if="acceptDialog.row?.currency !== 'CNY'" label="币种">
+            <span>{{ acceptDialog.row?.currency }}</span>
+          </el-form-item>
           <el-form-item label="股息总额">
             <el-input-number
               v-model="acceptDialog.totalDividend"
@@ -386,7 +446,11 @@ watch(
               :controls="false"
               class="amount-input"
             />
-            <div class="field-hint">A 股券商到账通常为税前全额，税额保持 0 即可</div>
+            <div v-if="isHkRow(acceptDialog.row)" class="field-hint">
+              港股按公告派发币种与除净日前一天持仓推算税前总额；预扣税视持有渠道而定（H 股/红筹经
+              HKSCC 代理人常按 10%、港股通个人 20%），请按券商实际到账填写
+            </div>
+            <div v-else class="field-hint">A 股券商到账通常为税前全额，税额保持 0 即可</div>
           </el-form-item>
         </template>
       </el-form>
@@ -416,6 +480,21 @@ watch(
 .suggestion-name {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+
+.suggestion-source {
+  margin-left: 6px;
+}
+
+.suggestion-currency {
+  margin-left: 3px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.suggestion-detail-tag {
+  margin-left: 4px;
+  cursor: help;
 }
 
 .after-tax {

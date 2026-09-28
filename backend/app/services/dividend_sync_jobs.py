@@ -2,7 +2,8 @@
 
 手动触发为 V1 唯一入口；周期任务（周度）由 settings.dividend_sync_periodic_enabled
 控制、默认关闭——dividend 接口有积分配额，且 A 股分红公告按年报/中报季集中，
-盲目轮询收益极低。
+盲目轮询收益极低。港股（披露易）不依赖 TUSHARE_TOKEN：未配置时周期入口只为
+持有/交易过港股的用户入队。
 """
 
 from typing import Any, Dict, Optional
@@ -11,11 +12,18 @@ from ..config import settings
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from .background_job_store import (
+    JobOwnershipLostError,
     create_or_get_active_job,
     get_job,
+    set_job_progress,
     update_job,
 )
-from .dividend_sync_service import SUPPORTED_MARKETS, sync_dividends_for_user
+from .dividend_sync_service import (
+    HKEX_MARKETS,
+    SUPPORTED_MARKETS,
+    sync_dividends_for_user,
+    tushare_configured,
+)
 from .job_runtime import run_job_inline
 from .job_worker import register_periodic_task, register_runner
 
@@ -30,10 +38,22 @@ def start_dividend_sync_job(user_id: int) -> Dict[str, Any]:
 
 
 def execute_dividend_sync_job(claimed: Dict[str, Any]) -> None:
-    """单标的失败已在 service 层吞并记录，job 级失败只剩配置/连接类错误。"""
+    """单标的失败已在 service 层吞并记录，job 级失败只剩配置/连接类错误。
+
+    进度逐标的（港股逐份表格下载）回写并续租：港股首次同步要下载历史表格，
+    数十只标的会超过租约，不回写会被 worker 当 stale 接管重跑。
+    """
+    attempt = claimed.get("attempt_count")
+
+    def progress(**fields: Any) -> None:
+        if set_job_progress(
+            claimed["id"], JOB_TYPE, required_attempt_count=attempt, **fields
+        ) is None:
+            raise JobOwnershipLostError(claimed["id"])
+
     db = SessionLocal()
     try:
-        result = sync_dividends_for_user(db, claimed["user_id"])
+        result = sync_dividends_for_user(db, claimed["user_id"], progress=progress)
         update_job(
             claimed["id"],
             JOB_TYPE,
@@ -57,18 +77,16 @@ def get_dividend_sync_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]
 def enqueue_periodic_dividend_sync() -> int:
     """周期入口（默认关闭）：为每个可能有应收分红的用户入队一次同步。
 
-    用户全集 = 当前持有 A/B 股的用户 ∪ lookback 内交易过 A/B 股的用户——
-    与服务层目标收集同一口径：登记日持有、随后卖清最后一只 A/B 股的用户
+    用户全集 = 当前持有支持市场的用户 ∪ lookback 内交易过的用户——
+    与服务层目标收集同一口径：登记日持有、随后卖清最后一只的用户
     仍会入队，交由登记日重放判定权益。
-    无 token / 开关关闭时静默返回 0；create_or_get_active_job 天然去重。
+    开关关闭时静默返回 0；无 token 时只看港股；create_or_get_active_job 天然去重。
     """
-    import os
     from datetime import date, timedelta
 
     if not settings.dividend_sync_periodic_enabled:
         return 0
-    if not (os.environ.get("TUSHARE_TOKEN") or settings.tushare_token):
-        return 0
+    markets = SUPPORTED_MARKETS if tushare_configured() else HKEX_MARKETS
 
     from ..models.holding import Holding
     from ..models.transaction import Transaction
@@ -79,7 +97,7 @@ def enqueue_periodic_dividend_sync() -> int:
         holding_users = {
             row[0]
             for row in db.query(Holding.user_id)
-            .filter(Holding.quantity > 0, Holding.market.in_(SUPPORTED_MARKETS))
+            .filter(Holding.quantity > 0, Holding.market.in_(markets))
             .distinct()
             .all()
         }
@@ -87,7 +105,7 @@ def enqueue_periodic_dividend_sync() -> int:
             row[0]
             for row in db.query(Transaction.user_id)
             .filter(
-                Transaction.market.in_(SUPPORTED_MARKETS),
+                Transaction.market.in_(markets),
                 Transaction.transaction_date >= lookback_start,
             )
             .distinct()

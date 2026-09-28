@@ -64,6 +64,8 @@ Thumbs.db
 *.xls
 *.xlsx
 *.pdf
+# 披露易公开的现金股息公告表格：PDF 文本抽取的测试金样（公开文件，不含个人数据）
+!backend/tests/fixtures/hkex_dividend/*.pdf
 *.dump
 *.dump.partial
 backups/

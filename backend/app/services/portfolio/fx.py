@@ -42,6 +42,27 @@ class ExchangeRateLookup:
             return None
         return values[-1][1]
 
+    def get_rate_strictly_on_or_before(
+        self,
+        from_currency: str,
+        to_currency: str,
+        effective_date: date,
+    ) -> Optional[Decimal]:
+        """只取生效日 ≤ effective_date 的直接/反向汇率；**不**回退到最新值（缺则 None）。
+
+        `get_rate_on_or_before` 在早于第一条汇率时回退到最新汇率（统计口径的历史
+        兼容）；复权因子这类「按事件当日换算」的场景不能拿未来汇率顶替。
+        """
+        if from_currency == to_currency:
+            return Decimal("1")
+        direct_rate = self._rate_on_or_before((from_currency, to_currency), effective_date)
+        if direct_rate is not None:
+            return direct_rate
+        reverse_rate = self._rate_on_or_before((to_currency, from_currency), effective_date)
+        if reverse_rate and reverse_rate != 0:
+            return Decimal("1") / reverse_rate
+        return None
+
     def get_rate_on_or_before(
         self,
         from_currency: Optional[str],

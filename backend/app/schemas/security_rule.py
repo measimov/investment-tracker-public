@@ -22,6 +22,7 @@ VALID_RULE_TYPES = {
     "PRICE_GAP_EXEMPTION",
     "CMB_CASH_BUSINESS",
     "ADS_RATIO",
+    "INDUSTRY",
 }
 # CMB 业务映射的 symbol 是业务名、无市场；其余类型必须给市场
 MARKET_REQUIRED_TYPES = VALID_RULE_TYPES - {"CMB_CASH_BUSINESS"}
@@ -115,6 +116,22 @@ class _AdsRatioPayload(BaseModel):
     ratio: Decimal = Field(gt=0, le=10000, max_digits=16, decimal_places=10)
 
 
+class _IndustryPayload(BaseModel):
+    """手工行业分类：覆盖官方（Tushare/EDGAR）与东方财富来源。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    industry: str = Field(min_length=1, max_length=50)
+
+    @field_validator("industry")
+    @classmethod
+    def _strip_reject_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
 # 只对单一市场有意义的规则类型
 MARKET_RESTRICTED_TYPES = {"ADS_RATIO": "美股"}
 
@@ -125,6 +142,7 @@ _PAYLOAD_MODELS = {
     "PRICE_GAP_EXEMPTION": _PriceGapPayload,
     "CMB_CASH_BUSINESS": _CmbCashBusinessPayload,
     "ADS_RATIO": _AdsRatioPayload,
+    "INDUSTRY": _IndustryPayload,
 }
 
 

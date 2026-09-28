@@ -3,6 +3,8 @@ import {
   buildMarketSubtotals,
   describePrice,
   displayAnalysisTag,
+  industrySourceLabel,
+  industryTooltip,
   priceSourceLabel,
   sortNullsLast
 } from './display'
@@ -135,5 +137,21 @@ describe('displayAnalysisTag', () => {
     expect(displayAnalysisTag(['数据不足', '估值偏低'])).toBe('估值偏低')
     expect(displayAnalysisTag(['数据不足'])).toBeNull()
     expect(displayAnalysisTag(undefined)).toBeNull()
+  })
+})
+
+describe('industry source hint', () => {
+  it('labels manual / official / East Money sources', () => {
+    expect(industrySourceLabel('rule')).toBe('手工（特例规则）')
+    expect(industrySourceLabel('tushare')).toContain('官方')
+    expect(industrySourceLabel('edgar')).toContain('官方')
+    expect(industrySourceLabel('eastmoney')).toContain('东方财富')
+    expect(industrySourceLabel(null)).toBe('未知')
+    expect(industrySourceLabel('other')).toBe('other')
+  })
+
+  it('tells how to override unless it is already a manual rule', () => {
+    expect(industryTooltip('eastmoney')).toContain('特例规则')
+    expect(industryTooltip('rule')).toBe('行业来源：手工（特例规则）')
   })
 })

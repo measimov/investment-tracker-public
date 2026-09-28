@@ -19,8 +19,9 @@ export const sourceTagType = (source: string | null | undefined) => {
   return 'info'
 }
 
-// 比对差异（%）超过这个幅度标红；与后端 FX_CHECK_WARN_PCT 默认值一致，只影响展示
-export const DIFF_WARN_PCT = 0.5
+// 比对差异（%）超过这个幅度标红；与后端 FX_CHECK_WARN_PCT 默认值一致，只影响展示。
+// 人民币即期可在中间价 ±2% 内波动，第三方参考价与中间价差 0.5% 上下是常态
+export const DIFF_WARN_PCT = 2
 
 export const isDiffAbnormal = (diffPct: number | string | null | undefined) =>
   diffPct !== null && diffPct !== undefined && Math.abs(Number(diffPct)) > DIFF_WARN_PCT

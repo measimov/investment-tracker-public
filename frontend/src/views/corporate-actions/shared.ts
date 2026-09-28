@@ -81,3 +81,89 @@ export function taxFromRate(
   if (Number.isNaN(total) || Number.isNaN(ratePercent)) return null
   return Math.round(total * ratePercent) / 100
 }
+
+/** 分红建议来源 → 短标签（后端 corporate_action_suggestions.source） */
+export function suggestionSourceLabel(source: string | null | undefined): string {
+  if (source === 'hkexnews-dividend') return '披露易'
+  if (source === 'tushare-dividend') return 'Tushare'
+  return source || ''
+}
+
+interface HkWithholding {
+  applicable?: boolean | null
+  rates_percent?: string[]
+  non_resident_enterprise_percent?: string | null
+  southbound_individual_percent?: string | null
+}
+
+interface HkDividendComponent {
+  dividend_type?: string | null
+  dividend_nature?: string | null
+  amount?: string | null
+  currency?: string | null
+  declared_amount?: string | null
+  declared_currency?: string | null
+  exchange_rate?: { from: string; to: string; rate: string } | null
+  status?: string | null
+  announcement_date?: string | null
+  withholding?: HkWithholding | null
+}
+
+/** 港股（披露易）建议的 announcement_detail 形状（后端 group_hk_dividends_by_ex_date） */
+export interface HkAnnouncementDetail {
+  source?: string
+  components?: HkDividendComponent[]
+  scrip_option?: boolean
+  currency_election?: boolean
+  withholding_applicable?: boolean | null
+}
+
+function withholdingNote(
+  components: HkDividendComponent[],
+  applicable: boolean | null | undefined
+): string | null {
+  if (applicable === false) {
+    return '公告：发行人不代扣所得税（港股通等渠道仍可能由结算机构代扣，以到账为准）'
+  }
+  const first = components.find((c) => c.withholding?.applicable)?.withholding
+  if (!first) return null
+  const parts: string[] = []
+  if (first.non_resident_enterprise_percent) {
+    parts.push(`非居民企业（含 HKSCC 代理人）${first.non_resident_enterprise_percent}%`)
+  }
+  if (first.southbound_individual_percent) {
+    parts.push(`港股通个人 ${first.southbound_individual_percent}%`)
+  }
+  if (!parts.length && first.rates_percent?.length) {
+    parts.push(`税率 ${first.rates_percent.map((r) => `${r}%`).join('/')}`)
+  }
+  return parts.length
+    ? `公告代扣所得税：${parts.join('、')}（按持有渠道不同，以实际到账为准）`
+    : '公告有代扣所得税说明（按持有渠道不同，以实际到账为准）'
+}
+
+/**
+ * 港股建议的说明行（tooltip 用）：每笔股息的类型/金额/宣派币种与汇率、代扣税、
+ * 以股代息与币种选择提示。非披露易建议返回空数组。
+ */
+export function hkDividendNotes(detail: HkAnnouncementDetail | null | undefined): string[] {
+  if (!detail || detail.source !== 'hkexnews') return []
+  const components = detail.components || []
+  const lines = components.map((c) => {
+    const kind = [c.dividend_type, c.dividend_nature].filter(Boolean).join('·')
+    let line = `${kind} 每股 ${c.amount ?? '—'} ${c.currency ?? ''}`.trim()
+    if (c.declared_currency && c.declared_currency !== c.currency) {
+      const rate = c.exchange_rate
+        ? `，1 ${c.exchange_rate.from} = ${c.exchange_rate.rate} ${c.exchange_rate.to}`
+        : ''
+      line += `（宣派 ${c.declared_amount} ${c.declared_currency}${rate}）`
+    }
+    if (c.status && c.status !== '新公告') line += ` · ${c.status}`
+    return line
+  })
+  const tax = withholdingNote(components, detail.withholding_applicable)
+  if (tax) lines.push(tax)
+  if (detail.scrip_option) lines.push('可选以股代息：若选择以股代息，实际不收现金')
+  if (detail.currency_election) lines.push('可选择派发币种：实际到账币种可能与此不同')
+  return lines
+}

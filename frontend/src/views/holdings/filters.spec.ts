@@ -98,6 +98,18 @@ describe('matchesTagFilter', () => {
     expect(matchesTagFilter(dividendLowRisk, [tagFilterValue('event', 'SHARE_UNLOCK')])).toBe(false)
   })
 
+  it('行业组：组内 OR，与其他组 AND；未取得行业的标的不命中', () => {
+    const bank = source({ industry: '银行', riskLevel: 'low' })
+    const software = source({ industry: '软件服务', riskLevel: 'high' })
+    const industries = [tagFilterValue('industry', '银行'), tagFilterValue('industry', '软件服务')]
+    expect(matchesTagFilter(bank, industries)).toBe(true)
+    expect(matchesTagFilter(software, industries)).toBe(true)
+    expect(matchesTagFilter(source(), industries)).toBe(false)
+    const withRisk = [...industries, tagFilterValue('risk', 'high')]
+    expect(matchesTagFilter(bank, withRisk)).toBe(false)
+    expect(matchesTagFilter(software, withRisk)).toBe(true)
+  })
+
   it('同名标签按组区分，不跨组命中', () => {
     const odd = source({ opinionTags: ['高股息'] })
     expect(matchesTagFilter(odd, [tagFilterValue('ai', '高股息')])).toBe(false)
@@ -136,6 +148,23 @@ describe('buildTagFilterOptions', () => {
     expect(groups[2].options).toEqual([
       expect.objectContaining({ label: '财报披露', value: 'event:EARNINGS_DISCLOSURE', count: 1 })
     ])
+  })
+
+  it('行业组排在最前，按标的数降序、同数按名称', () => {
+    const groups = buildTagFilterOptions([
+      source({ industry: '银行', aiTags: ['高股息'] }),
+      source({ industry: '银行' }),
+      source({ industry: '软件服务' }),
+      source({ industry: '白酒' }),
+      source()
+    ])
+    expect(groups.map((group) => group.label)).toEqual(['行业', 'AI 标签'])
+    expect(groups[0].options.map((option) => [option.label, option.value, option.count])).toEqual([
+      ['银行', 'industry:银行', 2],
+      ['白酒', 'industry:白酒', 1],
+      ['软件服务', 'industry:软件服务', 1]
+    ])
+    expect(groups[0].options[0].tone).toBeUndefined()
   })
 
   it('没有任何标签时返回空列表', () => {

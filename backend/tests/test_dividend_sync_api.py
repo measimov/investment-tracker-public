@@ -314,23 +314,16 @@ async def test_accept_creates_action_and_rejects_double_accept(api_users):
 
 @pytest.mark.anyio
 async def test_sync_job_endpoints(api_users, monkeypatch):
-    from app.api import corporate_actions as api_mod
+    from app.services import dividend_sync_service as svc_mod
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         user_auth = await _auth(client, "demo")
 
-        # 未配 token → 409
-        monkeypatch.setattr(api_mod.settings, "tushare_token", "")
+        # 未配 token 也可入队（港股走披露易不依赖 Tushare；A/B 股在 job 内跳过并标注）；
+        # 执行内联跑（空持仓 → 立即成功）
+        monkeypatch.setattr(svc_mod.settings, "tushare_token", "")
         monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
-        blocked = await client.post(
-            "/api/corporate-actions/dividend-sync-jobs", headers=user_auth
-        )
-        assert blocked.status_code == 409
-        assert "TUSHARE_TOKEN" in blocked.json()["detail"]
-
-        # 配置后可入队；执行内联跑（sync 全 mock 为空持仓 → 立即成功）
-        monkeypatch.setattr(api_mod.settings, "tushare_token", "fake-token")
         started = await client.post(
             "/api/corporate-actions/dividend-sync-jobs", headers=user_auth
         )

@@ -1,0 +1,21 @@
+[
+  {
+    "ticker": "PDD",
+    "timestamp": "2026-09-25T20:00:00+00:00",
+    "lastSaleTimestamp": "2026-09-25T15:59:58.186520297-04:00",
+    "quoteTimestamp": "2026-09-25T20:00:00+00:00",
+    "open": 121.1,
+    "high": 122.4,
+    "low": 119.55,
+    "mid": null,
+    "tngoLast": 120.0,
+    "last": 119.98,
+    "lastSize": 100,
+    "bidSize": null,
+    "bidPrice": null,
+    "askPrice": null,
+    "askSize": null,
+    "volume": 312000,
+    "prevClose": 121.05
+  }
+]

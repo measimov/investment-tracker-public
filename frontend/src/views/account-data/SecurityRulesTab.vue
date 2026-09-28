@@ -16,7 +16,7 @@ import { type SecurityRuleRow, currencyOptions, makeRemover, marketOptions } fro
 const securityRules = ref<SecurityRuleRow[]>([])
 const loading = ref(false)
 
-// 七类特例规则：一个表单承载全部字段，按 rule_type 动态显示与校验
+// 八类特例规则：一个表单承载全部字段，按 rule_type 动态显示与校验
 const RULE_TYPE_LABELS: Record<string, string> = {
   EXCLUDE: '排除标的',
   CASH_MANAGEMENT: '现金管理标的',
@@ -24,7 +24,8 @@ const RULE_TYPE_LABELS: Record<string, string> = {
   NAME_OVERRIDE: '名称覆盖',
   PRICE_GAP_EXEMPTION: '行情缺口豁免',
   CMB_CASH_BUSINESS: '招商现金业务',
-  ADS_RATIO: 'ADS 换算比'
+  ADS_RATIO: 'ADS 换算比',
+  INDUSTRY: '行业分类'
 }
 const ruleTypeOptions = Object.entries(RULE_TYPE_LABELS).map(([value, label]) => ({ value, label }))
 const RULE_TYPE_HINTS: Record<string, string> = {
@@ -35,7 +36,9 @@ const RULE_TYPE_HINTS: Record<string, string> = {
   PRICE_GAP_EXEMPTION: '该区间行情永久缺失（停牌-摘牌等），历史同步跳过且不计失败',
   CMB_CASH_BUSINESS: '招商对账单业务名 → 现金事件类型的入账口径',
   ADS_RATIO:
-    '美股 ADS 与普通股的换算比（1 ADS = N 股普通股），用于格雷厄姆估值；默认从 20-F 封面自动解析，解析失败或有误时在此填写（优先于解析值）'
+    '美股 ADS 与普通股的换算比（1 ADS = N 股普通股），用于格雷厄姆估值；默认从 20-F 封面自动解析，解析失败或有误时在此填写（优先于解析值）',
+  INDUSTRY:
+    '持仓页显示与筛选用的行业；默认取官方分类（A股 Tushare / 美股 SEC 行业代码），缺失时由东方财富补缺，在此填写则优先于两者'
 }
 const ruleTypeHint = (type: string) => RULE_TYPE_HINTS[type] || ''
 const ruleTypeLabel = (type: string) => RULE_TYPE_LABELS[type] || type
@@ -81,7 +84,9 @@ const ruleForm = reactive({
   // CMB_CASH_BUSINESS
   event_type: '',
   // ADS_RATIO（字符串输入：0.1 这类小数比例不经浮点）
-  ratio: ''
+  ratio: '',
+  // INDUSTRY
+  industry: ''
 })
 // ADS 换算比只对美股有意义（后端同样拒绝其他市场）
 const ADS_MARKET = '美股'
@@ -109,6 +114,11 @@ const ruleRules = computed<FormRules>(() => {
   }
   if (ruleForm.rule_type === 'NAME_OVERRIDE')
     rules.name = [{ required: true, message: '请输入覆盖名称', trigger: 'blur' }]
+  if (ruleForm.rule_type === 'INDUSTRY')
+    rules.industry = [
+      { required: true, whitespace: true, message: '请输入行业名称', trigger: 'blur' },
+      { max: 50, message: '行业名称最多 50 个字', trigger: 'blur' }
+    ]
   if (ruleForm.rule_type === 'PRICE_GAP_EXEMPTION')
     rules.start_date = [{ required: true, message: '请选择开始日期', trigger: 'change' }]
   if (isCmb) rules.event_type = [{ required: true, message: '请选择事件类型', trigger: 'change' }]
@@ -164,6 +174,8 @@ function ruleSummary(row: SecurityRuleRow): string {
       return `→ ${cashEventTypeLabel(payload.event_type as string)}`
     case 'ADS_RATIO':
       return `1 ADS = ${payload.ratio ?? '—'} 股`
+    case 'INDUSTRY':
+      return String(payload.industry ?? '—')
     default:
       return '—'
   }
@@ -183,7 +195,8 @@ function openRuleDialog() {
     start_date: '',
     end_date: '',
     event_type: '',
-    ratio: ''
+    ratio: '',
+    industry: ''
   })
   if (ruleForm.rule_type === 'ADS_RATIO') ruleForm.market = ADS_MARKET
   ruleDialog.visible = true
@@ -209,6 +222,8 @@ function buildRulePayload(): Record<string, unknown> | null {
       return { event_type: ruleForm.event_type }
     case 'ADS_RATIO':
       return { ratio: ruleForm.ratio.trim() }
+    case 'INDUSTRY':
+      return { industry: ruleForm.industry.trim() }
     default:
       // EXCLUDE / CASH_MANAGEMENT 不携带 payload
       return null
@@ -258,8 +273,8 @@ defineExpose({ reload: loadSecurityRules })
       <div>
         <h2>账本特例规则</h2>
         <p>
-          七类规则：排除标的＝导入只归档不入账、对账双侧忽略；现金管理标的＝其"产品红利发放"按利息入账（并非排除）；转板映射、名称覆盖、行情缺口豁免、招商现金业务用于修正导入与行情口径；ADS
-          换算比用于美股 20-F 发行人的估值口径。
+          八类规则：排除标的＝导入只归档不入账、对账双侧忽略；现金管理标的＝其"产品红利发放"按利息入账（并非排除）；转板映射、名称覆盖、行情缺口豁免、招商现金业务用于修正导入与行情口径；ADS
+          换算比用于美股 20-F 发行人的估值口径；行业分类覆盖持仓页的自动行业（官方 / 东方财富）。
         </p>
       </div>
       <el-button type="primary" :icon="Plus" @click="openRuleDialog">新增规则</el-button>
@@ -362,6 +377,10 @@ defineExpose({ reload: loadSecurityRules })
             <template #prepend>1 ADS =</template>
             <template #append>股</template>
           </el-input>
+        </el-form-item>
+
+        <el-form-item v-if="ruleForm.rule_type === 'INDUSTRY'" label="行业" prop="industry">
+          <el-input v-model="ruleForm.industry" maxlength="50" placeholder="如 银行、软件服务" />
         </el-form-item>
 
         <template v-if="ruleForm.rule_type === 'RELISTING'">

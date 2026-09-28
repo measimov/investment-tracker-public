@@ -599,6 +599,56 @@ def hkex_reports(
     return reports[:limit]
 
 
+def hkex_title_search(
+    symbol: str,
+    *,
+    t1code: int,
+    t2g_code: int,
+    t2code: int,
+    from_date: str,
+    to_date: str,
+    row_range: int = 100,
+) -> List[Dict[str, Any]]:
+    """披露易按文件类别检索（公告日倒序），返回 [{title, ann_date, url}]（仅 PDF）。
+
+    与 `hkex_reports` 同一端点、同一限速桶与 Referer，只是类别由调用方给出——
+    例如现金股息公告表格 t1code=10000 / t2Gcode=3 / t2code=13251。
+    from_date/to_date 为 YYYYMMDD。stockId 找不到时返回空列表。
+    """
+    stock_id = hkex_stock_id(symbol)
+    if not stock_id:
+        logger.warning("披露易未找到港股 %s 的 stockId", symbol)
+        return []
+    _throttle("hkexnews", _HKEX_MIN_INTERVAL_SECONDS)
+    response = requests.get(
+        f"{_HKEX_BASE}/search/titleSearchServlet.do",
+        params={
+            "sortDir": 0, "sortByOptions": "DateTime", "category": 0, "market": "SEHK",
+            "stockId": stock_id, "documentType": -1,
+            "fromDate": from_date, "toDate": to_date, "title": "",
+            "searchType": 1, "t1code": t1code, "t2Gcode": t2g_code,
+            "t2code": t2code, "rowRange": row_range, "lang": "ZH",
+        },
+        headers=_HKEX_HEADERS,
+        timeout=45,
+    )
+    response.raise_for_status()
+    rows = (response.json() or {}).get("result") or []
+    if isinstance(rows, str):
+        rows = json.loads(rows)
+    documents = []
+    for row in rows:
+        link = row.get("FILE_LINK") or ""
+        if not link.lower().endswith(".pdf"):
+            continue
+        documents.append({
+            "title": (row.get("TITLE") or "").strip(),
+            "ann_date": (row.get("DATE_TIME") or "").strip(),
+            "url": f"{_HKEX_BASE}{link}",
+        })
+    return documents
+
+
 # ---------------------------------------------------------------------------
 # 港股（Yahoo fundamentals-timeseries，免 crumb；非官方端点，失败上层降级）
 # ---------------------------------------------------------------------------

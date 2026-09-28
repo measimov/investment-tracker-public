@@ -106,6 +106,13 @@ services:
       # 标的全集周期同步
       - SECURITY_CATALOG_SYNC_ENABLED
       - SECURITY_CATALOG_SYNC_INTERVAL_HOURS
+      # 行业分类周期同步（官方为主 + 东方财富补缺）
+      - SECURITY_INDUSTRY_SYNC_ENABLED
+      - SECURITY_INDUSTRY_REFRESH_DAYS
+      # Tiingo（美股报价与日线，免费档）：留空 = 关闭，直接走下一兜底源
+      - TIINGO_API_TOKEN
+      - TIINGO_MIN_INTERVAL_SECONDS
+      - TIINGO_TIMEOUT_SECONDS
     restart: unless-stopped
     networks:
       - investment-network

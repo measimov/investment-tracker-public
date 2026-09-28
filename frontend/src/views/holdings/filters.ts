@@ -4,7 +4,7 @@
  * - 关键词：代码（不区分大小写；港股容忍省略前导零，「700」「0700」都能找到 00700）
  *   或名称子串。拼音首字母暂不支持：持仓响应不带 security_catalog 的 cnspell，
  *   逐只调搜索端点换拼音不值当。
- * - 标签：四组（AI 标签 / 风险等级 / 雪球观点 / 近期事件）。**组内 OR、组间 AND**：
+ * - 标签：五组（行业 / AI 标签 / 风险等级 / 雪球观点 / 近期事件）。**组内 OR、组间 AND**：
  *   选了「高股息」「估值偏低」+「高风险」= (高股息 或 估值偏低) 且 高风险。
  *   组内 AND 几乎总是空集（一只标的很少同时带几个同组标签），组间 OR 又会让
  *   加条件反而变多，都不符合「逐步收窄」的直觉。
@@ -13,10 +13,12 @@
 import { analysisTagTone, riskLabel, type AnalysisTagTone } from '../security-detail/analysisTags'
 import { securityEventTypeLabel } from '@/utils/labels'
 
-export type HoldingTagGroup = 'ai' | 'risk' | 'opinion' | 'event'
+export type HoldingTagGroup = 'industry' | 'ai' | 'risk' | 'opinion' | 'event'
 
 /** 一只标的可被筛选的标签来源（由 useSecurityBadges 按行组装） */
 export interface HoldingTagSource {
+  /** 行业分类（规则 > 官方 > 东方财富，后端已合成为一个值）；未取得为 null */
+  industry: string | null
   /** AI 分析的全部标签（表格只显示第一个非噪音标签，筛选用全部） */
   aiTags: string[]
   riskLevel: string | null
@@ -27,6 +29,7 @@ export interface HoldingTagSource {
 }
 
 export const EMPTY_TAG_SOURCE: HoldingTagSource = {
+  industry: null,
   aiTags: [],
   riskLevel: null,
   opinionTags: [],
@@ -34,13 +37,14 @@ export const EMPTY_TAG_SOURCE: HoldingTagSource = {
 }
 
 export const TAG_GROUP_LABELS: Record<HoldingTagGroup, string> = {
+  industry: '行业',
   ai: 'AI 标签',
   risk: '风险等级',
   opinion: '雪球观点',
   event: '近期事件'
 }
 
-const GROUP_ORDER: HoldingTagGroup[] = ['ai', 'risk', 'opinion', 'event']
+const GROUP_ORDER: HoldingTagGroup[] = ['industry', 'ai', 'risk', 'opinion', 'event']
 const RISK_ORDER = ['high', 'medium', 'low']
 const TONE_ORDER: AnalysisTagTone[] = ['negative', 'positive', 'neutral']
 
@@ -58,6 +62,7 @@ function parseTagFilterValue(value: string): { group: HoldingTagGroup; value: st
 }
 
 function valuesOf(source: HoldingTagSource, group: HoldingTagGroup): string[] {
+  if (group === 'industry') return source.industry ? [source.industry] : []
   if (group === 'ai') return source.aiTags
   if (group === 'risk') return source.riskLevel ? [source.riskLevel] : []
   if (group === 'opinion') return source.opinionTags

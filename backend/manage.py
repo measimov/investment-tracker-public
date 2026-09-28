@@ -27,6 +27,12 @@ def build_parser() -> argparse.ArgumentParser:
     reference.add_argument(
         "--start", help="backfill from this date (YYYY-MM-DD; default: earliest transaction - 15d)"
     )
+    adj = subcommands.add_parser(
+        "recompute-hk-adj-factors",
+        help="Recompute HK adj_factor/adj_close_price from cached HKEXnews cash-dividend "
+        "forms (no network; forms are fetched by the dividend sync job)",
+    )
+    adj.add_argument("--symbol", action="append", help="limit to HK symbols, repeatable")
     catalog = subcommands.add_parser(
         "sync-security-catalog",
         help="Refresh the security catalog (Tushare basics + HKEX list of securities)",
@@ -35,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     catalog.add_argument("--source", action="append", help="limit to a loader source, repeatable")
     catalog.add_argument(
         "--no-force", action="store_true", help="skip sources refreshed within the interval"
+    )
+    industries = subcommands.add_parser(
+        "sync-security-industries",
+        help="Refresh industry classification for held/watched securities "
+        "(Tushare / EDGAR SIC first, East Money F10 fills gaps)",
+    )
+    industries.add_argument(
+        "--force", action="store_true", help="refetch everything, ignoring the freshness window"
     )
     collector = subcommands.add_parser(
         "xueqiu-collector",
@@ -170,6 +184,40 @@ def sync_hkex_dayquot(days: int) -> int:
     return 1 if result["errors"] else 0
 
 
+def recompute_hk_adj_factors(symbols) -> int:
+    from app.database import SessionLocal
+    from app.models.security_price import SecurityPrice
+    from app.services.hk_adjustment_factors import MARKET, recompute_hk_adj_factors as run
+    from app.services.statistics.fx import DbExchangeRateLookup
+
+    db = SessionLocal()
+    try:
+        if not symbols:
+            symbols = [
+                row[0]
+                for row in db.query(SecurityPrice.symbol)
+                .filter(SecurityPrice.market == MARKET)
+                .distinct()
+                .order_by(SecurityPrice.symbol)
+            ]
+        lookup = DbExchangeRateLookup.from_db(db)
+        unresolved = 0
+        for symbol in symbols:
+            result = run(db, symbol, rate_lookup=lookup, commit=True)
+            applied = sum(1 for e in result["events"] if e["status"] == "applied")
+            bad = [e for e in result["events"] if e["status"] == "unresolved"]
+            unresolved += len(bad)
+            print(
+                f"  {symbol}: rows={result['rows']} updated={result['updated']} "
+                f"ex_dates applied={applied} unresolved={len(bad)}"
+            )
+            for event in bad:
+                print(f"    UNRESOLVED {event['ex_date']}: {event.get('reason')}")
+    finally:
+        db.close()
+    return 1 if unresolved else 0
+
+
 def sync_security_catalog(markets, sources, *, force: bool) -> int:
     from app.database import SessionLocal
     from app.services.security_catalog_service import sync_security_catalog as run_sync
@@ -190,6 +238,33 @@ def sync_security_catalog(markets, sources, *, force: bool) -> int:
             failed += 1
             line += f" error={item.get('error')}"
         print(line)
+    print(f"Done in {result['duration_seconds']:.1f}s; {failed} source(s) failed.")
+    return 1 if failed else 0
+
+
+def sync_security_industries(*, force: bool) -> int:
+    from app.database import SessionLocal
+    from app.services.security_industry_service import sync_security_industries as run_sync
+
+    db = SessionLocal()
+    try:
+        result = run_sync(db, force=force)
+    finally:
+        db.close()
+    failed = 0
+    for source, item in result["sources"].items():
+        line = (
+            f"  {source:<10s} {item['status']:<8s} requested={item['requested']} "
+            f"written={item['written']} missing={len(item['missing'])}"
+        )
+        if item["status"] in ("failed", "partial"):
+            failed += 1
+            line += f" errors={item['errors'][:3]}"
+        print(line)
+    print(
+        f"Scope {result['scope']} securities, {result['resolved']} with an industry; "
+        f"unresolved: {', '.join(result['unresolved']) or 'none'}"
+    )
     print(f"Done in {result['duration_seconds']:.1f}s; {failed} source(s) failed.")
     return 1 if failed else 0
 
@@ -385,8 +460,14 @@ def main() -> int:
     if args.command == "sync-reference-rates":
         return sync_reference_rates(args.start)
 
+    if args.command == "recompute-hk-adj-factors":
+        return recompute_hk_adj_factors(args.symbol)
+
     if args.command == "sync-security-catalog":
         return sync_security_catalog(args.market, args.source, force=not args.no_force)
+
+    if args.command == "sync-security-industries":
+        return sync_security_industries(force=args.force)
 
     parser.error(f"Unknown command: {args.command}")
 
