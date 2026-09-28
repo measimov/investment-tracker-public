@@ -141,8 +141,8 @@ onMounted(load)
             {{ state.status.last_cycle_message }}
           </el-descriptions-item>
           <el-descriptions-item label="按标的采集" :span="2">
-            每天 {{ state.status.symbols.run_after }} 后一轮（持仓∪自选的公告/讨论、组合调仓、热帖）
-            · 上一轮 {{ formatDateTime(state.status.symbols.last_started_at) }} →
+            每天 {{ state.status.symbols.run_after }} 后一轮（持仓∪自选的公告/讨论、组合调仓） ·
+            上一轮 {{ formatDateTime(state.status.symbols.last_started_at) }} →
             {{ formatDateTime(state.status.symbols.last_finished_at) }}
             <el-tag
               v-if="state.status.symbols.last_status"

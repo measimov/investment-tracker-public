@@ -2,7 +2,8 @@
 
 写入全部是按唯一键的幂等 upsert（重跑同一天不产生重复行，只刷新 last_seen_at 与
 可变字段）；新文本为空时保留库里已有的非空值——接口偶发返回空正文不该抹掉旧内容。
-读取供 API 使用（标的详情「雪球公告 / 讨论」、观点页「今日热帖」）。
+读取供 API 使用（标的详情「雪球公告 / 讨论」）。热帖快照的采集与展示已于 2026-09-28
+下线，`upsert_hot_posts` 只剩旧 Markdown 导入（`archive_import`）在用，存量行保留。
 """
 
 from __future__ import annotations
@@ -217,25 +218,3 @@ def symbol_feed(
         )
         result[kind] = [post_to_dict(row) for row in rows]
     return result
-
-
-def latest_hots(db: Session, scope: str, limit: int) -> Tuple[Optional[datetime], List[Dict[str, Any]]]:
-    """该口径最新一次快照（snapshot_at 最大）里的热帖，按名次。"""
-    snapshot_at = (
-        db.query(func.max(XueqiuHotPost.snapshot_at)).filter(XueqiuHotPost.scope == scope).scalar()
-    )
-    if snapshot_at is None:
-        return None, []
-    rows = (
-        db.query(XueqiuHotPost)
-        .filter(XueqiuHotPost.scope == scope, XueqiuHotPost.snapshot_at == snapshot_at)
-        .order_by(XueqiuHotPost.rank.asc(), XueqiuHotPost.id.asc())
-        .limit(limit)
-        .all()
-    )
-    items = []
-    for row in rows:
-        item = post_to_dict(row)
-        item["rank"] = row.rank
-        items.append(item)
-    return snapshot_at, items

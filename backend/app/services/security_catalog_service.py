@@ -48,6 +48,7 @@ from .stock_price_service import (
     get_exchange_type,
     tushare_query,
 )
+from .job_worker import PeriodicOutcome, periodic_outcome_task
 from .symbol_normalization import normalize_manual_symbol
 
 logger = get_app_logger(__name__)
@@ -807,18 +808,20 @@ def run_sync_in_background(*, markets: Optional[Iterable[str]] = None, force: bo
         db.close()
 
 
-def refresh_security_catalog() -> int:
-    """周期任务入口：返回本轮成功的来源数；异常只记日志不上抛。"""
+@periodic_outcome_task
+def periodic_refresh_security_catalog() -> PeriodicOutcome:
+    """周期任务入口（main.py 以名字 refresh_security_catalog 注册）：异常只记日志不上抛，
+    但任一来源 failed 即报失败；全部来源新鲜/无 token 跳过时报 skipped。"""
     if not settings.security_catalog_sync_enabled:
-        return 0
+        return PeriodicOutcome.skipped("SECURITY_CATALOG_SYNC_ENABLED=false")
     if is_sync_running():
-        return 0
+        return PeriodicOutcome.skipped("另一轮标的目录同步正在运行")
     db = SessionLocal()
     try:
         result = sync_security_catalog(db, force=False)
     except Exception as exc:  # noqa: BLE001 - 周期线程必须自吞异常
         logger.warning("标的目录周期同步失败: %s", str(exc)[:200])
-        return 0
+        return PeriodicOutcome.failed(f"标的目录同步失败：{type(exc).__name__}: {str(exc)[:200]}")
     finally:
         db.close()
     ok = [item for item in result["sources"] if item["status"] == "ok"]
@@ -827,7 +830,22 @@ def refresh_security_catalog() -> int:
             "标的目录同步完成: %s",
             ", ".join(f"{item['source']}={item['rows_upserted']}" for item in ok),
         )
-    return len(ok)
+    failed = [item for item in result["sources"] if item["status"] == "failed"]
+    if failed:
+        return PeriodicOutcome.failed(
+            "标的目录来源失败：" + "；".join(
+                f"{item['source']}: {str(item.get('error') or '')[:120]}" for item in failed
+            ),
+            count=len(ok),
+        )
+    if ok:
+        return PeriodicOutcome.succeeded(len(ok))
+    return PeriodicOutcome.skipped("全部来源新鲜或不可用（跳过）")
+
+
+def refresh_security_catalog() -> int:
+    """兼容入口：返回本轮成功的来源数；异常只记日志不上抛。"""
+    return periodic_refresh_security_catalog().count
 
 
 # ---------------------------------------------------------------- 读

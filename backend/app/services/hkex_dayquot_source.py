@@ -48,6 +48,7 @@ from ..models.hkex_dayquot_report import HkexDayquotReport
 from ..models.holding import Holding
 from ..models.security_price import SecurityPrice
 from ..models.watchlist_item import WatchlistItem
+from .job_worker import PeriodicOutcome, periodic_outcome_task
 from .stock_price_service import to_tushare_hk_code
 
 logger = get_app_logger(__name__)
@@ -477,17 +478,18 @@ def _apply_catalog_metadata(db: Session, quotes: Dict[int, DayquotRow]) -> None:
         logger.warning("港交所日报回填标的全集失败: %s", str(exc)[:200])
 
 
-def refresh_hk_dayquot() -> int:
-    """周期任务入口：返回本轮处理的报表份数；任何异常只记日志不上抛
-    （周期线程上的异常不该影响其他周期任务）。"""
+@periodic_outcome_task
+def periodic_refresh_hk_dayquot() -> PeriodicOutcome:
+    """周期任务入口（main.py 以名字 refresh_hk_dayquot 注册）：任何异常只记日志不上抛，
+    但如实报告结果——同步抛错或有报表解析失败 → failed；无跟踪标的/全部已处理/休市 → skipped。"""
     if not settings.hkex_dayquot_sync_enabled:
-        return 0
+        return PeriodicOutcome.skipped("HKEX_DAYQUOT_SYNC_ENABLED=false")
     db = SessionLocal()
     try:
         result = sync_recent_dayquots(db)
     except Exception as exc:  # noqa: BLE001 - 周期任务必须自吞异常
         logger.warning("港交所日报同步失败: %s", str(exc)[:200])
-        return 0
+        return PeriodicOutcome.failed(f"港交所日报同步失败：{type(exc).__name__}: {str(exc)[:200]}")
     finally:
         db.close()
     for item in result["processed"]:
@@ -501,4 +503,19 @@ def refresh_hk_dayquot() -> int:
                 item["report_date"], conflict["existing_source"], conflict["symbol"],
                 conflict["existing_close"], conflict["official_close"],
             )
-    return len(result["processed"])
+    processed = len(result["processed"])
+    if result["errors"]:
+        days = ", ".join(str(item["report_date"]) for item in result["errors"][:3])
+        return PeriodicOutcome.failed(
+            f"港交所日报解析失败 {len(result['errors'])} 份（{days}）："
+            f"{str(result['errors'][0]['error'])[:160]}",
+            count=processed,
+        )
+    if processed:
+        return PeriodicOutcome.succeeded(processed)
+    return PeriodicOutcome.skipped("无待处理报表", count=0)
+
+
+def refresh_hk_dayquot() -> int:
+    """兼容入口：返回本轮处理的报表份数（异常只记日志不上抛）。"""
+    return periodic_refresh_hk_dayquot().count

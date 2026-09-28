@@ -9,6 +9,8 @@
 #   BACKUP_MODE=postgres ./backup.sh --prune     先备份，成功后再清理
 #   BACKUP_TABLES="t1 t2 alembic_version" BACKUP_MODE=postgres ./backup.sh
 #                                                表级备份 → investment_tables_<时间>.dump
+#   BACKUP_NOTIFY=1 BACKUP_MODE=postgres ./backup.sh
+#                                                失败时推送告警 `backup`，成功时自动恢复
 #
 # 数据库备份流程（本机客户端与容器客户端同一套纪律）：
 #   写 .dump.partial → pg_dump 退出 0 → 文件非空 → pg_restore --file=/dev/null 完整读检
@@ -71,6 +73,8 @@ usage() {
   BACKUP_DOCKER_NETWORK   容器模式的网络，默认 host
   DATABASE_URL            不设则向 compose 的 backend 服务读取
   APP_BASE_URL / APP_CA_CERT / INVESTMENT_TRACKER_TOKEN   Excel 导出用
+  BACKUP_NOTIFY           设为 1：备份失败时经 backend 容器推送告警 `backup`（Bark 等，见
+                          DEPLOYMENT.md「告警通知」），成功时标记恢复；尽力而为，不影响退出码
 EOF
 }
 
@@ -135,6 +139,49 @@ compose() {
     # 在仓库根目录执行，Compose 才能找到 docker-compose.yml 与 .env
     (cd "$SCRIPT_DIR" && $COMPOSE_CMD "$@")
 }
+
+# 备份结果告警（可选，BACKUP_NOTIFY=1）：失败 → 告警 `backup`（critical），成功 → 恢复。
+# 经运行中的 backend 容器调 `manage.py notify`，与周期告警同一套状态机（持续失败不刷屏、
+# 每 NOTIFY_REMINDER_HOURS 提醒一次）。**尽力而为**：compose 不可用、backend 未运行、
+# 推送失败都只打印一行提示，绝不改变备份本身的退出码。
+BACKUP_NOTIFY="${BACKUP_NOTIFY:-0}"
+NOTIFY_ARMED=0
+
+notify_backup_result() {
+    local exit_code="$1"
+    local timeout_cmd=()
+    local args=()
+
+    if [ "$exit_code" -eq 0 ]; then
+        args=(notify --resolve --key backup)
+    else
+        args=(notify --key backup --severity critical --title "数据库备份失败"
+            --message "backup.sh（BACKUP_MODE=${BACKUP_MODE:-交互}）退出码 $exit_code，$(date '+%Y-%m-%d %H:%M:%S')；详见宿主机上的备份日志")
+    fi
+    if command -v timeout >/dev/null 2>&1; then
+        timeout_cmd=(timeout 120)
+    fi
+    # compose() 首次调用时探测 docker compose / docker-compose 并记进 COMPOSE_CMD
+    if ! compose version >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  找不到 docker compose，告警通知未发送${NC}" >&2
+        return 0
+    fi
+    # shellcheck disable=SC2086 # COMPOSE_CMD 是 "docker compose" 这样的两个词，刻意分词
+    if ! (cd "$SCRIPT_DIR" && ${timeout_cmd[@]+"${timeout_cmd[@]}"} $COMPOSE_CMD \
+        exec -T backend python manage.py "${args[@]}") >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠️  告警通知未送达（backend 容器不可用？）；备份结果以本脚本退出码为准${NC}" >&2
+    fi
+}
+
+on_exit() {
+    local exit_code=$?
+    trap - EXIT
+    if [ "$BACKUP_NOTIFY" = "1" ] && [ "$NOTIFY_ARMED" = "1" ]; then
+        notify_backup_result "$exit_code" || true
+    fi
+    exit "$exit_code"
+}
+trap on_exit EXIT
 
 sha256_file() {
     local path="$1"
@@ -488,6 +535,9 @@ echo -e "${BLUE}║          📦 投资追踪系统 - 数据备份工具 📦  
 echo -e "${BLUE}║                                                              ║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
+
+# 从这里起的退出（成功或失败）才算一次备份结果：只清理、--help、参数错误不告警
+NOTIFY_ARMED=1
 
 # 创建备份目录
 mkdir -p "$BACKUP_DIR"

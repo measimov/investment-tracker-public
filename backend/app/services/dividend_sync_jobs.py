@@ -25,7 +25,12 @@ from .dividend_sync_service import (
     tushare_configured,
 )
 from .job_runtime import run_job_inline
-from .job_worker import register_periodic_task, register_runner
+from .job_worker import (
+    PeriodicOutcome,
+    periodic_outcome_task,
+    register_periodic_task,
+    register_runner,
+)
 
 logger = get_app_logger(__name__)
 JOB_TYPE = "dividend_sync"
@@ -120,5 +125,18 @@ def enqueue_periodic_dividend_sync() -> int:
     return len(user_ids)
 
 
+@periodic_outcome_task
+def periodic_enqueue_dividend_sync() -> PeriodicOutcome:
+    """周期任务入口（以名字 enqueue_periodic_dividend_sync 注册）：开关关闭为 skipped；
+    查询/入队出错照常上抛（worker 记失败）；同步任务本身的失败由后台任务检查器报告。"""
+    if not settings.dividend_sync_periodic_enabled:
+        return PeriodicOutcome.skipped("DIVIDEND_SYNC_PERIODIC_ENABLED=false")
+    return PeriodicOutcome.succeeded(enqueue_periodic_dividend_sync())
+
+
 register_runner(JOB_TYPE, execute_dividend_sync_job)
-register_periodic_task(enqueue_periodic_dividend_sync, PERIODIC_INTERVAL_SECONDS)
+register_periodic_task(
+    periodic_enqueue_dividend_sync,
+    PERIODIC_INTERVAL_SECONDS,
+    name="enqueue_periodic_dividend_sync",
+)

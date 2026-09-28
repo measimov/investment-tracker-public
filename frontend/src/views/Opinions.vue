@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * 雪球观点页（父 view 只做布局与编排，逻辑在 views/opinions/ 下，issue #140）：
- * 数据源状态条 + 采集器卡片 + 今日热帖 + 批量生成 + 标的观点 / 作者动态两个 tab。
+ * 数据源状态条 + 采集器卡片 + 批量生成 + 标的观点 / 作者动态两个 tab。
+ * （「今日热帖」卡片已于 2026-09-28 随热帖采集一起下线。）
  */
 import { onMounted, ref } from 'vue'
 import { useAliveGuard } from '@/composables/useAliveGuard'
@@ -9,7 +10,6 @@ import JobProgressCard from '@/components/JobProgressCard.vue'
 import SymbolsTab from './opinions/SymbolsTab.vue'
 import AuthorsTab from './opinions/AuthorsTab.vue'
 import CollectorCard from './opinions/CollectorCard.vue'
-import HotPostsCard from './opinions/HotPostsCard.vue'
 import { useOpinions } from './opinions/useOpinions'
 import { useOpinionBatch } from './opinions/useOpinionBatch'
 import { formatDateTime } from '@/utils/helpers'
@@ -86,7 +86,6 @@ onMounted(async () => {
       />
 
       <CollectorCard />
-      <HotPostsCard />
 
       <JobProgressCard
         v-if="batch.job"

@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from ..models.security_price import SecurityPrice
+from .job_worker import PeriodicOutcome, periodic_outcome_task
 
 logger = get_app_logger(__name__)
 
@@ -94,21 +95,24 @@ def benchmark_targets(start_date: date, end_date: date) -> List[Dict[str, Any]]:
     ]
 
 
-def refresh_benchmark_tails() -> int:
+@periodic_outcome_task
+def periodic_refresh_benchmark_tails() -> PeriodicOutcome:
     """周期补尾：已有数据的基准把尾部推进到最近已完成交易日。
 
     冷启动（无任何数据）不主动回填全历史——首轮回填由用户区间驱动
     （history-sync job / analytics refresh_history），这里只维护日常尾部。
-    无 token 时 fetch 内部失败并被记录，返回成功计数。
+    无 token 或全部冷启动 → skipped；任一基准补尾失败（sync 返回 success=False）→ failed。
+    main.py 以名字 refresh_benchmark_tails 注册。
     """
     import os
 
     from ..config import settings
 
     if not (os.environ.get("TUSHARE_TOKEN") or settings.tushare_token):
-        return 0
+        return PeriodicOutcome.skipped("未配置 TUSHARE_TOKEN")
 
     refreshed = 0
+    failures = []
     db = SessionLocal()
     try:
         for code in BENCHMARKS:
@@ -132,9 +136,19 @@ def refresh_benchmark_tails() -> int:
                 logger.warning(
                     "基准 %s 周期补尾失败: %s", code, result.get("error")
                 )
+                failures.append(f"{code}: {str(result.get('error') or '')[:120]}")
     finally:
         db.close()
-    return refreshed
+    if failures:
+        return PeriodicOutcome.failed("基准补尾失败：" + "；".join(failures), count=refreshed)
+    if refreshed:
+        return PeriodicOutcome.succeeded(refreshed)
+    return PeriodicOutcome.skipped("没有已回填的基准（冷启动）")
+
+
+def refresh_benchmark_tails() -> int:
+    """兼容入口：返回成功补尾的基准数。"""
+    return periodic_refresh_benchmark_tails().count
 
 
 def load_benchmark_closes(

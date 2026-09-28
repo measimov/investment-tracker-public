@@ -1,8 +1,8 @@
 """每日按标的采集（收纳自 xueqiu-timeline-archiver 的 monitor_symbols，改为落库）。
 
-一轮 = 标的范围内每只标的的公告流 + 讨论流（各最新 N 条）→ 已启用组合的调仓记录 →
-一张市场热帖快照。与作者采集同进程、同一把 advisory lock、同一个进程级限速时钟
-（10–25s/次）与同一个 WAF 冷却：
+一轮 = 标的范围内每只标的的公告流 + 讨论流（各最新 N 条）→ 已启用组合的调仓记录。
+与作者采集同进程、同一把 advisory lock、同一个进程级限速时钟（10–25s/次）与同一个
+WAF 冷却：
 
 - **标的范围** = 全体活跃用户的持仓(quantity>0) ∪ 自选，∩ `OPINION_MARKETS`
   （A股/B股/港股/美股），减去各用户自己的 EXCLUDE / CASH_MANAGEMENT 规则——直接复用
@@ -11,7 +11,7 @@
 - 雪球 symbol 只在这里经 `to_xueqiu` 在内存里生成，落库的一律是本仓 (symbol, market)。
 - 响应在入口严格校验（`feed_parsing.validate_feed_payload`）：错误对象（error_code /
   error_description / success=false）、未知结构、JSON null、非 JSON 都是**单项失败**，
-  不是「当天恰好没数据」；只有端点认可的结构（顶层数组 / {list: []} 等）才算成功空结果。
+  不是「当天恰好没数据」；只有端点认可的结构（{list: []} / {statuses: []}）才算成功空结果。
 - 单项失败记入失败清单继续下一项；WAF 挑战页中止整轮并写 `last_waf_at`（作者轮次
   也随之冷却）。
 - **业务日语义**（`_finish_daily`）：一轮无失败才把该业务日记为已跑；有失败（含 WAF、
@@ -19,6 +19,9 @@
   items 是本轮**没成功**的项（失败的 + WAF 后没轮到的），距上一轮
   `symbols_retry_minutes` 后只重试这些项；当日尝试 `symbols_max_attempts` 轮（含首轮）
   仍有失败即记当日已跑，剩余失败项明日随整轮再采。停机中断不计次数、不动记录。
+- **市场热帖已下线**（2026-09-28）：与持仓无关、每天多打一类雪球请求，不再采集。
+  下线前写下的待重试记录可能含 `{"type": "hots"}` 项，重试时静默丢弃
+  （`known_work_items`），不会失败也不会被反复重试。
 - **不写 scan_runs**：观点页活性判据只看作者轮次，按标的采集的状态记在
   `xueqiu_collector_state.symbols_*`。
 """
@@ -47,27 +50,26 @@ from .client import (
     load_collector_cookies,
 )
 from .feed_parsing import (
-    ENDPOINT_HOTS,
     ENDPOINT_REBALANCING,
     KIND_LABELS,
     KINDS,
     feed_url,
-    hots_url,
     parse_rebalancings,
     parse_statuses,
     rebalancing_url,
     validate_feed_payload,
 )
-from .feed_store import upsert_hot_posts, upsert_rebalancing, upsert_symbol_posts
+from .feed_store import upsert_rebalancing, upsert_symbol_posts
 
 logger = get_app_logger(__name__)
 
 MAX_FAILURES_KEPT = 20
 
 # 一项工作（JSON 可序列化，待重试记录直接存它；只有本仓身份键，没有雪球 symbol）：
-#   {"type": "feed", "symbol", "market", "kind"} / {"type": "cube", "cube_id"} /
-#   {"type": "hots", "scope"}
+#   {"type": "feed", "symbol", "market", "kind"} / {"type": "cube", "cube_id"}
+# 下线前的待重试记录里还可能有 {"type": "hots", "scope"}（市场热帖，2026-09-28 下线）
 WorkItem = Dict[str, str]
+WORK_ITEM_TYPES = frozenset({"feed", "cube"})
 
 
 @dataclass(frozen=True)
@@ -149,24 +151,31 @@ def feed_items(targets: List[SymbolTarget]) -> List[WorkItem]:
     ]
 
 
-def market_wide_items(db: Session, hots_scope: str) -> List[WorkItem]:
+def market_wide_items(db: Session) -> List[WorkItem]:
+    """不绑定标的的工作项：已启用组合的调仓记录（市场热帖已于 2026-09-28 下线）。"""
     cubes = (
         db.query(XueqiuCollectorCube.cube_id)
         .filter(XueqiuCollectorCube.enabled.is_(True))
         .order_by(XueqiuCollectorCube.cube_id)
         .all()
     )
-    items: List[WorkItem] = [{"type": "cube", "cube_id": row[0]} for row in cubes]
-    items.append({"type": "hots", "scope": hots_scope})
-    return items
+    return [{"type": "cube", "cube_id": row[0]} for row in cubes]
+
+
+def known_work_items(items: List[Any]) -> List[WorkItem]:
+    """待重试记录里仍受支持的工作项。已下线的类型（市场热帖 `hots`）与格式不对的
+    条目静默丢弃——既不算失败，也不会再写回待重试记录被反复重试。"""
+    return [
+        dict(item)
+        for item in items
+        if isinstance(item, dict) and item.get("type") in WORK_ITEM_TYPES
+    ]
 
 
 def _item_label(item: WorkItem) -> str:
     if item["type"] == "feed":
         return f"{item['market']} {item['symbol']} {KIND_LABELS.get(item['kind'], item['kind'])}"
-    if item["type"] == "cube":
-        return f"组合 {item['cube_id']} 调仓"
-    return f"热帖（{item.get('scope', '')}）"
+    return f"组合 {item['cube_id']} 调仓"
 
 
 def _item_key(item: WorkItem) -> tuple:
@@ -208,7 +217,7 @@ def _empty_stats(symbol_count: int, mode: str) -> Dict[str, Any]:
     stats: Dict[str, Any] = {"mode": mode, "symbols": symbol_count, "failures": 0}
     for kind in KINDS:
         stats[kind] = {"fetched": 0, "new": 0}
-    stats.update({"cubes": 0, "rebalancing_new": 0, "hots": 0})
+    stats.update({"cubes": 0, "rebalancing_new": 0})
     return stats
 
 
@@ -221,7 +230,6 @@ def _summarize(stats: Dict[str, Any], failures: List[str]) -> str:
         parts.append(f"{KIND_LABELS[kind]} {item.get('fetched', 0)} 条（新 {item.get('new', 0)}）")
     if stats.get("cubes"):
         parts.append(f"组合 {stats['cubes']} 个（新调仓 {stats.get('rebalancing_new', 0)}）")
-    parts.append(f"热帖 {stats.get('hots', 0)} 条")
     if failures:
         parts.append(f"失败 {len(failures)} 项：" + "；".join(failures[:5]))
     return "，".join(parts)
@@ -266,12 +274,7 @@ def _run_item(
         stats["cubes"] += 1
         stats["rebalancing_new"] += new
         return
-    scope = item.get("scope") or settings.xueqiu_collector_hots_scope
-    items = _fetch_items(client, hots_url(scope, count), label, ENDPOINT_HOTS)
-    posts = parse_statuses(items, ENDPOINT_HOTS)
-    upsert_hot_posts(db, scope, posts, st.utcnow())
-    db.commit()
-    stats["hots"] = len(posts)
+    raise ValueError(f"未知的工作项类型: {item.get('type')!r}")
 
 
 def _mark_cube(db: Session, cube_id: str, status: str, message: str) -> None:
@@ -332,7 +335,6 @@ def run_symbols_cycle(
     record_daily: bool = True,
     retry_items: Optional[List[WorkItem]] = None,
     count: Optional[int] = None,
-    hots_scope: Optional[str] = None,
     client_factory: Optional[Callable[[Dict[str, str]], XueqiuWebClient]] = None,
     stop_event: Optional[threading.Event] = None,
     heartbeat: Optional[st.Heartbeat] = None,
@@ -340,9 +342,9 @@ def run_symbols_cycle(
 ) -> SymbolsCycleResult:
     """跑一轮按标的采集。
 
-    targets 为空 = 按范围计算；include_market_wide = 是否顺带组合调仓与热帖；
-    retry_items = 只重试这些项（待重试记录里的）；record_daily = 是否按业务日语义收尾
-    （手动指定标的的补跑不动业务日与待重试记录）。
+    targets 为空 = 按范围计算；include_market_wide = 是否顺带组合调仓；
+    retry_items = 只重试这些项（待重试记录里的，已下线类型经 `known_work_items` 丢弃）；
+    record_daily = 是否按业务日语义收尾（手动指定标的的补跑不动业务日与待重试记录）。
     """
     from .runner import (
         CYCLE_FAILED,
@@ -356,7 +358,6 @@ def run_symbols_cycle(
     )
 
     count = count or settings.xueqiu_collector_symbol_count
-    hots_scope = hots_scope or settings.xueqiu_collector_hots_scope
     stop_event = stop_event or threading.Event()
     lock = _CycleLock(db)
     if not lock.acquire():
@@ -388,13 +389,13 @@ def run_symbols_cycle(
             return SymbolsCycleResult(status=CYCLE_UNAVAILABLE, message=message)
 
         if retry_items is not None:
-            work = [dict(item) for item in retry_items]
+            work = known_work_items(retry_items)
         else:
             if targets is None:
                 targets = compute_symbol_universe(db)
             work = feed_items(targets)
             if include_market_wide:
-                work += market_wide_items(db, hots_scope)
+                work += market_wide_items(db)
         symbol_count = len({(i["symbol"], i["market"]) for i in work if i["type"] == "feed"})
 
         on_request = heartbeat.beat if heartbeat is not None else None

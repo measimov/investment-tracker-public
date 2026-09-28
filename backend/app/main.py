@@ -23,6 +23,7 @@ from .api import (
     excluded_securities,
     security_rules,
     llm_reports,
+    notifications,
     security_catalog,
     security_profiles,
     watchlist,
@@ -40,56 +41,86 @@ from .services import opinion_summary_batch_jobs as _opinion_summary_batch_jobs 
 from .services import opinion_summary_jobs as _opinion_summary_jobs  # noqa: F401
 from .services import report_digest_batch_jobs as _report_digest_batch_jobs  # noqa: F401
 from .services import report_digest_jobs as _report_digest_jobs  # noqa: F401
-from .services.exchange_rate_service import refresh_rates_if_stale
+from .services.exchange_rate_service import periodic_refresh_rates
 from .services.job_worker import register_periodic_task, start_worker, stop_worker
 
 # 汇率每日快照：6 小时检查一次，最近一期中间价已有则零外呼（幂等，非 Tushare）
-register_periodic_task(refresh_rates_if_stale, interval_seconds=6 * 3600)
+register_periodic_task(
+    periodic_refresh_rates, interval_seconds=6 * 3600, name="refresh_rates_if_stale"
+)
 
 # 参考利率（无风险利率）：首次按最早交易日回填，之后每 12 小时补尾（中国货币网 / 美国财政部）
 from .services.reference_rate_service import (  # noqa: E402
     PERIODIC_INTERVAL_SECONDS as REFERENCE_RATE_REFRESH_SECONDS,
-    refresh_reference_rates,
+    periodic_refresh_reference_rates,
 )
 
-register_periodic_task(refresh_reference_rates, interval_seconds=REFERENCE_RATE_REFRESH_SECONDS)
+register_periodic_task(
+    periodic_refresh_reference_rates,
+    interval_seconds=REFERENCE_RATE_REFRESH_SECONDS,
+    name="refresh_reference_rates",
+)
 
 # 基准指数尾部补齐：已有数据的基准每日推进到最近已完成交易日；
 # 冷启动回填由用户区间驱动（history-sync / analytics refresh），无 token 静默
 from .services.benchmark_service import (  # noqa: E402
     PERIODIC_INTERVAL_SECONDS as BENCHMARK_REFRESH_SECONDS,
-    refresh_benchmark_tails,
+    periodic_refresh_benchmark_tails,
 )
 
-register_periodic_task(refresh_benchmark_tails, interval_seconds=BENCHMARK_REFRESH_SECONDS)
+register_periodic_task(
+    periodic_refresh_benchmark_tails,
+    interval_seconds=BENCHMARK_REFRESH_SECONDS,
+    name="refresh_benchmark_tails",
+)
 
 # 港交所每日行情报表：港股收盘价的官方 T+1 源，只推进已跟踪标的的尾部；
 # 非交易日 404 即休市，无需交易日历
 from .services.hkex_dayquot_source import (  # noqa: E402
     PERIODIC_INTERVAL_SECONDS as HKEX_DAYQUOT_REFRESH_SECONDS,
-    refresh_hk_dayquot,
+    periodic_refresh_hk_dayquot,
 )
 
-register_periodic_task(refresh_hk_dayquot, interval_seconds=HKEX_DAYQUOT_REFRESH_SECONDS)
+register_periodic_task(
+    periodic_refresh_hk_dayquot,
+    interval_seconds=HKEX_DAYQUOT_REFRESH_SECONDS,
+    name="refresh_hk_dayquot",
+)
 
 # 标的全集：每周刷新（tick 6h，按 last_success_at 判新鲜，重启不重拉）
 from .services.security_catalog_service import (  # noqa: E402
     PERIODIC_INTERVAL_SECONDS as SECURITY_CATALOG_REFRESH_SECONDS,
-    refresh_security_catalog,
+    periodic_refresh_security_catalog,
 )
 
 register_periodic_task(
-    refresh_security_catalog, interval_seconds=SECURITY_CATALOG_REFRESH_SECONDS
+    periodic_refresh_security_catalog,
+    interval_seconds=SECURITY_CATALOG_REFRESH_SECONDS,
+    name="refresh_security_catalog",
 )
 
 # 行业分类：官方为主 + 东方财富补缺；24h 一查，按 fetched_at 判新鲜（超过刷新天数才重拉）
 from .services.security_industry_service import (  # noqa: E402
     PERIODIC_INTERVAL_SECONDS as SECURITY_INDUSTRY_REFRESH_SECONDS,
-    refresh_security_industries,
+    periodic_refresh_security_industries,
 )
 
 register_periodic_task(
-    refresh_security_industries, interval_seconds=SECURITY_INDUSTRY_REFRESH_SECONDS
+    periodic_refresh_security_industries,
+    interval_seconds=SECURITY_INDUSTRY_REFRESH_SECONDS,
+    name="refresh_security_industries",
+)
+
+# 系统告警检查（雪球采集器/Cookie/汇率/周期任务/后台任务）：每 10 分钟，状态机决定是否推送
+from .services.alert_checks import (  # noqa: E402
+    PERIODIC_INTERVAL_SECONDS as ALERT_CHECK_INTERVAL_SECONDS,
+    periodic_run_alert_checks,
+)
+
+register_periodic_task(
+    periodic_run_alert_checks,
+    interval_seconds=ALERT_CHECK_INTERVAL_SECONDS,
+    name="run_alert_checks",
 )
 
 
@@ -181,6 +212,7 @@ app.include_router(
     tags=["Watchlist"],
 )
 app.include_router(xueqiu_collector.router)
+app.include_router(notifications.router)
 
 
 @app.on_event("startup")

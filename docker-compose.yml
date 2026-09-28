@@ -113,6 +113,13 @@ services:
       - TIINGO_API_TOKEN
       - TIINGO_MIN_INTERVAL_SECONDS
       - TIINGO_TIMEOUT_SECONDS
+      # 告警通知（Apprise；NOTIFY_URLS 填 Bark 的 https://api.day.app/<key> 即可）与告警检查。
+      # 只有 Web 进程读取：采集器进程不推送，它的状态由 backend 的检查器读库判定
+      - NOTIFY_URLS
+      - NOTIFY_MIN_SEVERITY
+      - NOTIFY_REMINDER_HOURS
+      - NOTIFY_COLLECTOR_STALE_HOURS
+      - ALERT_CHECK_ENABLED
     restart: unless-stopped
     networks:
       - investment-network
@@ -139,7 +146,7 @@ services:
       - investment-network
 
   # 雪球发言采集器：与 backend 同一镜像的常驻进程（manage.py xueqiu-collector），
-  # 每小时一轮关注作者采集 + 每天一轮按标的采集（公告/讨论/组合调仓/热帖）。
+  # 每小时一轮关注作者采集 + 每天一轮按标的采集（公告/讨论/组合调仓）。
   # 与 Web 进程分离——不占 worker 车道，重启互不影响。
   # XUEQIU_COLLECTOR_ENABLED 未设为 true 时进程只空转写心跳（healthcheck 仍健康）。
   # 变量一律裸键透传：默认值只在 config.py 一处。
@@ -185,7 +192,6 @@ services:
       - XUEQIU_COLLECTOR_SYMBOLS_ENABLED
       - XUEQIU_COLLECTOR_SYMBOLS_RUN_AFTER
       - XUEQIU_COLLECTOR_SYMBOL_COUNT
-      - XUEQIU_COLLECTOR_HOTS_SCOPE
       - XUEQIU_COLLECTOR_SYMBOLS_RETRY_MINUTES
       - XUEQIU_COLLECTOR_SYMBOLS_MAX_ATTEMPTS
       # 心跳文件（相对 /app；默认落在挂载的 logs/ 里），healthcheck 读它的 mtime

@@ -449,3 +449,86 @@ def test_local_failure_without_mismatch_or_forced_local_does_not_retry(env, extr
     names = _names(env["backups"])
     assert any(n.endswith(".dump.partial") for n in names)
     assert not any(n.endswith(".dump") for n in names)
+
+
+# --------------------------------------------------------------------------- #
+# BACKUP_NOTIFY=1：失败推送告警、成功标记恢复；尽力而为，不改变退出码
+# --------------------------------------------------------------------------- #
+# 打桩 docker-compose（独立二进制形态）：记录参数；`version` 恒成功，其余按 FAKE_COMPOSE_EXIT
+FAKE_COMPOSE = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FAKE_COMPOSE_LOG"
+[ "$1" = version ] && exit 0
+exit "${FAKE_COMPOSE_EXIT:-0}"
+"""
+
+
+def _install_notify_stubs(ctx):
+    _install_local_pg(ctx)
+    # 假 docker 没有 compose 插件（`docker compose version` 失败）→ 落到 docker-compose
+    _write_exe(ctx["bin"] / "docker", FAKE_DOCKER)
+    _write_exe(ctx["bin"] / "docker-compose", FAKE_COMPOSE)
+    return ctx["tmp"] / "compose.log"
+
+
+def _notify_calls(log: pathlib.Path) -> list:
+    if not log.exists():
+        return []
+    return [line for line in log.read_text().splitlines() if "manage.py notify" in line]
+
+
+def _backup_env(log, **extra):
+    return {
+        "BACKUP_MODE": "postgres",
+        "DATABASE_URL": "postgresql://u:p@db:5432/x",
+        "FAKE_COMPOSE_LOG": str(log),
+        "FAKE_DOCKER_LOG": str(log.parent / "docker.log"),
+        **extra,
+    }
+
+
+def test_backup_notify_resolves_on_success(env):
+    log = _install_notify_stubs(env)
+    result = _run(env, extra_env=_backup_env(log, BACKUP_NOTIFY="1"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _notify_calls(log) == [
+        "exec -T backend python manage.py notify --resolve --key backup"
+    ]
+
+
+@pytest.mark.parametrize("compose_exit", ["0", "1"])
+def test_backup_notify_raises_on_failure_and_keeps_exit_code(env, compose_exit):
+    log = _install_notify_stubs(env)
+    result = _run(
+        env,
+        extra_env=_backup_env(
+            log, BACKUP_NOTIFY="1", FAKE_DUMP_MODE="fail", FAKE_COMPOSE_EXIT=compose_exit
+        ),
+    )
+    assert result.returncode == 1  # 与不开通知时相同：pg_dump 失败的退出码
+    calls = _notify_calls(log)
+    assert len(calls) == 1
+    assert "notify --key backup --severity critical --title 数据库备份失败" in calls[0]
+    assert "退出码 1" in calls[0]
+    if compose_exit != "0":
+        assert "告警通知未送达" in result.stderr
+
+
+def test_backup_notify_failure_never_breaks_a_successful_backup(env):
+    log = _install_notify_stubs(env)
+    result = _run(env, extra_env=_backup_env(log, BACKUP_NOTIFY="1", FAKE_COMPOSE_EXIT="1"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "告警通知未送达" in result.stderr
+    _assert_verified_backup(env["backups"], b"PGDMP-fake-dump")
+
+
+def test_backup_notify_is_opt_in_and_skips_prune_only_runs(env):
+    log = _install_notify_stubs(env)
+    assert _run(env, extra_env=_backup_env(log)).returncode == 0
+    assert _run(env, extra_env=_backup_env(log, FAKE_DUMP_MODE="fail")).returncode != 0
+    assert _notify_calls(log) == []
+    # 只清理不是一次备份：即使开了通知也不发
+    only_prune = _run(
+        env, "--prune", extra_env={"BACKUP_NOTIFY": "1", "FAKE_COMPOSE_LOG": str(log)}
+    )
+    assert only_prune.returncode == 0, only_prune.stdout + only_prune.stderr
+    assert _notify_calls(log) == []

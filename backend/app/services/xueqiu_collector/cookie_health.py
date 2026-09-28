@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
@@ -19,28 +19,59 @@ import requests
 PRIMARY_AUTH_COOKIES = ("xq_a_token", "xqat")
 
 
-def load_cookie_facts(cookie_file: Path) -> Dict[str, Any]:
-    """读浏览器导出：{names: 出现的 Cookie 名, expirations: 主凭证的 expirationDate（秒）}。
+def effective_cookie_values(data: Any) -> Dict[str, str]:
+    """Cookie 导出 → 最终生效的 {name: value}，与两个加载器（`client._cookies_from_data`、
+    行情库 `load_cookies`）同一语义：`{"cookies": ...}` 先解包；列表按顺序逐条写入，
+    **同名后者覆盖前者**；字典直接取值。缺 value / value 为 null 按空串。"""
+    if isinstance(data, dict) and "cookies" in data:
+        data = data["cookies"]
+    values: Dict[str, str] = {}
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                raise ValueError("Cookie 列表条目不是对象")
+            value = item.get("value")
+            values[str(item.get("name", ""))] = "" if value is None else str(value)
+    elif isinstance(data, dict):
+        for key, value in data.items():
+            values[str(key)] = "" if value is None else str(value)
+    else:
+        raise ValueError("Cookie 结构无法识别")
+    return values
 
-    {name: value} 形状没有 expirationDate，expirations 为空；names 仍然可用于
-    判断主凭证是否缺失。
+
+def missing_primary_credentials(values: Dict[str, str]) -> List[str]:
+    """最终值缺失或为空白的主凭证：只有键没有值的登录态同样不可用（PR #255 评审）。"""
+    return [name for name in PRIMARY_AUTH_COOKIES if not (values.get(name) or "").strip()]
+
+
+def load_cookie_facts(cookie_file: Path) -> Dict[str, Any]:
+    """读浏览器导出：{names, values, missing, expirations}。
+
+    values 是最终生效的值（同名后者覆盖）；missing 是最终值缺失或为空的主凭证；
+    expirations 只取生效那一条的 expirationDate（秒）。{name: value} 形状没有
+    expirationDate，expirations 为空。
     """
     data = json.loads(cookie_file.read_text(encoding="utf-8"))
+    values = effective_cookie_values(data)
     cookies = data.get("cookies") if isinstance(data, dict) and "cookies" in data else data
-    names: set = set()
     expirations: Dict[str, float] = {}
     if isinstance(cookies, list):
         for cookie in cookies:
             name = str(cookie.get("name", ""))
-            names.add(name)
+            if name not in PRIMARY_AUTH_COOKIES:
+                continue
             expiration = cookie.get("expirationDate")
-            if name in PRIMARY_AUTH_COOKIES and expiration is not None:
+            if expiration is None:
+                expirations.pop(name, None)  # 生效的那条没有到期日
+            else:
                 expirations[name] = float(expiration)
-    elif isinstance(cookies, dict):
-        names = {str(key) for key in cookies}
-    else:
-        raise ValueError("Cookie 文件结构无法识别")
-    return {"names": names, "expirations": expirations}
+    return {
+        "names": set(values),
+        "values": values,
+        "missing": missing_primary_credentials(values),
+        "expirations": expirations,
+    }
 
 
 def check_expiry(
@@ -68,15 +99,15 @@ def check_expiry(
                 "days_left": None, "cookie": ""}
     try:
         facts = load_cookie_facts(path)
-    except (json.JSONDecodeError, OSError, ValueError, AttributeError) as exc:
+    except (json.JSONDecodeError, OSError, ValueError, AttributeError, TypeError) as exc:
         return {"level": "critical", "message": f"Cookie 文件无法解析：{exc}",
                 "days_left": None, "cookie": ""}
 
-    missing = [name for name in PRIMARY_AUTH_COOKIES if name not in facts["names"]]
+    missing = facts["missing"]
     if missing:
         return {
             "level": "critical",
-            "message": f"雪球登录凭证缺失：{', '.join(missing)}（请重新导出完整 Cookie）",
+            "message": f"雪球登录凭证缺失或为空：{', '.join(missing)}（请重新导出完整 Cookie）",
             "days_left": None, "cookie": missing[0],
         }
 

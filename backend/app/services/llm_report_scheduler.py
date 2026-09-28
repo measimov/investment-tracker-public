@@ -16,6 +16,7 @@ from ..database import SessionLocal
 from ..models.background_job import BackgroundJob
 from ..models.llm_report import LlmReport, LlmReportSchedule
 from .background_job_store import ACTIVE_STATUSES, create_or_get_active_job
+from .job_worker import PeriodicOutcome, periodic_outcome_task
 from .llm_client import is_llm_configured
 
 logger = get_app_logger(__name__)
@@ -76,3 +77,12 @@ def enqueue_due_scheduled_reports(now: Optional[datetime] = None) -> int:
                 schedule.cadence,
             )
     return enqueued
+
+
+@periodic_outcome_task
+def periodic_enqueue_scheduled_reports() -> PeriodicOutcome:
+    """周期任务入口（以名字 enqueue_due_scheduled_reports 注册）：未配置 LLM 为 skipped；
+    查询/入队出错照常上抛（worker 记失败）；报告任务本身的失败由后台任务检查器报告。"""
+    if not is_llm_configured():
+        return PeriodicOutcome.skipped("未配置 LLM_REPORT_API_KEY")
+    return PeriodicOutcome.succeeded(enqueue_due_scheduled_reports())

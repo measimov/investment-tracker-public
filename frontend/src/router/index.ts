@@ -14,6 +14,7 @@ const AccountData = () => import('../views/AccountData.vue')
 const Login = () => import('../views/Login.vue')
 const UserManagement = () => import('../views/admin/UserManagement.vue')
 const AllHoldings = () => import('../views/admin/AllHoldings.vue')
+const SystemAlerts = () => import('../views/admin/SystemAlerts.vue')
 
 // meta.title：标签页标题的页面名（与导航文案一致）；meta.nav：不在导航里的
 // 页面点亮哪个菜单项
@@ -106,6 +107,12 @@ const routes: RouteRecordRaw[] = [
     name: 'AllHoldings',
     component: AllHoldings,
     meta: { requiresAuth: true, requiresAdmin: true, title: '查看所有持仓' }
+  },
+  {
+    path: '/admin/alerts',
+    name: 'SystemAlerts',
+    component: SystemAlerts,
+    meta: { requiresAuth: true, requiresAdmin: true, title: '系统告警' }
   },
   {
     // 兜底 404，必须放在最后。不要求登录：输错地址应该看到「页面不存在」，

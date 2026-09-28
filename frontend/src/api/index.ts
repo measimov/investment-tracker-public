@@ -7,6 +7,7 @@ import type {
 } from '@/types'
 import type {
   AdminHolding,
+  AlertList,
   BrokerAccount,
   BrokerImportResult,
   CashEvent,
@@ -30,6 +31,7 @@ import type {
   LlmReportListItem,
   LlmReportSchedule,
   LoginResponse,
+  NotifyResult,
   ReconciliationSnapshot,
   SecurityEvent,
   SecurityRule,
@@ -38,7 +40,6 @@ import type {
   User,
   WatchlistItem,
   WatchlistMembership,
-  XueqiuHots,
   XueqiuSymbolFeed
 } from '../types'
 import { ElNotification } from 'element-plus'
@@ -623,16 +624,10 @@ const api = {
   deleteCollectorCube(cubeId: string) {
     return apiClient.delete(`/xueqiu-collector/cubes/${encodeURIComponent(cubeId)}`)
   },
-  // 采集器每日按标的落库的只读展示：标的的雪球公告/讨论、今日热帖。
+  // 采集器每日按标的落库的只读展示：标的的雪球公告/讨论。
   // 锦上添花的数据，失败由调用方静默处理，不弹全局通知
   getXueqiuSymbolFeed(params: { symbol: string; market: string; kind?: string; limit?: number }) {
     return apiClient.get<XueqiuSymbolFeed>('/xueqiu-collector/symbol-feed', {
-      params,
-      skipGlobalErrorNotification: true
-    })
-  },
-  getXueqiuHots(params?: { scope?: 'day' | 'week'; limit?: number }) {
-    return apiClient.get<XueqiuHots>('/xueqiu-collector/hots', {
       params,
       skipGlobalErrorNotification: true
     })
@@ -814,6 +809,17 @@ const api = {
     return apiClient.put(`/users/${userId}/password`, {
       new_password: newPassword
     })
+  },
+
+  // 系统告警（管理员）：推送渠道只返回脱敏地址
+  getSystemAlerts() {
+    return apiClient.get<AlertList>('/notifications/alerts')
+  },
+  runAlertChecks() {
+    return apiClient.post<AlertList>('/notifications/check')
+  },
+  sendTestNotification() {
+    return apiClient.post<NotifyResult>('/notifications/test')
   },
 
   // Admin Holdings

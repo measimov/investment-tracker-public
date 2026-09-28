@@ -5,7 +5,8 @@
 数据），读对所有登录用户开放，增删改仅管理员。
 
 按标的监控（每日一轮）：组合跟踪名单同一权限模型；`/symbol-feed`（标的的雪球公告/
-讨论）与 `/hots`（今日热帖）是全局数据的只读展示，按本仓 (symbol, market) 查询。
+讨论）是全局数据的只读展示，按本仓 (symbol, market) 查询。原 `/hots`（今日热帖）已于
+2026-09-28 随热帖采集一起下线。
 """
 
 from datetime import timedelta
@@ -29,13 +30,13 @@ from ..schemas.xueqiu_collector import (
     CollectorCubeUpdate,
     CollectorStatusResponse,
     CollectorSymbolsStatus,
-    XueqiuHotsResponse,
     XueqiuSymbolFeedResponse,
 )
 from ..services.opinion_summary_jobs import OPINION_MARKETS
 from ..services.symbol_normalization import normalize_manual_symbol
 from ..services.xueqiu_collector import cookie_health, feed_store
 from ..services.xueqiu_collector import state as collector_state
+from ..services.xueqiu_collector.symbols import known_work_items
 from ..services.xueqiu_collector.feed_parsing import KIND_ANNOUNCEMENT, KIND_DISCUSSION, KINDS
 
 router = APIRouter(prefix="/api/xueqiu-collector", tags=["Xueqiu Collector"])
@@ -110,7 +111,9 @@ def build_status(db: Session) -> CollectorStatusResponse:
             retry_pending=pending is not None,
             retry_attempts=int((pending or {}).get("attempts") or 0),
             retry_item_count=(
-                len(pending["items"]) if pending and isinstance(pending.get("items"), list)
+                # 与重试执行同口径：已下线类型（热帖）不计入
+                len(known_work_items(pending["items"]))
+                if pending and isinstance(pending.get("items"), list)
                 else None
             ),
         ),
@@ -281,7 +284,7 @@ def delete_collector_cube(
 
 
 # --------------------------------------------------------------------------- #
-# 只读展示：标的的公告/讨论流、今日热帖（全局数据，不接 LLM）
+# 只读展示：标的的公告/讨论流（全局数据，不接 LLM）
 # --------------------------------------------------------------------------- #
 @router.get("/symbol-feed", response_model=XueqiuSymbolFeedResponse)
 def get_symbol_feed(
@@ -310,14 +313,3 @@ def get_symbol_feed(
         discussions=feed.get(KIND_DISCUSSION, []),
         last_cycle_finished_at=state.symbols_last_finished_at,
     )
-
-
-@router.get("/hots", response_model=XueqiuHotsResponse)
-def get_hot_posts(
-    scope: Literal["day", "week"] = Query("day"),
-    limit: int = Query(10, ge=1, le=50),
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    snapshot_at, items = feed_store.latest_hots(db, scope, limit)
-    return XueqiuHotsResponse(scope=scope, snapshot_at=snapshot_at, items=items)

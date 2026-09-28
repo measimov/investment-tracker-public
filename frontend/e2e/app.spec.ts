@@ -3040,9 +3040,9 @@ test('opinions page degrades explicitly without collected data', async ({ page, 
   await expect(page.getByTestId('opinion-symbols-table')).toBeVisible()
   await expect(page.getByTestId('xueqiu-collector-card')).toBeVisible()
   await expect(page.getByTestId('collector-health')).toHaveText('未启用')
-  // 按标的采集从未运行：摘要行如实说明、今日热帖卡给空态而不是报错
+  // 按标的采集从未运行：摘要行如实说明；「今日热帖」卡已下线（2026-09-28），不再渲染
   await expect(page.getByTestId('collector-symbols-summary')).toContainText('尚未运行')
-  await expect(page.getByTestId('xueqiu-hots-card')).toContainText('尚无快照')
+  await expect(page.getByTestId('xueqiu-hots-card')).toHaveCount(0)
 
   // 详情页的观点 section：生成按钮点击后收到 409 预检（e2e 环境先命中
   // "未配置 LLM"，配了 key 的环境则是"数据源未接入"），以信息条呈现而非报错弹窗

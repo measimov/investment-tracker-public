@@ -116,15 +116,13 @@ class Settings(BaseSettings):
     # 心跳文件（healthcheck 用 mtime 判活），相对路径以进程工作目录为基准
     xueqiu_collector_heartbeat_file: str = "logs/xueqiu-collector.heartbeat"
     xueqiu_collector_health_max_age_minutes: int = 30
-    # 每日按标的采集（公告/讨论 + 组合调仓 + 热帖）：同一进程、同一把 advisory lock、
+    # 每日按标的采集（公告/讨论 + 组合调仓；市场热帖 2026-09-28 下线）：同一进程、同一把 advisory lock、
     # 同一 WAF 冷却。标的范围 = 全体用户持仓∪自选 ∩ OPINION_MARKETS − 排除/现金管理规则。
     # 业务时区每天 run_after 之后跑一轮（落 state 表，重启不重跑）
     xueqiu_collector_symbols_enabled: bool = True
     xueqiu_collector_symbols_run_after: str = "07:30"
     # 每标的每类取最新几条（原 monitor_symbols 默认 20）
     xueqiu_collector_symbol_count: int = 20
-    # 热帖口径（day / week）
-    xueqiu_collector_hots_scope: str = "day"
     # 一轮有失败（含错误对象/未知结构/WAF/Cookie 不可用）时当天不记「已跑」，只把没成功的
     # 项留作待重试：距上一轮 retry_minutes 后重试，当日最多 max_attempts 轮（含首轮），
     # 用尽后记当日已跑、剩余失败项明日随整轮再采
@@ -208,6 +206,19 @@ class Settings(BaseSettings):
     # 超过刷新天数才重拉；manage.py sync-security-industries [--force] 手动
     security_industry_sync_enabled: bool = True
     security_industry_refresh_days: int = Field(default=30, gt=0)
+    # 告警通知（services/notification_service.py + alert_service.py）。推送走 Apprise：
+    # NOTIFY_URLS 空格或逗号分隔多个渠道；Bark 直接填 App 里复制的
+    # `https://api.day.app/<key>`（自动换成 Apprise 的 barks://），其他渠道（飞书、邮件…）
+    # 填 Apprise URL 即可，不改代码。留空 = 不推送（告警仍记录，管理员页可见）。
+    notify_urls: str = ""
+    # 推送门槛：低于它的告警只记录不推送（info / warning / critical）
+    notify_min_severity: str = "warning"
+    # 仍未恢复的告警每隔 N 小时再提醒一次
+    notify_reminder_hours: float = Field(default=24, gt=0)
+    # 采集器启用时，超过 N 小时没有一次成功（ok/partial）的作者采集即告警
+    notify_collector_stale_hours: float = Field(default=3, gt=0)
+    # 告警检查周期任务（每 10 分钟）总开关
+    alert_check_enabled: bool = True
     price_refresh_max_workers: int = 4
     # 主动刷新股价的新鲜度窗口：窗口内重复请求跳过（防连点浪费配额）
     price_refresh_freshness_seconds: int = 600

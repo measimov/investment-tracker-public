@@ -1340,6 +1340,60 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/notifications/alerts': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Alerts */
+    get: operations['list_alerts_api_notifications_alerts_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/notifications/check': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Run Checks Now
+     * @description 立即跑一轮告警检查（与周期任务同一套状态机：该推送的照常推送）。
+     */
+    post: operations['run_checks_now_api_notifications_check_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/notifications/test': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /** Send Test Notification */
+    post: operations['send_test_notification_api_notifications_test_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/reconciliation-snapshots': {
     parameters: {
       query?: never
@@ -2661,23 +2715,6 @@ export interface paths {
     patch: operations['update_collector_cube_api_xueqiu_collector_cubes__cube_id__patch']
     trace?: never
   }
-  '/api/xueqiu-collector/hots': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /** Get Hot Posts */
-    get: operations['get_hot_posts_api_xueqiu_collector_hots_get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/xueqiu-collector/run-now': {
     parameters: {
       query?: never
@@ -2835,6 +2872,83 @@ export interface components {
       user_id: number
       /** Username */
       username?: string | null
+    }
+    /** AlertCounts */
+    AlertCounts: {
+      /** Active */
+      active: number
+      /** Critical */
+      critical: number
+      /** Info */
+      info: number
+      /** Recent Resolved */
+      recent_resolved: number
+      /** Warning */
+      warning: number
+    }
+    /** AlertItem */
+    AlertItem: {
+      /** Alert Key */
+      alert_key: string
+      /**
+       * First Seen At
+       * Format: date-time
+       */
+      first_seen_at: string
+      /** Last Notified At */
+      last_notified_at?: string | null
+      /**
+       * Last Notify
+       * @description 最近一次推送尝试：{at, action, status, message}
+       */
+      last_notify?: Record<string, unknown> | null
+      /**
+       * Last Seen At
+       * Format: date-time
+       */
+      last_seen_at: string
+      /** Message */
+      message: string
+      /** Notify Count */
+      notify_count: number
+      /** Payload */
+      payload?: Record<string, unknown>
+      /**
+       * Resolve Notified At
+       * @description 「已恢复」推送送达时间；推送过的告警恢复后为空 = 恢复通知待重试
+       */
+      resolve_notified_at?: string | null
+      /** Resolved At */
+      resolved_at?: string | null
+      /**
+       * Severity
+       * @enum {string}
+       */
+      severity: 'info' | 'warning' | 'critical'
+      /** Source */
+      source: string
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'active' | 'resolved'
+      /** Title */
+      title: string
+    }
+    /** AlertListResponse */
+    AlertListResponse: {
+      /** Active */
+      active: components['schemas']['AlertItem'][]
+      channels: components['schemas']['NotifyChannelSummary']
+      /** Check Enabled */
+      check_enabled: boolean
+      /** Check Interval Minutes */
+      check_interval_minutes: number
+      counts: components['schemas']['AlertCounts']
+      /** Recent Resolved */
+      recent_resolved: components['schemas']['AlertItem'][]
+      /** Reminder Hours */
+      reminder_hours: number
     }
     /** Body_import_cmb_fund_flows_api_import_cmb_fund_flows_post */
     Body_import_cmb_fund_flows_api_import_cmb_fund_flows_post: {
@@ -4568,6 +4682,71 @@ export interface components {
     LoginResponse: {
       user: components['schemas']['User']
     }
+    /** NotifyChannel */
+    NotifyChannel: {
+      /**
+       * Channel
+       * @description 脱敏后的渠道地址（不含设备 key / token）
+       */
+      channel: string
+      /**
+       * Kind
+       * @description bark / Apprise 的 scheme
+       */
+      kind: string
+      /**
+       * Valid
+       * @description Apprise 能否识别该 URL（不外呼）
+       */
+      valid: boolean
+    }
+    /** NotifyChannelResult */
+    NotifyChannelResult: {
+      /** Channel */
+      channel: string
+      /** Error */
+      error?: string | null
+      /** Kind */
+      kind: string
+      /** Ok */
+      ok: boolean
+    }
+    /** NotifyChannelSummary */
+    NotifyChannelSummary: {
+      /** Apprise Available */
+      apprise_available: boolean
+      /** Channels */
+      channels: components['schemas']['NotifyChannel'][]
+      /** Configured */
+      configured: boolean
+      /** Count */
+      count: number
+      /**
+       * Min Severity
+       * @enum {string}
+       */
+      min_severity: 'info' | 'warning' | 'critical'
+      /** Valid Count */
+      valid_count: number
+    }
+    /** NotifyResult */
+    NotifyResult: {
+      /** Channels */
+      channels: components['schemas']['NotifyChannelResult'][]
+      /** Configured */
+      configured: number
+      /** Message */
+      message: string
+      /** Ok */
+      ok: boolean
+      /** Sent */
+      sent: number
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'unconfigured' | 'sent' | 'partial' | 'failed'
+    }
     /**
      * OpeningPositionCostUpdate
      * @description 只补录成本（导入建的期初仓也允许）：数量/日期/账户来自对账单，不在此改。
@@ -5423,53 +5602,6 @@ export interface components {
       title: string
       /** Url */
       url: string
-    }
-    /** XueqiuHotPostItem */
-    XueqiuHotPostItem: {
-      /** Author Id */
-      author_id: string
-      /** Author Name */
-      author_name: string
-      /** Created At Ms */
-      created_at_ms: number
-      /**
-       * First Seen At
-       * Format: date-time
-       */
-      first_seen_at: string
-      /**
-       * Last Seen At
-       * Format: date-time
-       */
-      last_seen_at: string
-      /** Like Count */
-      like_count?: number | null
-      /**
-       * Links
-       * @description 站外附件链接（公告原文等）
-       */
-      links?: string[]
-      /** Post Id */
-      post_id: string
-      /** Rank */
-      rank: number
-      /** Reply Count */
-      reply_count?: number | null
-      /** Text */
-      text: string
-      /** Title */
-      title: string
-      /** Url */
-      url: string
-    }
-    /** XueqiuHotsResponse */
-    XueqiuHotsResponse: {
-      /** Items */
-      items?: components['schemas']['XueqiuHotPostItem'][]
-      /** Scope */
-      scope: string
-      /** Snapshot At */
-      snapshot_at?: string | null
     }
     /** XueqiuSymbolFeedResponse */
     XueqiuSymbolFeedResponse: {
@@ -7903,6 +8035,66 @@ export interface operations {
       }
     }
   }
+  list_alerts_api_notifications_alerts_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AlertListResponse']
+        }
+      }
+    }
+  }
+  run_checks_now_api_notifications_check_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AlertListResponse']
+        }
+      }
+    }
+  }
+  send_test_notification_api_notifications_test_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NotifyResult']
+        }
+      }
+    }
+  }
   list_reconciliation_snapshots_api_reconciliation_snapshots_get: {
     parameters: {
       query?: {
@@ -10223,38 +10415,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CollectorCubeResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_hot_posts_api_xueqiu_collector_hots_get: {
-    parameters: {
-      query?: {
-        scope?: 'day' | 'week'
-        limit?: number
-      }
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['XueqiuHotsResponse']
         }
       }
       /** @description Validation Error */

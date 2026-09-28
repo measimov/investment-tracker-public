@@ -9,6 +9,7 @@ from .user import User
 from .broker_fund_flow import BrokerFundFlow
 from .ibkr_activity_flow import IbkrActivityFlow
 from .background_job import BackgroundJob
+from .alert_state import AlertState
 from .auth_session import AuthSession
 from .broker_account import BrokerAccount
 from .import_batch import ImportBatch
@@ -39,6 +40,7 @@ from .xueqiu_collector import (
 )
 
 __all__ = [
+    "AlertState",
     "Transaction",
     "Holding",
     "CorporateAction",

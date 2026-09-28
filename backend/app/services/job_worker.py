@@ -24,6 +24,8 @@ import os
 import socket
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from ..config import settings
@@ -80,12 +82,112 @@ def _lane_job_types(lane: str) -> List[str]:
 # 通用周期任务钩子：跑在独立的调度线程上（与租约回收线程分开——慢的周期
 # 任务不得拖延回收 tick）。领域任务（如 LLM 报告定期入队）经此注册，
 # worker 保持领域无关。
-_periodic_tasks: list = []  # [(fn, interval_seconds, next_due_monotonic)]
+_periodic_tasks: list = []  # [fn, interval_seconds, next_due_monotonic, name]
+
+PERIODIC_SUCCEEDED = "succeeded"
+PERIODIC_FAILED = "failed"
+PERIODIC_SKIPPED = "skipped"
 
 
-def register_periodic_task(fn: Callable[[], Any], interval_seconds: float) -> None:
+@dataclass(frozen=True)
+class PeriodicOutcome:
+    """周期任务的结果契约（告警依据）。
+
+    多数领域入口为了不拖垮调度线程会**自吞异常**并返回 0——只看「有没有抛异常」的话，
+    数据源持续宕机会被记成成功：失败计数清零、已有告警被误判恢复（PR #255 评审 P1）。
+    所以注册的周期任务一律返回本类型，把真实结果交代清楚：
+    - succeeded：跑完了且没有错误（写入 0 行的正常空跑也算）；
+    - failed(reason)：数据源/解析/写库出错——计入连续失败；
+    - skipped(reason)：开关关闭、未到期、无配置、另一轮在跑——**不计失败也不算恢复**。
+    抛异常等同 failed。`periodic_outcome_task` 装饰器标记遵守本契约的入口，
+    `tests/test_periodic_outcomes.py` 断言每个注册的任务都带这个标记。
+    """
+
+    status: str
+    reason: str = ""
+    count: int = 0
+
+    @classmethod
+    def succeeded(cls, count: int = 0, reason: str = "") -> "PeriodicOutcome":
+        return cls(PERIODIC_SUCCEEDED, reason, count)
+
+    @classmethod
+    def failed(cls, reason: str, count: int = 0) -> "PeriodicOutcome":
+        return cls(PERIODIC_FAILED, reason, count)
+
+    @classmethod
+    def skipped(cls, reason: str = "", count: int = 0) -> "PeriodicOutcome":
+        return cls(PERIODIC_SKIPPED, reason, count)
+
+
+def periodic_outcome_task(fn: Callable[[], Any]) -> Callable[[], Any]:
+    """标记：该入口按 PeriodicOutcome 契约报告结果（自吞的错误不会被当成成功）。"""
+    fn.periodic_outcome_contract = True  # type: ignore[attr-defined]
+    return fn
+
+
+def register_periodic_task(
+    fn: Callable[[], Any], interval_seconds: float, *, name: Optional[str] = None
+) -> None:
+    """name 缺省取函数名；它是告警键 `periodic:<name>` 的一部分，改名等于换一个告警。"""
     with _registry_lock:
-        _periodic_tasks.append([fn, interval_seconds, 0.0])
+        _periodic_tasks.append([fn, interval_seconds, 0.0, name or periodic_task_name(fn)])
+
+
+# 周期任务的连续失败计数（进程内）：告警检查器（alert_checks.check_periodic_tasks）读取，
+# 连续 N 次失败即告警，成功一次清零，skipped 不动。重启清零是可接受的——重启本身就是一次
+# 恢复尝试，真正持续的故障重启后会再次累积。
+_periodic_failures: Dict[str, Dict[str, Any]] = {}
+# 本进程启动以来至少成功过一次的任务：重启清零了失败计数，但「清零」不等于「恢复」——
+# 检查器据此区分「重启后还没跑到」与「跑成功了」，不对前者误发「已恢复」
+_periodic_succeeded: set = set()
+_failures_lock = threading.Lock()
+
+
+def periodic_task_name(fn: Callable[[], Any]) -> str:
+    return getattr(fn, "__name__", None) or repr(fn)
+
+
+def as_periodic_outcome(result: Any) -> PeriodicOutcome:
+    """任务返回值 → 结果；未遵守契约的旧式返回值（int/None）按成功处理。"""
+    if isinstance(result, PeriodicOutcome):
+        return result
+    return PeriodicOutcome.succeeded()
+
+
+def record_periodic_outcome(name: str, outcome: PeriodicOutcome) -> None:
+    with _failures_lock:
+        if outcome.status == PERIODIC_SKIPPED:
+            return
+        if outcome.status == PERIODIC_SUCCEEDED:
+            _periodic_failures.pop(name, None)
+            _periodic_succeeded.add(name)
+            return
+        entry = _periodic_failures.setdefault(name, {"consecutive_failures": 0})
+        entry["consecutive_failures"] += 1
+        entry["last_error"] = (outcome.reason or "未知错误")[:300]
+        entry["last_failed_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def record_periodic_result(name: str, error: Optional[BaseException] = None) -> None:
+    """异常形态的便捷入口：None = 成功，异常 = 失败。"""
+    if error is None:
+        record_periodic_outcome(name, PeriodicOutcome.succeeded())
+    else:
+        record_periodic_outcome(
+            name, PeriodicOutcome.failed(f"{type(error).__name__}: {str(error)[:300]}")
+        )
+
+
+def periodic_task_failures() -> Dict[str, Dict[str, Any]]:
+    """{任务名: {consecutive_failures, last_error, last_failed_at}} 的快照。"""
+    with _failures_lock:
+        return {name: dict(entry) for name, entry in _periodic_failures.items()}
+
+
+def periodic_task_succeeded_since_start() -> set:
+    with _failures_lock:
+        return set(_periodic_succeeded)
 
 
 def execute_claimed_job(claimed: Dict[str, Any]) -> None:
@@ -233,12 +335,17 @@ class JobWorker:
             due = [task for task in _periodic_tasks if now >= task[2]]
         # 绝不持锁调 fn：一个慢周期任务会卡住所有注册
         for task in due:
-            fn, interval, _ = task
+            fn, interval, _, name = task
             task[2] = now + interval  # next_due 只有本线程写
             try:
-                fn()
-            except Exception:  # noqa: BLE001 - 周期任务失败不拖垮 worker
-                logger.exception("Periodic task %s failed", getattr(fn, "__name__", fn))
+                outcome = as_periodic_outcome(fn())
+            except Exception as exc:  # noqa: BLE001 - 周期任务失败不拖垮 worker
+                logger.exception("Periodic task %s failed", name)
+                record_periodic_result(name, exc)
+                continue
+            if outcome.status == PERIODIC_FAILED:
+                logger.warning("Periodic task %s reported failure: %s", name, outcome.reason)
+            record_periodic_outcome(name, outcome)
 
 
 def start_worker() -> Optional[JobWorker]:

@@ -25,6 +25,7 @@ from ..core.timeutil import local_today
 from ..models.reference_rate import ReferenceRate
 from ..models.transaction import Transaction
 from . import chinamoney_source, treasury_source
+from .job_worker import PeriodicOutcome, periodic_outcome_task
 
 logger = get_app_logger(__name__)
 
@@ -126,23 +127,35 @@ def sync_series(
     }
 
 
-def refresh_reference_rates() -> int:
-    """周期任务：逐序列补齐（失败互不影响）。返回写入/改写行数。"""
+@periodic_outcome_task
+def periodic_refresh_reference_rates() -> PeriodicOutcome:
+    """周期任务入口（main.py 以名字 refresh_reference_rates 注册）：逐序列补齐（失败互不影响），
+    任一序列获取失败 → failed（sync_series 只把错误放进 outcome，不上抛）。"""
     if not settings.reference_rate_sync_enabled:
-        return 0
+        return PeriodicOutcome.skipped("REFERENCE_RATE_SYNC_ENABLED=false")
     from ..database import SessionLocal
 
     db = SessionLocal()
     try:
         total = 0
+        errors = []
         for series in SERIES:
             outcome = sync_series(db, series)
             total += int(outcome["written"])
+            if outcome.get("error"):
+                errors.append(str(outcome["error"])[:200])
         if total:
             logger.info("参考利率已同步: %s 行", total)
-        return total
+        if errors:
+            return PeriodicOutcome.failed("；".join(errors), count=total)
+        return PeriodicOutcome.succeeded(total)
     finally:
         db.close()
+
+
+def refresh_reference_rates() -> int:
+    """兼容入口：返回写入/改写行数。"""
+    return periodic_refresh_reference_rates().count
 
 
 def load_points(

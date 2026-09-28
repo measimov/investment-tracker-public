@@ -1,7 +1,7 @@
 # 部署指南
 
 本文档覆盖 Docker Compose 部署的前置要求、环境变量、运行时架构、首次部署、升级、
-部署后数据任务、长任务运维、备份恢复与常见问题。
+部署后数据任务、长任务运维、备份恢复、告警通知与常见问题。
 
 - 运行数据库统一为**外部 PostgreSQL 16**（不在 compose 里）。`data/` 目录只保留原始导入文件，
   不是数据库，也不是备份目标。
@@ -21,7 +21,8 @@
 7. [长任务运维](#7-长任务运维)
 8. [雪球运维](#8-雪球运维)
 9. [备份与恢复](#9-备份与恢复)
-10. [常见问题](#10-常见问题)
+10. [告警通知](#10-告警通知)
+11. [常见问题](#11-常见问题)
 
 ---
 
@@ -218,12 +219,24 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `XUEQIU_COLLECTOR_WAF_COOLDOWN_SECONDS` | `1800` | 命中 WAF 后的冷却期，期内不开新一轮（「立即运行」也等冷却结束） |
 | `XUEQIU_COLLECTOR_HEARTBEAT_FILE` | `logs/xueqiu-collector.heartbeat` | 心跳文件（相对 `/app`，即挂载的日志目录）；healthcheck 读它的修改时间 |
 | `XUEQIU_COLLECTOR_HEALTH_MAX_AGE_MINUTES` | `30` | 心跳超过该时长即判不健康 |
-| `XUEQIU_COLLECTOR_SYMBOLS_ENABLED` | `true` | 每日按标的采集（公告/讨论、组合调仓、热帖）开关；只在总开关打开时生效 |
+| `XUEQIU_COLLECTOR_SYMBOLS_ENABLED` | `true` | 每日按标的采集（公告/讨论、组合调仓）开关；只在总开关打开时生效 |
 | `XUEQIU_COLLECTOR_SYMBOLS_RUN_AFTER` | `07:30` | 业务时区每天该时刻之后跑一轮（`HH:MM`；格式错退回 07:30 并告警） |
 | `XUEQIU_COLLECTOR_SYMBOL_COUNT` | `20` | 每个标的每类取最新几条 |
-| `XUEQIU_COLLECTOR_HOTS_SCOPE` | `day` | 热帖口径：`day` / `week` |
 | `XUEQIU_COLLECTOR_SYMBOLS_RETRY_MINUTES` | `60` | 按标的轮次有失败项时，距上一轮多少分钟后只重试失败项 |
 | `XUEQIU_COLLECTOR_SYMBOLS_MAX_ATTEMPTS` | `3` | 按标的轮次当日最多几轮（含首轮）；用尽即记当天已跑，剩余失败项明日随整轮再采 |
+
+### 告警通知
+
+只有 backend（Web 进程）读取；采集器进程不推送，它的状态由 backend 的检查器读库判定。
+用法与告警目录见 [第 10 节](#10-告警通知)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `NOTIFY_URLS` | 空 | 推送渠道，空格或逗号分隔。Bark 填 App 里复制的 `https://api.day.app/<key>`；其他渠道写 [Apprise URL](https://github.com/caronc/apprise/wiki)。空 = 不推送（告警仍记录） |
+| `NOTIFY_MIN_SEVERITY` | `warning` | 推送门槛（`info` / `warning` / `critical`），低于它的只记录 |
+| `NOTIFY_REMINDER_HOURS` | `24` | 未恢复的告警每隔多少小时再提醒一次 |
+| `NOTIFY_COLLECTOR_STALE_HOURS` | `3` | 采集器启用时，超过多少小时没有一次成功的作者采集即告警 |
+| `ALERT_CHECK_ENABLED` | `true` | 告警检查周期任务（每 10 分钟）总开关 |
 
 ### 只给宿主脚本用的变量
 
@@ -238,6 +251,7 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `BACKUP_PG_IMAGE` | 容器模式的镜像，默认 `postgres:16`（主版本须 ≥ 数据库主版本） |
 | `BACKUP_DOCKER_NETWORK` | 容器模式的网络，默认 `host`；数据库在某个 compose 网络里时改成该网络名 |
 | `APP_BASE_URL` / `APP_CA_CERT` / `INVESTMENT_TRACKER_TOKEN` | Excel 导出的访问地址、私有 CA、Bearer token |
+| `BACKUP_NOTIFY` | 设为 `1`：备份失败时经 backend 容器推送告警 `backup`，成功时标记恢复（见 [第 10 节](#10-告警通知)） |
 
 ---
 
@@ -284,6 +298,7 @@ multipart 开销）；普通 API 代理超时 300s。
   | 标的全集 | 6 小时检查，按 `SECURITY_CATALOG_SYNC_INTERVAL_HOURS` 判新鲜 | `SECURITY_CATALOG_SYNC_ENABLED` |
   | AI 复盘定期计划调度 | 1 小时 | 需 `LLM_REPORT_API_KEY` |
   | 分红公告同步 | 7 天 | `DIVIDEND_SYNC_PERIODIC_ENABLED`（默认关） |
+  | 告警检查（推送见[第 10 节](#10-告警通知)） | 10 分钟 | `ALERT_CHECK_ENABLED`；推送需 `NOTIFY_URLS` |
 
   以上全部依赖 `BACKGROUND_WORKER_ENABLED=true`。周期任务在一条线程上串行执行，一个任务慢
   （如标的全集首次同步约 1 分钟）只推迟其余任务，不会并发。
@@ -313,8 +328,11 @@ multipart 开销）；普通 API 代理超时 300s。
   只有 `ok` 与 `partial` 说明「数据在流动」，计入活性（见 [8.2](#82-采集器状态与监控)）。
 - **按标的轮次**（每天业务时区 `XUEQIU_COLLECTOR_SYMBOLS_RUN_AFTER`=07:30 之后）：范围 = 全体用户
   持仓 ∪ 自选中 A/B/港/美股、扣除排除与现金管理规则；每个标的取最新一页公告与讨论，外加管理员维护
-  的组合调仓名单与今日热帖，幂等写入 `xueqiu_symbol_posts / xueqiu_cube_rebalancing /
-  xueqiu_hot_posts`。每一项的响应都按端点校验结构——错误对象（`error_code`、`success=false`）、
+  的组合调仓名单，幂等写入 `xueqiu_symbol_posts / xueqiu_cube_rebalancing`。**市场热帖（今日热帖）
+  的采集已于 2026-09-28 下线**（与持仓无关，少打一类雪球请求）：`xueqiu_hot_posts` 表与存量行保留、
+  旧 Markdown 导入仍会写入，但采集器不再请求、观点页不再展示，`XUEQIU_COLLECTOR_HOTS_SCOPE` 已删除
+  （`.env` 里残留的这一行会被忽略，可顺手删掉）；下线前留在 `symbols_pending` 里的热帖待重试项在重试时
+  静默丢弃。每一项的响应都按端点校验结构——错误对象（`error_code`、`success=false`）、
   未知结构、非 JSON、HTTP/网络错误都记为该项失败，不会被当成「没有新帖」。**业务日语义**：一轮
   **没有任何失败**才把当天记为已跑（记在数据库里，重启不重跑）；有失败（含 WAF、Cookie 不可用）时只把
   没成功的项写进状态表的 `symbols_pending`，距上一轮 `XUEQIU_COLLECTOR_SYMBOLS_RETRY_MINUTES`（60）
@@ -874,7 +892,7 @@ PY
   # 零写入试抓：主页第 1 页、最多 N 个候选帖、每帖 1 页评论，打印将写入的 utterance_key
   docker compose exec -T xueqiu-collector python manage.py xueqiu-collector \
     --dry-run --max-posts 3 --author <作者ID>
-  # 跑一轮按标的采集；--symbol/--market 只跑指定标的（不含组合与热帖，也不记当天已跑）
+  # 跑一轮按标的采集；--symbol/--market 只跑指定标的（不含组合调仓，也不记当天已跑）
   docker compose exec -T xueqiu-collector python manage.py xueqiu-collector --symbols-once
   docker compose exec -T xueqiu-collector python manage.py xueqiu-collector \
     --symbols-once --symbol 600519 --market A股
@@ -949,7 +967,8 @@ PY
    ```
 
    只插入不覆盖（已有行保留）、可重复执行；公告/讨论与热帖快照会导入，组合调仓 Markdown 没有调仓 ID
-   不导入；导入的行没有作者昵称与附件链接。
+   不导入；导入的行没有作者昵称与附件链接。热帖快照只是留档进 `xueqiu_hot_posts`——热帖展示已于
+   2026-09-28 下线，页面上看不到。
 6. **启用内置采集器**：`.env` 设 `XUEQIU_COLLECTOR_ENABLED=true`（旧程序用过 Uptime Kuma 的话，把
    push 地址填进 `XUEQIU_COLLECTOR_PUSH_URL`），然后 `docker compose up -d backend xueqiu-collector`。
    在采集器卡片里对照旧程序的作者名单与组合名单文件核对（迁移可能已预置一份作者名单），第一轮作者
@@ -1115,7 +1134,101 @@ Excel 导出需要运行中的服务和 `INVESTMENT_TRACKER_TOKEN`（Bearer toke
 
 ---
 
-## 10. 常见问题
+## 10. 告警通知
+
+backend 每 10 分钟跑一轮告警检查（周期任务 `run_alert_checks`，跑在 Web 进程的 worker 里），
+结果交给状态机决定是否推送；推送走 [Apprise](https://github.com/caronc/apprise)，首选
+[Bark](https://github.com/Finb/Bark)（iPhone/iPad）。与采集器的 Uptime Kuma 推送
+（`XUEQIU_COLLECTOR_PUSH_URL`）互不影响，可以同时用。
+
+### 10.1 配置 Bark
+
+1. App Store 安装 **Bark**，打开后首页示例里有一条 `https://api.day.app/<key>/...` 的 URL。
+2. 复制到 key 为止（后面的示例文字会被忽略），写进 `.env`：
+
+   ```bash
+   NOTIFY_URLS=https://api.day.app/<key>
+   ```
+
+   多个设备/渠道用空格或逗号分隔。自建 Bark 服务器写 Apprise 形态 `barks://<host>/<key>`；
+   飞书、邮件等其他渠道直接写对应的 Apprise URL（如 `feishu://…`、`mailtos://…`），不改代码。
+3. `docker compose up -d backend`（改 `.env` 要重建容器才生效），然后发一条测试通知：
+
+   ```bash
+   docker compose exec -T backend python manage.py notify-test
+   ```
+
+   输出里每个渠道只显示脱敏地址（`barks://api.day.app/Ab***`），设备 key 不会出现在日志、
+   接口或命令行输出里。也可以在管理员菜单「更多 → 系统告警」页点「发送测试通知」。
+
+严重（critical）告警在 Bark 上按 `level=timeSensitive` 推送（可突破专注模式），所有推送归入
+`investment-tracker` 分组；在 URL 里显式写了 `level` / `group` 的以你写的为准。
+
+### 10.2 推送规则
+
+| 情况 | 行为 |
+| --- | --- |
+| 新告警 | 立即推送 `【严重】/【警告】标题` |
+| 仍未恢复 | 不重复推送；每 `NOTIFY_REMINDER_HOURS`（24）小时提醒一次 `【仍未恢复·…】` |
+| 严重度升高（warning → critical） | 立即推送 `【升级·严重】` |
+| 严重度降低 | 静默更新 |
+| 恢复 | 推送 `【已恢复】标题`（只对推送过的告警；只记录的 info 级恢复时也不打扰） |
+| 推送失败 / 未配置渠道 | 下一轮检查（10 分钟后）自动重试，渠道配好后未恢复的告警会补推；升级推送没送达的按升级重推（不等提醒间隔），「已恢复」没送达的在 `NOTIFY_REMINDER_HOURS` 内继续重试 |
+| `NOTIFY_URLS` 里有写坏的 URL | 该渠道标为无效（「系统告警」页可见），其他渠道照常推送 |
+| 低于 `NOTIFY_MIN_SEVERITY` | 只记录，在「系统告警」页可见 |
+
+「恢复」按检查器判定：某个检查器本轮不再报出的告警即恢复；检查器自己抛异常时，它名下的告警
+**保持原状**（查不了不等于好了），同时报一条 `checker:<名字>` 告警。状态落 `alert_states` 表
+（每个告警键一行）。
+
+### 10.3 告警目录
+
+| 告警键 | 级别 | 触发条件 | 恢复条件 |
+| --- | --- | --- | --- |
+| `xueqiu:cookie` | warning / critical | Cookie 到期（`XUEQIU_COOKIE_WARN_DAYS` / `CRITICAL_DAYS`）、已过期、文件不存在/无法解析、主凭证 `xq_a_token`/`xqat` 缺失或值为空（按加载器语义取最终值：同名后者覆盖前者；critical）。未配置雪球 Cookie 不告警 | 换上新 Cookie |
+| `xueqiu:collector_unavailable` | critical | 采集器启用且上一轮因 Cookie 不可用整轮未跑 | 下一轮正常开跑 |
+| `xueqiu:heartbeat` | warning | 采集器启用但心跳超过 `XUEQIU_COLLECTOR_HEALTH_MAX_AGE_MINUTES`（30）分钟 | 心跳恢复 |
+| `xueqiu:collector_stale` | warning | 采集器启用、有启用的作者，但超过 `NOTIFY_COLLECTOR_STALE_HOURS`（3）小时没有一次 `ok`/`partial` 的作者采集 | 任一作者采集成功 |
+| `xueqiu:author_errors:<ID>` | warning | 同一作者最近 3 次采集都是 `error`/`failed`（`waf`/`interrupted` 不计） | 该作者采集成功一次 |
+| `xueqiu:all_authors_failing` | critical | 全部启用作者（≥2 位）最近一次都失败——多半是登录态被服务端注销 | 任一作者成功 |
+| `xueqiu:waf` | critical | 命中阿里云 WAF 挑战页 | 之后任一轮作者或按标的采集成功 |
+| `xueqiu:symbols` | warning / info | 今日按标的采集重试已用尽仍有失败（warning）；失败后等待自动重试中（info，只记录） | 当日一轮全部成功 |
+| `fx:sources` | warning | 汇率回退到第三方报价，或第三方与官方中间价差异超 `FX_CHECK_WARN_PCT` | 官方中间价恢复 / 差异回落 |
+| `periodic:<任务名>` | warning | 某个周期任务连续 3 次失败——抛异常，或任务报告失败（数据源报错、解析失败、某个来源 failed；各任务自吞的错误也如实上报），开关关闭/无事可做/新鲜跳过不计（计数在进程内，重启清零） | 该任务成功一次 |
+| `job_failed:<job_type>` | info / warning | 近 24 小时某类后台任务有失败且之后没有成功；3 次以上升 warning（单次失败多是数据本身的问题，只记录） | 同类型成功一次，或失败滑出 24 小时窗口 |
+| `checker:<名字>` | warning | 某个检查器自身运行失败 | 检查器恢复正常 |
+| `backup`（外部） | critical | `backup.sh` 失败（`BACKUP_NOTIFY=1`） | 下一次备份成功 |
+
+采集器相关的心跳/停摆检查在 **backend 启动后的宽限期内**不报：开启采集器要重建容器，backend 与
+采集器同时重启，采集器还没来得及跑第一轮；以 backend 进程启动时刻作为「启用时刻」的代理。
+因此频繁重启 backend 会推迟停摆告警，这是有意的取舍。
+
+### 10.4 外部信号：`manage.py notify`
+
+宿主脚本可以通过 backend 容器发起/恢复告警，与周期检查同一套状态机（持续失败不刷屏、按时提醒）：
+
+```bash
+docker compose exec -T backend python manage.py notify --key nightly-sync --severity warning \
+    --title "夜间同步失败" --message "详见 /var/log/sync.log"
+docker compose exec -T backend python manage.py notify --resolve --key nightly-sync
+```
+
+告警键只允许字母、数字与 `_ . : -`。`backup.sh` 已接好：设 `BACKUP_NOTIFY=1`（例如定时任务里
+`BACKUP_NOTIFY=1 BACKUP_MODE=postgres ./backup.sh --prune`），备份失败推送 critical 告警 `backup`，
+下一次成功时恢复。通知是尽力而为：compose 不可用或 backend 没在运行只打印一行提示，
+**不改变备份脚本的退出码**。外部告警没有检查器每轮重报，由周期任务按同一规则提醒；它不会自己恢复，
+必须有一次 `--resolve`。
+
+### 10.5 「系统告警」页
+
+管理员菜单「更多 → 系统告警」：推送渠道状态（已配置几个、Apprise 能否识别，地址已脱敏）、当前告警
+（级别、来源、首次发现与持续时间、推送情况）、近 7 天已恢复的告警；「立即检查」立刻跑一轮检查
+（该推送的照常推送），「发送测试通知」验证渠道。接口：`GET /api/notifications/alerts`、
+`POST /api/notifications/check`、`POST /api/notifications/test`（均仅管理员）。
+
+---
+
+## 11. 常见问题
 
 ### 容器内 DNS 失败（`Temporary failure in name resolution`）
 

@@ -145,7 +145,8 @@ const ROUTES: Array<[string, string]> = [
 // 在登录页上测"无横向溢出"是假通过
 const ADMIN_ROUTES: Array<[string, string]> = [
   ['/admin/users', '用户管理'],
-  ['/admin/holdings', '全部持仓']
+  ['/admin/holdings', '全部持仓'],
+  ['/admin/alerts', '系统告警']
 ]
 
 async function sweepRoutes(page: Page, routes: Array<[string, string]>): Promise<string[]> {

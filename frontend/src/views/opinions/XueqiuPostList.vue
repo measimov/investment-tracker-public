@@ -1,22 +1,19 @@
 <script setup lang="ts">
 /**
- * 雪球帖子列表（按标的采集的公告/讨论、今日热帖共用）：时间 · 作者 · 互动数，
+ * 雪球帖子列表（按标的采集的公告/讨论）：时间 · 作者 · 互动数，
  * 标题/正文摘要，原帖与附件外链（只放行 http(s)）。纯展示，不接 LLM。
  */
 import type { XueqiuFeedPost } from '@/types'
 import { formatDateTime } from '@/utils/helpers'
 import { isSafeExternalUrl, postExcerpt, postHeadline, postTimeMs, safeLinks } from './xueqiuFeed'
 
-type Post = XueqiuFeedPost & { rank?: number }
-
 withDefaults(
   defineProps<{
-    posts: Post[]
+    posts: XueqiuFeedPost[]
     emptyText?: string
-    showRank?: boolean
     testid?: string
   }>(),
-  { emptyText: '暂无数据', showRank: false, testid: 'xueqiu-post-list' }
+  { emptyText: '暂无数据', testid: 'xueqiu-post-list' }
 )
 </script>
 
@@ -26,7 +23,6 @@ withDefaults(
     <ol v-else class="post-list">
       <li v-for="post in posts" :key="post.post_id" class="post-item">
         <div class="post-meta">
-          <span v-if="showRank && post.rank" class="post-rank">#{{ post.rank }}</span>
           <span>{{ formatDateTime(postTimeMs(post)) }}</span>
           <span v-if="post.author_name">· {{ post.author_name }}</span>
           <span v-if="post.reply_count">· 评 {{ post.reply_count }}</span>
@@ -80,9 +76,6 @@ withDefaults(
   gap: 4px;
   font-size: 12px;
   color: var(--app-text-muted);
-}
-.post-rank {
-  font-weight: 600;
 }
 .post-link {
   margin-left: 6px;

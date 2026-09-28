@@ -24,3 +24,5 @@ lxml==6.1.2
 # 标的全集：拼音首字母兜底与繁→简（港交所名單只有繁体）；纯 Python、离线
 pypinyin==0.55.0
 zhconv==1.4.3
+# 告警推送（services/notification_service.py）：Bark 为主，其他渠道只改 NOTIFY_URLS
+apprise==2.0.0

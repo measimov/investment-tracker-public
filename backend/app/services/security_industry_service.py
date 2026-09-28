@@ -36,6 +36,7 @@ from ..models.holding import Holding
 from ..models.security_industry import SecurityIndustry
 from ..models.user import User
 from ..models.watchlist_item import WatchlistItem
+from .job_worker import PeriodicOutcome, periodic_outcome_task
 from .security_rule_service import get_industry_overrides
 
 logger = get_app_logger(__name__)
@@ -619,12 +620,14 @@ def sync_security_industries(
     }
 
 
-def refresh_security_industries() -> int:
-    """周期任务入口：返回本轮写入行数；异常只记日志不上抛。"""
+@periodic_outcome_task
+def periodic_refresh_security_industries() -> PeriodicOutcome:
+    """周期任务入口（main.py 以名字 refresh_security_industries 注册）：异常只记日志不上抛，
+    但任一来源 failed/partial（有真实错误，不含「取不到」）即报失败；无待刷新标的报 skipped。"""
     if not settings.security_industry_sync_enabled:
-        return 0
+        return PeriodicOutcome.skipped("SECURITY_INDUSTRY_SYNC_ENABLED=false")
     if not _sync_lock.acquire(blocking=False):
-        return 0
+        return PeriodicOutcome.skipped("另一轮行业分类同步正在运行")
     from ..database import SessionLocal
 
     db = SessionLocal()
@@ -633,7 +636,7 @@ def refresh_security_industries() -> int:
     except Exception as exc:  # noqa: BLE001 - 周期线程必须自吞异常
         db.rollback()
         logger.warning("行业分类周期同步失败: %s", str(exc)[:200])
-        return 0
+        return PeriodicOutcome.failed(f"行业分类同步失败：{type(exc).__name__}: {str(exc)[:200]}")
     finally:
         db.close()
         _sync_lock.release()
@@ -648,4 +651,19 @@ def refresh_security_industries() -> int:
             "行业分类同步：范围 %d 只，写入 %d 行，未取得 %d 只，失败来源 %s",
             result["scope"], written, len(result["unresolved"]), failing or "无",
         )
-    return written
+    if failing:
+        return PeriodicOutcome.failed(
+            "行业分类来源失败：" + "；".join(
+                f"{source}: {str(errors[0])[:120] if errors else '失败'}"
+                for source, errors in failing.items()
+            ),
+            count=written,
+        )
+    if any(item["status"] == "ok" for item in result["sources"].values()):
+        return PeriodicOutcome.succeeded(written)
+    return PeriodicOutcome.skipped("没有需要刷新的标的", count=written)
+
+
+def refresh_security_industries() -> int:
+    """兼容入口：返回本轮写入行数；异常只记日志不上抛。"""
+    return periodic_refresh_security_industries().count

@@ -196,7 +196,7 @@ def test_exchange_rate_auto_refresh_checks_all_required_currencies(monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_fetch(db_):
+    def fake_fetch(db_, errors=None):
         calls["n"] += 1
         return {"USD/CNY": Decimal("7.2")}
 

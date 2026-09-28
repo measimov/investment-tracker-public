@@ -1,10 +1,12 @@
 """按标的监控的请求构造与响应解析（纯函数，移植自 monitor_symbols.py）。
 
-四个签名域端点（参数逐字照搬原实现）：
+三个签名域端点（参数逐字照搬原实现）：
 - 公告流 `statuses/stock_timeline.json?symbol_id=…&count=…&source=公告`
 - 讨论流 `query/v1/symbol/search/status`（stock_timeline 实际只服务公告）
 - 组合调仓 `cubes/rebalancing/history.json`
-- 市场热帖 `statuses/hots.json`（顶层可能直接是 list）
+
+原实现的市场热帖 `statuses/hots.json` 已于 2026-09-28 下线（与持仓无关，少打一类请求）；
+旧 Markdown 热帖快照仍可经 `archive_import` 导入 `xueqiu_hot_posts`，但不再采集、不再展示。
 
 **雪球 symbol 不作身份键落库**：请求参数里的雪球 symbol 由调用方经 `to_xueqiu` 在内存里
 生成；解析结果里的 url 尽量用 `/{uid}/{id}` 形态（公告的 target 是 `/S/{雪球symbol}/{id}`），
@@ -27,12 +29,11 @@ from .common import build_post_url, build_status_url, html_to_text, valid_author
 STOCK_TIMELINE_API = "https://xueqiu.com/statuses/stock_timeline.json"
 SYMBOL_STATUS_API = "https://xueqiu.com/query/v1/symbol/search/status"
 CUBE_REBALANCING_API = "https://xueqiu.com/cubes/rebalancing/history.json"
-HOTS_API = "https://xueqiu.com/statuses/hots.json"
 
 KIND_ANNOUNCEMENT = "announcement"
 KIND_DISCUSSION = "discussion"
 KINDS = (KIND_ANNOUNCEMENT, KIND_DISCUSSION)
-KIND_LABELS = {KIND_ANNOUNCEMENT: "公告", KIND_DISCUSSION: "讨论", "hots": "热帖", "rebalancing": "组合调仓"}
+KIND_LABELS = {KIND_ANNOUNCEMENT: "公告", KIND_DISCUSSION: "讨论", "rebalancing": "组合调仓"}
 
 MAX_TEXT_CHARS = 20000
 MAX_LINKS = 5
@@ -88,26 +89,17 @@ def rebalancing_url(cube_id: str, count: int) -> str:
     return f"{CUBE_REBALANCING_API}?{urlencode(params)}"
 
 
-def hots_url(scope: str, count: int) -> str:
-    params = {"a": 1, "count": count, "page": 1, "scope": scope}
-    return f"{HOTS_API}?{urlencode(params)}"
-
-
 # --------------------------------------------------------------------------- #
 # 解析
 # --------------------------------------------------------------------------- #
 ENDPOINT_REBALANCING = "rebalancing"
-ENDPOINT_HOTS = "hots"
 # 每个端点认可的列表字段（与原实现 `_extract_list` 的 list 口径一致；帖子流另认雪球
 # status 列表通用的 statuses）。只有这些已知结构才算「合法的空结果」
 FEED_LIST_KEYS = {
     KIND_ANNOUNCEMENT: ("list", "statuses"),
     KIND_DISCUSSION: ("list", "statuses"),
-    ENDPOINT_HOTS: ("list", "statuses"),
     ENDPOINT_REBALANCING: ("list",),
 }
-# 顶层直接是数组的端点（原实现注释：hots 返回顶层 list）
-TOP_LEVEL_LIST_ENDPOINTS = frozenset({ENDPOINT_HOTS})
 
 
 def response_error_reason(payload: Any) -> Optional[str]:
@@ -126,8 +118,9 @@ def response_error_reason(payload: Any) -> Optional[str]:
 
 def validate_feed_payload(payload: Any, endpoint: str) -> List[Dict[str, Any]]:
     """网络响应入口的校验：错误对象、未知结构、None 一律抛 `CollectorFetchError`
-    （与作者时间线/评论同一个错误类型，PR #236）；只有该端点认可的结构（顶层数组 /
-    {list: [...]} 等）才返回条目（可为空）。"""
+    （与作者时间线/评论同一个错误类型，PR #236）；只有该端点认可的对象结构
+    （{list: [...]} 等）才返回条目（可为空）。顶层数组一律拒绝——唯一返回顶层数组的
+    市场热帖端点已下线。"""
     if endpoint not in FEED_LIST_KEYS:
         raise ValueError(f"未知的端点类型: {endpoint}")
     context = f"{KIND_LABELS.get(endpoint, endpoint)}接口"
@@ -137,10 +130,8 @@ def validate_feed_payload(payload: Any, endpoint: str) -> List[Dict[str, Any]]:
     if reason:
         raise CollectorFetchError(f"{context} {reason}")
     if isinstance(payload, list):
-        if endpoint not in TOP_LEVEL_LIST_ENDPOINTS:
-            raise CollectorFetchError(f"{context} 响应顶层是数组，该端点预期对象")
-        items = payload
-    elif isinstance(payload, dict):
+        raise CollectorFetchError(f"{context} 响应顶层是数组，该端点预期对象")
+    if isinstance(payload, dict):
         keys = FEED_LIST_KEYS[endpoint]
         key = next((name for name in keys if name in payload), None)
         if key is None:
@@ -151,7 +142,7 @@ def validate_feed_payload(payload: Any, endpoint: str) -> List[Dict[str, Any]]:
         items = require_list(payload, key, context=context)
     else:
         raise CollectorFetchError(
-            f"{context} 响应不是 JSON 对象或数组（{type(payload).__name__}）"
+            f"{context} 响应不是 JSON 对象（{type(payload).__name__}）"
         )
     if any(not isinstance(item, dict) for item in items):
         raise CollectorFetchError(f"{context} 列表里有非对象元素")
@@ -219,7 +210,7 @@ def status_url(item: Dict[str, Any], author_id: str, post_id: str) -> str:
 
 
 def parse_status(item: Dict[str, Any]) -> Optional[FeedPost]:
-    """一条帖子（公告/讨论/热帖同构）→ FeedPost；没有 id 的条目丢弃。"""
+    """一条帖子（公告/讨论同构）→ FeedPost；没有 id 的条目丢弃。"""
     post_id = str(item.get("id") or "").strip()
     if not post_id:
         return None

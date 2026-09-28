@@ -360,6 +360,64 @@ def test_cookie_missing_primary_is_critical(tmp_path):
     assert result["level"] == "critical" and result["cookie"] == "xqat"
 
 
+@pytest.mark.parametrize(
+    "cookies,missing",
+    [
+        # 列表形态：值为空串 / 空白 / null / 缺 value 都等于没有
+        ([{"name": "xq_a_token", "value": "v"}, {"name": "xqat", "value": ""}], "xqat"),
+        ([{"name": "xq_a_token", "value": "  "}, {"name": "xqat", "value": "v"}], "xq_a_token"),
+        ([{"name": "xq_a_token", "value": None}, {"name": "xqat", "value": "v"}], "xq_a_token"),
+        ([{"name": "xq_a_token"}, {"name": "xqat", "value": "v"}], "xq_a_token"),
+        # 同名后者覆盖前者（与加载器一致）：后来的空值让先前的有效值失效
+        ([{"name": "xq_a_token", "value": "v"}, {"name": "xqat", "value": "ok"},
+          {"name": "xqat", "value": ""}], "xqat"),
+    ],
+)
+def test_cookie_empty_primary_value_is_critical(tmp_path, cookies, missing):
+    """PR #255 评审：只有键、值为空的主凭证照样不可用，不得当成健康。"""
+    now = 1_800_000_000.0
+    for item in cookies:
+        item["expirationDate"] = now + 30 * 86400
+    path = _j2team(tmp_path, cookies)
+    result = cookie_health.check_expiry(path, warn_days=7, critical_days=3, now=now)
+    assert result["level"] == "critical" and result["cookie"] == missing
+    assert "为空" in result["message"]
+
+
+def test_cookie_later_valid_value_overrides_earlier_empty(tmp_path):
+    now = 1_800_000_000.0
+    path = _j2team(tmp_path, [
+        {"name": "xq_a_token", "value": "v", "expirationDate": now + 30 * 86400},
+        {"name": "xqat", "value": "", "expirationDate": now + 1 * 86400},
+        {"name": "xqat", "value": "ok", "expirationDate": now + 20 * 86400},
+    ])
+    result = cookie_health.check_expiry(path, warn_days=7, critical_days=3, now=now)
+    # 生效的是后一条：有值、20 天后到期（前一条的 1 天不作数）
+    assert result["level"] == "normal" and round(result["days_left"]) == 20
+
+
+def test_cookie_dict_file_with_empty_value_is_critical(tmp_path):
+    path = tmp_path / "xueqiu.json"
+    path.write_text(json.dumps({"xq_a_token": "v", "xqat": ""}))
+    result = cookie_health.check_expiry(str(path), warn_days=7, critical_days=3)
+    assert result["level"] == "critical" and result["cookie"] == "xqat"
+    path.write_text(json.dumps({"xq_a_token": "v", "xqat": "v"}))
+    assert cookie_health.check_expiry(str(path), warn_days=7, critical_days=3)["level"] == (
+        "unconfigured"  # 字典形态没有到期日
+    )
+
+
+def test_effective_cookie_values_match_the_collector_loader():
+    from app.services.xueqiu_collector.client import _cookies_from_data
+
+    for data in (
+        {"cookies": [{"name": "xqat", "value": "a"}, {"name": "xqat", "value": ""}]},
+        [{"name": "xqat", "value": ""}, {"name": "xqat", "value": "b"}],
+        {"xq_a_token": "", "xqat": "c"},
+    ):
+        assert cookie_health.effective_cookie_values(data) == _cookies_from_data(data)
+
+
 def test_cookie_without_expiration_is_unconfigured(tmp_path):
     path = _j2team(tmp_path, [{"name": "xq_a_token", "value": "v"}, {"name": "xqat", "value": "v"}])
     assert cookie_health.check_expiry(path, warn_days=7, critical_days=3)["level"] == "unconfigured"

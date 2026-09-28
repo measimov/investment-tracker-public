@@ -89,7 +89,7 @@ class CollectorStatusResponse(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
-# 按标的监控（公告/讨论、热帖、组合调仓）
+# 按标的监控（公告/讨论、组合调仓）
 # --------------------------------------------------------------------------- #
 class CollectorCubeResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -175,16 +175,6 @@ class XueqiuSymbolFeedResponse(BaseModel):
     last_cycle_finished_at: Optional[datetime] = Field(
         None, description="上一轮按标的采集结束时间（判断数据新旧）"
     )
-
-
-class XueqiuHotPostItem(XueqiuFeedPost):
-    rank: int
-
-
-class XueqiuHotsResponse(BaseModel):
-    scope: str
-    snapshot_at: Optional[datetime] = None
-    items: List[XueqiuHotPostItem] = Field(default_factory=list)
 
 
 CollectorStatusResponse.model_rebuild()

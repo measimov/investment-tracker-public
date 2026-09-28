@@ -15,6 +15,7 @@ from ..models.exchange_rate import ExchangeRate, ExchangeRateCheck
 from ..core.logging import get_app_logger
 from ..core.timeutil import business_timezone, local_today
 from . import chinamoney_source
+from .job_worker import PeriodicOutcome, periodic_outcome_task
 
 
 BASE_CURRENCY = "CNY"  # 基准货币
@@ -279,12 +280,18 @@ def expected_official_date(now: Optional[datetime] = None) -> date:
     return candidate
 
 
-def refresh_rates_if_stale() -> int:
-    """任一必需币种缺最近一期汇率即刷新（job_worker 周期任务；幂等）。
+@periodic_outcome_task
+def periodic_refresh_rates() -> PeriodicOutcome:
+    """任一必需币种缺最近一期汇率即刷新（job_worker 周期任务，main.py 以名字
+    refresh_rates_if_stale 注册；幂等）。
 
     「最近一期」按中间价发布节奏（工作日 9:15）判定，而不是「今天有一行」——周末与
     节假日没有官方新值，旧口径会让每个 tick 都去抓、再拿第三方当天值顶上。逐币种检查：
     只查 USD 会掩盖 HKD/SGD 缺失（手工只更新了 USD、上游部分返回、写入中断）。
+
+    结果契约：已是最新 → succeeded（目标状态已核实）；官方中间价接口报错、或两路都
+    拿不到任何汇率 → failed（fetch_latest_rates_from_api 自吞这些错误，只经 errors 交代）；
+    节假日官方无新值但接口正常 → succeeded。
     """
     from ..database import SessionLocal
 
@@ -301,17 +308,28 @@ def refresh_rates_if_stale() -> int:
             )
         }
         if fresh_currencies >= set(REQUIRED_RATE_CURRENCIES):
-            return 0
-        rates = fetch_latest_rates_from_api(db)
+            return PeriodicOutcome.succeeded(0, "已是最新")
+        errors: List[str] = []
+        rates = fetch_latest_rates_from_api(db, errors=errors)
         logger.info(
             "汇率自动刷新完成: %s 个币种（此前缺 %s 起的汇率: %s）",
             len(rates),
             expected.isoformat(),
             sorted(set(REQUIRED_RATE_CURRENCIES) - fresh_currencies),
         )
-        return len(rates)
+        official_errors = [item for item in errors if item.startswith("official")]
+        if official_errors or not rates:
+            return PeriodicOutcome.failed(
+                "；".join(errors) or "官方与第三方汇率源均未返回数据", count=len(rates)
+            )
+        return PeriodicOutcome.succeeded(len(rates))
     finally:
         db.close()
+
+
+def refresh_rates_if_stale() -> int:
+    """兼容入口：返回本次刷新到的币种数（已是最新返回 0）。"""
+    return periodic_refresh_rates().count
 
 
 def _fetch_third_party_quotes() -> Tuple[str, Dict[str, Decimal]]:
@@ -465,7 +483,9 @@ def record_rate_checks(
     return checks
 
 
-def fetch_latest_rates_from_api(db: Session) -> Dict[str, Decimal]:
+def fetch_latest_rates_from_api(
+    db: Session, *, errors: Optional[List[str]] = None
+) -> Dict[str, Decimal]:
     """刷新 外币→CNY 汇率，返回各币种当前生效的汇率（可能不是本次新写的）。
 
     1. 官方：中国货币网人民币汇率中间价，回看 OFFICIAL_LOOKBACK_DAYS 天全部写库
@@ -473,7 +493,8 @@ def fetch_latest_rates_from_api(db: Session) -> Dict[str, Decimal]:
     2. 第三方（frankfurter → open.er-api）只取值，与最近一期中间价逐日比对记差异；
     3. 降级：某币种最近一期中间价已超过 fx_official_max_stale_days 天（官方源持续失败），
        才把第三方报价以今天日期写入，来源标签如实写第三方。
-    两路都失败返回空字典（调用方按失败处理）。
+    两路都失败返回空字典（调用方按失败处理）。errors 给出时追加各源错误
+    （`official: …` / `third_party: …`），供周期任务判定失败——本函数自己不上抛。
     """
     today = local_today()
     try:
@@ -491,12 +512,16 @@ def fetch_latest_rates_from_api(db: Session) -> Dict[str, Decimal]:
         )
     except Exception as exc:  # noqa: BLE001 - 官方源失败走比对/降级，不中断
         logger.warning("人民币汇率中间价获取失败: %s", exc)
+        if errors is not None:
+            errors.append(f"official: 人民币汇率中间价获取失败：{str(exc)[:200]}")
 
     reference_source, reference_rates = None, {}
     try:
         reference_source, reference_rates = _fetch_third_party_quotes()
     except RuntimeError as exc:
         logger.warning("%s", exc)
+        if errors is not None:
+            errors.append(f"third_party: {str(exc)[:200]}")
 
     official = _latest_official(db)
     if official and reference_rates:

@@ -64,7 +64,6 @@ COLLECTOR_ONLY: dict[str, str] = {
         "XUEQIU_COLLECTOR_MAX_WAF_HITS",
         "XUEQIU_COLLECTOR_HEARTBEAT_FILE",
         "XUEQIU_COLLECTOR_SYMBOL_COUNT",
-        "XUEQIU_COLLECTOR_HOTS_SCOPE",
         "XUEQIU_COLLECTOR_SYMBOLS_RETRY_MINUTES",
         "XUEQIU_COLLECTOR_SYMBOLS_MAX_ATTEMPTS",
     )
@@ -87,6 +86,7 @@ NON_SETTINGS_ENV_VARS = {
     "APP_BASE_URL": "backup.sh：Excel 导出访问地址",
     "APP_CA_CERT": "backup.sh：Excel 导出校验私有 CA",
     "INVESTMENT_TRACKER_TOKEN": "backup.sh：Excel 导出用的 Bearer token",
+    "BACKUP_NOTIFY": "backup.sh：失败时经 backend 容器推送告警（manage.py notify）",
 }
 
 _ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")

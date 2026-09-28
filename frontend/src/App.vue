@@ -154,6 +154,7 @@ import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import {
+  Bell,
   ChatDotRound,
   Close,
   DataBoard,
@@ -204,7 +205,8 @@ const moreNav: NavItem[] = [
   { path: '/account-data', label: '账户数据', icon: Tickets },
   { path: '/exchange-rates', label: '汇率管理', icon: Money },
   { path: '/admin/holdings', label: '查看所有持仓', icon: Odometer, adminOnly: true },
-  { path: '/admin/users', label: '用户管理', icon: User, adminOnly: true }
+  { path: '/admin/users', label: '用户管理', icon: User, adminOnly: true },
+  { path: '/admin/alerts', label: '系统告警', icon: Bell, adminOnly: true }
 ]
 
 const visible = (item: NavItem) => !item.adminOnly || authStore.isAdmin

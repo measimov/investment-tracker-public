@@ -117,6 +117,10 @@ def get_llm_report_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
 register_runner(JOB_TYPE, execute_llm_report_job)
 
 # 定期自动生成：无独立调度器，挂在 worker housekeeping tick 上、小时级节流。
-from .llm_report_scheduler import enqueue_due_scheduled_reports  # noqa: E402
+from .llm_report_scheduler import periodic_enqueue_scheduled_reports  # noqa: E402
 
-register_periodic_task(enqueue_due_scheduled_reports, interval_seconds=3600)
+register_periodic_task(
+    periodic_enqueue_scheduled_reports,
+    interval_seconds=3600,
+    name="enqueue_due_scheduled_reports",
+)

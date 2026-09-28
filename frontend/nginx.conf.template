@@ -2,6 +2,16 @@
 limit_req_zone $binary_remote_addr zone=login_limit:10m rate=5r/m;
 limit_req_zone $binary_remote_addr zone=api_limit:10m rate=300r/m;
 
+# 后端上游：按 Docker 内置 DNS 动态解析。直接写 proxy_pass http://backend:8000 时 nginx
+# 只在启动时解析一次 backend——单独重建 backend（换了容器 IP，如改 .env 后
+# `up -d backend`）之后所有 /api 请求 502，直到重启 frontend（2026-09-28 实测停机约 3 分钟）。
+# `server … resolve` 需要 nginx ≥ 1.27.3（开源版），镜像 nginx:alpine 当前为 1.29.x。
+upstream backend_upstream {
+    zone backend_upstream 64k;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    server backend:8000 resolve;
+}
+
 # HTTP redirect to HTTPS
 server {
     listen 80;
@@ -63,7 +73,7 @@ server {
         access_log /var/log/nginx/login_access.log combined;
         error_log /var/log/nginx/login_error.log warn;
 
-        proxy_pass http://backend:8000;
+        proxy_pass http://backend_upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -89,7 +99,7 @@ server {
         # 真正的判定交给后端那一层。
         client_max_body_size 21m;
 
-        proxy_pass http://backend:8000/api/;
+        proxy_pass http://backend_upstream/api/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -109,7 +119,7 @@ server {
     location = /health {
         access_log off;
 
-        proxy_pass http://backend:8000/health;
+        proxy_pass http://backend_upstream/health;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

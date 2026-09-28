@@ -69,12 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collector.add_argument(
         "--symbols-once", action="store_true",
-        help="run one per-symbol cycle (announcements/discussion + cubes + hots) and exit",
+        help="run one per-symbol cycle (announcements/discussion + cubes) and exit",
     )
     collector.add_argument(
         "--symbol", action="append",
         help="with --symbols-once: only these codes (our code, e.g. 600519 / 00700; "
-        "repeatable; needs --market; skips cubes/hots and does not mark the day as done)",
+        "repeatable; needs --market; skips cubes and does not mark the day as done)",
     )
     collector.add_argument("--market", help="market of --symbol (A股/B股/港股/美股)")
     collector.add_argument(
@@ -91,6 +91,22 @@ def build_parser() -> argparse.ArgumentParser:
         "xueqiu-collector-health",
         help="exit 0 if the collector heartbeat is fresh (docker healthcheck)",
     )
+    subcommands.add_parser(
+        "notify-test",
+        help="Send a test notification to every NOTIFY_URLS channel (URLs are masked in output)",
+    )
+    notify = subcommands.add_parser(
+        "notify",
+        help="Raise or resolve an external alert (e.g. from backup.sh); goes through the same "
+        "state machine as the periodic checks (no repeat pushes while active)",
+    )
+    notify.add_argument("--key", required=True, help="alert key, e.g. backup")
+    notify.add_argument(
+        "--severity", choices=("info", "warning", "critical"), default="warning"
+    )
+    notify.add_argument("--title", help="alert title (required unless --resolve)")
+    notify.add_argument("--message", default="", help="alert details")
+    notify.add_argument("--resolve", action="store_true", help="mark the alert as recovered")
     return parser
 
 
@@ -428,6 +444,59 @@ def xueqiu_collector_health() -> int:
     return 0 if age <= limit else 1
 
 
+def notify_test() -> int:
+    from app.services import notification_service
+
+    summary = notification_service.channel_summary()
+    if not summary["configured"]:
+        print("NOTIFY_URLS is empty: no notification channel configured")
+    for item in summary["channels"]:
+        flag = "ok" if item["valid"] else "UNRECOGNIZED"
+        print(f"channel {item['kind']:<8} {item['channel']}  [{flag}]")
+    result = notification_service.send_test()
+    print(f"result: {result['status']} - {result['message']}")
+    for item in result["channels"]:
+        detail = "sent" if item["ok"] else f"failed ({item['error']})"
+        print(f"  {item['channel']}: {detail}")
+    return 0 if result["ok"] else 1
+
+
+_ALERT_KEY_RE = r"^[A-Za-z0-9_.:-]{1,200}$"
+
+
+def notify(args) -> int:
+    import re
+
+    from app.database import SessionLocal
+    from app.services import alert_service
+
+    if not re.match(_ALERT_KEY_RE, args.key):
+        print(f"invalid --key {args.key!r}: use letters, digits and _ . : - (max 200)")
+        return 2
+    if not args.resolve and not (args.title or "").strip():
+        print("--title is required unless --resolve")
+        return 2
+    db = SessionLocal()
+    try:
+        if args.resolve:
+            outcome = alert_service.resolve_alert(db, args.key)
+        else:
+            outcome = alert_service.raise_alert(
+                db,
+                alert_service.Alert(
+                    key=args.key,
+                    severity=args.severity,
+                    title=args.title.strip(),
+                    message=args.message or "",
+                ),
+            )
+    finally:
+        db.close()
+    status = outcome.get("notify_status") or ("pushed" if outcome["notified"] else "not pushed")
+    print(f"alert {outcome['key']}: {outcome['action']} ({status})")
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -468,6 +537,12 @@ def main() -> int:
 
     if args.command == "sync-security-industries":
         return sync_security_industries(force=args.force)
+
+    if args.command == "notify-test":
+        return notify_test()
+
+    if args.command == "notify":
+        return notify(args)
 
     parser.error(f"Unknown command: {args.command}")
 
