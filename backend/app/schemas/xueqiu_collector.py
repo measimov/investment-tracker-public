@@ -1,6 +1,6 @@
 import re
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -66,6 +66,56 @@ class CollectorCookieStatus(BaseModel):
     message: str
     days_left: Optional[float] = None
     cookie: str = ""
+
+
+class XueqiuCookiePrimaryFact(BaseModel):
+    name: str = Field(..., description="主凭证 Cookie 名（xq_a_token / xqat）")
+    present: bool
+    expires_at: Optional[datetime] = None
+    days_left: Optional[float] = Field(None, description="距到期天数；无 expirationDate 时为空")
+
+
+class XueqiuCookieAdminStatus(BaseModel):
+    """雪球 Cookie 的管理视图（仅管理员）。只有名称与到期事实，绝不含 Cookie 值。"""
+
+    source: Literal["file", "inline", "none"] = Field(
+        ..., description="file=XUEQIU_COOKIE_FILE / inline=XUEQIU_COOKIES / none=未配置"
+    )
+    file_path: Optional[str] = Field(None, description="容器内 Cookie 文件路径")
+    file_exists: bool
+    file_mtime: Optional[datetime] = None
+    backup_exists: bool
+    backup_mtime: Optional[datetime] = None
+    writable: bool = Field(..., description="能否在界面更新（文件来源且目录对后端可写）")
+    writable_reason: Optional[str] = Field(None, description="不能更新的原因与修复办法")
+    level: str = Field(..., description="normal / warning / critical / unconfigured")
+    message: str
+    keys: List[str] = Field(default_factory=list, description="当前 Cookie 的名称（不含值）")
+    primary: List[XueqiuCookiePrimaryFact]
+    read_error: Optional[str] = None
+
+
+class XueqiuCookieUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(
+        ...,
+        description="浏览器插件导出的 J2Team JSON、{name: value} JSON，或请求头 `a=b; c=d`",
+    )
+    probe: bool = Field(False, description="写入后发一次真实请求确认登录态（一次限速请求）")
+
+
+class XueqiuCookieProbeResult(BaseModel):
+    ok: bool
+    detail: str
+
+
+class XueqiuCookieUpdateResponse(BaseModel):
+    status: XueqiuCookieAdminStatus
+    backup_created: bool
+    source_format: Literal["j2team", "json_list", "json_dict", "header"]
+    notes: List[str] = Field(default_factory=list)
+    probe: Optional[XueqiuCookieProbeResult] = None
 
 
 class CollectorStatusResponse(BaseModel):

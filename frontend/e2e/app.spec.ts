@@ -3040,6 +3040,8 @@ test('opinions page degrades explicitly without collected data', async ({ page, 
   await expect(page.getByTestId('opinion-symbols-table')).toBeVisible()
   await expect(page.getByTestId('xueqiu-collector-card')).toBeVisible()
   await expect(page.getByTestId('collector-health')).toHaveText('未启用')
+  // 更新 Cookie 仅管理员可见
+  await expect(page.getByTestId('collector-update-cookie')).toHaveCount(0)
   // 按标的采集从未运行：摘要行如实说明；「今日热帖」卡已下线（2026-09-28），不再渲染
   await expect(page.getByTestId('collector-symbols-summary')).toContainText('尚未运行')
   await expect(page.getByTestId('xueqiu-hots-card')).toHaveCount(0)
@@ -3058,6 +3060,24 @@ test('opinions page degrades explicitly without collected data', async ({ page, 
   await page.getByTestId('xueqiu-symbol-feed').getByText('雪球公告 / 讨论').click()
   await expect(page.getByTestId('xueqiu-symbol-feed')).toContainText('按标的采集尚未运行过')
   await expect(page.getByTestId('xueqiu-announcements')).toContainText('暂无雪球公告')
+})
+
+// 管理员的「更新 Cookie」对话框：e2e 环境没配 XUEQIU_COOKIE_FILE，对话框只读展示原因
+// （不给提交按钮），不得报错。写入/校验/不回显归后端 pytest 与 vitest。
+test('admin sees why the Xueqiu cookie cannot be updated from the UI', async ({
+  page,
+  request
+}) => {
+  const token = await loginThroughApi(request, adminUser)
+  await setAuthenticatedSession(page, token)
+
+  await page.goto('/opinions')
+  await page.getByTestId('collector-update-cookie').click()
+  const dialog = page.getByTestId('xueqiu-cookie-dialog')
+  await expect(dialog.getByTestId('xueqiu-cookie-status')).toContainText('未配置')
+  await expect(dialog.getByTestId('xueqiu-cookie-not-writable')).toContainText('XUEQIU_COOKIE_FILE')
+  await expect(dialog.getByTestId('xueqiu-cookie-submit')).toHaveCount(0)
+  await expect(dialog.getByTestId('xueqiu-cookie-input')).toHaveCount(0)
 })
 
 // ---------------------------------------------------------------------------

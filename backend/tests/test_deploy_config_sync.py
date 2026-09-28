@@ -402,6 +402,36 @@ def test_services_only_read_explicit_environment(compose_text, service):
     )
 
 
+def _secrets_mounts(text: str, service: str) -> list[str]:
+    """服务里挂到容器 /app/secrets 的 volume 条目（短语法字符串）。"""
+    entries: list[str] = []
+    for _indent, line in _service_lines(text, service):
+        if line.startswith("- ") and ":/app/secrets" in line:
+            entries.append(line[2:].strip().strip("'\""))
+    return entries
+
+
+def test_cookie_dir_writable_only_for_backend(compose_text):
+    """界面更新 Cookie 只由 backend 写：它的 /app/secrets 可写，采集器保持只读。
+
+    采集器只读 Cookie；给它写权限只会扩大被攻破时能改凭证的进程面。backend 挂载若误加回
+    `:ro`，界面更新会在运行时报「目录不可写」——这里在 CI 就拦下。
+    """
+    backend = _secrets_mounts(compose_text, WEB_SERVICE)
+    collector = _secrets_mounts(compose_text, COLLECTOR_SERVICE)
+    assert backend == ["${XUEQIU_COOKIE_HOST_DIR:-./backend/secrets}:/app/secrets"], backend
+    assert collector == ["${XUEQIU_COOKIE_HOST_DIR:-./backend/secrets}:/app/secrets:ro"], collector
+    if _has_yaml():
+        assert backend == [
+            v for v in _yaml_service(compose_text, WEB_SERVICE)["volumes"] if ":/app/secrets" in v
+        ]
+        assert collector == [
+            v
+            for v in _yaml_service(compose_text, COLLECTOR_SERVICE)["volumes"]
+            if ":/app/secrets" in v
+        ]
+
+
 # --------------------------------------------------------------------------- #
 # .env.example
 # --------------------------------------------------------------------------- #

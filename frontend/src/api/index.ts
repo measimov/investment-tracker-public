@@ -40,6 +40,9 @@ import type {
   User,
   WatchlistItem,
   WatchlistMembership,
+  XueqiuCookieAdminStatus,
+  XueqiuCookieUpdateRequest,
+  XueqiuCookieUpdateResponse,
   XueqiuSymbolFeed
 } from '../types'
 import { ElNotification } from 'element-plus'
@@ -609,6 +612,16 @@ const api = {
   requestCollectorRun(target: 'authors' | 'symbols' = 'authors') {
     return apiClient.post<CollectorStatus>('/xueqiu-collector/run-now', null, {
       params: { target }
+    })
+  },
+  // 雪球 Cookie（仅管理员）：只返回名称与到期事实，永不回显值。
+  // 更新的错误（缺主凭证/已过期/目录不可写）由对话框就地展示，不再弹全局通知
+  getXueqiuCookieStatus() {
+    return apiClient.get<XueqiuCookieAdminStatus>('/xueqiu-collector/cookie')
+  },
+  updateXueqiuCookie(data: XueqiuCookieUpdateRequest) {
+    return apiClient.put<XueqiuCookieUpdateResponse>('/xueqiu-collector/cookie', data, {
+      skipGlobalErrorNotification: true
     })
   },
   // 组合跟踪名单（按标的采集的组合调仓），权限同作者名单

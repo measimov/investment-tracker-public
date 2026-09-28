@@ -2,11 +2,12 @@
 /**
  * 雪球发言采集器卡片（观点页数据源状态区）：启用/心跳/上一轮/Cookie/WAF 状态，
  * 关注作者名单与最近 10 次运行；每日按标的采集的状态与组合跟踪名单。
- * 增删改与「立即运行」仅管理员可见。
+ * 增删改、「立即运行」与「更新 Cookie」仅管理员可见。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/helpers'
+import CookieUpdateDialog from './CookieUpdateDialog.vue'
 import { useCollector } from './useCollector'
 import {
   cookieLabel,
@@ -36,6 +37,7 @@ const {
 } = useCollector()
 const symbolsSummary = computed(() => symbolsCycleSummary(state.status?.symbols))
 const expanded = ref<string[]>([])
+const cookieDialog = ref<InstanceType<typeof CookieUpdateDialog>>()
 
 const enabledAuthors = computed(
   () => (state.status?.authors ?? []).filter((author) => author.enabled).length
@@ -62,6 +64,14 @@ onMounted(load)
       </div>
       <div class="collector-actions">
         <el-button size="small" :loading="state.loading" @click="load">刷新</el-button>
+        <el-button
+          v-if="isAdmin"
+          size="small"
+          data-testid="collector-update-cookie"
+          @click="cookieDialog?.open()"
+        >
+          更新 Cookie
+        </el-button>
         <el-button
           v-if="isAdmin"
           size="small"
@@ -324,6 +334,7 @@ onMounted(load)
         </el-table>
       </el-collapse-item>
     </el-collapse>
+    <CookieUpdateDialog v-if="isAdmin" ref="cookieDialog" @updated="load" />
   </el-card>
 </template>
 

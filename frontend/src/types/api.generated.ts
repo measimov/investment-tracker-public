@@ -2676,6 +2676,27 @@ export interface paths {
     patch: operations['update_collector_author_api_xueqiu_collector_authors__xueqiu_user_id__patch']
     trace?: never
   }
+  '/api/xueqiu-collector/cookie': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Xueqiu Cookie Status */
+    get: operations['get_xueqiu_cookie_status_api_xueqiu_collector_cookie_get']
+    /**
+     * Update Xueqiu Cookie
+     * @description 替换 XUEQIU_COOKIE_FILE（原子写入 + 同目录 .bak）；backend 与采集器无需重启。
+     */
+    put: operations['update_xueqiu_cookie_api_xueqiu_collector_cookie_put']
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/xueqiu-collector/cubes': {
     parameters: {
       query?: never
@@ -5566,6 +5587,109 @@ export interface components {
       item_id?: number | null
       /** Watching */
       watching: boolean
+    }
+    /**
+     * XueqiuCookieAdminStatus
+     * @description 雪球 Cookie 的管理视图（仅管理员）。只有名称与到期事实，绝不含 Cookie 值。
+     */
+    XueqiuCookieAdminStatus: {
+      /** Backup Exists */
+      backup_exists: boolean
+      /** Backup Mtime */
+      backup_mtime?: string | null
+      /** File Exists */
+      file_exists: boolean
+      /** File Mtime */
+      file_mtime?: string | null
+      /**
+       * File Path
+       * @description 容器内 Cookie 文件路径
+       */
+      file_path?: string | null
+      /**
+       * Keys
+       * @description 当前 Cookie 的名称（不含值）
+       */
+      keys?: string[]
+      /**
+       * Level
+       * @description normal / warning / critical / unconfigured
+       */
+      level: string
+      /** Message */
+      message: string
+      /** Primary */
+      primary: components['schemas']['XueqiuCookiePrimaryFact'][]
+      /** Read Error */
+      read_error?: string | null
+      /**
+       * Source
+       * @description file=XUEQIU_COOKIE_FILE / inline=XUEQIU_COOKIES / none=未配置
+       * @enum {string}
+       */
+      source: 'file' | 'inline' | 'none'
+      /**
+       * Writable
+       * @description 能否在界面更新（文件来源且目录对后端可写）
+       */
+      writable: boolean
+      /**
+       * Writable Reason
+       * @description 不能更新的原因与修复办法
+       */
+      writable_reason?: string | null
+    }
+    /** XueqiuCookiePrimaryFact */
+    XueqiuCookiePrimaryFact: {
+      /**
+       * Days Left
+       * @description 距到期天数；无 expirationDate 时为空
+       */
+      days_left?: number | null
+      /** Expires At */
+      expires_at?: string | null
+      /**
+       * Name
+       * @description 主凭证 Cookie 名（xq_a_token / xqat）
+       */
+      name: string
+      /** Present */
+      present: boolean
+    }
+    /** XueqiuCookieProbeResult */
+    XueqiuCookieProbeResult: {
+      /** Detail */
+      detail: string
+      /** Ok */
+      ok: boolean
+    }
+    /** XueqiuCookieUpdateRequest */
+    XueqiuCookieUpdateRequest: {
+      /**
+       * Content
+       * @description 浏览器插件导出的 J2Team JSON、{name: value} JSON，或请求头 `a=b; c=d`
+       */
+      content: string
+      /**
+       * Probe
+       * @description 写入后发一次真实请求确认登录态（一次限速请求）
+       * @default false
+       */
+      probe: boolean
+    }
+    /** XueqiuCookieUpdateResponse */
+    XueqiuCookieUpdateResponse: {
+      /** Backup Created */
+      backup_created: boolean
+      /** Notes */
+      notes?: string[]
+      probe?: components['schemas']['XueqiuCookieProbeResult'] | null
+      /**
+       * Source Format
+       * @enum {string}
+       */
+      source_format: 'j2team' | 'json_list' | 'json_dict' | 'header'
+      status: components['schemas']['XueqiuCookieAdminStatus']
     }
     /** XueqiuFeedPost */
     XueqiuFeedPost: {
@@ -10298,6 +10422,59 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['CollectorAuthorResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_xueqiu_cookie_status_api_xueqiu_collector_cookie_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['XueqiuCookieAdminStatus']
+        }
+      }
+    }
+  }
+  update_xueqiu_cookie_api_xueqiu_collector_cookie_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['XueqiuCookieUpdateRequest']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['XueqiuCookieUpdateResponse']
         }
       }
       /** @description Validation Error */

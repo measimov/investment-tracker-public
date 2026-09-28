@@ -4,15 +4,21 @@
 由 xueqiu-collector 进程在下一个轮询点（≤30s）拾取。作者名单是全局配置（不是用户域
 数据），读对所有登录用户开放，增删改仅管理员。
 
+雪球 Cookie（仅管理员）：`GET/PUT /cookie` 查看名称与到期事实、在界面替换 Cookie 文件。
+Cookie 是登录凭证——响应、日志、错误信息都不带值；PUT 的请求体校验错误也要去掉回显
+（`_NoInputEchoRoute`），否则 FastAPI 默认的 422 会把原文 `input` 原样返回。
+
 按标的监控（每日一轮）：组合跟踪名单同一权限模型；`/symbol-feed`（标的的雪球公告/
 讨论）是全局数据的只读展示，按本仓 (symbol, market) 查询。原 `/hots`（今日热帖）已于
 2026-09-28 随热帖采集一起下线。
 """
 
 from datetime import timedelta
-from typing import Literal, Optional
+from typing import Any, Callable, Coroutine, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from sqlalchemy.orm import Session
 
 from ..config import settings
@@ -30,9 +36,13 @@ from ..schemas.xueqiu_collector import (
     CollectorCubeUpdate,
     CollectorStatusResponse,
     CollectorSymbolsStatus,
+    XueqiuCookieAdminStatus,
+    XueqiuCookieUpdateRequest,
+    XueqiuCookieUpdateResponse,
     XueqiuSymbolFeedResponse,
 )
 from ..services.opinion_summary_jobs import OPINION_MARKETS
+from ..services import xueqiu_cookie_admin
 from ..services.symbol_normalization import normalize_manual_symbol
 from ..services.xueqiu_collector import cookie_health, feed_store
 from ..services.xueqiu_collector import state as collector_state
@@ -40,6 +50,28 @@ from ..services.xueqiu_collector.symbols import known_work_items
 from ..services.xueqiu_collector.feed_parsing import KIND_ANNOUNCEMENT, KIND_DISCUSSION, KINDS
 
 router = APIRouter(prefix="/api/xueqiu-collector", tags=["Xueqiu Collector"])
+
+# 请求体校验错误只留定位与说明：`input`（原文）与 `ctx` 都可能是 Cookie 本身
+_SAFE_ERROR_KEYS = ("type", "loc", "msg")
+
+
+class _NoInputEchoRoute(APIRoute):
+    """请求体校验失败时去掉错误里的原文回显（仅用于接收凭证的路由）。"""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        original = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            try:
+                return await original(request)
+            except RequestValidationError as exc:
+                errors = [
+                    {key: error[key] for key in _SAFE_ERROR_KEYS if key in error}
+                    for error in exc.errors()
+                ]
+                raise RequestValidationError(errors) from None
+
+        return handler
 
 
 def _list_authors(db: Session):
@@ -127,6 +159,45 @@ def get_collector_status(
     db: Session = Depends(get_db),
 ):
     return build_status(db)
+
+
+# --------------------------------------------------------------------------- #
+# 雪球 Cookie（仅管理员；值永不出进程）
+# --------------------------------------------------------------------------- #
+_COOKIE_ERROR_STATUS = {
+    "invalid": status.HTTP_422_UNPROCESSABLE_ENTITY,
+    "unconfigurable": status.HTTP_409_CONFLICT,
+    "not_writable": status.HTTP_409_CONFLICT,
+    "write_failed": status.HTTP_500_INTERNAL_SERVER_ERROR,
+}
+
+
+@router.get("/cookie", response_model=XueqiuCookieAdminStatus)
+def get_xueqiu_cookie_status(current_user: User = Depends(get_current_admin_user)):
+    return xueqiu_cookie_admin.cookie_status()
+
+
+def update_xueqiu_cookie(
+    payload: XueqiuCookieUpdateRequest,
+    current_user: User = Depends(get_current_admin_user),
+):
+    """替换 XUEQIU_COOKIE_FILE（原子写入 + 同目录 .bak）；backend 与采集器无需重启。"""
+    try:
+        return xueqiu_cookie_admin.update_cookie(
+            payload.content, probe=payload.probe, actor=current_user.username
+        )
+    except xueqiu_cookie_admin.CookieAdminError as exc:
+        raise HTTPException(status_code=_COOKIE_ERROR_STATUS[exc.kind], detail=exc.message)
+
+
+router.add_api_route(
+    "/cookie",
+    update_xueqiu_cookie,
+    methods=["PUT"],
+    response_model=XueqiuCookieUpdateResponse,
+    summary="Update Xueqiu Cookie",
+    route_class_override=_NoInputEchoRoute,
+)
 
 
 @router.get("/authors", response_model=list[CollectorAuthorResponse])

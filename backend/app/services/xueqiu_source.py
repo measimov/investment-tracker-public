@@ -24,6 +24,7 @@ AAPL）只存在于本模块内部，边界一律经 `to_xueqiu` 转换——本
 """
 
 import json
+import os
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -56,6 +57,7 @@ FINANCIAL_COUNT = 8
 CAPITAL_HISTORY_COUNT = 20
 
 _client = None
+_client_fingerprint: Any = None
 _client_lock = threading.Lock()
 _call_lock = threading.Lock()
 
@@ -112,21 +114,56 @@ def _build_client():
     )
 
 
+def _source_fingerprint() -> Any:
+    """当前 Cookie 来源的指纹：文件按 (路径, mtime_ns, size, inode) 判定是否换过。
+
+    管理员在界面更新 Cookie（原子 rename，inode 必变）或运维在宿主上直接替换文件后，
+    下一次调用就会用新 Cookie 重建 client，无需重启进程。内联配置只在进程启动时
+    读入环境，指纹取其 hash（只在内存里比较，不外传）。
+    """
+    raw = (settings.xueqiu_cookies or "").strip()
+    if raw:
+        return ("inline", hash(raw))
+    path = (settings.xueqiu_cookie_file or "").strip()
+    if not path:
+        return ("none",)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return ("file", path, None)
+    return ("file", path, stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
 def get_client():
     """模块级单例。未配置 Cookie 时返回 None，并且每次重试构造——构造不发请求，
-    重试的代价是零，换来改配置后无需重启进程。"""
-    global _client
+    重试的代价是零，换来改配置后无需重启进程。
+
+    Cookie 来源指纹变了（文件被替换）也重建；新 client 接上旧 client 的限速时钟，
+    换 Cookie 不会让下一次请求绕过限速。构造失败（新文件无法解析）照常抛出、保留
+    旧指纹，下一次调用继续重试。
+    """
+    global _client, _client_fingerprint
     with _client_lock:
-        if _client is None:
+        fingerprint = _source_fingerprint()
+        if _client is None or fingerprint != _client_fingerprint:
+            previous = _client
+            _client = None
             _client = _build_client()
+            _client_fingerprint = fingerprint
+            if previous is not None and _client is not None:
+                logger.info("雪球 Cookie 来源已变更，已用新 Cookie 重建行情 client")
+                next_at = getattr(previous, "_next_request_at", None)
+                if next_at is not None and hasattr(_client, "_next_request_at"):
+                    _client._next_request_at = next_at
         return _client
 
 
 def reset_client() -> None:
     """丢弃单例（测试与轮换 Cookie 后用）。"""
-    global _client
+    global _client, _client_fingerprint
     with _client_lock:
         _client = None
+        _client_fingerprint = None
 
 
 def is_configured() -> bool:
@@ -139,10 +176,12 @@ def _call(method: str, *args: Any, **kwargs: Any) -> Any:
     锁覆盖库内部 2-4s 的限速 sleep，因此并发线程会在此排队——这是共享限速
     时钟的必然代价，也正是不让批量刷新绕过限速的手段。
     """
-    client = get_client()
-    if client is None:
-        raise XueqiuUnavailable("未配置雪球 Cookie（XUEQIU_COOKIES / XUEQIU_COOKIE_FILE）")
+    # 取 client 也在锁内：Cookie 换过时，重建发生在两次调用之间，而不是让排队中的
+    # 线程拿着旧 client 与新 client 交替使用两套限速时钟
     with _call_lock:
+        client = get_client()
+        if client is None:
+            raise XueqiuUnavailable("未配置雪球 Cookie（XUEQIU_COOKIES / XUEQIU_COOKIE_FILE）")
         return getattr(client, method)(*args, **kwargs)
 
 

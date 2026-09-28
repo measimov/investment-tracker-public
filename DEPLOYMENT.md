@@ -93,7 +93,7 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `FRONTEND_HTTPS_PORT` | `443` | HTTPS 端口；同时以 `NGINX_HTTPS_PORT` 传给 nginx 模板作为跳转目标端口，不要另设 |
 | `BACKEND_LOG_DIR` | `./backend/logs` | 后端日志的宿主目录，挂到容器 `/app/logs`；须可被 uid 10001 写入 |
 | `NGINX_LOG_DIR` | `./logs/nginx` | nginx 访问/错误日志的宿主目录 |
-| `XUEQIU_COOKIE_HOST_DIR` | `./backend/secrets` | 雪球 Cookie 文件所在宿主**目录**，只读挂到容器 `/app/secrets` |
+| `XUEQIU_COOKIE_HOST_DIR` | `./backend/secrets` | 雪球 Cookie 文件所在宿主**目录**，挂到容器 `/app/secrets`（backend 可写、采集器只读）；须授权给 uid 10001，见 [8.1](#81-cookie-更新流程) |
 
 ### 安全与会话
 
@@ -476,8 +476,9 @@ curl --cacert certs/lan/fullchain.pem https://<app-host>/health
 
 - **美股档案**：填 `EDGAR_USER_AGENT`。
 - **美股行情**：填 `TIINGO_API_TOKEN`（免费档即可），美股报价与日线不再依赖会过期的雪球 Cookie。
-- **雪球**：把浏览器插件导出的 Cookie JSON 放进 `XUEQIU_COOKIE_HOST_DIR`，`XUEQIU_COOKIE_FILE`
-  填容器内路径，见 [雪球运维](#8-雪球运维)。
+- **雪球**：`XUEQIU_COOKIE_FILE` 填容器内路径（如 `/app/secrets/xueqiu.com.json`），按
+  [8.1](#81-cookie-更新流程) 给 Cookie 目录授权一次，之后在「雪球观点」页的采集器卡片点「更新 Cookie」
+  粘贴或上传即可，见 [雪球运维](#8-雪球运维)。
 - **Tushare**：`TUSHARE_TOKEN` 可留空；此时不能主动从 Tushare 刷新行情，A/B 股分红公告与基本面档案同步也不可用（港股分红同步走披露易，不受影响）。
 - **AI 功能**：填 `LLM_REPORT_API_KEY`。留空时 AI 复盘和标的分析接口保持禁用，定期计划不会调用外部模型。
   启用后，生成报告、追问和标的分析会把相应的账本或公开行情输入发送给 `LLM_REPORT_BASE_URL`
@@ -807,7 +808,7 @@ docker exec -d -e PYTHONUNBUFFERED=1 investment-tracker-backend sh -c \
 ## 8. 雪球运维
 
 雪球只靠登录态 Cookie，不会自动刷新；`xq_a_token` 约 15 天过期。本应用有两处用它，**共用同一份
-Cookie**（`XUEQIU_COOKIE_FILE` / `XUEQIU_COOKIES`，同一个只读挂载目录）：
+Cookie**（`XUEQIU_COOKIE_FILE` / `XUEQIU_COOKIES`，同一个挂载目录：backend 可写，采集器只读）：
 
 - backend：`stock.xueqiu.com` 的行情兜底与 A股 `xueqiu_*` 档案数据集；
 - xueqiu-collector：`xueqiu.com` 的作者发言采集与按标的采集。
@@ -817,21 +818,57 @@ Cookie 过期时 backend 侧不显眼（行情只是 Tushare 之后的兜底，�
 
 ### 8.1 Cookie 更新流程
 
-1. 在浏览器登录雪球，用 Cookie 导出插件导出 `xueqiu.com` 的**完整 JSON**（带 `expirationDate`
-   字段，探活与采集器每轮自检都靠它提前告警；缺主凭证 `xq_a_token`/`xqat` 直接判 critical）。
+**首选：在界面更新**（管理员，「雪球观点」页 → 采集器卡片 →「更新 Cookie」）。
+
+1. 在浏览器登录雪球，用 Cookie 导出插件（如 J2Team Cookies）导出 `xueqiu.com` 的**完整 JSON**（带
+   `expirationDate` 字段，采集器每轮自检与状态卡靠它提前告警）；也可以粘贴开发者工具里复制的 Cookie
+   请求头 `xq_a_token=…; xqat=…; …`，但它不含到期时间，只能靠探活确认。
+2. 在对话框里粘贴，或选择导出的 `.json` 文件；按需勾选「更新后探活」（发一次真实请求确认登录态）。
+   后端校验（与到期检查/告警同一判据）：主凭证 `xq_a_token` 与 `xqat` 的最终值（同名条目以后者
+   为准）不能缺失或为空白；到期时间取生效那一条，须是可换算成日期的秒级时间戳（误填毫秒直接拒绝）
+   且未过期；结构认不出直接拒绝——不合格的内容不会覆盖现有文件。通过后以 J2Team JSON 形状**原子替换** `XUEQIU_COOKIE_FILE`（同目录
+   临时文件 + fsync + rename，文件模式 `0640`），旧文件保留为同目录的 `<文件名>.bak`（只留上一份）。
+3. **不用重启**：backend 的行情 client 按文件指纹（mtime/大小/inode）变化自动重建，采集器每轮开始
+   重读文件。对话框只显示 Cookie 名与主凭证剩余天数，任何接口、日志、错误信息都不含 Cookie 值；
+   Cookie 不进数据库。
+
+前提与限制：
+
+- 只对 `XUEQIU_COOKIE_FILE` 生效。用 `XUEQIU_COOKIES` 内联配置时（它优先于文件）界面会拒绝并提示
+  改配文件——界面改不了环境变量。
+- **一次性授权 Cookie 目录**：两个容器都以 uid/gid **10001** 运行，backend 要在
+  `XUEQIU_COOKIE_HOST_DIR` 里建临时文件、做 rename 和 `.bak`，所以目录本身须对 10001 可写（compose 里
+  只有 backend 的挂载去掉了 `:ro`，采集器仍只读）。与 [4.3](#43-日志目录权限后端容器非-root) 一样让
+  Compose 自己解析路径：
+
+  ```bash
+  # 目录属主给容器用户，属组给宿主运维账号（setgid：之后新建的文件也归这个组），其他人无权限
+  docker compose run --rm --user root backend \
+    sh -c "chown -R 10001:$(id -g) /app/secrets && chmod 2770 /app/secrets"
+  ```
+
+  `$(id -g)` 由宿主 shell 展开成当前运维账号的 gid：容器（属主）可写，宿主运维账号（属组）照样能
+  读写这个目录（默认目录在仓库检出里，版本管理不受影响），其他账号看不到。界面写出的文件是
+  `10001:<该组> 0640`：两个容器同一 uid，属主位就够读写；组读位留给宿主运维查看。没做这一步时对话框
+  会显示「目录不可写」及这条命令，而不是报 500。
+
+**兜底：在宿主替换文件**（界面不可用、或用内联配置时）：
+
+1. 同上导出完整 JSON；
 2. 覆盖 `XUEQIU_COOKIE_HOST_DIR` 下的文件（文件名与 `XUEQIU_COOKIE_FILE` 对应），并让容器内的
-   uid 10001 读得到：`chmod 664 <文件>`（`644` 也可），所在目录要有 `o+x`。
-3. 重启两个服务：`docker compose restart backend xueqiu-collector`（只换了文件、没改 `.env`，
-   restart 即可）。backend 在首次使用时把 Cookie 读进进程内缓存，必须重启；采集器其实每轮开始都会
-   重读文件，一并重启只是省得等。
-4. 验证：
+   uid 10001 读得到：宿主账号新建的文件不属于 10001，要 `chmod 644 <文件>`（未按上面授权的旧部署，
+   所在目录还要有 `o+x`）；
+3. 不必重启：backend 与采集器都会在下一次使用时读到新文件（本功能之前的旧版本 backend 仍需
+   `docker compose restart backend xueqiu-collector`）。
 
-   ```bash
-   # 到期日（离线）+ --probe 发一次真实请求；退出码 0 正常 / 1 warning / 2 critical / 3 未配置
-   docker compose exec -T backend python scripts/check_xueqiu_cookie_expiry.py --probe
-   ```
+**验证**（两种方式都适用）：
 
-   然后在「雪球观点」页的采集器卡片点「立即运行」，看下一轮作者状态是否回到 `ok`/`partial`（不再是 `error`）。
+```bash
+# 到期日（离线）+ --probe 发一次真实请求；退出码 0 正常 / 1 warning / 2 critical / 3 未配置
+docker compose exec -T backend python scripts/check_xueqiu_cookie_expiry.py --probe
+```
+
+然后在采集器卡片点「立即运行」，看下一轮作者状态是否回到 `ok`/`partial`（不再是 `error`）。
 
 挂载的是**目录**不是文件：bind 一个不存在的文件路径时 Docker 会在宿主上把它误建成同名目录，
 之后真文件就放不进去了。
@@ -900,7 +937,7 @@ PY
 
 - **WAF**：采集器识别到阿里云 WAF 挑战页会立即中止本轮，该作者的 `scan_runs` 记 `waf`，
   `XUEQIU_COLLECTOR_WAF_COOLDOWN_SECONDS`（默认 30 分钟）内不开新一轮。偶发一次不用处理。连续多轮
-  命中时：用同一账号在浏览器里打开雪球、完成人机验证，按 8.1 重新导出 Cookie 并重启；仍频繁命中就
+  命中时：用同一账号在浏览器里打开雪球、完成人机验证，按 8.1 重新导出并更新 Cookie；仍频繁命中就
   调大 `XUEQIU_COLLECTOR_MIN_DELAY_SECONDS` / `XUEQIU_COLLECTOR_MAX_DELAY_SECONDS` 或减少
   `XUEQIU_COLLECTOR_MAX_AUTHORS_PER_RUN`（改 `.env` 后 `docker compose up -d xueqiu-collector`）。
   **不要**为了赶进度调低限速或多开实例。
@@ -1271,7 +1308,7 @@ SEC 拒绝了不合规的 User-Agent。在 `.env` 设置 `EDGAR_USER_AGENT="your
 
 阿里云 WAF 把请求判成了机器流量。采集器会中止本轮并冷却 `XUEQIU_COLLECTOR_WAF_COOLDOWN_SECONDS`
 （默认 30 分钟），偶发一次不用管。连续多轮命中时：在浏览器里用同一账号打开雪球完成人机验证，按
-[8.1](#81-cookie-更新流程) 重新导出 Cookie 并重启；仍频繁命中就调大
+[8.1](#81-cookie-更新流程) 重新导出并更新 Cookie（界面更新无需重启）；仍频繁命中就调大
 `XUEQIU_COLLECTOR_MIN_DELAY_SECONDS` / `XUEQIU_COLLECTOR_MAX_DELAY_SECONDS`、减少
 `XUEQIU_COLLECTOR_MAX_AUTHORS_PER_RUN`，然后 `docker compose up -d xueqiu-collector`。确认没有第二个
 采集程序（例如切换后忘了停的旧 archiver 定时任务）在用同一账号并发请求。

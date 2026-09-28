@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import json
+import math
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -45,15 +47,31 @@ def missing_primary_credentials(values: Dict[str, str]) -> List[str]:
     return [name for name in PRIMARY_AUTH_COOKIES if not (values.get(name) or "").strip()]
 
 
-def load_cookie_facts(cookie_file: Path) -> Dict[str, Any]:
-    """读浏览器导出：{names, values, missing, expirations}。
+def expiration_seconds(value: Any) -> float:
+    """`expirationDate` → 秒（float）。非数字、非有限、或换算不成日期（多为误填毫秒：
+    1800000000000 秒是公元 59009 年）一律抛 ValueError，文案不带原值。
 
-    values 是最终生效的值（同名后者覆盖）；missing 是最终值缺失或为空的主凭证；
-    expirations 只取生效那一条的 expirationDate（秒）。{name: value} 形状没有
-    expirationDate，expirations 为空。
+    到期检查、状态摘要与界面更新的校验共用这一判据：能过这里的值，后续
+    `datetime.fromtimestamp` 与天数运算都不会再炸。
     """
-    data = json.loads(cookie_file.read_text(encoding="utf-8"))
-    values = effective_cookie_values(data)
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("expirationDate 不是数字")
+    try:
+        seconds = float(value)
+    except ValueError:
+        raise ValueError("expirationDate 不是数字") from None
+    if not math.isfinite(seconds):
+        raise ValueError("expirationDate 不是有限数字")
+    try:
+        datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        raise ValueError("expirationDate 超出可表示的日期范围（是否误填了毫秒？）") from None
+    return seconds
+
+
+def effective_expirations(data: Any) -> Dict[str, float]:
+    """主凭证**生效那一条**的 expirationDate（秒）：同名后者覆盖前者，后者没有到期日
+    即视为没有（与 `effective_cookie_values` 取同一条，值与到期不会张冠李戴）。"""
     cookies = data.get("cookies") if isinstance(data, dict) and "cookies" in data else data
     expirations: Dict[str, float] = {}
     if isinstance(cookies, list):
@@ -65,13 +83,29 @@ def load_cookie_facts(cookie_file: Path) -> Dict[str, Any]:
             if expiration is None:
                 expirations.pop(name, None)  # 生效的那条没有到期日
             else:
-                expirations[name] = float(expiration)
+                expirations[name] = expiration_seconds(expiration)
+    return expirations
+
+
+def cookie_facts_from_data(data: Any) -> Dict[str, Any]:
+    """已解析的 Cookie JSON → {names, values, missing, expirations}（见 `load_cookie_facts`）。"""
+    values = effective_cookie_values(data)
     return {
         "names": set(values),
         "values": values,
         "missing": missing_primary_credentials(values),
-        "expirations": expirations,
+        "expirations": effective_expirations(data),
     }
+
+
+def load_cookie_facts(cookie_file: Path) -> Dict[str, Any]:
+    """读浏览器导出：{names, values, missing, expirations}。
+
+    values 是最终生效的值（同名后者覆盖）；missing 是最终值缺失或为空的主凭证；
+    expirations 只取生效那一条的 expirationDate（秒）。{name: value} 形状没有
+    expirationDate，expirations 为空。
+    """
+    return cookie_facts_from_data(json.loads(cookie_file.read_text(encoding="utf-8")))
 
 
 def check_expiry(
