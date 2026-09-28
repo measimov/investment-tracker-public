@@ -1098,6 +1098,41 @@ def search_securities(
     return items, catalog_health(db)
 
 
+def display_names(
+    db: Session, user_id: int, keys: Iterable[Tuple[str, str]]
+) -> Dict[Tuple[str, str], str]:
+    """一批 (symbol, market) 的展示名：目录简体名优先，缺失再用该用户的持仓/自选名。
+
+    与 `lookup_catalog_name` 同一优先级（分析/摘要落 name 时目录优先）：券商导入写进
+    持仓的名称常是英文或带除权前缀（`C&D Prpty Mgmt`、`XD海尔智`），目录是规范简体名；
+    B股、漏网标的目录里没有时才退回账本名。两条批量查询，取不到的键不出现在结果里。
+    """
+    wanted = {(symbol, market) for symbol, market in keys}
+    if not wanted:
+        return {}
+    names: Dict[Tuple[str, str], str] = {}
+    for symbol, market, name in db.query(
+        SecurityCatalogEntry.symbol, SecurityCatalogEntry.market, SecurityCatalogEntry.name
+    ).filter(tuple_(SecurityCatalogEntry.symbol, SecurityCatalogEntry.market).in_(wanted)):
+        if name:
+            names[(symbol, market)] = name
+    remaining = wanted - set(names)
+    if remaining:
+        ledger = db.query(Holding.symbol, Holding.market, Holding.name).filter(
+            Holding.user_id == user_id,
+            tuple_(Holding.symbol, Holding.market).in_(remaining),
+        ).union_all(
+            db.query(WatchlistItem.symbol, WatchlistItem.market, WatchlistItem.name).filter(
+                WatchlistItem.user_id == user_id,
+                tuple_(WatchlistItem.symbol, WatchlistItem.market).in_(remaining),
+            )
+        )
+        for symbol, market, name in ledger:
+            if name and (symbol, market) not in names:
+                names[(symbol, market)] = name
+    return names
+
+
 def lookup_catalog_name(symbol: str, market: str) -> Optional[str]:
     """目录里的简体名（供分析/摘要落 name 时优先使用）；未命中返回 None。"""
     normalized = normalize_manual_symbol(symbol, market)

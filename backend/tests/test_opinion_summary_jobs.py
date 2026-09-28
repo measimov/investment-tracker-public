@@ -751,3 +751,40 @@ def test_batch_mutex_with_analysis_family(db):
     create_or_get_active_job("opinion_summary_batch", 1, {"targets": []})
     with pytest.raises(AnalysisBusyError, match="批量观点摘要"):
         ensure_no_conflicting_analysis_job(db, 1, "security_analysis")
+
+
+@pytest.mark.anyio
+async def test_opinion_summaries_fill_missing_names(db, api_user, monkeypatch):
+    """摘要快照 name 为空时读取补名：目录简体名优先，目录没有再用持仓/自选名；已有名称不动。"""
+    import app.services.xueqiu_opinion_source as src
+    from app.models.security_catalog import SecurityCatalogEntry
+
+    _hold(db, "600519", "A股", user_id=api_user)  # 持仓名 = 代码本身
+    _hold(db, "200596", "B股", user_id=api_user)
+    db.query(Holding).filter(Holding.symbol == "200596").update({"name": "古井贡Ｂ"})
+    _watch(db, "00700", "港股", user_id=api_user)
+    db.add(SecurityCatalogEntry(symbol="600519", market="A股", name="贵州茅台", source="tushare_stock_basic"))
+    for symbol, market, name in (
+        ("600519", "A股", None), ("200596", "B股", None), ("00700", "港股", "腾讯控股（快照）"),
+    ):
+        db.add(SecurityOpinionSummary(
+            symbol=symbol, market=market, name=name, tags=["偏多"], author_stances=[],
+            summary="摘要", content="x", model="m", input_payload={},
+            recent_days=30, lookback_days=180, utterance_count=1, recent_utterance_count=0,
+        ))
+    db.commit()
+    try:
+        monkeypatch.setattr(
+            src, "source_freshness",
+            lambda db_: {"available": False, "latest_scan_at": None,
+                         "latest_utterance_at": None, "stale": False},
+        )
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            auth = await _login(client)
+            body = (await client.get("/api/securities/opinion-summaries", headers=auth)).json()
+        names = {item["symbol"]: item["name"] for item in body["items"]}
+        assert names == {"600519": "贵州茅台", "200596": "古井贡Ｂ", "00700": "腾讯控股（快照）"}
+    finally:
+        db.query(SecurityCatalogEntry).filter(SecurityCatalogEntry.symbol == "600519").delete()
+        db.commit()

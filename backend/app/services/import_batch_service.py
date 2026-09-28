@@ -237,6 +237,12 @@ def complete_import_batch(
     suspected_duplicate_rows = int(result["suspected_duplicate_rows"])
     if errors:
         batch.error_message = _error_message("; ".join(errors))
+    elif suspected_duplicate_rows and result.get("broker") == "IBKR":
+        batch.error_message = (
+            f"{suspected_duplicate_rows} 条流水疑似与账本已有记录重复"
+            "（同日同向同数量的交易，或日期窗口内已入账的同标的股息/预扣税），"
+            "已归档未入账，待人工确认"
+        )
     elif suspected_duplicate_rows:
         # 疑似重复行（#190）也在 unbooked 里，但要把原因说清楚：用户要做的是逐条确认，
         # 不是排查"为什么没入账"

@@ -12,9 +12,16 @@ import {
   formatQuantity,
   todayLocalISODate
 } from '@/utils/helpers'
-import { transactionTypeLabel } from '@/utils/labels'
 import { brokerAccountLabel } from './shared'
 import { importAccountChoice } from './importAccounts'
+import {
+  isSuspectedCashRow,
+  supportsSuspectedConfirm,
+  suspectedAlertDescription,
+  suspectedAlertTitle,
+  suspectedExistingSource,
+  suspectedRowTypeLabel
+} from './suspectedDuplicates'
 
 // 预览/导入响应以后端 BrokerImportResult 为准（生成类型；此前手写副本已漂移：
 // statement_scope 的 null、诊断报告新增字段都没跟上）
@@ -35,8 +42,8 @@ const brokerPreview = ref<BrokerPreview | null>(null)
 // 结果态文案切成「导入结果」、导入按钮禁用——同一份文件不应在未改动时再点一次
 const importDone = ref(false)
 const importBrokerAccountId = ref<number | null>(null)
-// 疑似重复（#190）：用户勾选后确认为真实成交的 row_hash，随预览/导入一起回传；
-// 换文件、换账户、换模式都要清空——确认是对某一份文件里某几行的决定
+// 疑似重复（招商 #190 / IBKR）：用户勾选后确认为真实的另一笔的 row_hash，随预览/导入
+// 一起回传；换文件、换账户、换模式都要清空——确认是对某一份文件里某几行的决定
 const confirmedSuspectedHashes = ref<string[]>([])
 const selectedSuspectedRows = ref<SuspectedDuplicateSample[]>([])
 const suspectedSamples = computed<SuspectedDuplicateSample[]>(
@@ -44,13 +51,15 @@ const suspectedSamples = computed<SuspectedDuplicateSample[]>(
 )
 const suspectedHeldCount = computed(() => brokerPreview.value?.suspected_duplicate_rows ?? 0)
 const suspectedTotalCount = computed(() => suspectedSamples.value.length)
+const suspectedMode = computed(() => (importMode.value === 'ibkr' ? 'ibkr' : 'cmb'))
+const suspectedHasReasons = computed(() => suspectedSamples.value.some((row) => row.reason))
 function handleSuspectedSelection(rows: SuspectedDuplicateSample[]) {
   selectedSuspectedRows.value = rows
 }
 async function confirmSelectedSuspected() {
   const hashes = selectedSuspectedRows.value.map((row) => row.row_hash)
   if (!hashes.length) {
-    ElMessage.warning('请先勾选要确认为真实成交的行')
+    ElMessage.warning('请先勾选要确认为真实的另一笔的行')
     return
   }
   confirmedSuspectedHashes.value = Array.from(
@@ -167,7 +176,11 @@ async function handleImportPreview() {
   try {
     let response
     if (importMode.value === 'ibkr') {
-      response = await api.previewIbkrActivity(uploadFile.value, importBrokerAccountId.value)
+      response = await api.previewIbkrActivity(
+        uploadFile.value,
+        importBrokerAccountId.value,
+        confirmedSuspectedHashes.value
+      )
     } else if (importMode.value === 'eastmoney') {
       response = await api.previewEastmoneyStatement(uploadFile.value, importBrokerAccountId.value)
     } else {
@@ -218,7 +231,11 @@ async function handleImport() {
         `现金事件 ${response.data.imported_cash_events || 0} 条，` +
         `跳过重复 ${response.data.duplicate_rows} 条`
     } else if (importMode.value === 'ibkr') {
-      response = await api.importIbkrActivity(uploadFile.value, importBrokerAccountId.value)
+      response = await api.importIbkrActivity(
+        uploadFile.value,
+        importBrokerAccountId.value,
+        confirmedSuspectedHashes.value
+      )
       brokerResult = response.data
       successMessage =
         `导入交易 ${response.data.imported_transactions} 条，` +
@@ -418,7 +435,7 @@ defineExpose({ open })
           {{ brokerPreview.source_account_masks.join(' / ') }}
         </el-descriptions-item>
         <el-descriptions-item label="总行数">{{ brokerPreview.total_rows }}</el-descriptions-item>
-        <el-descriptions-item v-if="importMode === 'cmb'" label="疑似重复">
+        <el-descriptions-item v-if="supportsSuspectedConfirm(importMode)" label="疑似重复">
           {{ brokerPreview.suspected_duplicate_rows || 0 }}
         </el-descriptions-item>
         <el-descriptions-item v-if="brokerPreview.archived_source_rows != null" label="来源归档">
@@ -532,12 +549,8 @@ defineExpose({ open })
           type="warning"
           :closable="false"
           show-icon
-          :title="
-            suspectedHeldCount > 0
-              ? `${suspectedHeldCount} 条成交疑似与已入账流水重复（同日/同标的/同数量/同金额，成交价精度不同），本次不入账，待人工确认`
-              : `${suspectedTotalCount} 条此前归档的疑似重复成交仍待确认（本次按重复跳过）`
-          "
-          description="券商新旧导出的成交价小数位不同时，同一笔成交会算出不同的流水指纹。勾选确认为「真实的另一笔成交」后重新预览，再导入即入账；不勾选则保持归档不入账。"
+          :title="suspectedAlertTitle(suspectedMode, suspectedHeldCount, suspectedTotalCount)"
+          :description="suspectedAlertDescription(suspectedMode)"
         />
         <el-table
           :data="suspectedSamples"
@@ -550,28 +563,46 @@ defineExpose({ open })
           <el-table-column prop="trade_date" label="日期" width="105" />
           <el-table-column prop="symbol" label="代码" width="90" />
           <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
-          <el-table-column label="方向" width="70">
-            <template #default="{ row }">{{ transactionTypeLabel(row.transaction_type) }}</template>
+          <el-table-column label="类型" width="80">
+            <template #default="{ row }">{{
+              suspectedRowTypeLabel(row.transaction_type)
+            }}</template>
           </el-table-column>
           <el-table-column label="数量" width="100" align="right">
-            <template #default="{ row }">{{ formatQuantity(row.quantity) }}</template>
+            <template #default="{ row }">{{
+              isSuspectedCashRow(row) ? '—' : formatQuantity(row.quantity)
+            }}</template>
           </el-table-column>
-          <el-table-column label="发生金额" width="120" align="right">
-            <template #default="{ row }">{{ formatNumber(row.amount, 2) }}</template>
-          </el-table-column>
-          <el-table-column label="已入账价格 → 本单价格" min-width="150" align="right">
+          <el-table-column label="发生金额" width="130" align="right">
             <template #default="{ row }">
-              {{ formatPrice(row.existing_price) }} → {{ formatPrice(row.price) }}
+              {{ formatNumber(row.amount, 2) }} {{ row.currency || '' }}
             </template>
           </el-table-column>
-          <el-table-column label="已入账来源" min-width="150" show-overflow-tooltip>
+          <el-table-column label="已入账 → 本单" min-width="170" align="right">
             <template #default="{ row }">
-              {{ row.existing_source_filename || '—' }}
-              <template v-if="row.existing_row_number"
-                >第 {{ row.existing_row_number }} 行</template
-              >
+              <template v-if="isSuspectedCashRow(row)">
+                {{ formatNumber(row.existing_amount, 2) }} {{ row.existing_currency || '' }}
+                <template v-if="row.existing_date">（{{ row.existing_date }}）</template>
+              </template>
+              <template v-else>
+                {{ formatPrice(row.existing_price) }} → {{ formatPrice(row.price) }}
+                {{ row.price_currency || '' }}
+              </template>
             </template>
           </el-table-column>
+          <el-table-column label="已入账来源" min-width="160" show-overflow-tooltip>
+            <template #default="{ row }">
+              <template v-if="row.existing_id">#{{ row.existing_id }}&nbsp;</template>
+              {{ suspectedExistingSource(row) }}
+            </template>
+          </el-table-column>
+          <el-table-column
+            v-if="suspectedHasReasons"
+            prop="reason"
+            label="匹配依据"
+            min-width="220"
+            show-overflow-tooltip
+          />
           <el-table-column prop="row_number" label="本单行号" width="80" align="right" />
         </el-table>
         <div class="suspected-actions">
@@ -588,7 +619,7 @@ defineExpose({ open })
             :loading="importing"
             @click="confirmSelectedSuspected"
           >
-            确认所选为真实成交并重新预览
+            确认所选为真实的另一笔并重新预览
           </el-button>
         </div>
       </div>

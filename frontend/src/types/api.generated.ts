@@ -2902,6 +2902,8 @@ export interface components {
     Body_import_ibkr_activity_statement_api_import_ibkr_activity_post: {
       /** Broker Account Id */
       broker_account_id?: number | null
+      /** Confirm Suspected Row Hashes */
+      confirm_suspected_row_hashes?: string | null
       /**
        * File
        * Format: binary
@@ -2934,6 +2936,8 @@ export interface components {
     Body_preview_ibkr_activity_statement_api_import_ibkr_activity_preview_post: {
       /** Broker Account Id */
       broker_account_id?: number | null
+      /** Confirm Suspected Row Hashes */
+      confirm_suspected_row_hashes?: string | null
       /**
        * File
        * Format: binary
@@ -4973,11 +4977,26 @@ export interface components {
     }
     /**
      * SuspectedDuplicateSample
-     * @description 疑似重复成交行（#190）：与已入账流水同「代码/日期/方向/数量/金额/币种」但 hash 不同。
+     * @description 疑似重复行：hash 不同、但账本里已有同一笔经济事实。
+     *
+     *     招商（#190）：与已入账流水同「代码/日期/方向/数量/金额/币种」。
+     *     IBKR：与已有交易同「代码/市场/日期/方向/|数量|」（含手工录入与其他导出形态），
+     *     或股息/预扣税与已入账股息日期窗口重合（不比金额/币种）——配对目标在
+     *     match_kind/existing_id/existing_date/existing_source，reason 是给人看的说明。
      */
     SuspectedDuplicateSample: {
       /** Amount */
       amount: string
+      /** Currency */
+      currency?: string | null
+      /** Existing Amount */
+      existing_amount?: string | null
+      /** Existing Currency */
+      existing_currency?: string | null
+      /** Existing Date */
+      existing_date?: string | null
+      /** Existing Id */
+      existing_id?: number | null
       /** Existing Import Batch Id */
       existing_import_batch_id?: number | null
       /** Existing Price */
@@ -4986,10 +5005,14 @@ export interface components {
       existing_row_hash?: string | null
       /** Existing Row Number */
       existing_row_number?: number | null
+      /** Existing Source */
+      existing_source?: string | null
       /** Existing Source Filename */
       existing_source_filename?: string | null
       /** Market */
       market: string
+      /** Match Kind */
+      match_kind?: string | null
       /** Name */
       name?: string | null
       /**
@@ -4999,8 +5022,12 @@ export interface components {
       previously_held: boolean
       /** Price */
       price: string
+      /** Price Currency */
+      price_currency?: string | null
       /** Quantity */
       quantity: string
+      /** Reason */
+      reason?: string | null
       /** Row Hash */
       row_hash: string
       /** Row Number */

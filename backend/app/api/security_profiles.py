@@ -637,6 +637,17 @@ def list_opinion_summaries(
         item["new_utterance_count"] = new_count
         items.append(item)
 
+    # 摘要是快照：生成时没取到名称的行 name 为空，观点页只能显示代码。读取时统一补名
+    # （目录简体名优先，缺失再用持仓/自选名），不改存量摘要
+    from ..services.security_catalog_service import display_names
+
+    unnamed = [(item["symbol"], item["market"]) for item in items if not item.get("name")]
+    if unnamed:
+        names = display_names(db, current_user.id, unnamed)
+        for item in items:
+            if not item.get("name"):
+                item["name"] = names.get((item["symbol"], item["market"]))
+
     return {
         "source_available": freshness["available"],
         "freshness": freshness,

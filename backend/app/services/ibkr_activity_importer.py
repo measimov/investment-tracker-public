@@ -8,7 +8,7 @@ from threading import Lock
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import pandas as pd
 from sqlalchemy import or_
@@ -28,13 +28,20 @@ from ..services.broker_import_common import (
     base_import_result,
     disambiguated_row_hash,
     iso_date_range,
+    SUSPECTED_DUPLICATE,
     UNATTRIBUTED_TAX,
+    SuspectedDuplicateResolution,
+    attribute_source,
     attribute_tax_source,
+    book_suspected_source,
+    mark_suspected_duplicate,
     mark_unattributed_tax,
     normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间
     split_new_and_duplicate_rows,
     strip_text,
 )
+from ..config import settings
+from ..services.dividend_sync_service import MATCH_WINDOW_BEFORE_DAYS
 from ..services.holding_service import recalculate_holdings
 from ..services.security_rule_service import (
     get_excluded_symbols,
@@ -224,6 +231,9 @@ class ExistingSourceResolution:
     booked_hashes: set[str] = field(default_factory=set)
     duplicate_hashes: set[str] = field(default_factory=set)
     unresolved_tax_sources: Dict[str, IbkrActivityFlow] = field(default_factory=dict)
+    # 上次已归档为疑似重复（skip_reason=suspected_duplicate、无任何链接）的来源行：
+    # 不是孤儿，是等人工确认的保留行（与未归属税行同一套三段式）
+    suspected_sources: Dict[str, IbkrActivityFlow] = field(default_factory=dict)
 
 
 def _account_parts(value: Optional[str]) -> tuple[str, str, bool]:
@@ -1183,6 +1193,9 @@ def resolve_existing_sources(
             ):
                 resolution.unresolved_tax_sources[source.row_hash] = source
                 continue
+            if source.skip_reason == SUSPECTED_DUPLICATE:
+                resolution.suspected_sources[source.row_hash] = source
+                continue
             raise _unsafe_existing_source(
                 source,
                 "来源没有可解析的交易或公司行动链接，属于孤儿记录",
@@ -1243,6 +1256,646 @@ def resolve_existing_sources(
     return resolution
 
 
+# ---------------------------------------------------------------------------
+# 疑似重复守卫（IBKR 版）——row_hash 之外的第二层，**不改任何 hash 输入**
+#
+# 同一笔经济事实在账本里可能已经以另一种形态存在，row_hash 判重看不见：
+#   - 成交：trade_history.xlsx 把 Trade ID 并进说明（hash 不同于 CSV 同笔成交），
+#     或用户在没有券商流水时手工录入；
+#   - 股息：分红公告建议入账的 CASH_DIVIDEND（港股按 HKD、除净日/派息日为真实日期），
+#     而 IBKR 报表按 USD、在到账日记一行股息 + 另一行外国预扣税。
+# 于是按下面的二级键找「账本里已有、但不是被本文件同 hash 行解释掉的」记录：
+#
+#   成交 = (代码, 市场, 成交日, 方向, |数量|)，对象是同账户或未指定账户的 BUY/SELL
+#          交易（含手工录入、含其他来源类型的 IBKR 流水链接的交易）；成交价**不进键**
+#          （xlsx/CSV/手工的价格精度不同），只在配对时按相对差 ≤ 1% 放行，同键多笔时
+#          按价格最接近优先配对——同日同量不同价的两笔真实成交不会互相顶替。
+#          美股成交日允许 ±1 天（xlsx 日期是香港时间，美股盘中跨过香港午夜），同日优先。
+#   股息 = (代码, 市场) + 日期窗口，对象是同账户或未指定账户的 CASH_DIVIDEND；
+#          **不比金额与币种**（USD vs HKD）。窗口沿用分红同步判重
+#          （dividend_sync_service.match_existing_action）的口径、角色互换：
+#          到账日 ∈ [除净日 − 3 天, (派息日 or 除净日) + dividend_sync_match_window_days]；
+#          已链接 IBKR 股息来源的记录本身就是到账日记账，同一笔股息换一种导出形态
+#          日期不变，窗口收紧为 ±3 天（否则月度派息标的会把上个月的股息当成本月的）。
+#   预扣税 = 随同日同标的的疑似股息一并扣住；本文件没有同日股息、账本也没有同币种
+#          同日股息可归属、但日期窗口命中已入账股息的孤立税行同样扣住。
+#
+# 三条纪律与招商 #190 一致：
+#   1. **计数而非存在**：每条既有记录只抵一行，多出来的真实成交照常入账；
+#   2. 被本文件同 hash 行解释掉的既有记录（hash 重复）不占额度；
+#   3. 扣住的行归档为 skip_reason=suspected_duplicate、不入账；重导时按重复计；
+#      用户勾选确认（confirm_suspected_row_hashes）后在原归档行上转正，绝不插新行。
+#      确认股息时其同日预扣税一并转正。
+# ---------------------------------------------------------------------------
+
+SUSPECTED_TRADE_PRICE_TOLERANCE = Decimal("0.01")  # 相对差，1%
+SUSPECTED_US_TRADE_DAY_TOLERANCE = 1  # 美股：香港时间/美东时间的成交日可差一天
+# 已链接 IBKR 股息来源的记录：同一笔股息换导出形态，到账日不变
+SUSPECTED_IBKR_DIVIDEND_DAYS = MATCH_WINDOW_BEFORE_DAYS
+
+
+@dataclass
+class SuspectedMatch:
+    """疑似重复的配对目标（交易或公司行动）及其来源说明。"""
+
+    kind: str  # "transaction" | "corporate_action" | PREVIOUSLY_HELD_KIND
+    record: Any  # PREVIOUSLY_HELD_KIND 时为 None（配对目标是上次归档的疑似行）
+    reason: str
+    source: Optional[IbkrActivityFlow] = None
+    source_label: str = ""
+
+
+# 税行随「上次已归档为疑似、未确认」的同日股息一并扣住时的配对类型：没有账本记录可指
+PREVIOUSLY_HELD_KIND = "previously_held_dividend"
+
+
+def _dividend_key(flow: ParsedIbkrFlow) -> tuple:
+    """股息与其预扣税的配对键——与 preview_booked_source_hashes 的虚拟候选同口径。"""
+    return (flow.symbol, flow.market, flow.base_currency, flow.trade_date)
+
+
+def _record_source_label(record: Any, source: Optional[IbkrActivityFlow]) -> str:
+    if source is not None:
+        return f"IBKR 导入 {source.source_filename or ''} 第 {source.source_row_number} 行"
+    notes = strip_text(getattr(record, "notes", None))
+    if notes.startswith("来自分红公告建议"):
+        return notes
+    if getattr(record, "import_batch_id", None):
+        return f"导入批次 #{record.import_batch_id}"
+    return "手工录入"
+
+
+def _fmt_decimal(value: Any) -> str:
+    if value is None:
+        return "—"
+    return format(Decimal(str(value)).normalize(), "f")
+
+
+def _linked_ibkr_sources(db: Session, column, ids: set[int]) -> Dict[int, List[IbkrActivityFlow]]:
+    if not ids:
+        return {}
+    linked: Dict[int, List[IbkrActivityFlow]] = {}
+    for source in (
+        db.query(IbkrActivityFlow).filter(column.in_(sorted(ids))).order_by(IbkrActivityFlow.id)
+    ):
+        linked.setdefault(getattr(source, column.key), []).append(source)
+    return linked
+
+
+def _trade_day_tolerance(market: Optional[str]) -> int:
+    """美股允许 ±1 天：trade_history.xlsx 的日期是香港时间（美股盘中跨过香港午夜），
+    手工录入也常按北京时间记；其他市场与香港同时区，要求同日。"""
+    return SUSPECTED_US_TRADE_DAY_TOLERANCE if market == "美股" else 0
+
+
+def _match_suspected_trades(
+    db: Session,
+    user_id: int,
+    broker_account_id: int,
+    pool: List[ParsedIbkrFlow],
+    batch_hashes: set[str],
+    resolution: SuspectedDuplicateResolution,
+    warnings: List[str],
+) -> None:
+    if not pool:
+        return
+    query_dates = {
+        flow.trade_date + timedelta(days=offset)
+        for flow in pool
+        for offset in range(
+            -_trade_day_tolerance(flow.market), _trade_day_tolerance(flow.market) + 1
+        )
+    }
+    transactions = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user_id,
+            or_(
+                Transaction.broker_account_id == broker_account_id,
+                Transaction.broker_account_id.is_(None),
+            ),
+            Transaction.transaction_type.in_(("BUY", "SELL")),
+            Transaction.symbol.in_(sorted({flow.symbol for flow in pool})),
+            Transaction.transaction_date.in_(sorted(query_dates)),
+        )
+        .order_by(Transaction.id)
+        .all()
+    )
+    sources = _linked_ibkr_sources(
+        db, IbkrActivityFlow.transaction_id, {txn.id for txn in transactions}
+    )
+    existing_by_key: Dict[tuple, List[Transaction]] = {}
+    for txn in transactions:
+        linked = sources.get(txn.id, [])
+        if any(source.row_hash in batch_hashes for source in linked):
+            continue  # 本文件同 hash 行已解释它，不占额度
+        if SYNTHETIC_RELISTING_MARKER in (txn.notes or ""):
+            continue  # 转板合成交易不是券商成交
+        key = (txn.symbol, txn.market, txn.transaction_type)
+        existing_by_key.setdefault(key, []).append(txn)
+
+    flows_by_key: Dict[tuple, List[ParsedIbkrFlow]] = {}
+    for flow in pool:
+        key = (flow.symbol, flow.market, flow.transaction_type)
+        flows_by_key.setdefault(key, []).append(flow)
+
+    for key, flows in flows_by_key.items():
+        existing = existing_by_key.get(key, [])
+        tolerance = _trade_day_tolerance(key[1])
+        pairs = []
+        for flow_index, flow in enumerate(flows):
+            quantity = abs(flow.quantity)
+            for txn in existing:
+                day_gap = abs((txn.transaction_date - flow.trade_date).days)
+                if day_gap > tolerance or Decimal(str(txn.quantity)) != quantity:
+                    continue
+                txn_price = Decimal(str(txn.price))
+                if txn_price <= 0:
+                    continue
+                diff = abs(flow.price - txn_price) / txn_price
+                if diff <= SUSPECTED_TRADE_PRICE_TOLERANCE:
+                    pairs.append((day_gap, diff, flow_index, txn.id, flow, txn))
+        # 同日优先、价格最接近优先：同键多笔时真实成交不会互相顶替
+        used_flows: set[int] = set()
+        used_txns: set[int] = set()
+        for _gap, _diff, flow_index, txn_id, flow, txn in sorted(pairs, key=lambda p: p[:4]):
+            if flow_index in used_flows or txn_id in used_txns:
+                continue
+            used_flows.add(flow_index)
+            used_txns.add(txn_id)
+            source = (sources.get(txn.id) or [None])[0]
+            label = _record_source_label(txn, source)
+            resolution.held_hashes.add(flow.row_hash)
+            resolution.matches[flow.row_hash] = SuspectedMatch(
+                kind="transaction",
+                record=txn,
+                source=source,
+                source_label=label,
+                reason=(
+                    f"与已有交易 #{txn.id}（{txn.transaction_date} {txn.transaction_type} "
+                    f"{_fmt_decimal(txn.quantity)} @ {_fmt_decimal(txn.price)} "
+                    f"{txn.currency}，{label}）"
+                    + ("同日同向同数量" if _gap == 0 else "同向同数量、日期相邻（时区口径）")
+                ),
+            )
+        # 数量/价格对不上的同日同向交易：可能是手工合并录入的多笔成交，只提示不扣住
+        leftover_by_day: Dict[date, tuple[list, list]] = {}
+        for index, flow in enumerate(flows):
+            if index not in used_flows:
+                leftover_by_day.setdefault(flow.trade_date, ([], []))[0].append(flow)
+        for txn in existing:
+            if txn.id not in used_txns and txn.transaction_date in leftover_by_day:
+                leftover_by_day[txn.transaction_date][1].append(txn)
+        symbol, _market, transaction_type = key
+        for trade_date, (leftover_flows, leftover_txns) in sorted(leftover_by_day.items()):
+            if not leftover_txns:
+                continue
+            warnings.append(
+                f"{trade_date} {symbol} {transaction_type}：本文件有 {len(leftover_flows)} 笔"
+                f"成交将入账，账本已有 {len(leftover_txns)} 笔同日同向但数量或价格对不上的交易"
+                f"（#{', #'.join(str(txn.id) for txn in leftover_txns)}），"
+                "请核对是否为合并录入的同一批成交"
+            )
+
+
+def _dividend_window_gap(
+    action: CorporateAction, flow_date: date, *, ibkr_linked: bool
+) -> Optional[int]:
+    """命中返回日期差（越小越优先配对），不命中返回 None。"""
+    anchor = action.payment_date or action.ex_date
+    if anchor is None:
+        return None
+    gap = abs((flow_date - anchor).days)
+    if ibkr_linked:
+        return gap if gap <= SUSPECTED_IBKR_DIVIDEND_DAYS else None
+    start = (action.ex_date or anchor) - timedelta(days=MATCH_WINDOW_BEFORE_DAYS)
+    end = anchor + timedelta(days=settings.dividend_sync_match_window_days)
+    return gap if start <= flow_date <= end else None
+
+
+def _dividend_reason(action: CorporateAction, label: str) -> str:
+    return (
+        f"与已入账股息 #{action.id}（除净日 {action.ex_date}，派息日 "
+        f"{action.payment_date or '—'}，{_fmt_decimal(action.total_dividend)} "
+        f"{action.currency or ''}，{label}）日期窗口重合"
+    )
+
+
+def _dividend_match(action: CorporateAction, source, reason_prefix: str = "") -> SuspectedMatch:
+    label = _record_source_label(action, source)
+    return SuspectedMatch(
+        kind="corporate_action",
+        record=action,
+        source=source,
+        source_label=label,
+        reason=f"{reason_prefix}{_dividend_reason(action, label)}",
+    )
+
+
+_PER_SHARE_RE = re.compile(
+    r"([A-Z]{3})\s*([0-9]+(?:\.[0-9]+)?)\s*(?:每股|per\s+share)", re.IGNORECASE
+)
+
+
+def _per_share_descriptor(description: Optional[str]) -> Optional[tuple]:
+    """IBKR 股息/预扣税描述里的「币种 每股金额」：
+    `883(…) 现金红利 HKD 0.75 每股 (普通股息)` 与 `… HKD 0.75 每股 - CN 税` 是同一笔。"""
+    match = _PER_SHARE_RE.search(description or "")
+    if not match:
+        return None
+    return match.group(1).upper(), Decimal(match.group(2)).normalize()
+
+
+def _paired_dividend(
+    tax: ParsedIbkrFlow, same_day_dividends: List[ParsedIbkrFlow]
+) -> Optional[ParsedIbkrFlow]:
+    """同日股息里描述「币种 每股金额」与税行一致的**唯一**一笔；没有或不唯一返回 None。"""
+    descriptor = _per_share_descriptor(tax.description)
+    if descriptor is None:
+        return None
+    matches = [d for d in same_day_dividends if _per_share_descriptor(d.description) == descriptor]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _match_suspected_dividends(
+    db: Session,
+    user_id: int,
+    broker_account_id: int,
+    dividend_pool: List[ParsedIbkrFlow],
+    tax_pool: List[ParsedIbkrFlow],
+    parsed_rows: List[ParsedIbkrFlow],
+    batch_hashes: set[str],
+    resolution: SuspectedDuplicateResolution,
+) -> None:
+    if not dividend_pool and not tax_pool:
+        return
+    actions = (
+        db.query(CorporateAction)
+        .filter(
+            CorporateAction.user_id == user_id,
+            CorporateAction.action_type == "CASH_DIVIDEND",
+            CorporateAction.symbol.in_(sorted({flow.symbol for flow in dividend_pool + tax_pool})),
+            or_(
+                CorporateAction.broker_account_id == broker_account_id,
+                CorporateAction.broker_account_id.is_(None),
+            ),
+        )
+        .order_by(CorporateAction.id)
+        .all()
+    )
+    sources = _linked_ibkr_sources(
+        db, IbkrActivityFlow.corporate_action_id, {action.id for action in actions}
+    )
+    candidates: List[tuple] = []  # (action, 链接的 IBKR 股息来源 or None)
+    for action in actions:
+        linked = sources.get(action.id, [])
+        if any(source.row_hash in batch_hashes for source in linked):
+            continue  # 本文件同 hash 行已解释它（hash 重复），不占额度
+        dividend_source = next(
+            (source for source in linked if source.activity_type == DIVIDEND_TYPE), None
+        )
+        candidates.append((action, dividend_source))
+
+    def gaps_for(flow: ParsedIbkrFlow):
+        for action, source in candidates:
+            if action.symbol != flow.symbol or action.market != flow.market:
+                continue
+            gap = _dividend_window_gap(action, flow.trade_date, ibkr_linked=source is not None)
+            if gap is not None:
+                yield gap, action, source
+
+    pairs = [
+        (gap, flow_index, action.id, flow, action, source)
+        for flow_index, flow in enumerate(dividend_pool)
+        for gap, action, source in gaps_for(flow)
+    ]
+    used_flows: set[int] = set()
+    used_actions: set[int] = set()
+    held_by_key: Dict[tuple, SuspectedMatch] = {}
+    for _gap, flow_index, action_id, flow, action, source in sorted(pairs, key=lambda p: p[:3]):
+        if flow_index in used_flows or action_id in used_actions:
+            continue
+        used_flows.add(flow_index)
+        used_actions.add(action_id)
+        match = _dividend_match(action, source)
+        resolution.held_hashes.add(flow.row_hash)
+        resolution.matches[flow.row_hash] = match
+        held_by_key.setdefault(_dividend_key(flow), match)
+
+    # 本文件里同日（同标的/币种/日期）的股息：税行跟它们走。同日股息**部分被扣、部分入账**
+    # 时不能按「同日还有一笔入账股息」放行全部税行——正式导入时税只能归到入账的那笔，
+    # 被扣股息的税会被静默累加进去（PR #253 评审 P1）。先按描述里的「币种 每股金额」
+    # 把税行配对到唯一一笔同日股息，跟随它的扣留状态；配不上又是混合日的，扣住待确认。
+    dividends_by_key: Dict[tuple, List[ParsedIbkrFlow]] = {}
+    for flow in parsed_rows:
+        if flow.is_cash_dividend:
+            dividends_by_key.setdefault(_dividend_key(flow), []).append(flow)
+    # 「未入账」的同日股息 = 本轮判疑似的 + 上次已归档为疑似、本次仍未确认的。后者早已
+    # 排出匹配池、本轮没有 matches——只看本轮集合会把它们当成「照常入账」，重导时税行
+    # 全部放行并归到真正入账的那笔（PR #253 复审 P1：分两次导入，税额 11.46 应为 1.91）
+    unconfirmed_prior = unconfirmed_previously_held(resolution)
+
+    def is_held(dividend: ParsedIbkrFlow) -> bool:
+        return dividend.row_hash in resolution.held_hashes or dividend.row_hash in unconfirmed_prior
+
+    def match_of(dividend: ParsedIbkrFlow) -> SuspectedMatch:
+        found = resolution.matches.get(dividend.row_hash) or held_by_key.get(_dividend_key(dividend))
+        if found is not None:
+            return found
+        return SuspectedMatch(
+            kind=PREVIOUSLY_HELD_KIND,
+            record=None,
+            reason="同日股息上次导入已归档为疑似重复、尚未确认",
+        )
+
+    def archived_held_dividends(flow: ParsedIbkrFlow) -> List[IbkrActivityFlow]:
+        """库里已归档为疑似、仍未确认、且不在本文件里的同日股息来源行。
+
+        后续文件只含税行时，本文件的同日股息列表为空——不查库就会把税归到恰好唯一的那笔
+        已入账股息上，而它可能属于另一笔被扣留的股息（PR #253 复审 P1）。"""
+        rows = db.query(IbkrActivityFlow).filter(
+            IbkrActivityFlow.user_id == user_id,
+            IbkrActivityFlow.broker_account_id == broker_account_id,
+            IbkrActivityFlow.activity_type == DIVIDEND_TYPE,
+            IbkrActivityFlow.skip_reason == SUSPECTED_DUPLICATE,
+            IbkrActivityFlow.symbol == flow.symbol,
+            IbkrActivityFlow.market == flow.market,
+            IbkrActivityFlow.base_currency == flow.base_currency,
+            IbkrActivityFlow.trade_date == flow.trade_date,
+        ).all()
+        return [
+            row
+            for row in rows
+            if row.row_hash not in batch_hashes and row.row_hash not in resolution.confirmed_hashes
+        ]
+
+    def booked_unrepresented(flow: ParsedIbkrFlow) -> List[tuple]:
+        """同币种同日已入账、且不由本文件某行解释的股息：[(每股描述集合, action)]。"""
+        actions = find_dividend_candidates_for_tax(
+            db, user_id, flow, broker_account_id=broker_account_id
+        )
+        if not actions:
+            return []
+        linked: Dict[int, List[IbkrActivityFlow]] = {}
+        for source in db.query(IbkrActivityFlow).filter(
+            IbkrActivityFlow.corporate_action_id.in_([a.id for a in actions]),
+            IbkrActivityFlow.activity_type == DIVIDEND_TYPE,
+        ):
+            linked.setdefault(source.corporate_action_id, []).append(source)
+        result = []
+        for action in actions:
+            sources = linked.get(action.id, [])
+            if any(source.row_hash in batch_hashes for source in sources):
+                continue  # 本文件同 hash 股息行已代表它
+            result.append(({_per_share_descriptor(src.description) for src in sources}, action))
+        return result
+
+    for flow in tax_pool:
+        key = _dividend_key(flow)
+        # 同日股息的统一候选集：(每股描述集合, 是否未入账, 配对说明取法)
+        entities: List[tuple] = []
+        for dividend in dividends_by_key.get(key, []):
+            entities.append(
+                ({_per_share_descriptor(dividend.description)}, is_held(dividend),
+                 lambda d=dividend: match_of(d))
+            )
+        for source in archived_held_dividends(flow):
+            entities.append(
+                ({_per_share_descriptor(source.description)}, True,
+                 lambda: SuspectedMatch(
+                     kind=PREVIOUSLY_HELD_KIND,
+                     record=None,
+                     reason="同日股息此前已归档为疑似重复、尚未确认",
+                 ))
+            )
+        for descriptors, _action in booked_unrepresented(flow):
+            entities.append((descriptors, False, None))
+
+        if entities:
+            held_entities = [entity for entity in entities if entity[1]]
+            if not held_entities:
+                continue  # 同日股息全部照常入账（或已入账）：税行随它们入账
+            descriptor = _per_share_descriptor(flow.description)
+            paired = [
+                entity for entity in entities if descriptor is not None and descriptor in entity[0]
+            ]
+            paired_entity = paired[0] if len(paired) == 1 else None
+            if paired_entity is not None and not paired_entity[1]:
+                continue  # 明确属于一笔入账股息
+            follow = paired_entity or (
+                held_entities[0] if len(held_entities) == len(entities) else None
+            )
+            if follow is not None:
+                dividend_match = follow[2]()
+                reason = f"随同日疑似重复股息一并扣住：{dividend_match.reason}"
+            else:
+                # 同日有扣留也有入账、又无法从描述确定归属：扣住待确认，不因「唯一可入账
+                # 候选恰好是另一笔股息」就自动归属
+                dividend_match = held_entities[0][2]()
+                reason = (
+                    "同日多笔股息部分疑似重复、部分照常入账，无法从描述确定这条预扣税属于哪一笔，"
+                    f"请核对后确认：{dividend_match.reason}"
+                )
+            resolution.held_hashes.add(flow.row_hash)
+            resolution.matches[flow.row_hash] = SuspectedMatch(
+                kind=dividend_match.kind,
+                record=dividend_match.record,
+                source=dividend_match.source,
+                source_label=dividend_match.source_label,
+                reason=reason,
+            )
+            continue
+        # 孤立税行：库里同币种同日既无入账股息也无扣留股息，但日期窗口命中已入账股息
+        best = min(gaps_for(flow), key=lambda item: (item[0], item[1].id), default=None)
+        if best is not None:
+            _gap, action, source = best
+            resolution.held_hashes.add(flow.row_hash)
+            resolution.matches[flow.row_hash] = _dividend_match(
+                action, source, "预扣税对应的股息疑似已入账："
+            )
+
+
+def resolve_suspected_duplicates(
+    db: Session,
+    user_id: int,
+    broker_account_id: int,
+    parsed_rows: List[ParsedIbkrFlow],
+    *,
+    resolution: ExistingSourceResolution,
+    confirmed_row_hashes: frozenset[str] = frozenset(),
+) -> tuple[SuspectedDuplicateResolution, List[str]]:
+    """预览与导入共用的唯一入口——两边不可能对同一份文件得出不同的疑似结论。
+
+    返回 (结论, 提示)。提示只针对「数量/价格对不上的同日同向交易」，不扣住任何行。
+    """
+    batch_hashes = {flow.row_hash for flow in parsed_rows}
+    unknown = sorted(confirmed_row_hashes - batch_hashes)
+    if unknown:
+        raise ValueError(f"确认列表包含本文件中不存在的流水: {unknown[0][:12]}…")
+    previously_held = dict(resolution.suspected_sources)
+    # 确认一条股息 = 连同它的同日预扣税一起转正（税行不需要逐条勾选）
+    confirmed = set(confirmed_row_hashes)
+    confirmed_dividend_keys = {
+        _dividend_key(flow)
+        for flow in parsed_rows
+        if flow.is_cash_dividend and flow.row_hash in confirmed
+    }
+    for flow in parsed_rows:
+        if (
+            flow.is_withholding_tax
+            and flow.row_hash in previously_held
+            and _dividend_key(flow) in confirmed_dividend_keys
+        ):
+            confirmed.add(flow.row_hash)
+    suspected = SuspectedDuplicateResolution(
+        previously_held=previously_held, confirmed_hashes=frozenset(confirmed)
+    )
+    pool = [
+        flow
+        for flow in parsed_rows
+        if flow.row_hash not in resolution.booked_hashes
+        and flow.row_hash not in previously_held
+        and flow.row_hash not in confirmed
+    ]
+    warnings: List[str] = []
+    _match_suspected_trades(
+        db,
+        user_id,
+        broker_account_id,
+        [
+            flow
+            for flow in pool
+            if flow.is_trade
+            and flow.symbol
+            and flow.market
+            and flow.quantity
+            and flow.price is not None
+            and flow.price > 0
+        ],
+        batch_hashes,
+        suspected,
+        warnings,
+    )
+    _match_suspected_dividends(
+        db,
+        user_id,
+        broker_account_id,
+        [flow for flow in pool if flow.is_cash_dividend],
+        [flow for flow in pool if flow.is_withholding_tax],
+        parsed_rows,
+        batch_hashes,
+        suspected,
+    )
+    return suspected, warnings
+
+
+def unconfirmed_previously_held(suspected: SuspectedDuplicateResolution) -> set[str]:
+    """上次已归档为疑似、本次未确认的行：按重复计（#189 同款守卫）。"""
+    return {
+        row_hash
+        for row_hash in suspected.previously_held
+        if row_hash not in suspected.confirmed_hashes
+    }
+
+
+def suspected_note(match: Optional[SuspectedMatch]) -> str:
+    if match is None:
+        return "suspected duplicate; manual confirmation required"
+    if match.record is None:
+        return f"suspected duplicate ({match.reason}); manual confirmation required"
+    record = match.record
+    record_date = getattr(record, "transaction_date", None) or getattr(record, "ex_date", None)
+    return (
+        f"suspected duplicate of {match.kind} id={record.id} (date {record_date}; "
+        f"{match.source_label}); manual confirmation required"
+    )
+
+
+def suspected_sample(
+    flow: ParsedIbkrFlow,
+    match: Optional[SuspectedMatch],
+    *,
+    previously_held: bool,
+    held_source: Optional[IbkrActivityFlow] = None,
+) -> Dict[str, Any]:
+    record = match.record if match is not None else None
+    source = match.source if match is not None else None
+    existing_date = existing_amount = existing_price = None
+    if match is None:
+        reason = "上次导入已归档为疑似重复，仍待确认（本次按重复跳过）"
+        notes = strip_text(held_source.notes if held_source is not None else None)
+        marker = notes.find("suspected duplicate of ")
+        if marker >= 0:
+            reason += f"：{notes[marker:]}"
+    else:
+        reason = match.reason
+        if record is None:
+            pass  # 配对目标是上次归档的疑似行，没有账本记录可展示
+        elif match.kind == "transaction":
+            existing_date = record.transaction_date.isoformat()
+            existing_price = _fmt_decimal(record.price)
+        else:
+            existing_date = (record.payment_date or record.ex_date).isoformat()
+            if record.total_dividend is not None:
+                existing_amount = _fmt_decimal(record.total_dividend)
+    return {
+        "row_number": flow.source_row_number,
+        "symbol": flow.symbol or flow.raw_symbol,
+        "name": flow.name,
+        "market": flow.market or "",
+        "transaction_type": flow.transaction_type
+        or ("CASH_DIVIDEND" if flow.is_cash_dividend else "DIVIDEND_TAX"),
+        "trade_date": flow.trade_date.isoformat(),
+        "quantity": str(abs(flow.quantity)) if flow.quantity is not None else "0",
+        # 发生金额是 CSV 的基础货币金额（港股成交价是 HKD、金额可能是 USD），
+        # 币种不能取成交价币种（PR #253 评审 P2）；成交价币种另给
+        "amount": str(flow.gross_amount if flow.gross_amount is not None else Decimal("0")),
+        "price": str(flow.price) if flow.price is not None else "",
+        "currency": flow.base_currency,
+        "price_currency": flow.price_currency if flow.transaction_type else None,
+        "existing_price": existing_price,
+        "existing_source_filename": source.source_filename if source is not None else None,
+        "existing_import_batch_id": (
+            source.import_batch_id
+            if source is not None
+            else getattr(record, "import_batch_id", None)
+        ),
+        "existing_row_number": source.source_row_number if source is not None else None,
+        "existing_row_hash": source.row_hash if source is not None else None,
+        "match_kind": match.kind if match is not None else None,
+        "existing_id": record.id if record is not None else None,
+        "existing_date": existing_date,
+        "existing_currency": getattr(record, "currency", None),
+        "existing_amount": existing_amount,
+        "existing_source": match.source_label if match is not None else None,
+        "reason": reason,
+        "row_hash": flow.row_hash,
+        "previously_held": previously_held,
+    }
+
+
+def suspected_samples(
+    parsed_rows: List[ParsedIbkrFlow], suspected: Optional[SuspectedDuplicateResolution]
+) -> List[Dict[str, Any]]:
+    if suspected is None:
+        return []
+    pending = unconfirmed_previously_held(suspected)
+    return [
+        suspected_sample(flow, suspected.matches.get(flow.row_hash), previously_held=False)
+        for flow in parsed_rows
+        if flow.row_hash in suspected.held_hashes
+    ] + [
+        suspected_sample(
+            flow,
+            None,
+            previously_held=True,
+            held_source=suspected.previously_held.get(flow.row_hash),
+        )
+        for flow in parsed_rows
+        if flow.row_hash in pending
+    ]
+
+
 def eligible_rows(parsed_rows: List[ParsedIbkrFlow]) -> List[ParsedIbkrFlow]:
     return [
         flow
@@ -1268,7 +1921,9 @@ def build_import_result(
     warnings: Optional[List[str]] = None,
     source_accounts: Optional[List[str]] = None,
     canonical_objects_changed: int = 0,
+    suspected: Optional[SuspectedDuplicateResolution] = None,
 ) -> Dict[str, Any]:
+    held_hashes = suspected.held_hashes if suspected is not None else set()
     rows = eligible_rows(parsed_rows)
     trade_rows = [flow for flow in rows if flow.is_trade]
     dividend_rows = [flow for flow in rows if flow.is_cash_dividend]
@@ -1290,6 +1945,7 @@ def build_import_result(
     ]
     audited_rows = rows + bookable_cash_rows
     import_rows, duplicate_rows = split_new_and_duplicate_rows(audited_rows, existing_hashes)
+    import_rows = [flow for flow in import_rows if flow.row_hash not in held_hashes]
     skip_counts = {
         "option": len([flow for flow in parsed_rows if flow.skip_reason == "option"]),
         "fx": len([flow for flow in parsed_rows if flow.skip_reason == "fx"]),
@@ -1357,6 +2013,8 @@ def build_import_result(
         ],
         errors=errors,
         warnings=warnings,
+        suspected_duplicate_rows=len(held_hashes),
+        suspected_duplicate_samples=suspected_samples(parsed_rows, suspected),
     )
     result.update(
         {
@@ -1380,44 +2038,63 @@ def preview_booked_source_hashes(
     broker_account_id: int,
     resolution: ExistingSourceResolution,
     errors: List[str],
+    suspected: Optional[SuspectedDuplicateResolution] = None,
 ) -> set[str]:
-    """Dry-run source-to-canonical coverage without mutating the database."""
+    """Dry-run source-to-canonical coverage without mutating the database.
+
+    疑似重复（本次扣住的、以及上次已归档仍未确认的）不会入账，不进覆盖口径；
+    后者由调用方按重复计。
+    """
     booked_hashes = set(resolution.booked_hashes)
+    not_booking: set[str] = set()
+    if suspected is not None:
+        not_booking = suspected.held_hashes | unconfirmed_previously_held(suspected)
     prospective_dividends = [
         flow
         for flow in parsed_rows
-        if flow.is_cash_dividend and flow.row_hash not in resolution.booked_hashes
+        if flow.is_cash_dividend
+        and flow.row_hash not in resolution.booked_hashes
+        and flow.row_hash not in not_booking
     ]
     for flow in parsed_rows:
         if (
-            flow.is_trade
-            or flow.is_cash_dividend
-            or flow.is_cash_business
-            or flow.fx_legs is not None
-        ) and flow.row_hash not in booked_hashes:
+            (
+                flow.is_trade
+                or flow.is_cash_dividend
+                or flow.is_cash_business
+                or flow.fx_legs is not None
+            )
+            and flow.row_hash not in booked_hashes
+            and flow.row_hash not in not_booking
+        ):
             booked_hashes.add(flow.row_hash)
 
     for flow in parsed_rows:
-        if not flow.is_withholding_tax or flow.row_hash in booked_hashes:
+        if (
+            not flow.is_withholding_tax
+            or flow.row_hash in booked_hashes
+            or flow.row_hash in not_booking
+        ):
             continue
-        candidate_ids = {
-            action.id
-            for action in find_dividend_candidates_for_tax(
+        real_candidates, virtual_candidates = narrow_tax_candidates(
+            db,
+            flow,
+            find_dividend_candidates_for_tax(
                 db,
                 user_id,
                 flow,
                 broker_account_id=broker_account_id,
-            )
-        }
-        virtual_candidates = [
-            dividend
-            for dividend in prospective_dividends
-            if dividend.symbol == flow.symbol
-            and dividend.market == flow.market
-            and dividend.base_currency == flow.base_currency
-            and dividend.trade_date == flow.trade_date
-        ]
-        candidate_count = len(candidate_ids) + len(virtual_candidates)
+            ),
+            [
+                dividend
+                for dividend in prospective_dividends
+                if dividend.symbol == flow.symbol
+                and dividend.market == flow.market
+                and dividend.base_currency == flow.base_currency
+                and dividend.trade_date == flow.trade_date
+            ],
+        )
+        candidate_count = len({action.id for action in real_candidates}) + len(virtual_candidates)
         if candidate_count == 1:
             booked_hashes.add(flow.row_hash)
         else:
@@ -1501,6 +2178,18 @@ def cash_flow_anomaly_warnings(parsed_rows: List[ParsedIbkrFlow]) -> List[str]:
     return warnings
 
 
+def mark_previously_held_duplicates(
+    suspected: SuspectedDuplicateResolution,
+    *,
+    duplicate_hashes: set[str],
+    booked_source_hashes: set[str],
+) -> None:
+    """上次已归档为疑似、本次未确认的行按「已处理的重复」计（#189 同款）。"""
+    pending = unconfirmed_previously_held(suspected)
+    duplicate_hashes.update(pending)
+    booked_source_hashes.update(pending)
+
+
 def mark_archived_bookable_duplicates(
     parsed_rows: List[ParsedIbkrFlow],
     existing_archived_hashes: set[str],
@@ -1524,6 +2213,7 @@ def preview_ibkr_activity(
     contents: bytes,
     filename: str,
     broker_account_id: Optional[int] = None,
+    confirmed_row_hashes: frozenset[str] = frozenset(),
 ) -> Dict[str, Any]:
     if broker_account_id is None:
         raise ValueError("请选择 IBKR 券商账户后再预览")
@@ -1567,6 +2257,16 @@ def preview_ibkr_activity(
         broker_account_id=broker_account_id,
         broker_account=broker_account,
     )
+    # 疑似重复：与正式导入同一个解析器，结论只算一次
+    suspected, suspected_warnings = resolve_suspected_duplicates(
+        db,
+        user_id,
+        broker_account_id,
+        parsed_rows,
+        resolution=resolution,
+        confirmed_row_hashes=confirmed_row_hashes,
+    )
+    warnings_extra.extend(suspected_warnings)
     booked_source_hashes = preview_booked_source_hashes(
         db,
         user_id,
@@ -1574,6 +2274,7 @@ def preview_ibkr_activity(
         broker_account_id=broker_account_id,
         resolution=resolution,
         errors=errors,
+        suspected=suspected,
     )
     # 现金/外汇行的归档判重与正式导入共用：既有行计入 duplicate/booked，
     # 他账户归档行同样在预览阶段阻断
@@ -1584,6 +2285,11 @@ def preview_ibkr_activity(
     mark_archived_bookable_duplicates(
         parsed_rows,
         existing_archived_hashes,
+        duplicate_hashes=duplicate_hashes,
+        booked_source_hashes=booked_source_hashes,
+    )
+    mark_previously_held_duplicates(
+        suspected,
         duplicate_hashes=duplicate_hashes,
         booked_source_hashes=booked_source_hashes,
     )
@@ -1601,6 +2307,7 @@ def preview_ibkr_activity(
         errors=errors,
         warnings=warnings_extra,
         source_accounts=source_accounts,
+        suspected=suspected,
     )
 
 
@@ -1760,6 +2467,51 @@ def find_dividend_candidates_for_tax(
         )
         .order_by(CorporateAction.id)
         .all()
+    )
+
+
+def narrow_tax_candidates(
+    db: Session,
+    flow: ParsedIbkrFlow,
+    candidates: List[CorporateAction],
+    virtual_dividends: Sequence[ParsedIbkrFlow] = (),
+) -> tuple[List[CorporateAction], List[ParsedIbkrFlow]]:
+    """按描述里的「币种 每股金额」收窄税行的同日候选股息。
+
+    IBKR 的税行与股息行描述同源（`… HKD 0.75 每股 (常规股息)` / `… HKD 0.75 每股 - CN 税收`，
+    生产全部历史逐条一致）。已入账候选看它链接的 IBKR 股息来源行，预览里的待入账股息看本文件
+    原行：
+    - 恰好一笔描述相同 → 只留它（同日两笔股息各带税时此前必然整条报错）；
+    - 否则剔除**描述明确不同**的候选（公告建议入账等没有 IBKR 来源的候选描述未知，保留）——
+      只剩一笔入账候选、但描述属于另一笔股息时不能归给它（PR #253 复审：人工确认一条税行时，
+      它的股息仍被扣留，唯一的入账候选是别的股息）。
+    税行本身没有每股描述时原样返回。
+    """
+    virtual = list(virtual_dividends)
+    descriptor = _per_share_descriptor(flow.description)
+    if descriptor is None or (not candidates and not virtual):
+        return candidates, virtual
+    linked: Dict[int, set] = {}
+    if candidates:
+        for source in db.query(IbkrActivityFlow).filter(
+            IbkrActivityFlow.corporate_action_id.in_([c.id for c in candidates]),
+            IbkrActivityFlow.activity_type == DIVIDEND_TYPE,
+        ):
+            linked.setdefault(source.corporate_action_id, set()).add(
+                _per_share_descriptor(source.description)
+            )
+    exact = [c for c in candidates if descriptor in linked.get(c.id, set())]
+    exact_virtual = [d for d in virtual if _per_share_descriptor(d.description) == descriptor]
+    if len(exact) + len(exact_virtual) == 1:
+        return exact, exact_virtual
+
+    def compatible(descriptors: set) -> bool:
+        known = {d for d in descriptors if d is not None}
+        return not known or descriptor in known
+
+    return (
+        [c for c in candidates if compatible(linked.get(c.id, set()))],
+        [d for d in virtual if compatible({_per_share_descriptor(d.description)})],
     )
 
 
@@ -1987,6 +2739,7 @@ def import_ibkr_activity(
     contents: bytes,
     filename: str,
     broker_account_id: Optional[int] = None,
+    confirmed_row_hashes: frozenset[str] = frozenset(),
 ) -> Dict[str, Any]:
     if broker_account_id is None:
         raise ValueError("请选择 IBKR 券商账户后再正式导入")
@@ -2059,12 +2812,38 @@ def import_ibkr_activity(
         duplicate_hashes = set(resolution.duplicate_hashes)
         booked_source_hashes.update(resolution.booked_hashes)
 
+        # 疑似重复：与预览同一个解析器，结论只算一次
+        suspected, suspected_warnings = resolve_suspected_duplicates(
+            db,
+            user_id,
+            broker_account_id,
+            parsed_rows,
+            resolution=resolution,
+            confirmed_row_hashes=confirmed_row_hashes,
+        )
+        warnings_extra.extend(suspected_warnings)
+        # 上次已归档为疑似、本次未确认：按重复计，原归档行继续保留待确认。
+        # 确认过的在原归档行上转正（suspected_sources.pop），绝不插第二条同 hash 行
+        pending_suspected = unconfirmed_previously_held(suspected)
+        mark_previously_held_duplicates(
+            suspected,
+            duplicate_hashes=duplicate_hashes,
+            booked_source_hashes=booked_source_hashes,
+        )
+        suspected_sources = {
+            row_hash: source
+            for row_hash, source in suspected.previously_held.items()
+            if row_hash not in pending_suspected
+        }
+
         affected_symbols: set[tuple[str, str]] = set()
         pending_tax_flows: List[ParsedIbkrFlow] = [
             flow
             for flow in parsed_rows
             if flow.is_withholding_tax
             and flow.row_hash not in resolution.booked_hashes
+            and flow.row_hash not in pending_suspected
+            and flow.row_hash not in suspected.held_hashes
         ]
 
         # 期权行不在 eligible_rows 里，resolution 不覆盖其哈希；
@@ -2132,6 +2911,27 @@ def import_ibkr_activity(
                 continue
             if flow.row_hash in resolution.booked_hashes:
                 continue
+            if flow.row_hash in pending_suspected:
+                continue
+            if flow.row_hash in suspected.held_hashes:
+                # 疑似重复：归档留痕、不入账。人工确认后带 confirm 清单重导，
+                # 在这条归档行上原地转正
+                note = suspected_note(suspected.matches.get(flow.row_hash))
+                existing = resolution.unresolved_tax_sources.get(flow.row_hash)
+                if existing is not None:
+                    # 此前已归档为「未归属税行」：原地改标记，不插第二条同 hash 行
+                    # （唯一约束，整批回滚——PR #253 评审 P2）
+                    mark_suspected_duplicate(existing, note)
+                    continue
+                archived = create_ibkr_activity_flow(
+                    user_id=user_id,
+                    filename=filename,
+                    flow=flow,
+                    broker_account_id=broker_account_id,
+                    import_batch_id=batch_id,
+                )
+                db.add(mark_suspected_duplicate(archived, note))
+                continue
             if flow.is_withholding_tax:
                 continue
 
@@ -2160,16 +2960,27 @@ def import_ibkr_activity(
                 )
                 db.add(action)
                 db.flush()
-                db.add(
-                    create_ibkr_activity_flow(
-                        user_id=user_id,
-                        filename=filename,
-                        flow=flow,
-                        broker_account_id=broker_account_id,
-                        import_batch_id=batch_id,
-                        corporate_action_id=action.id,
+                preserved = suspected_sources.pop(flow.row_hash, None)
+                if preserved is not None:
+                    # 人工确认的疑似股息：在原归档行上转正，不插第二条同 hash 行
+                    db.add(
+                        attribute_source(
+                            preserved,
+                            corporate_action_id=action.id,
+                            note="confirmed as a distinct dividend during re-import",
+                        )
                     )
-                )
+                else:
+                    db.add(
+                        create_ibkr_activity_flow(
+                            user_id=user_id,
+                            filename=filename,
+                            flow=flow,
+                            broker_account_id=broker_account_id,
+                            import_batch_id=batch_id,
+                            corporate_action_id=action.id,
+                        )
+                    )
                 booked_source_hashes.add(flow.row_hash)
                 imported_corporate_actions += 1
                 canonical_action_ids_changed.add(action.id)
@@ -2209,30 +3020,48 @@ def import_ibkr_activity(
             )
             db.add(transaction)
             db.flush()
-            db.add(
-                create_ibkr_activity_flow(
-                    user_id=user_id,
-                    filename=filename,
-                    flow=flow,
-                    broker_account_id=broker_account_id,
-                    import_batch_id=batch_id,
-                    transaction_id=transaction.id,
+            preserved = suspected_sources.pop(flow.row_hash, None)
+            if preserved is not None:
+                # 人工确认的疑似成交：在原归档行上转正，不插第二条同 hash 行
+                db.add(book_suspected_source(preserved, transaction.id))
+            else:
+                db.add(
+                    create_ibkr_activity_flow(
+                        user_id=user_id,
+                        filename=filename,
+                        flow=flow,
+                        broker_account_id=broker_account_id,
+                        import_batch_id=batch_id,
+                        transaction_id=transaction.id,
+                    )
                 )
-            )
             booked_source_hashes.add(flow.row_hash)
             affected_symbols.add((flow.symbol, flow.market))
             imported_transactions += 1
 
         db.flush()
         for flow in pending_tax_flows:
-            candidates = find_dividend_candidates_for_tax(
+            candidates, _ = narrow_tax_candidates(
                 db,
-                user_id,
                 flow,
-                broker_account_id=broker_account_id,
+                find_dividend_candidates_for_tax(
+                    db,
+                    user_id,
+                    flow,
+                    broker_account_id=broker_account_id,
+                ),
             )
+            preserved_tax = suspected_sources.pop(flow.row_hash, None)
             if len(candidates) != 1:
-                if flow.row_hash not in resolution.unresolved_tax_sources:
+                if preserved_tax is not None:
+                    # 确认过的疑似税行仍找不到唯一股息：原归档行改记未归属，不建新行
+                    preserved_tax.skip_reason = UNATTRIBUTED_TAX
+                    preserved_tax.notes = (
+                        f"{preserved_tax.notes or ''}; confirmed but no unique dividend "
+                        f"candidate (found {len(candidates)})"
+                    ).strip("; ")
+                    db.add(preserved_tax)
+                elif flow.row_hash not in resolution.unresolved_tax_sources:
                     unresolved_source = create_ibkr_activity_flow(
                         user_id=user_id,
                         filename=filename,
@@ -2258,7 +3087,9 @@ def import_ibkr_activity(
                 flow,
                 candidates[0],
                 import_batch_id=batch_id,
-                existing_source=resolution.unresolved_tax_sources.get(flow.row_hash),
+                existing_source=(
+                    preserved_tax or resolution.unresolved_tax_sources.get(flow.row_hash)
+                ),
             )
             booked_source_hashes.add(flow.row_hash)
             canonical_action_ids_changed.add(candidates[0].id)
@@ -2317,6 +3148,7 @@ def import_ibkr_activity(
             warnings=warnings_extra,
             source_accounts=source_accounts,
             canonical_objects_changed=canonical_objects_changed,
+            suspected=suspected,
         )
         imported_source_rows = (
             db.query(IbkrActivityFlow)

@@ -414,14 +414,25 @@ const api = {
       confirm_suspected_row_hashes: confirmHashes.join(',')
     })
   },
-  previewIbkrActivity(file: File | Blob, brokerAccountId: number | string | null = null) {
+  // confirmHashes：与招商同一表单字段——用户确认为真实的另一笔的疑似重复行
+  previewIbkrActivity(
+    file: File | Blob,
+    brokerAccountId: number | string | null = null,
+    confirmHashes: string[] = []
+  ) {
     return uploadFile('/import/ibkr-activity/preview', file, {
-      broker_account_id: brokerAccountId
+      broker_account_id: brokerAccountId,
+      confirm_suspected_row_hashes: confirmHashes.join(',')
     })
   },
-  importIbkrActivity(file: File | Blob, brokerAccountId: number | string | null = null) {
+  importIbkrActivity(
+    file: File | Blob,
+    brokerAccountId: number | string | null = null,
+    confirmHashes: string[] = []
+  ) {
     return uploadFile('/import/ibkr-activity', file, {
-      broker_account_id: brokerAccountId
+      broker_account_id: brokerAccountId,
+      confirm_suspected_row_hashes: confirmHashes.join(',')
     })
   },
   previewEastmoneyStatement(file: File | Blob, brokerAccountId: number | string | null = null) {

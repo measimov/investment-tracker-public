@@ -400,7 +400,9 @@ def test_ibkr_preview_requires_owned_matching_broker_account():
 def test_ibkr_preview_api_forwards_broker_account_id(monkeypatch):
     captured = {}
 
-    def fake_preview(db, user_id, contents, filename, broker_account_id=None):
+    def fake_preview(
+        db, user_id, contents, filename, broker_account_id=None, confirmed_row_hashes=None
+    ):
         captured.update(
             {
                 "db": db,
@@ -408,6 +410,7 @@ def test_ibkr_preview_api_forwards_broker_account_id(monkeypatch):
                 "contents": contents,
                 "filename": filename,
                 "broker_account_id": broker_account_id,
+                "confirmed_row_hashes": confirmed_row_hashes,
             }
         )
         return {"ok": True}
@@ -418,6 +421,7 @@ def test_ibkr_preview_api_forwards_broker_account_id(monkeypatch):
         import_export_api.preview_ibkr_activity_statement(
             file=UploadFile(filename="ibkr.csv", file=io.BytesIO(b"statement")),
             broker_account_id=37,
+            confirm_suspected_row_hashes="AB" * 32,
             current_user=SimpleNamespace(id=1),
             db=db_marker,
         )
@@ -430,6 +434,8 @@ def test_ibkr_preview_api_forwards_broker_account_id(monkeypatch):
         "contents": b"statement",
         "filename": "ibkr.csv",
         "broker_account_id": 37,
+        # 疑似重复的确认清单与招商同一表单字段、同一校验（小写归一）
+        "confirmed_row_hashes": frozenset({"ab" * 32}),
     }
 
 

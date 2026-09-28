@@ -329,11 +329,13 @@ async def import_cmb_fund_flows(
 async def preview_ibkr_activity_statement(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
+    confirm_suspected_row_hashes: str | None = Form(None),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Preview IBKR import (Activity Statement CSV or trade_history.xlsx)."""
     validate_ibkr_filename(file.filename)
+    confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
     contents = await read_upload(file)
     try:
@@ -343,6 +345,7 @@ async def preview_ibkr_activity_statement(
             contents,
             file.filename,
             broker_account_id=broker_account_id,
+            confirmed_row_hashes=confirmed,
         )
     except (*USER_DATA_ERRORS, *PARSER_ERRORS) as exc:
         raise as_user_data_error(exc, "IBKR 对账单预览失败") from exc
@@ -352,11 +355,13 @@ async def preview_ibkr_activity_statement(
 async def import_ibkr_activity_statement(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
+    confirm_suspected_row_hashes: str | None = Form(None),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Import IBKR trades (Activity CSV or trade_history.xlsx). Duplicate row hashes are skipped."""
     validate_ibkr_filename(file.filename)
+    confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
     contents = await read_upload(file)
     try:
@@ -366,6 +371,7 @@ async def import_ibkr_activity_statement(
             contents,
             file.filename,
             broker_account_id=broker_account_id,
+            confirmed_row_hashes=confirmed,
         )
     except (*USER_DATA_ERRORS, *PARSER_ERRORS) as exc:
         raise as_user_data_error(exc, "IBKR 对账单导入失败") from exc

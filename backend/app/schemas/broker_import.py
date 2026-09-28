@@ -17,7 +17,13 @@ class BrokerImportSample(BaseModel):
 
 
 class SuspectedDuplicateSample(BaseModel):
-    """疑似重复成交行（#190）：与已入账流水同「代码/日期/方向/数量/金额/币种」但 hash 不同。"""
+    """疑似重复行：hash 不同、但账本里已有同一笔经济事实。
+
+    招商（#190）：与已入账流水同「代码/日期/方向/数量/金额/币种」。
+    IBKR：与已有交易同「代码/市场/日期/方向/|数量|」（含手工录入与其他导出形态），
+    或股息/预扣税与已入账股息日期窗口重合（不比金额/币种）——配对目标在
+    match_kind/existing_id/existing_date/existing_source，reason 是给人看的说明。
+    """
 
     row_number: int
     symbol: str
@@ -28,11 +34,22 @@ class SuspectedDuplicateSample(BaseModel):
     quantity: str
     amount: str
     price: str
+    currency: Optional[str] = None
+    # 成交价币种（IBKR 港股：价格 HKD、发生金额按基础货币 USD）；股息/税行为空
+    price_currency: Optional[str] = None
     existing_price: Optional[str] = None
     existing_source_filename: Optional[str] = None
     existing_import_batch_id: Optional[int] = None
     existing_row_number: Optional[int] = None
     existing_row_hash: Optional[str] = None
+    # 配对目标：transaction / corporate_action 及其 id、日期、币种、金额、来源说明
+    match_kind: Optional[str] = None
+    existing_id: Optional[int] = None
+    existing_date: Optional[str] = None
+    existing_currency: Optional[str] = None
+    existing_amount: Optional[str] = None
+    existing_source: Optional[str] = None
+    reason: Optional[str] = None
     row_hash: str
     # 上一批已归档为疑似、仍未确认：本次按重复计，列出来供确认
     previously_held: bool = False
