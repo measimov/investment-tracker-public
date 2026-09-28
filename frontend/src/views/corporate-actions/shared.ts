@@ -96,6 +96,25 @@ interface HkWithholding {
   southbound_individual_percent?: string | null
 }
 
+/** EF003（可選擇以股份代替）的代息股份信息，后端 parse_scrip_option */
+interface HkScripOption {
+  default_option?: string | null
+  default_cash?: boolean | null
+  price?: { amount: string; currency: string } | null
+  election_deadline?: string | null
+}
+
+/** EF002（可選擇貨幣）的可选币种，后端 parse_currency_options */
+interface HkCurrencyOptions {
+  options?: {
+    currency?: string | null
+    amount?: string | null
+    exchange_rate?: { from: string; to: string; rate: string } | null
+    pending?: boolean
+  }[]
+  election_deadline?: string | null
+}
+
 interface HkDividendComponent {
   dividend_type?: string | null
   dividend_nature?: string | null
@@ -107,6 +126,8 @@ interface HkDividendComponent {
   status?: string | null
   announcement_date?: string | null
   withholding?: HkWithholding | null
+  scrip?: HkScripOption | null
+  currency_options?: HkCurrencyOptions | null
 }
 
 /** 港股（披露易）建议的 announcement_detail 形状（后端 group_hk_dividends_by_ex_date） */
@@ -165,5 +186,38 @@ export function hkDividendNotes(detail: HkAnnouncementDetail | null | undefined)
   if (tax) lines.push(tax)
   if (detail.scrip_option) lines.push('可选以股代息：若选择以股代息，实际不收现金')
   if (detail.currency_election) lines.push('可选择派发币种：实际到账币种可能与此不同')
+  for (const c of components) {
+    const scrip = scripNote(c.scrip)
+    if (scrip) lines.push(scrip)
+    const currency = currencyOptionsNote(c.currency_options)
+    if (currency) lines.push(currency)
+  }
   return lines
+}
+
+function deadlineText(deadline: string | null | undefined): string {
+  return deadline ? `，选择截止 ${deadline}` : ''
+}
+
+function scripNote(scrip: HkScripOption | null | undefined): string | null {
+  if (!scrip) return null
+  const price = scrip.price ? `代息股份价格 ${scrip.price.amount} ${scrip.price.currency}` : ''
+  if (scrip.default_cash === false) {
+    // 金额仍按现金口径展示，但不作选择的股东收到的是新股
+    return `预设选项为「${scrip.default_option}」：不作选择将收到代息股份${price ? `（${price}）` : ''}${deadlineText(scrip.election_deadline)}`
+  }
+  if (!price && !scrip.election_deadline) return null
+  return `以股代息：${price || '代息股份价格未公布'}${deadlineText(scrip.election_deadline)}`
+}
+
+function currencyOptionsNote(options: HkCurrencyOptions | null | undefined): string | null {
+  const items = (options?.options || []).map((o) => {
+    if (!o.amount) return `${o.currency ?? '其他币种'} 金额有待公布`
+    const rate = o.exchange_rate
+      ? `，1 ${o.exchange_rate.from} = ${o.exchange_rate.rate} ${o.exchange_rate.to}`
+      : ''
+    return `每股 ${o.amount} ${o.currency ?? ''}${rate}`.trim()
+  })
+  if (!items.length) return null
+  return `可选币种：${items.join('；')}${deadlineText(options?.election_deadline)}`
 }

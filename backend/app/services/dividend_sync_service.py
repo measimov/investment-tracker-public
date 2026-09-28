@@ -634,10 +634,15 @@ def _decimal_text(value: Optional[Decimal]) -> Optional[str]:
 
 def _component_detail(entry: Dict[str, Any]) -> Dict[str, Any]:
     form = entry["form"]
+    financial_year_end = form.get("financial_year_end")
     return {
         "dividend_type": form["dividend_type"],
         "dividend_nature": form["dividend_nature"],
         "period_end": form["period_end"].isoformat() if form["period_end"] else None,
+        # 報告期末「不適用」时的身份锚点来源（financial_year_end / none），见 dividend_identity
+        "period_basis": hkex_dividend_source.period_basis(form),
+        "financial_year_end": financial_year_end.isoformat() if financial_year_end else None,
+        "template": form.get("template"),
         "amount": _decimal_text(form["payment"]["amount"]),
         "currency": form["payment"]["currency"],
         "declared_amount": _decimal_text((form.get("declared") or {}).get("amount")),
@@ -665,6 +670,9 @@ def _component_detail(entry: Dict[str, Any]) -> Dict[str, Any]:
         },
         "scrip_option": form["scrip_option"],
         "currency_election": form["currency_election"],
+        # EF003 预设选项/代息股份价格、EF002 可选货币金额：只作展示，建议金额仍是预设现金
+        "scrip": form.get("scrip"),
+        "currency_options": form.get("currency_options"),
     }
 
 
@@ -814,13 +822,10 @@ def _sync_hkex_symbol(
         })
         return
     for item in resolution.blocked:
-        period_end, dividend_type, dividend_nature = item["identity"]
         result["hk_blocked"].append({
             "symbol": symbol,
             "scope": "dividend",
-            "period_end": period_end.isoformat() if period_end else None,
-            "dividend_type": dividend_type,
-            "dividend_nature": dividend_nature,
+            **hkex_dividend_source.describe_identity(item["identity"], item.get("period_basis")),
             "ex_dates": [day.isoformat() for day in item["ex_dates"]],
             "doc_id": item["entry"].get("doc_id"),
             "url": item["entry"].get("url"),
@@ -839,6 +844,7 @@ def _sync_hkex_symbol(
             "dividend_type": form["dividend_type"],
             "dividend_nature": form["dividend_nature"],
             "period_end": form["period_end"].isoformat() if form["period_end"] else None,
+            "period_basis": hkex_dividend_source.period_basis(form),
             "announcement_date": form["announcement_date"].isoformat(),
         })
     groups, conflicts = group_hk_dividends_by_ex_date(current)

@@ -609,6 +609,142 @@ def test_lost_job_ownership_aborts_instead_of_counting_as_failure(db, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# 解析器 v2：EF003、報告期末「不適用」、无期间撤回；升版零下载重解析
+# ---------------------------------------------------------------------------
+
+
+def test_ef003_scrip_form_yields_default_cash_suggestion(db, monkeypatch):
+    """02156 EF003（可選擇以股份代替）：建议金额 = 预设现金（港元），代息股份信息进明细。"""
+    fake = FakeHkex(monkeypatch)
+    fake.publish("02156", "2023060801296", "2023-06-08T22:15:00",
+                 _text("02156_final_2022_ef003_update.txt"))
+    _seed_hk_holding(db, "02156")
+    _buy(db, "02156", "2000", date(2023, 5, 2))
+
+    result = svc.sync_dividends_for_user(db, 1)
+    assert result["hk_blocked"] == [] and result["hk_unparsed_forms"] == []
+    (row,) = _suggestions(db, "02156")
+    assert (row.ex_date, row.currency, Decimal(str(row.cash_div_pre_tax))) == (
+        date(2023, 6, 1), "HKD", Decimal("0.1"),
+    )
+    assert Decimal(str(row.estimated_total_dividend)) == Decimal("200")
+    detail = row.announcement_detail
+    assert detail["scrip_option"] is True and detail["currency_election"] is False
+    (component,) = detail["components"]
+    assert component["template"] == "EF003"
+    assert component["scrip"]["default_option"] == "現金"
+    assert component["scrip"]["price"] == {"amount": "3.48", "currency": "HKD"}
+    assert component["scrip"]["election_deadline"] == "2023-06-27 16:30"
+
+
+def test_fy_fallback_update_yields_suggestion(db, monkeypatch):
+    """06049 2022 末期：两份更新公告的報告期末都「不適用」→ 以財政年末锚定为同一笔，
+    待定那份被取代，建议取最新更新公告的港元金额。"""
+    fake = FakeHkex(monkeypatch)
+    fake.publish("06049", "2023042502546", "2023-04-25T20:36:00",
+                 _text("06049_final_2022_update_pending.txt"))
+    fake.publish("06049", "2023051700956", "2023-05-17T22:50:00",
+                 _text("06049_final_2022_update.txt"))
+    _seed_hk_holding(db, "06049")
+    _buy(db, "06049", "1000", date(2023, 1, 5))
+
+    result = svc.sync_dividends_for_user(db, 1)
+    assert result["hk_blocked"] == [] and result["hk_pending"] == []
+    (row,) = _suggestions(db, "06049")
+    assert (row.ex_date, row.currency, Decimal(str(row.cash_div_pre_tax))) == (
+        date(2023, 6, 8), "HKD", Decimal("0.56795"),
+    )
+    # 公告日期取表格原文：06049 的更新公告沿用原公告日期
+    assert row.ann_date == date(2023, 3, 29)
+    (component,) = row.announcement_detail["components"]
+    assert (component["period_end"], component["period_basis"], component["financial_year_end"]) == (
+        None, "financial_year_end", "2022-12-31",
+    )
+    assert (component["declared_amount"], component["declared_currency"]) == ("0.503", "CNY")
+
+
+def test_no_period_special_withdrawal_blocks_symbol(db, monkeypatch):
+    """00878：无期间特別股息 + 「撤回股息公告」→ 整标的挂起，不把已撤回的特別股息写成建议。"""
+    fake = FakeHkex(monkeypatch)
+    fake.publish("00878", "2025043000208", "2025-04-30T06:33:00",
+                 _text("00878_special_2025_no_period.txt"))
+    _seed_hk_holding(db, "00878")
+    _buy(db, "00878", "1000", date(2025, 1, 5))
+    first = svc.sync_dividends_for_user(db, 1)
+    assert first["hk_blocked"] == []
+    (before,) = _suggestions(db, "00878")
+    assert (before.ex_date, Decimal(str(before.cash_div_pre_tax))) == (
+        date(2025, 5, 28), Decimal("1"),
+    )
+
+    fake.publish("00878", "2025052600440", "2025-05-26T16:40:00",
+                 _text("00878_special_2025_withdrawal.txt"))
+    result = svc.sync_dividends_for_user(db, 1)
+    (blocked,) = result["hk_blocked"]
+    assert (blocked["scope"], [f["doc_id"] for f in blocked["forms"]]) == (
+        "symbol", ["2025052600440"],
+    )
+    assert "均不適用" in blocked["forms"][0]["reason"]
+    # 整标的不写不删：已有建议原样保留，由用户核对后自行忽略
+    (after,) = _suggestions(db, "00878")
+    assert (after.id, after.updated_at) == (before.id, before.updated_at)
+
+    # 从零回填（两份都在）：同样整标的挂起，不产生任何建议
+    _cleanup(db)
+    _seed_hk_holding(db, "00878")
+    _buy(db, "00878", "1000", date(2025, 1, 5))
+    result = svc.sync_dividends_for_user(db, 1)
+    assert [b["scope"] for b in result["hk_blocked"]] == ["symbol"]
+    assert _suggestions(db, "00878") == []
+
+
+def test_parser_bump_reparses_stale_rows_outside_listing_without_download(db, monkeypatch):
+    """生产 v1 缓存：清单内外都有 v1 判为未解析的表格。升版后同步只从缓存原文重解析，
+    零下载；清单窗口外的旧行也重写（复权因子要全部历史）。"""
+    from app.services.security_profile_service import upsert_profile_row
+
+    fake = FakeHkex(monkeypatch)
+    text_2023 = _text("02688_final_2023_ef002.txt")
+    in_listing = fake.publish("02688", "2024032200356", "2024-03-22T16:32:00", text_2023)
+    # 不在本次清单里（更早窗口）的缓存行：上一年的同类末期（報告期末同为不適用）
+    text_2022 = (
+        text_2023.replace("2023年12月31日", "2022年12月31日")
+        .replace("公告日期 2024年3月22日", "公告日期 2023年3月22日")
+        .replace("除淨日 2024年6月5日", "除淨日 2023年6月5日")
+    )
+    for doc_id, listed_at, text, url in (
+        ("2024032200356", "2024-03-22T16:32:00", text_2023, in_listing),
+        ("2023032200001", "2023-03-22T16:32:00", text_2022, "https://x/2023032200001.pdf"),
+    ):
+        upsert_profile_row(db, "02688", "港股", src.DATASET, doc_id, {
+            "parser_version": 1, "doc_id": doc_id, "url": url, "title": "t",
+            "listed_at": listed_at, "status": "unparsed",
+            "reason": "不是「股票發行人現金股息公告」表格", "form": None, "text": text,
+        })
+    db.commit()
+    _seed_hk_holding(db, "02688")
+    _buy(db, "02688", "100", date(2024, 1, 5))
+
+    result = svc.sync_dividends_for_user(db, 1)
+    assert fake.downloads == [] and result["hk_forms_downloaded"] == 0
+    rows = {
+        r.period_key: r.payload
+        for r in db.query(SecurityProfileData).filter_by(dataset=src.DATASET, symbol="02688")
+    }
+    assert {k: (p["parser_version"], p["status"]) for k, p in rows.items()} == {
+        "2024032200356": (src.HKEX_DIVIDEND_PARSER_VERSION, "ok"),
+        "2023032200001": (src.HKEX_DIVIDEND_PARSER_VERSION, "ok"),
+    }
+    assert rows["2024032200356"]["form"]["template"] == "EF002"
+    # 2023-06-05 除净日前还没有持仓：只有 2024 末期一条建议
+    assert [(r.ex_date, Decimal(str(r.cash_div_pre_tax))) for r in _suggestions(db, "02688")] == [
+        (date(2024, 6, 5), Decimal("2.31")),
+    ]
+    assert result["skipped_no_position"] == 1
+    assert _suggestions(db, "02688")[0].announcement_detail["currency_election"] is True
+
+
+# ---------------------------------------------------------------------------
 # 复权因子（编排：缓存表格 + security_prices + 汇率表）
 # ---------------------------------------------------------------------------
 

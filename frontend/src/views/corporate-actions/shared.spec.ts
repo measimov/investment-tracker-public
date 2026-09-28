@@ -100,4 +100,62 @@ describe('hkDividendNotes', () => {
       '可选择派发币种：实际到账币种可能与此不同'
     ])
   })
+
+  it('EF003 代息股份信息与 EF002 可选币种金额', () => {
+    const lines = hkDividendNotes({
+      source: 'hkexnews',
+      scrip_option: true,
+      currency_election: true,
+      components: [
+        {
+          dividend_type: '末期',
+          dividend_nature: '普通股息',
+          amount: '0.1',
+          currency: 'HKD',
+          scrip: {
+            default_option: '現金',
+            default_cash: true,
+            price: { amount: '3.48', currency: 'HKD' },
+            election_deadline: '2023-06-27 16:30'
+          }
+        },
+        {
+          dividend_type: '中期（半年期）',
+          dividend_nature: '普通股息',
+          amount: '0.2919',
+          currency: 'HKD',
+          currency_options: {
+            options: [
+              {
+                currency: 'CNY',
+                amount: '0.2516301',
+                exchange_rate: { from: 'HKD', to: 'CNY', rate: '0.862042' }
+              },
+              { currency: 'USD', amount: null, pending: true }
+            ],
+            election_deadline: '2026-10-07 16:30'
+          }
+        }
+      ]
+    })
+    expect(lines.slice(4)).toEqual([
+      '以股代息：代息股份价格 3.48 HKD，选择截止 2023-06-27 16:30',
+      '可选币种：每股 0.2516301 CNY，1 HKD = 0.862042 CNY；USD 金额有待公布，选择截止 2026-10-07 16:30'
+    ])
+  })
+
+  it('预设选项为代息股份时明确提示', () => {
+    const lines = hkDividendNotes({
+      source: 'hkexnews',
+      scrip_option: true,
+      components: [
+        {
+          amount: '0.1',
+          currency: 'HKD',
+          scrip: { default_option: '代息股份', default_cash: false, price: null }
+        }
+      ]
+    })
+    expect(lines).toContain('预设选项为「代息股份」：不作选择将收到代息股份')
+  })
 })
