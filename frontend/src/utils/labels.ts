@@ -72,6 +72,17 @@ export function cashEventTypeLabel(type: string | null | undefined): string {
   return CASH_EVENT_TYPE_LABELS[type] || type
 }
 
+// 标的事件（security_events 全局表）：持仓页角标与事件筛选共用
+export const SECURITY_EVENT_TYPE_LABELS: Record<string, string> = {
+  EARNINGS_DISCLOSURE: '财报披露',
+  DIVIDEND_PLAN: '分红预案',
+  SHARE_UNLOCK: '限售解禁'
+}
+
+export function securityEventTypeLabel(type: string): string {
+  return SECURITY_EVENT_TYPE_LABELS[type] || type
+}
+
 /** 映射 → el-option 列表（保持声明顺序）；exclude 用于 CMB 规则这类子集 */
 export function optionsOf(
   labels: Record<string, string>,

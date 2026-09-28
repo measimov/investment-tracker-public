@@ -64,3 +64,19 @@ class CurrencyConvertResponse(BaseModel):
     to_currency: str
     rate: Decimal = Field(..., description="使用的汇率")
     effective_date: date = Field(..., description="汇率日期")
+
+
+class ExchangeRateCheck(BaseModel):
+    """官方中间价与第三方报价的一次逐日比对（#200）"""
+
+    from_currency: str
+    to_currency: str
+    check_date: date
+    official_date: date
+    official_source: str
+    official_rate: Decimal
+    reference_source: str
+    reference_rate: Decimal
+    diff_pct: Decimal
+
+    model_config = ConfigDict(from_attributes=True)

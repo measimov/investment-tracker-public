@@ -15,7 +15,8 @@ from ...models.corporate_action import CorporateAction
 from ...models.holding import Holding
 from ...models.security_price import SecurityPrice
 from ...models.transaction import Transaction
-from .. import benchmark_service
+from ...config import settings
+from .. import benchmark_service, reference_rate_service
 from ..market_data_service import (
     fetch_and_store_security_price_history_incremental,
     infer_price_currency,
@@ -437,6 +438,45 @@ def _build_benchmarks(
     return benchmarks_payload
 
 
+def _resolve_risk_free(
+    db: Session,
+    risk_free_rate: Optional[Decimal],
+    start_date: date,
+    end_date: date,
+) -> Tuple[Optional[List[Tuple[date, Decimal]]], Dict[str, Any]]:
+    """无风险利率口径（#200）：请求显式给常量就用常量；否则取配置的参考利率序列
+    （默认 SHIBOR 3M），区间内没有任何值时按 0 并在 note 里说明——不静默。"""
+    if risk_free_rate is not None:
+        return None, {"basis": "constant", "series": None, "label": "请求指定"}
+    series = settings.risk_free_series
+    spec = reference_rate_service.SERIES.get(series)
+    if spec is None:
+        return None, {
+            "basis": "none",
+            "series": series,
+            "label": None,
+            "note": f"未知的无风险利率序列 {series}，按 0 计算",
+        }
+    points = reference_rate_service.load_points(db, series, start_date, end_date)
+    if not points:
+        return None, {
+            "basis": "none",
+            "series": series,
+            "label": spec.label,
+            "note": f"{spec.label} 暂无数据（参考利率尚未同步），按 0 计算",
+        }
+    in_range = [point for point in points if point[0] >= start_date]
+    return points, {
+        "basis": "series",
+        "series": series,
+        "label": spec.label,
+        "currency": spec.currency,
+        "first_date": points[0][0].isoformat(),
+        "last_date": points[-1][0].isoformat(),
+        "published_points": len(in_range),
+    }
+
+
 def calculate_performance_analytics(
     db: Session,
     user_id: int,
@@ -444,7 +484,7 @@ def calculate_performance_analytics(
     *,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-    risk_free_rate: Decimal = Decimal("0"),
+    risk_free_rate: Optional[Decimal] = None,
     refresh_history: bool = False,
     benchmarks: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
@@ -510,7 +550,16 @@ def calculate_performance_analytics(
         db, user_id, transactions=transactions, corporate_actions=corporate_actions
     )
     realized = calculate_realized_pnl_fifo(db, user_id, fifo_results=fifo_results)
-    risk_metrics = calculate_risk_metrics(curve, risk_free_rate, calculation_level)
+    risk_free_points, risk_free = _resolve_risk_free(db, risk_free_rate, start_date, end_date)
+    risk_metrics = calculate_risk_metrics(
+        curve,
+        risk_free_rate if risk_free_rate is not None else Decimal("0"),
+        calculation_level,
+        risk_free_points=risk_free_points,
+    )
+    risk_free["average"] = risk_metrics.get("risk_free_rate")
+    if risk_metrics.get("risk_free_missing_points"):
+        risk_free["missing_points"] = risk_metrics["risk_free_missing_points"]
     range_summary, trade_skill, range_missing_rates = _build_range_summary(
         db,
         realized,
@@ -602,6 +651,8 @@ def calculate_performance_analytics(
         "curve": curve,
         **({"benchmarks": benchmarks_payload} if benchmarks else {}),
         "metrics": risk_metrics,
+        # 夏普/索提诺所用无风险利率的口径（#200）：序列 / 请求常量 / 无数据按 0
+        "risk_free": risk_free,
         "trade_skill": trade_skill,
         # 区间汇总：与 curve/metrics/trade_skill 同一窗口的资金侧数字。
         "range_summary": range_summary,

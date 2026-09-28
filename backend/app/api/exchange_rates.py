@@ -4,15 +4,16 @@
 汇率是全局数据（不分用户），但它是所有用户金额折算的唯一数据源：登录即可读写，
 匿名一律拒绝。口径与 security_profiles 一致（全局表、逐端点挂依赖）。
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
-from datetime import date
+from datetime import date, timedelta
 
 from ..core.deps import get_current_active_user
 from ..core.logging import get_app_logger
+from ..core.timeutil import local_today
 from ..database import get_db
-from ..models.exchange_rate import ExchangeRate
+from ..models.exchange_rate import ExchangeRate, ExchangeRateCheck
 from ..models.user import User
 from ..schemas import exchange_rate as schemas
 from ..services import exchange_rate_service
@@ -72,6 +73,22 @@ def list_exchange_rates(
 
     rates = query.offset(skip).limit(limit).all()
     return rates
+
+
+@router.get("/source-checks", response_model=List[schemas.ExchangeRateCheck])
+def list_source_checks(
+    days: int = Query(30, ge=1, le=366),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """官方中间价与第三方报价的逐日比对（最近 N 天，新在前）"""
+    since = local_today() - timedelta(days=days)
+    return (
+        db.query(ExchangeRateCheck)
+        .filter(ExchangeRateCheck.check_date >= since)
+        .order_by(ExchangeRateCheck.check_date.desc(), ExchangeRateCheck.from_currency)
+        .all()
+    )
 
 
 @router.get("/{from_currency}/{to_currency}", response_model=schemas.ExchangeRate)

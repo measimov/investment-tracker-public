@@ -245,8 +245,15 @@
               </el-table-column>
               <el-table-column label="标的" min-width="140">
                 <template #default="{ row }">
-                  <div class="txn-name">{{ row.name || row.symbol }}</div>
-                  <div class="txn-sub">{{ row.symbol }} · {{ row.market }}</div>
+                  <!-- 点标的跳持仓页并定位到该行（已清仓时持仓页会提示并给档案入口） -->
+                  <router-link
+                    :to="holdingsLink(row)"
+                    class="txn-link"
+                    data-testid="recent-txn-symbol-link"
+                  >
+                    <div class="txn-name">{{ row.name || row.symbol }}</div>
+                    <div class="txn-sub">{{ row.symbol }} · {{ row.market }}</div>
+                  </router-link>
                 </template>
               </el-table-column>
               <el-table-column prop="transaction_type" label="类型" width="80">
@@ -297,6 +304,7 @@ import {
   formatCurrency,
   formatQuantity
 } from '../utils/helpers'
+import { holdingsLink } from '../utils/securities'
 import { cardTone, mergeDashboardWarnings, periodIsEstimated } from './dashboard/helpers'
 import { CHART_FONT_FAMILY, CHART_PALETTE, chartTooltipCurrency } from '@/styles/tokens'
 
@@ -615,9 +623,23 @@ onMounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
+.txn-link {
+  display: block;
+  text-decoration: none;
+}
+
 .txn-name {
   color: var(--app-text);
   line-height: 1.3;
+}
+
+.txn-link .txn-name {
+  color: var(--app-primary);
+}
+
+.txn-link:hover .txn-name,
+.txn-link:focus-visible .txn-name {
+  text-decoration: underline;
 }
 
 .txn-sub {

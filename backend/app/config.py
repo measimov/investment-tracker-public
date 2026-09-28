@@ -180,6 +180,14 @@ class Settings(BaseSettings):
     hkex_dayquot_sync_enabled: bool = True
     hkex_dayquot_lookback_days: int = 10
     hkex_dayquot_max_reports_per_tick: int = 5
+    # 汇率（#200）：人民币汇率中间价（中国货币网）为主源，第三方只比对。某币种最近一期
+    # 中间价超过 N 天（覆盖国庆长假）才降级写入第三方报价；比对差异超过阈值（%）告警
+    fx_official_max_stale_days: int = 10
+    fx_check_warn_pct: float = 0.5
+    # 无风险利率（#200）：参考利率日序列的周期同步开关；夏普/索提诺默认使用的序列
+    # （SHIBOR_3M = 本币 CNY；UST_3M 只展示）。请求显式传 risk_free_rate 时仍按常量计算
+    reference_rate_sync_enabled: bool = True
+    risk_free_series: str = "SHIBOR_3M"
     # 标的全集（security_catalog）：Tushare 三张基础表 + 港交所證券名單，每周刷新
     # （6h tick 按 last_success_at 判新鲜，重启不重拉）；manage.py sync-security-catalog 手动
     security_catalog_sync_enabled: bool = True

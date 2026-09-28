@@ -946,6 +946,74 @@ async def test_profile_api_flow(db, api_user, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_analyses_list_single_query_matches_per_symbol_latest(db, api_user):
+    """/analyses 改为一条 DISTINCT ON 查询后，逐标的结果必须与 `_latest_analysis` 完全一致：
+    取最新（created_at 倒序、同刻按 id 倒序），只含数量 > 0 的持仓，同代码跨市场各自独立。"""
+    from datetime import datetime, timezone
+
+    from app.api.security_profiles import _analysis_summary, _latest_analysis
+
+    admin_id = db.query(User.id).filter(User.username == "admin").scalar()
+
+    def holding(user_id, symbol, market, quantity):
+        return Holding(user_id=user_id, symbol=symbol, name=symbol, market=market,
+                       quantity=Decimal(quantity), avg_cost=Decimal("1"),
+                       total_cost=Decimal(quantity), currency="CNY")
+
+    def analysis(symbol, market, summary, created_at):
+        return SecurityAnalysis(
+            symbol=symbol, market=market, name=symbol, tags=[summary],
+            risk_level="medium", summary=summary, content="全文", model="m",
+            input_payload={}, created_at=created_at,
+        )
+
+    t1 = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    t2 = datetime(2026, 9, 2, tzinfo=timezone.utc)
+    db.add_all([
+        holding(api_user, "600036", "A股", "100"),
+        holding(api_user, "00700", "港股", "10"),
+        holding(api_user, "00700", "A股", "5"),  # 同代码跨市场：各取各的
+        holding(api_user, "000001", "A股", "0"),  # 已清仓：不列
+        holding(admin_id, "AAPL", "美股", "1"),  # 别人的持仓：不列
+    ])
+    db.flush()
+    # 逐条 flush 保证 id 递增顺序与写入顺序一致（同刻 created_at 靠 id 定先后）
+    for row in [
+        analysis("600036", "A股", "旧", t1),
+        analysis("600036", "A股", "新", t2),
+        analysis("00700", "港股", "同刻先写", t2),
+        analysis("00700", "港股", "同刻后写", t2),
+        analysis("00700", "A股", "A股侧", t1),
+        analysis("000001", "A股", "已清仓", t2),
+        analysis("AAPL", "美股", "他人", t2),
+    ]:
+        db.add(row)
+        db.flush()
+    db.commit()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        login = await client.post(
+            "/api/auth/token",
+            json={"username": "demo", "password": "profile-api-password"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        rows = (await client.get("/api/securities/analyses", headers=auth)).json()
+
+    by_key = {(row["symbol"], row["market"]): row for row in rows}
+    assert len(rows) == len(by_key) == 3
+    assert {key: row["summary"] for key, row in by_key.items()} == {
+        ("600036", "A股"): "新",
+        ("00700", "港股"): "同刻后写",
+        ("00700", "A股"): "A股侧",
+    }
+    # 与逐标的旧实现逐字段一致（响应形状不变，仍不含全文）
+    for (symbol, market), row in by_key.items():
+        assert row == _analysis_summary(_latest_analysis(db, symbol, market))
+        assert "content" not in row
+
+
+@pytest.mark.anyio
 async def test_report_sections_endpoint_skips_failed_rows_before_limit(db, api_user):
     """[评审回归] 最近三期全部抽取失败时，端点仍须返回更早的成功节选——
     成功状态要在限制条数前过滤，不能先 limit(3) 再在 Python 里筛。"""

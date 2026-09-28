@@ -230,7 +230,7 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `BACKUP_DIR` | 备份目录，默认 `./backups` |
 | `BACKUP_MODE` | `postgres` / `excel` / `full`；不设则交互选择 |
 | `BACKUP_TABLES` | 空格分隔的表名 → 表级备份 `investment_tables_<时间>.dump`；不设 = 整库 |
-| `BACKUP_PG_TOOL` | `local` / `docker`；不设则本机有 `pg_dump` 用本机，否则用一次性容器 |
+| `BACKUP_PG_TOOL` | `local` / `docker`；不设则本机有 `pg_dump` 用本机，否则用一次性容器；本机主版本低于数据库时自动改用容器 |
 | `BACKUP_PG_IMAGE` | 容器模式的镜像，默认 `postgres:16`（主版本须 ≥ 数据库主版本） |
 | `BACKUP_DOCKER_NETWORK` | 容器模式的网络，默认 `host`；数据库在某个 compose 网络里时改成该网络名 |
 | `APP_BASE_URL` / `APP_CA_CERT` / `INVESTMENT_TRACKER_TOKEN` | Excel 导出的访问地址、私有 CA、Bearer token |
@@ -694,6 +694,8 @@ docker compose up -d --remove-orphans
 | 港交所日报解析 / 需要补历史 | `hkex_dayquot_source.py` | 周期任务自动推进；补跑：`manage.py sync-hkex-dayquot --days N`（站点只存约一个月） | 每份约 25MB |
 | 持仓重放口径（公司行动语义、持仓计算） | `holding_service.py`、`portfolio/semantics.py` | `manage.py rebuild-holdings` | 分钟级；输出 Failures = 真实超卖数据 |
 | 收益/统计口径 | `services/statistics/`、`services/portfolio/` | 5.3 / 5.7 的 metrics 快照对比 | 只读 |
+| 无风险利率（参考利率表，迁移 `…_0030_reference_rates` 首次部署） | `reference_rate_service.py` | 周期任务（12 小时）首次按最早交易日自动回填 SHIBOR 3M 与美国国库券 3M；要立即生效：`manage.py sync-reference-rates`。夏普/索提诺从此按 SHIBOR 3M 逐期扣除（此前为 0），metrics 快照对比时这两项与 `risk_free_rate` 的变化是预期的 | 中国货币网与美国财政部每年各一次请求 |
+| 汇率历史（官方中间价回填，迁移 `…_0027_exchange_rate_checks` 首次部署） | `exchange_rate_service.py`、`chinamoney_source.py` | 先取 metrics 快照 → `scripts/backfill_official_fx.py --start <最早交易日> --dry-run` 看将改写/新写/停用的行数 → 去掉 `--dry-run` 执行 → 再取快照对比（差异应全部来自汇率变化）。日常刷新由周期任务完成，只回看 15 天 | 中国货币网每年一次请求；**会改变历史人民币折算**（此前早于首条汇率的日期按最新汇率折算） |
 
 重新同步美股档案（只刷新已有 EDGAR 档案的美股，不产生新的 AI 分析）：
 
@@ -989,8 +991,9 @@ BACKUP_MODE=postgres ./backup.sh --prune --keep 2                        # 备�
 验证的备份，**不能**用于恢复。表级备份命名为 `investment_tables_<时间>.dump`。
 
 - **客户端**：宿主有 `pg_dump`/`pg_restore` 就用本机的；没有则自动改用一次性 `docker run --rm
-  postgres:16` 容器（backend 镜像刻意不含 pg_dump）。`BACKUP_PG_TOOL=local|docker` 可强制，宿主
-  客户端主版本低于数据库时就强制 `docker`。容器模式默认 `--network host`（与宿主同样的网络可达性），
+  postgres:16` 容器（backend 镜像刻意不含 pg_dump）。`BACKUP_PG_TOOL=local|docker` 可强制。宿主
+  客户端主版本低于数据库时（`pg_dump` 报 `server version mismatch`），没有强制 `local` 就自动改用
+  容器重跑一遍；其他失败原因不重跑，`.partial` 原样保留。容器模式默认 `--network host`（与宿主同样的网络可达性），
   以当前用户身份写文件，连接串经环境变量传入、不出现在进程参数里。
 - **连接串**：优先取 shell 里的 `DATABASE_URL`；没有就向 compose 的 backend 服务读取（运行中用
   `exec`，已停止用一次性 `run`）。脚本不读 `.env`。

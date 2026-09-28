@@ -173,4 +173,60 @@ describe('useHoldingsTable merged rows', () => {
       ['港股', 1, 0]
     ])
   })
+
+  it('keyword/tag filters narrow rows in both views; summary and focus ignore them (#235)', async () => {
+    vi.mocked(api.getHoldings).mockResolvedValue({
+      data: [
+        row(1, 11),
+        row(2, 12),
+        row(3, 11, { symbol: '600036', name: '招商银行', market: 'A股', currency: 'CNY' })
+      ]
+    } as never)
+    const table = useHoldingsTable({
+      isUnmounted: () => false,
+      tagSourceOf: (r) => ({
+        aiTags: r.symbol === '600036' ? ['高股息', '估值偏低'] : ['业绩增长'],
+        riskLevel: r.symbol === '600036' ? 'low' : 'high',
+        opinionTags: [],
+        eventTypes: []
+      })
+    })
+    await table.loadHoldings()
+    expect(table.rows).toHaveLength(2)
+
+    table.state.keyword = '700'
+    expect(table.rows.map((r) => r.symbol)).toEqual(['00700'])
+    expect(table.isFiltered).toBe(true)
+    expect(table.totalRowCount).toBe(2)
+    // 按账户视图同一口径：两行（两个账户）都留下
+    table.setViewMode('account')
+    expect(table.rows.map((r) => r.key).sort()).toEqual(['00700:港股:11', '00700:港股:12'])
+    table.state.keyword = '招商'
+    expect(table.rows.map((r) => r.symbol)).toEqual(['600036'])
+    table.setViewMode('merged')
+
+    // 标签：按标的去重计数，筛选用全部 AI 标签
+    table.clearFilters()
+    const ai = table.tagOptions.find((group) => group.group === 'ai')!
+    expect(ai.options.map((o) => [o.label, o.count])).toContainEqual(['业绩增长', 1])
+    table.state.selectedTags = ['ai:估值偏低']
+    expect(table.rows.map((r) => r.symbol)).toEqual(['600036'])
+    table.state.selectedTags = ['ai:估值偏低', 'ai:业绩增长', 'risk:high']
+    expect(table.rows.map((r) => r.symbol)).toEqual(['00700'])
+
+    // 汇总不受筛选影响
+    expect(table.securityCount).toBe(2)
+
+    // 深链定位：省略前导零也算同一只；未持有时 focusHeld=false
+    table.clearFilters()
+    table.state.focus = { symbol: '700', market: '港股' }
+    expect(table.focusHeld).toBe(true)
+    expect(table.rows.filter((r) => table.isFocused(r)).map((r) => r.symbol)).toEqual(['00700'])
+    table.state.focus = { symbol: '00700', market: 'A股' }
+    expect(table.focusHeld).toBe(false)
+    table.state.focus = { symbol: '600036', market: null }
+    expect(table.focusHeld).toBe(true)
+    table.state.selectedAccount = 12
+    expect(table.focusVisible).toBe(false)
+  })
 })

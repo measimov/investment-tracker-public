@@ -494,6 +494,7 @@
       "calmar_ratio": 3.084127,
       "max_drawdown_rate": -12.082237,
       "observation_span_days": 355,
+      "risk_free_basis": "constant",
       "risk_free_rate": 0.0,
       "risk_sample_count": 18,
       "sharpe_ratio": 1.15187,
@@ -513,6 +514,13 @@
       "realized_pnl_cny": 7485.636667,
       "status": "experimental",
       "xirr_annualized_rate": 39.43748
+    },
+    "risk_free": {
+      "average": 0.0,
+      "basis": "none",
+      "label": "SHIBOR 3M",
+      "note": "SHIBOR 3M 暂无数据（参考利率尚未同步），按 0 计算",
+      "series": "SHIBOR_3M"
     },
     "trade_skill": {
       "average_loss_cny": 0.0,

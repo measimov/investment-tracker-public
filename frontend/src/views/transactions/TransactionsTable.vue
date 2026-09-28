@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { formatDate, formatPrice, formatQuantity } from '@/utils/helpers'
+import { holdingsLink } from '@/utils/securities'
 import type { BrokerAccount } from '@/types'
 import type { Transaction } from '@/stores/transactions'
 import { brokerAccountLabelById as labelById, isTransfer, typeLabel, typeTagKind } from './shared'
@@ -35,7 +36,18 @@ function brokerAccountLabelById(id: number | null | undefined) {
           {{ formatDate(row.transaction_date) }}
         </template>
       </el-table-column>
-      <el-table-column prop="symbol" label="代码" width="100" />
+      <!-- 代码跳持仓页并定位到该标的（已清仓时持仓页会提示并给档案入口） -->
+      <el-table-column prop="symbol" label="代码" width="100">
+        <template #default="{ row }">
+          <router-link
+            :to="holdingsLink(row)"
+            class="symbol-link"
+            data-testid="transaction-symbol-link"
+          >
+            {{ row.symbol }}
+          </router-link>
+        </template>
+      </el-table-column>
       <el-table-column prop="name" label="名称" width="120" />
       <el-table-column prop="market" label="市场" width="100" />
       <el-table-column label="账户" min-width="150">
@@ -99,7 +111,13 @@ function brokerAccountLabelById(id: number | null | undefined) {
     >
       <div class="mobile-card-head">
         <div class="mobile-card-title">
-          <span class="mobile-card-symbol">{{ row.symbol }}</span>
+          <router-link
+            :to="holdingsLink(row)"
+            class="mobile-card-symbol symbol-link"
+            data-testid="transaction-symbol-link"
+          >
+            {{ row.symbol }}
+          </router-link>
           <span class="mobile-card-name">{{ row.name || row.market }}</span>
         </div>
         <el-tag :type="typeTagKind(row.transaction_type)" size="small">
@@ -149,6 +167,16 @@ function brokerAccountLabelById(id: number | null | undefined) {
 .account-unassigned {
   color: var(--app-warning);
   font-weight: 600;
+}
+
+.symbol-link {
+  color: var(--app-primary);
+  text-decoration: none;
+}
+
+.symbol-link:hover,
+.symbol-link:focus-visible {
+  text-decoration: underline;
 }
 
 :deep(.el-table .el-button.is-text) {

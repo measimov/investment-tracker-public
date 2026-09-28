@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional
 from ..database import get_db
 from ..models.user import User
 from ..core.deps import get_current_active_user
@@ -138,7 +138,7 @@ def _run_performance_analytics(
     current_prices: Dict[str, float],
     start_date: date | None,
     end_date: date | None,
-    risk_free_rate: Decimal,
+    risk_free_rate: Optional[Decimal],
     refresh_history: bool,
     benchmarks: str = "",
 ) -> Dict[str, Any]:
@@ -160,7 +160,9 @@ def get_performance_analytics(
     current_prices: Dict[str, float],
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
-    risk_free_rate: Decimal = Query(Decimal("0")),
+    risk_free_rate: Decimal | None = Query(
+        None, description="年化无风险利率 %；不传则按参考利率序列（默认 SHIBOR 3M）"
+    ),
     refresh_history: bool = Query(False),
     benchmarks: str = Query("", description="逗号分隔的基准指数 code，最多 3 个"),
     current_user: User = Depends(get_current_active_user),
@@ -183,7 +185,9 @@ def get_performance_analytics(
 def get_performance_analytics_server_priced(
     start_date: date | None = Query(None),
     end_date: date | None = Query(None),
-    risk_free_rate: Decimal = Query(Decimal("0")),
+    risk_free_rate: Decimal | None = Query(
+        None, description="年化无风险利率 %；不传则按参考利率序列（默认 SHIBOR 3M）"
+    ),
     refresh_history: bool = Query(False),
     benchmarks: str = Query("", description="逗号分隔的基准指数 code，最多 3 个"),
     current_user: User = Depends(get_current_active_user),

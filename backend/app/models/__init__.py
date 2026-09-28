@@ -2,7 +2,8 @@
 from .transaction import Transaction
 from .holding import Holding
 from .corporate_action import CorporateAction
-from .exchange_rate import ExchangeRate
+from .exchange_rate import ExchangeRate, ExchangeRateCheck
+from .reference_rate import ReferenceRate
 from .security_price import SecurityPrice
 from .user import User
 from .broker_fund_flow import BrokerFundFlow
@@ -41,6 +42,8 @@ __all__ = [
     "Holding",
     "CorporateAction",
     "ExchangeRate",
+    "ExchangeRateCheck",
+    "ReferenceRate",
     "SecurityPrice",
     "User",
     "BrokerFundFlow",

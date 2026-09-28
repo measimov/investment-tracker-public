@@ -54,7 +54,7 @@ defineProps<{ analytics: AnalyticsFeature }>()
         </template>
 
         <el-alert
-          title="TTWR 与风险指标为实验指标，基于证券交易现金流估算，未包含账户现金和真实外部入出金；夏普率/索提诺率按无风险利率 0 计算；胜率/盈亏比按平仓日落在所选区间内的每笔平仓交易统计（按笔，不是按标的）；区间不足半年时年化仅供参考。"
+          :title="`TTWR 与风险指标为实验指标，基于证券交易现金流估算，未包含账户现金和真实外部入出金；夏普率/索提诺率的${analytics.riskFreeNote}；胜率/盈亏比按平仓日落在所选区间内的每笔平仓交易统计（按笔，不是按标的）；区间不足半年时年化仅供参考。`"
           type="warning"
           :closable="false"
           show-icon
@@ -145,7 +145,7 @@ defineProps<{ analytics: AnalyticsFeature }>()
           </div>
           <div class="analytics-metric">
             <span class="metric-label"
-              >夏普率<el-tooltip content="无风险利率按 0 计算（未扣除存款/国债收益）"
+              >夏普率<el-tooltip :content="analytics.riskFreeNote"
                 ><el-icon class="label-help"><QuestionFilled /></el-icon></el-tooltip
             ></span>
             <span class="metric-value">{{

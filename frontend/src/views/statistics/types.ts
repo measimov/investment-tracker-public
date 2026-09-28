@@ -140,8 +140,25 @@ export interface BenchmarkBlock {
   [key: string]: unknown
 }
 
+/** 夏普/索提诺所用无风险利率的口径（#200） */
+export interface RiskFreeInfo {
+  /** series = 参考利率日序列；constant = 请求指定常量；none = 无数据按 0 */
+  basis: 'series' | 'constant' | 'none'
+  series?: string | null
+  label?: string | null
+  currency?: string
+  /** 各收益点所用年化利率（%）的均值 */
+  average?: number | null
+  first_date?: string
+  last_date?: string
+  published_points?: number
+  missing_points?: number
+  note?: string
+}
+
 export interface PerformanceAnalytics {
   calculation_level: string
+  risk_free?: RiskFreeInfo
   curve: CurvePoint[]
   benchmarks?: BenchmarkBlock[]
   metrics: AnalyticsMetrics

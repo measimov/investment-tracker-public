@@ -15,6 +15,7 @@ import type {
   CorporateAction,
   DividendSuggestion,
   ExchangeRate,
+  ExchangeRateCheck,
   ExchangeRateLatest,
   ExcludedSecurity,
   HoldingResponse,
@@ -750,6 +751,11 @@ const api = {
   },
   refreshRatesFromAPI() {
     return apiClient.post('/exchange-rates/refresh-from-api')
+  },
+  getExchangeRateSourceChecks(days = 30) {
+    return apiClient.get<ExchangeRateCheck[]>('/exchange-rates/source-checks', {
+      params: { days }
+    })
   },
 
   // Stock Price Updates

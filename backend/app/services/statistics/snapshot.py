@@ -179,6 +179,14 @@ def build_portfolio_snapshot(db: Session, user_id: int) -> Dict[str, Any]:
     if missing_prices:
         warnings.append(f"以下标的缺少可用估值价格：{'、'.join(missing_prices)}")
 
+    # 汇率来源预警（#200）：当前生效汇率降级为第三方，或第三方与官方中间价差异超阈值
+    try:
+        from ..exchange_rate_service import fx_source_warnings
+
+        warnings.extend(fx_source_warnings(db))
+    except Exception:  # noqa: BLE001 —— 预警是锦上添花
+        pass
+
     # 雪球观点数据源停摆预警：只在"已接入但长时间未更新"时报（采集器未启用、
     # 从未跑过是合法形态，不该在看板报警）。探测本身异常静默——观点数据源的故障不配
     # 拖垮整个看板。

@@ -43,8 +43,16 @@ from .services import report_digest_jobs as _report_digest_jobs  # noqa: F401
 from .services.exchange_rate_service import refresh_rates_if_stale
 from .services.job_worker import register_periodic_task, start_worker, stop_worker
 
-# 汇率每日快照：6 小时检查一次，今日已有则零外呼（幂等，非 Tushare）
+# 汇率每日快照：6 小时检查一次，最近一期中间价已有则零外呼（幂等，非 Tushare）
 register_periodic_task(refresh_rates_if_stale, interval_seconds=6 * 3600)
+
+# 参考利率（无风险利率）：首次按最早交易日回填，之后每 12 小时补尾（中国货币网 / 美国财政部）
+from .services.reference_rate_service import (  # noqa: E402
+    PERIODIC_INTERVAL_SECONDS as REFERENCE_RATE_REFRESH_SECONDS,
+    refresh_reference_rates,
+)
+
+register_periodic_task(refresh_reference_rates, interval_seconds=REFERENCE_RATE_REFRESH_SECONDS)
 
 # 基准指数尾部补齐：已有数据的基准每日推进到最近已完成交易日；
 # 冷启动回填由用户区间驱动（history-sync / analytics refresh），无 token 静默

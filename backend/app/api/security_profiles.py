@@ -14,7 +14,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy import and_
+from sqlalchemy.orm import Session, defer
 
 from ..core.deps import get_current_active_user
 from ..database import get_db
@@ -61,6 +62,40 @@ def _latest_analysis(db: Session, symbol: str, market: str) -> SecurityAnalysis 
     )
 
 
+def _latest_held_analyses(db: Session, user_id: int) -> List[SecurityAnalysis]:
+    """该用户持仓标的各自的最新分析，一条查询取完（此前逐标的 `_latest_analysis` 是 N+1）。
+
+    DISTINCT ON (symbol, market) + 与 `_latest_analysis` 相同的排序键
+    （created_at 倒序、id 倒序兜底）：每个标的取到的恰是逐个查询时的那一行。
+    全文与压缩输入不进列表响应，延迟加载不取。
+    """
+    held = (
+        db.query(Holding.symbol, Holding.market)
+        .filter(Holding.user_id == user_id, Holding.quantity > 0)
+        .distinct()
+        .subquery()
+    )
+    return (
+        db.query(SecurityAnalysis)
+        .join(
+            held,
+            and_(
+                SecurityAnalysis.symbol == held.c.symbol,
+                SecurityAnalysis.market == held.c.market,
+            ),
+        )
+        .options(defer(SecurityAnalysis.content), defer(SecurityAnalysis.input_payload))
+        .distinct(SecurityAnalysis.symbol, SecurityAnalysis.market)
+        .order_by(
+            SecurityAnalysis.symbol,
+            SecurityAnalysis.market,
+            SecurityAnalysis.created_at.desc(),
+            SecurityAnalysis.id.desc(),
+        )
+        .all()
+    )
+
+
 def _analysis_summary(analysis: SecurityAnalysis) -> Dict[str, Any]:
     return {
         "id": analysis.id,
@@ -85,18 +120,7 @@ def list_holding_analyses(
 
     列表端点：按持仓收敛（见模块 docstring 的全局表读取口径）。
     """
-    held = (
-        db.query(Holding.symbol, Holding.market)
-        .filter(Holding.user_id == current_user.id, Holding.quantity > 0)
-        .distinct()
-        .all()
-    )
-    results = []
-    for symbol, market in held:
-        analysis = _latest_analysis(db, symbol, market)
-        if analysis:
-            results.append(_analysis_summary(analysis))
-    return results
+    return [_analysis_summary(analysis) for analysis in _latest_held_analyses(db, current_user.id)]
 
 
 @router.get("/analysis-jobs/{job_id}")

@@ -19,6 +19,14 @@ def build_parser() -> argparse.ArgumentParser:
         "securities over the last N days (site keeps ~1 month)",
     )
     dayquot.add_argument("--days", type=int, default=10, help="calendar days to look back")
+    reference = subcommands.add_parser(
+        "sync-reference-rates",
+        help="Backfill/refresh reference rate series (SHIBOR 3M, US T-bill 3M) used as "
+        "the risk-free rate",
+    )
+    reference.add_argument(
+        "--start", help="backfill from this date (YYYY-MM-DD; default: earliest transaction - 15d)"
+    )
     catalog = subcommands.add_parser(
         "sync-security-catalog",
         help="Refresh the security catalog (Tushare basics + HKEX list of securities)",
@@ -112,6 +120,26 @@ def rebuild_holdings() -> int:
         return 0
     finally:
         db.close()
+
+def sync_reference_rates(start) -> int:
+    from datetime import date
+
+    from app.database import SessionLocal
+    from app.services.reference_rate_service import SERIES, sync_series
+
+    db = SessionLocal()
+    failed = 0
+    try:
+        for series in SERIES:
+            outcome = sync_series(db, series, start=date.fromisoformat(start) if start else None)
+            print(f"{series}: wrote {outcome['written']} row(s), ranges {outcome['ranges']}")
+            if outcome["error"]:
+                failed += 1
+                print(f"  ERROR {outcome['error']}")
+    finally:
+        db.close()
+    return 1 if failed else 0
+
 
 def sync_hkex_dayquot(days: int) -> int:
     from app.database import SessionLocal
@@ -353,6 +381,9 @@ def main() -> int:
 
     if args.command == "sync-hkex-dayquot":
         return sync_hkex_dayquot(args.days)
+
+    if args.command == "sync-reference-rates":
+        return sync_reference_rates(args.start)
 
     if args.command == "sync-security-catalog":
         return sync_security_catalog(args.market, args.source, force=not args.no_force)

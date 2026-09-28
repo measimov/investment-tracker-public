@@ -5,7 +5,9 @@
    `.partial` 残留默认不碰，`--include-partial` 才处理且不删比最新完整备份更新的残留；
 2. `.sha256` 记裸文件名，从备份目录内 `sha256sum -c` 能通过（换目录/换机器校验）；
 3. 数据库备份的 `.partial → pg_dump 退出 0 → 非空 → pg_restore 读检 → 改名` 纪律，
-   本机客户端与一次性容器客户端两条路径都走（pg_dump/pg_restore/docker 均为打桩）。
+   本机客户端与一次性容器客户端两条路径都走（pg_dump/pg_restore/docker 均为打桩）；
+4. 本机 pg_dump 主版本低于数据库（server version mismatch）时自动改用容器重跑，
+   强制 `BACKUP_PG_TOOL=local` 或其他失败原因则不重跑。
 """
 
 import hashlib
@@ -31,6 +33,11 @@ case "${FAKE_DUMP_MODE:-ok}" in
     ok) printf 'PGDMP-fake-dump' > "$out" ;;
     empty) : > "$out" ;;
     fail) printf 'half' > "$out"; exit 1 ;;
+    mismatch)
+        printf 'half' > "$out"
+        echo "pg_dump: error: server version: 16.4; pg_dump version: 14.11" >&2
+        echo "pg_dump: error: aborting because of server version mismatch" >&2
+        exit 1 ;;
 esac
 """
 
@@ -389,3 +396,56 @@ def test_docker_client_table_level_backup(env):
     )
     dump_call = next(line for line in log.read_text().splitlines() if line.startswith("run "))
     assert dump_call.endswith("--table=public.alembic_version")
+
+
+def test_local_version_mismatch_falls_back_to_docker(env):
+    """#195：宿主 pg_dump 比数据库旧 → 自动改用一次性容器，不必手工加 BACKUP_PG_TOOL。"""
+    _install_local_pg(env)
+    _write_exe(env["bin"] / "docker", FAKE_DOCKER)
+    log = env["tmp"] / "docker.log"
+    result = _run(
+        env,
+        extra_env={
+            "BACKUP_MODE": "postgres",
+            "DATABASE_URL": "postgresql://u:secret@db:5432/x",
+            "FAKE_DUMP_MODE": "mismatch",
+            "FAKE_DOCKER_LOG": str(log),
+        },
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "改用一次性 postgres:16 容器重试" in result.stderr
+    # 本机那次的半截 .partial 已清掉，产物来自容器且经容器 pg_restore 读检
+    _assert_verified_backup(env["backups"], b"PGDMP-fake-docker-dump")
+    calls = [line for line in log.read_text().splitlines() if line.startswith("run ")]
+    assert len(calls) == 2
+    assert "pg_restore" in calls[1]
+    assert all("secret" not in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"FAKE_DUMP_MODE": "mismatch", "BACKUP_PG_TOOL": "local"},  # 强制本机：不擅自换客户端
+        {"FAKE_DUMP_MODE": "fail"},  # 其他失败原因：不是版本问题，换容器也没用
+    ],
+)
+def test_local_failure_without_mismatch_or_forced_local_does_not_retry(env, extra):
+    _install_local_pg(env)
+    _write_exe(env["bin"] / "docker", FAKE_DOCKER)
+    log = env["tmp"] / "docker.log"
+    result = _run(
+        env,
+        extra_env={
+            "BACKUP_MODE": "postgres",
+            "DATABASE_URL": "postgresql://u:p@db:5432/x",
+            "FAKE_DOCKER_LOG": str(log),
+            **extra,
+        },
+    )
+    assert result.returncode != 0
+    assert not log.exists() or not [
+        line for line in log.read_text().splitlines() if line.startswith("run ")
+    ]
+    names = _names(env["backups"])
+    assert any(n.endswith(".dump.partial") for n in names)
+    assert not any(n.endswith(".dump") for n in names)

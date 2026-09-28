@@ -103,3 +103,11 @@ export function resolvedFormPatch(
   }
   return patch
 }
+
+/**
+ * 持仓页深链（#235）：Holdings.vue 读 ?symbol=&market=，填关键词并高亮滚动到该标的；
+ * 未持有时提示并给出标的档案入口。仪表盘最近交易与交易记录的代码链接共用。
+ */
+export function holdingsLink(row: { symbol: string; market: string }) {
+  return { name: 'Holdings', query: { symbol: row.symbol, market: row.market } }
+}

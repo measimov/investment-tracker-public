@@ -7,6 +7,7 @@
 
 import { EMPTY, formatNumber, formatPercent } from '@/utils/helpers'
 import { parseLocalDate } from '@/utils/dateRange'
+import type { RiskFreeInfo } from './types'
 
 type Numeric = number | string | null | undefined
 
@@ -47,4 +48,20 @@ export function rangeSpanDays(
 
 export function isShortRange(spanDays: number | null | undefined): boolean {
   return spanDays !== null && spanDays !== undefined && spanDays >= 0 && spanDays < SHORT_RANGE_DAYS
+}
+
+/**
+ * 夏普/索提诺的无风险利率说明（#200）：默认按 SHIBOR 3M 日序列逐期扣除，
+ * 序列尚未同步时后端按 0 计算并给 note——两种情况都要写明，不能笼统说「按 0」。
+ */
+export function riskFreeText(info: RiskFreeInfo | null | undefined): string {
+  if (!info || info.basis === 'none') {
+    return info?.note || '无风险利率按 0 计算（未扣除存款/国债收益）'
+  }
+  const average = formatNumber(info.average, 2)
+  if (info.basis === 'constant') return `无风险利率按请求指定的年化 ${average}% 计算`
+  const partial = info.missing_points
+    ? `；区间开头 ${info.missing_points} 个观测点早于序列首值，按 0 计`
+    : ''
+  return `无风险利率按 ${info.label || info.series} 日序列逐期扣除，区间均值 ${average}%${partial}`
 }

@@ -16,10 +16,7 @@ import { EMPTY, formatNumber } from '@/utils/helpers'
 import { pollJobUntilDone, type BackgroundJob } from '@/utils/polling'
 import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR } from '@/styles/tokens'
 import type { HistorySyncJob, PerformanceAnalytics } from './types'
-import { isShortRange, rangeSpanDays } from './format'
-
-// 夏普/索提诺的无风险利率：固定 0（界面上注明，#218）
-export const RISK_FREE_RATE = 0
+import { isShortRange, rangeSpanDays, riskFreeText } from './format'
 
 // 基准对比：选择持久化 localStorage；无数据基准降级为标签提示
 const BENCHMARK_STORAGE_KEY = 'statistics.benchmarks'
@@ -89,7 +86,6 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
     try {
       const response = await api.getPerformanceAnalytics(state.whatIfPrices, {
         refresh_history: options.refresh_history === true,
-        risk_free_rate: RISK_FREE_RATE,
         benchmarks: state.selectedBenchmarks.join(','),
         ...rangeParams()
       })
@@ -342,10 +338,14 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
     }
   })
 
+  // 无风险利率不再由前端指定：后端默认按参考利率序列（SHIBOR 3M）计算（#200）
+  const riskFreeNote = computed(() => riskFreeText(state.data?.risk_free))
+
   return reactive({
     state,
     curve,
     metrics,
+    riskFreeNote,
     tradeSkill,
     rangeSummary,
     warnings,

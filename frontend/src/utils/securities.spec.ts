@@ -6,6 +6,7 @@ import {
   MARKETS,
   followMarketCurrency,
   freeTextFormPatch,
+  holdingsLink,
   inferCurrency,
   normalizeSymbolInput,
   resolvedFormPatch,
@@ -181,5 +182,14 @@ describe('followMarketCurrency', () => {
   it('用户手选过币种：不跟随市场', () => {
     expect(followMarketCurrency('USD', '港股', '00700', false)).toBe('USD')
     expect(followMarketCurrency('', '加密货币', 'BTC', false)).toBe('')
+  })
+})
+
+describe('holdingsLink', () => {
+  it('持仓页深链带代码与市场（同代码跨市场不串）', () => {
+    expect(holdingsLink({ symbol: '00700', market: '港股' })).toEqual({
+      name: 'Holdings',
+      query: { symbol: '00700', market: '港股' }
+    })
   })
 })

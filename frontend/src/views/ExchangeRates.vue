@@ -67,7 +67,7 @@
                   >
                     <el-tag size="small" type="warning" effect="dark">过期</el-tag>
                   </el-tooltip>
-                  <el-tag v-if="card.source" size="small" :type="getSourceType(card.source)">
+                  <el-tag v-if="card.source" size="small" :type="sourceTagType(card.source)">
                     {{ sourceLabel(card.source) }}
                   </el-tag>
                 </span>
@@ -75,6 +75,47 @@
             </el-card>
           </el-col>
         </el-row>
+      </div>
+
+      <el-divider />
+
+      <!-- 官方中间价与第三方报价比对（#200） -->
+      <div class="rate-checks">
+        <h3>官方中间价与第三方比对（近 30 天）</h3>
+        <el-text size="small" type="info" class="rate-checks-tip">
+          折算以中国外汇交易中心人民币汇率中间价为准（工作日 9:15 发布）；第三方报价只用于逐日比对，
+          官方中间价持续不可用时才会顶上并在仪表盘告警。
+        </el-text>
+        <el-empty v-if="sourceChecks.length === 0" description="暂无比对记录" :image-size="64" />
+        <div v-else class="responsive-table">
+          <el-table :data="sourceChecks" size="small" stripe max-height="320">
+            <el-table-column label="比对日" min-width="100">
+              <template #default="{ row }">{{ formatDate(row.check_date) }}</template>
+            </el-table-column>
+            <el-table-column prop="from_currency" label="币种" min-width="70" />
+            <el-table-column label="官方中间价" min-width="150" align="right">
+              <template #default="{ row }">
+                {{ formatNumber(row.official_rate, 4) }}
+                <el-text size="small" type="info">（{{ formatDate(row.official_date) }}）</el-text>
+              </template>
+            </el-table-column>
+            <el-table-column label="第三方报价" min-width="160" align="right">
+              <template #default="{ row }">
+                {{ formatNumber(row.reference_rate, 4) }}
+                <el-text size="small" type="info"
+                  >（{{ sourceLabel(row.reference_source) }}）</el-text
+                >
+              </template>
+            </el-table-column>
+            <el-table-column label="差异" min-width="90" align="right">
+              <template #default="{ row }">
+                <el-text :type="isDiffAbnormal(row.diff_pct) ? 'danger' : undefined">
+                  {{ Number(row.diff_pct) > 0 ? '+' : '' }}{{ formatNumber(row.diff_pct, 2) }}%
+                </el-text>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </div>
 
       <el-divider />
@@ -110,7 +151,7 @@
             </el-table-column>
             <el-table-column prop="source" label="来源" min-width="90">
               <template #default="{ row }">
-                <el-tag size="small" :type="getSourceType(row.source)">
+                <el-tag size="small" :type="sourceTagType(row.source)">
                   {{ sourceLabel(row.source) }}
                 </el-tag>
               </template>
@@ -203,7 +244,7 @@
         </el-form-item>
 
         <el-form-item v-if="editingRate" label="来源">
-          <el-tag size="small" :type="getSourceType(editingRate.source || '')">
+          <el-tag size="small" :type="sourceTagType(editingRate.source || '')">
             {{ sourceLabel(editingRate.source) }}
           </el-tag>
         </el-form-item>
@@ -229,11 +270,12 @@ import { Refresh, Plus } from '@element-plus/icons-vue'
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormItemRule } from 'element-plus'
 import api from '@/api'
-import type { ExchangeRate, ExchangeRateLatest } from '@/types'
+import type { ExchangeRate, ExchangeRateCheck, ExchangeRateLatest } from '@/types'
 import { CURRENCIES } from '@/utils/currency'
 import { formatDate, formatDateTime, formatNumber, todayLocalISODate } from '@/utils/helpers'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import { RATE_STALE_DAYS, buildRateCards } from './exchange-rates/rateCards'
+import { isDiffAbnormal, sourceLabel, sourceTagType } from './exchange-rates/sources'
 
 // 汇率是全局表（不分用户）：任何人的增删改都会改变所有用户的折算与估值
 const GLOBAL_RATE_NOTICE = '汇率为全局数据，修改会影响所有用户的金额折算与持仓估值'
@@ -247,6 +289,7 @@ type LatestRates = ExchangeRateLatest
 
 const latestRates = ref<LatestRates | null>(null)
 const rateHistory = ref<RateRow[]>([])
+const sourceChecks = ref<ExchangeRateCheck[]>([])
 const loadingLatest = ref(false)
 const loadingHistory = ref(false)
 const hasLoaded = ref(false)
@@ -334,9 +377,19 @@ const loadRateHistory = async () => {
   }
 }
 
+// 官方中间价 vs 第三方比对（近 30 天）：辅助信息，失败不打扰页面主流程
+const loadSourceChecks = async () => {
+  try {
+    const response = await api.getExchangeRateSourceChecks(30)
+    sourceChecks.value = response.data
+  } catch (error) {
+    console.error(error)
+  }
+}
+
 const loadInitialData = async () => {
   try {
-    await Promise.all([loadLatestRates(), loadRateHistory()])
+    await Promise.all([loadLatestRates(), loadRateHistory(), loadSourceChecks()])
   } finally {
     hasLoaded.value = true
   }
@@ -348,6 +401,7 @@ const refreshFromAPI = async () => {
     refreshing.value = true
     const response = await api.refreshRatesFromAPI()
     ElMessage.success(`成功更新 ${response.data.count} 个汇率`)
+    void loadSourceChecks()
     await loadLatestRates()
     await loadRateHistory()
   } catch (error) {
@@ -447,25 +501,6 @@ const deleteRate = async (id: number) => {
   }
 }
 
-const SOURCE_LABELS: Record<string, string> = {
-  api: '自动获取',
-  manual: '手工录入',
-  system: '系统默认'
-}
-
-const sourceLabel = (value: string | null | undefined) =>
-  value ? SOURCE_LABELS[value] || value : '—'
-
-// 获取来源类型
-const getSourceType = (source: string) => {
-  const types: Record<string, 'success' | 'warning' | 'info'> = {
-    api: 'success',
-    manual: 'warning',
-    system: 'info'
-  }
-  return types[source] || 'info'
-}
-
 onMounted(() => {
   loadInitialData()
 })
@@ -474,6 +509,11 @@ onMounted(() => {
 <style scoped>
 .exchange-rates-page {
   width: 100%;
+}
+
+.rate-checks-tip {
+  display: block;
+  margin-bottom: 8px;
 }
 
 .current-rates {

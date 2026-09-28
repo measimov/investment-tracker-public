@@ -3,7 +3,8 @@
 import math
 from datetime import date
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from bisect import bisect_right
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # 年化天数基准：同一响应里会同时出现 TTWR 年化（metrics）与 XIRR 年化
 # （range_summary），此前两者分别用 365 与 365.25，长区间下有可感知的系统性
@@ -148,16 +149,63 @@ def calculate_trade_skill_metrics(realized: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _parse_curve_date(value: Any) -> Optional[date]:
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def forward_filled_rates(
+    points: Sequence[Tuple[date, Decimal]], dates: Sequence[Optional[date]]
+) -> List[Optional[Decimal]]:
+    """每个日期取「当日或之前最近一个发布值」；早于首个发布值或日期缺失 → None。"""
+    ordered = sorted(points, key=lambda item: item[0])
+    keys = [item[0] for item in ordered]
+    result: List[Optional[Decimal]] = []
+    for day in dates:
+        if day is None:
+            result.append(None)
+            continue
+        index = bisect_right(keys, day) - 1
+        result.append(ordered[index][1] if index >= 0 else None)
+    return result
+
+
 def calculate_risk_metrics(
     curve: List[Dict[str, Any]],
     risk_free_rate: Decimal,
-    calculation_level: str
+    calculation_level: str,
+    risk_free_points: Optional[Sequence[Tuple[date, Decimal]]] = None,
 ) -> Dict[str, Any]:
+    """风险指标。无风险利率两种口径：
+
+    - 常量 `risk_free_rate`（年化 %）：按平均观测频率摊到每期（历史口径，逐字节不变）；
+    - `risk_free_points` = [(发布日, 年化 %)] 日序列（#200，SHIBOR 3M）：每个收益点按其日期
+      向前填充取当期年化利率，再按**该点与上一点的实际日历间隔**计息
+      （rate/100 × gap/365.25）——曲线日期网格不规则，平均频率会把长间隔少算、短间隔多算。
+      此时输出的 `risk_free_rate` 是各收益点所用利率的均值；早于序列首值的点按 0 计并在
+      `risk_free_missing_points` 里如实报数。
+    """
     returns = [
         Decimal(str(point["daily_return_rate"])) / Decimal("100")
         for point in curve
         if point.get("daily_return_rate") is not None
     ]
+    # 每个收益点的 (日期, 上一曲线点日期)：逐期无风险收益按实际间隔计息要用
+    return_dates: List[Tuple[Optional[date], Optional[date]]] = []
+    previous_date: Optional[date] = None
+    for point in curve:
+        point_date = _parse_curve_date(point.get("date"))
+        if point.get("daily_return_rate") is not None:
+            return_dates.append((point_date, previous_date))
+        previous_date = point_date
+    series_rates: Optional[List[Optional[Decimal]]] = None
+    if risk_free_points:
+        series_rates = forward_filled_rates(risk_free_points, [d for d, _ in return_dates])
+        known = [rate for rate in series_rates if rate is not None]
+        if known:
+            risk_free_rate = sum(known, Decimal("0")) / Decimal(len(known))
     final_return_rate = Decimal(str(curve[-1]["cumulative_return_rate"])) if curve else Decimal("0")
     max_drawdown_rate = min(
         [Decimal(str(point.get("drawdown_rate", 0))) for point in curve],
@@ -185,12 +233,16 @@ def calculate_risk_metrics(
         "max_drawdown_rate": float(max_drawdown_rate),
         "calmar_ratio": None,
         "risk_free_rate": float(risk_free_rate),
+        "risk_free_basis": "series" if series_rates is not None else "constant",
         "risk_sample_count": len(returns),
         "annualization_basis": "calendar_days",
         # 与 range_summary 的 XIRR 同基准；此前两者 365 vs 365.25 不一致且无说明
         "annualization_days_basis": DAYS_PER_YEAR_FLOAT,
         "observation_span_days": span_days,
     }
+
+    if series_rates is not None:
+        metrics["risk_free_missing_points"] = sum(1 for rate in series_rates if rate is None)
 
     if len(returns) < 2:
         return metrics
@@ -221,8 +273,19 @@ def calculate_risk_metrics(
     volatility = variance.sqrt()
     metrics["annualized_volatility"] = float(volatility * annual_factor * Decimal("100"))
 
-    period_risk_free = (risk_free_rate / Decimal("100")) / periods_per_year
-    excess_returns = [value - period_risk_free for value in returns]
+    if series_rates is None:
+        period_risk_free = (risk_free_rate / Decimal("100")) / periods_per_year
+        excess_returns = [value - period_risk_free for value in returns]
+    else:
+        average_gap = Decimal(span_days) / Decimal(len(returns))
+        excess_returns = []
+        for value, rate, (point_date, prior_date) in zip(returns, series_rates, return_dates):
+            if point_date is not None and prior_date is not None:
+                gap = Decimal((point_date - prior_date).days)
+            else:
+                gap = average_gap
+            accrued = (rate or Decimal("0")) / Decimal("100") * gap / DAYS_PER_YEAR
+            excess_returns.append(value - accrued)
     average_excess = sum(excess_returns, Decimal("0")) / Decimal(len(excess_returns))
 
     # Sharpe uses the dispersion of the *excess* returns so numerator and

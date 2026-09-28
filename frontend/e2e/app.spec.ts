@@ -778,6 +778,72 @@ test('transfers a holding between broker accounts through the UI', async ({ page
   }
 })
 
+test('transaction symbol links deep-link into holdings with the row highlighted (#235)', async ({
+  page,
+  request
+}) => {
+  const { adminToken, createdUser, password } = await createTemporaryUser(request)
+  const token = await loginThroughApi(request, { username: createdUser.username, password })
+  const headers = { Authorization: `Bearer ${token}` }
+
+  async function trade(symbol: string, type: 'BUY' | 'SELL', date: string) {
+    const response = await request.post('http://127.0.0.1:18000/api/transactions', {
+      headers,
+      data: {
+        symbol,
+        name: `深链${symbol}`,
+        market: 'A股',
+        transaction_type: type,
+        quantity: 100,
+        price: 10,
+        fee: 0,
+        transaction_date: date,
+        currency: 'CNY'
+      }
+    })
+    expect(response.ok()).toBeTruthy()
+  }
+
+  try {
+    // DLK001 / DLK003 在持；DLK002 买入后全部卖出（已清仓）
+    await trade('DLK001', 'BUY', '2026-01-05')
+    await trade('DLK003', 'BUY', '2026-01-06')
+    await trade('DLK002', 'BUY', '2026-01-07')
+    await trade('DLK002', 'SELL', '2026-01-08')
+
+    await setAuthenticatedSession(page, token, createdUser)
+    await page.goto('/transactions')
+    await page.getByTestId('transaction-symbol-link').filter({ hasText: 'DLK001' }).click()
+
+    // 落到持仓页：关键词填入代码、目标行高亮、其他标的被筛掉
+    await expect(page).toHaveURL(/\/holdings\?.*symbol=DLK001/)
+    await expect(page.getByTestId('holdings-search')).toHaveValue('DLK001')
+    const focused = page.locator('.el-table__row.holding-focus-row')
+    await expect(focused).toHaveCount(1)
+    await expect(focused).toContainText('DLK001')
+    await expect(page.locator('.el-table__row', { hasText: 'DLK003' })).toHaveCount(0)
+    await expect(page.getByTestId('holdings-filter-count')).toContainText('1 / 2')
+
+    // 清空关键词 = 放弃定位：去高亮、query 从地址栏拿掉、全部持仓回来
+    await page.getByTestId('holdings-search').fill('')
+    await expect(page).not.toHaveURL(/symbol=/)
+    await expect(page.locator('.el-table__row.holding-focus-row')).toHaveCount(0)
+    await expect(page.locator('.el-table__row', { hasText: 'DLK003' })).toHaveCount(1)
+
+    // 已清仓的标的：提示未持有并给出标的档案入口
+    await page.goto('/transactions')
+    await page.getByTestId('transaction-symbol-link').filter({ hasText: 'DLK002' }).first().click()
+    const notHeld = page.getByTestId('holdings-not-held')
+    await expect(notHeld).toContainText('当前未持有 DLK002')
+    await expect(page.getByTestId('holdings-not-held-link')).toHaveAttribute(
+      'href',
+      /\/securities\/A%E8%82%A1\/DLK002$/
+    )
+  } finally {
+    await deleteTemporaryUser(request, adminToken, createdUser.id)
+  }
+})
+
 test('account view: editing one account row of a multi-account holding mounts a single focused editor (#226 P2)', async ({
   page,
   request

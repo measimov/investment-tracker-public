@@ -97,6 +97,12 @@ services:
       - HKEX_DAYQUOT_SYNC_ENABLED
       - HKEX_DAYQUOT_LOOKBACK_DAYS
       - HKEX_DAYQUOT_MAX_REPORTS_PER_TICK
+      # 汇率：官方中间价降级天数 / 第三方比对告警阈值
+      - FX_OFFICIAL_MAX_STALE_DAYS
+      - FX_CHECK_WARN_PCT
+      # 无风险利率：参考利率同步开关 / 风险指标默认序列
+      - REFERENCE_RATE_SYNC_ENABLED
+      - RISK_FREE_SERIES
       # 标的全集周期同步
       - SECURITY_CATALOG_SYNC_ENABLED
       - SECURITY_CATALOG_SYNC_INTERVAL_HOURS

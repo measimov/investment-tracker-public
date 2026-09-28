@@ -6,7 +6,8 @@ import {
   formatPlainPercent,
   isShortRange,
   rangeSpanDays,
-  signedNumber
+  signedNumber,
+  riskFreeText
 } from './format'
 
 describe('百分比正号规则', () => {
@@ -45,5 +46,26 @@ describe('短区间年化标注', () => {
     expect(isShortRange(179)).toBe(true)
     expect(isShortRange(180)).toBe(false)
     expect(isShortRange(null)).toBe(false)
+  })
+})
+
+describe('riskFreeText（#200 无风险利率口径说明）', () => {
+  it('序列口径写明来源与区间均值，开头缺值如实说明', () => {
+    expect(
+      riskFreeText({ basis: 'series', label: 'SHIBOR 3M', series: 'SHIBOR_3M', average: 1.4321 })
+    ).toBe('无风险利率按 SHIBOR 3M 日序列逐期扣除，区间均值 1.43%')
+    expect(
+      riskFreeText({ basis: 'series', label: 'SHIBOR 3M', average: 1.5, missing_points: 3 })
+    ).toContain('区间开头 3 个观测点早于序列首值，按 0 计')
+  })
+
+  it('无数据时用后端 note，缺块时回落到按 0 的说明', () => {
+    expect(
+      riskFreeText({ basis: 'none', note: 'SHIBOR 3M 暂无数据（参考利率尚未同步），按 0 计算' })
+    ).toBe('SHIBOR 3M 暂无数据（参考利率尚未同步），按 0 计算')
+    expect(riskFreeText(undefined)).toBe('无风险利率按 0 计算（未扣除存款/国债收益）')
+    expect(riskFreeText({ basis: 'constant', average: 2 })).toBe(
+      '无风险利率按请求指定的年化 2.00% 计算'
+    )
   })
 })

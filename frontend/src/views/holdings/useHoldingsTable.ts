@@ -1,6 +1,6 @@
 /**
  * 持仓数据 feature（issue #140：持仓页的核心数据面）。持仓列表、账户/市场
- * 过滤、券商账户目录、行内价格编辑与持久化、一键刷新股价、汇总口径
+ * 过滤、关键词搜索与标签筛选（#235，口径见 filters.ts）、深链定位、券商账户目录、行内价格编辑与持久化、一键刷新股价、汇总口径
  * （成本/市值/盈亏，CNY+USD 双币）全在这里；HoldingsTable/HoldingsSummary
  * 只做展示与交互绑定。
  *
@@ -26,6 +26,14 @@ import {
   type PriceInfo,
   type SortOrder
 } from './display'
+import {
+  buildTagFilterOptions,
+  EMPTY_TAG_SOURCE,
+  matchesKeyword,
+  matchesTagFilter,
+  symbolEquals,
+  type HoldingTagSource
+} from './filters'
 
 /**
  * 表格的一行：合并视图下是同一标的跨账户的汇总（accounts 里是各账户的原始持仓行），
@@ -77,7 +85,20 @@ function latest(a: string | null | undefined, b: string | null | undefined) {
   return a > b ? a : b
 }
 
-export function useHoldingsTable({ isUnmounted }: { isUnmounted: () => boolean }) {
+/** 深链定位的目标（?symbol=&market=）；market 缺省 = 任意市场 */
+export interface HoldingFocus {
+  symbol: string
+  market: string | null
+}
+
+export function useHoldingsTable({
+  isUnmounted,
+  tagSourceOf = () => EMPTY_TAG_SOURCE
+}: {
+  isUnmounted: () => boolean
+  /** 标签筛选的数据来源（角标 feature 提供）；缺省视为无标签 */
+  tagSourceOf?: (row: { symbol: string; market: string }) => HoldingTagSource
+}) {
   const holdingsStore = useHoldingsStore()
   const { convertToCNY, convertToUSD, hasRate } = useExchangeRates()
   const { refreshPrices: runPriceRefresh, notifyRefreshResult } = useRefreshPrices(isUnmounted)
@@ -97,7 +118,12 @@ export function useHoldingsTable({ isUnmounted }: { isUnmounted: () => boolean }
     priceDraft: null as number | null,
     sort: { ...DEFAULT_SORT } as { prop: HoldingsSortProp | null; order: SortOrder },
     // 合并（按标的汇总，默认）/ 按账户：账户细节多数时候用不上，放到展开行与切换视图里
-    viewMode: readViewMode() as HoldingsViewMode
+    viewMode: readViewMode() as HoldingsViewMode,
+    // 搜索与标签筛选只作用于表格行，不影响汇总卡（汇总是账户/市场口径的全貌）
+    keyword: '',
+    selectedTags: [] as string[],
+    // 深链定位（仪表盘/交易记录点代码跳来）：高亮并滚动到这一只
+    focus: null as HoldingFocus | null
   })
 
   function setViewMode(mode: HoldingsViewMode) {
@@ -230,12 +256,48 @@ export function useHoldingsTable({ isUnmounted }: { isUnmounted: () => boolean }
 
   // 排序在这里做（el-table 用 sortable="custom"）：el-table 的 sort-method 降序时整体
   // 反转，缺值会跑到最上面；这里缺价/缺汇率的行无论升降序都沉底。默认按市值降序。
+  const baseRows = computed<HoldingRow[]>(() =>
+    state.viewMode === 'account' ? visibleHoldings.value.map(toRow) : mergedRows.value
+  )
+
+  // 两种视图同一口径：关键词与标签都按标的（symbol:market）判断，与行是否按账户拆开无关
   const rows = computed<HoldingRow[]>(() => {
-    const base = state.viewMode === 'account' ? visibleHoldings.value.map(toRow) : mergedRows.value
+    const filtered = baseRows.value.filter(
+      (row) =>
+        matchesKeyword(row, state.keyword) &&
+        (!state.selectedTags.length || matchesTagFilter(tagSourceOf(row), state.selectedTags))
+    )
     const { prop, order } = state.sort.prop && state.sort.order ? state.sort : DEFAULT_SORT
     const valueOf = prop === 'profit' ? profitCNYOf : marketValueCNYOf
-    return sortNullsLast(base, valueOf, order ?? 'descending')
+    return sortNullsLast(filtered, valueOf, order ?? 'descending')
   })
+
+  /** 筛选前（账户/市场口径下）的行数：「筛选出 x / y」 */
+  const totalRowCount = computed(() => baseRows.value.length)
+  const isFiltered = computed(() => !!state.keyword.trim() || state.selectedTags.length > 0)
+
+  // 选项按标的去重后统计（按账户视图同一标的多行只计一只），只列当前持仓里出现过的标签
+  const tagOptions = computed(() => {
+    const seen = new Map<string, { symbol: string; market: string }>()
+    for (const h of visibleHoldings.value) seen.set(priceKey(h), h)
+    return buildTagFilterOptions([...seen.values()].map((row) => tagSourceOf(row)))
+  })
+
+  function clearFilters() {
+    state.keyword = ''
+    state.selectedTags = []
+  }
+
+  function isFocused(row: { symbol: string; market: string }): boolean {
+    const focus = state.focus
+    if (!focus) return false
+    return symbolEquals(row.symbol, focus.symbol) && (!focus.market || row.market === focus.market)
+  }
+
+  /** 深链目标是否在已加载的持仓里（不看账户过滤）；false = 已清仓或从未持有 */
+  const focusHeld = computed(() => !!state.focus && state.holdings.some(isFocused))
+  /** 深链目标是否在当前账户过滤下可见 */
+  const focusVisible = computed(() => !!state.focus && visibleHoldings.value.some(isFocused))
 
   function setSort(sort: { prop: string | null; order: SortOrder }) {
     const prop = sort.prop === 'profit' || sort.prop === 'marketValue' ? sort.prop : null
@@ -429,6 +491,13 @@ export function useHoldingsTable({ isUnmounted }: { isUnmounted: () => boolean }
     totalProfitUSD,
     totalProfitRate,
     rows,
+    totalRowCount,
+    isFiltered,
+    tagOptions,
+    clearFilters,
+    isFocused,
+    focusHeld,
+    focusVisible,
     accountLabel,
     loadBrokerAccounts,
     loadHoldings,

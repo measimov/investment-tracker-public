@@ -15,7 +15,8 @@
 #   → 计算 SHA256（.sha256 里记裸文件名，可在备份目录内 sha256sum -c）→ 原子改名为 .dump
 #
 # 客户端选择（BACKUP_PG_TOOL=local|docker 可强制）：
-#   local  = 宿主机上的 pg_dump/pg_restore（主版本须 ≥ 数据库主版本）
+#   local  = 宿主机上的 pg_dump/pg_restore（主版本须 ≥ 数据库主版本；未强制 local 时，
+#            pg_dump 报 server version mismatch 会自动改用 docker 重跑）
 #   docker = 一次性 `docker run --rm $BACKUP_PG_IMAGE`（默认 postgres:16）；backend 镜像
 #            刻意不含 pg_dump，所以不走 backend 容器
 # DATABASE_URL：优先取当前 shell 环境；没有则向 compose 的 backend 服务要（运行中用
@@ -64,7 +65,8 @@ usage() {
   BACKUP_DIR              备份目录，默认 ./backups
   BACKUP_MODE             postgres | excel | full；不设则交互选择
   BACKUP_TABLES           空格分隔的表名 → 表级备份 investment_tables_<时间>.dump
-  BACKUP_PG_TOOL          local | docker；不设则本机有 pg_dump 用本机，否则用容器
+  BACKUP_PG_TOOL          local | docker；不设则本机有 pg_dump 用本机，否则用容器；
+                          本机客户端主版本低于数据库时自动改用容器
   BACKUP_PG_IMAGE         容器模式的镜像，默认 postgres:16（主版本须 ≥ 数据库主版本）
   BACKUP_DOCKER_NETWORK   容器模式的网络，默认 host
   DATABASE_URL            不设则向 compose 的 backend 服务读取
@@ -252,6 +254,7 @@ create_postgres_backup() {
     local db_url
     local abs_dir
     local table
+    local err_file
     local user_args=()
     local table_args=()
 
@@ -284,12 +287,31 @@ create_postgres_backup() {
 
     echo -e "${BLUE}📁 正在同步备份 PostgreSQL 数据库（客户端: $tool_mode）...${NC}"
     if [ "$tool_mode" = "local" ]; then
-        if ! pg_dump --format=custom --file="$partial_path" \
-            ${table_args[@]+"${table_args[@]}"} "$db_url"; then
-            echo -e "${YELLOW}⚠️  pg_dump 失败；未完成文件保留为:${NC} $partial_path" >&2
-            return 1
+        err_file="$(mktemp)"
+        if pg_dump --format=custom --file="$partial_path" \
+            ${table_args[@]+"${table_args[@]}"} "$db_url" 2>"$err_file"; then
+            cat "$err_file" >&2
+        else
+            cat "$err_file" >&2
+            # 宿主客户端主版本低于数据库时 pg_dump 直接拒跑（不产生可用内容）。没有强制
+            # BACKUP_PG_TOOL=local 且有 docker 时，改用一次性容器重跑一遍，而不是让运维
+            # 读完报错再手工加 BACKUP_PG_TOOL=docker
+            if [ -z "${BACKUP_PG_TOOL:-}" ] \
+                && grep -q "server version mismatch" "$err_file" \
+                && command -v docker >/dev/null 2>&1; then
+                echo -e "${YELLOW}⚠️  本机 pg_dump 主版本低于数据库，改用一次性 $BACKUP_PG_IMAGE 容器重试${NC}" >&2
+                # 本次运行刚建的 .partial（ensure_new_path 保证此前不存在），不含可用内容
+                rm -f "$partial_path"
+                tool_mode="docker"
+            else
+                rm -f "$err_file"
+                echo -e "${YELLOW}⚠️  pg_dump 失败；未完成文件保留为:${NC} $partial_path" >&2
+                return 1
+            fi
         fi
-    else
+        rm -f "$err_file"
+    fi
+    if [ "$tool_mode" = "docker" ]; then
         abs_dir="$(cd "$BACKUP_DIR" && pwd)"
         # 以当前宿主用户写文件，产物不是 root 属主；连接串经环境变量传入，不出现在
         # 进程参数里（ps 看得到参数）
@@ -501,7 +523,7 @@ case $choice in
         if services_running; then
             export_excel_backup
         else
-            echo -e "${YELLOW}⚠️  服务未运行，请先启动: docker compose up -d${NC}" >&2
+            echo -e "${YELLOW}⚠️  服务未运行，请先启动: docker compose up -d（或 docker-compose up -d）${NC}" >&2
             exit 1
         fi
         ;;

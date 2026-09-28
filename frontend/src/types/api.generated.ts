@@ -695,6 +695,26 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/exchange-rates/source-checks': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List Source Checks
+     * @description 官方中间价与第三方报价的逐日比对（最近 N 天，新在前）
+     */
+    get: operations['list_source_checks_api_exchange_rates_source_checks_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/exchange-rates/{from_currency}/{to_currency}': {
     parameters: {
       query?: never
@@ -4118,6 +4138,36 @@ export interface components {
        */
       updated_at: string
     }
+    /**
+     * ExchangeRateCheck
+     * @description 官方中间价与第三方报价的一次逐日比对（#200）
+     */
+    ExchangeRateCheck: {
+      /**
+       * Check Date
+       * Format: date
+       */
+      check_date: string
+      /** Diff Pct */
+      diff_pct: string
+      /** From Currency */
+      from_currency: string
+      /**
+       * Official Date
+       * Format: date
+       */
+      official_date: string
+      /** Official Rate */
+      official_rate: string
+      /** Official Source */
+      official_source: string
+      /** Reference Rate */
+      reference_rate: string
+      /** Reference Source */
+      reference_source: string
+      /** To Currency */
+      to_currency: string
+    }
     /** ExchangeRateCreate */
     ExchangeRateCreate: {
       /**
@@ -6674,6 +6724,37 @@ export interface operations {
       }
     }
   }
+  list_source_checks_api_exchange_rates_source_checks_get: {
+    parameters: {
+      query?: {
+        days?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ExchangeRateCheck'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_exchange_rate_api_exchange_rates__from_currency___to_currency__get: {
     parameters: {
       query?: never
@@ -9001,7 +9082,8 @@ export interface operations {
       query?: {
         start_date?: string | null
         end_date?: string | null
-        risk_free_rate?: number | string
+        /** @description 年化无风险利率 %；不传则按参考利率序列（默认 SHIBOR 3M） */
+        risk_free_rate?: number | string | null
         refresh_history?: boolean
         /** @description 逗号分隔的基准指数 code，最多 3 个 */
         benchmarks?: string
@@ -9037,7 +9119,8 @@ export interface operations {
       query?: {
         start_date?: string | null
         end_date?: string | null
-        risk_free_rate?: number | string
+        /** @description 年化无风险利率 %；不传则按参考利率序列（默认 SHIBOR 3M） */
+        risk_free_rate?: number | string | null
         refresh_history?: boolean
         /** @description 逗号分隔的基准指数 code，最多 3 个 */
         benchmarks?: string

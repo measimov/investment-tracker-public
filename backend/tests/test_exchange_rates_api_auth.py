@@ -18,6 +18,7 @@ from app.models.user import User
 # (method, path, json_body)：覆盖 exchange_rates.py 的全部 8 个端点
 ENDPOINTS = [
     ("GET", "/api/exchange-rates/latest", None),
+    ("GET", "/api/exchange-rates/source-checks", None),
     ("GET", "/api/exchange-rates/", None),
     ("GET", "/api/exchange-rates/USD/CNY", None),
     ("POST", "/api/exchange-rates/", {

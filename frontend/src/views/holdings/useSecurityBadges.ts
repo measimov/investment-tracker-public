@@ -12,15 +12,11 @@ import { todayLocalISODate } from '@/utils/helpers'
 import { parseLocalDate } from '@/utils/dateRange'
 import type { OpinionSummariesResponse, OpinionSummaryRow, SecurityEvent } from '@/types'
 import { OPINION_CHANGE_TAGS, opinionTagType } from '../opinions/useOpinions'
+import { securityEventTypeLabel } from '@/utils/labels'
 import type { AnalysisSummaryRow } from './types'
+import type { HoldingTagSource } from './filters'
 
 export const RISK_LABELS: Record<string, string> = { low: '低', medium: '中', high: '高' }
-
-const EVENT_TYPE_LABELS: Record<string, string> = {
-  EARNINGS_DISCLOSURE: '财报披露',
-  DIVIDEND_PLAN: '分红预案',
-  SHARE_UNLOCK: '限售解禁'
-}
 
 export function useSecurityBadges() {
   const state = reactive({
@@ -107,7 +103,7 @@ export function useSecurityBadges() {
       (parseLocalDate(nearest.event_date).getTime() - parseLocalDate(today).getTime()) / 86400000
     )
     return {
-      label: EVENT_TYPE_LABELS[nearest.event_type] || nearest.event_type,
+      label: securityEventTypeLabel(nearest.event_type),
       daysText: days === 0 ? '今天' : `${days}天后`,
       date: nearest.event_date
     }
@@ -117,10 +113,22 @@ export function useSecurityBadges() {
     const today = todayLocalISODate()
     return eventsFor(row)
       .filter((event) => event.event_date >= today)
-      .map(
-        (event) => `${event.event_date} ${EVENT_TYPE_LABELS[event.event_type] || event.event_type}`
-      )
+      .map((event) => `${event.event_date} ${securityEventTypeLabel(event.event_type)}`)
       .join('；')
+  }
+
+  /** 标签筛选（filters.ts）的输入：AI 全部标签 + 风险 + 观点全部标签 + 未来事件类型 */
+  function tagSourceOf(row: { symbol: string; market: string }): HoldingTagSource {
+    const analysis = analysisFor(row)
+    const today = todayLocalISODate()
+    return {
+      aiTags: analysis?.tags || [],
+      riskLevel: analysis?.risk_level || null,
+      opinionTags: opinionFor(row)?.tags || [],
+      eventTypes: eventsFor(row)
+        .filter((event) => event.event_date >= today)
+        .map((event) => event.event_type)
+    }
   }
 
   return reactive({
@@ -135,7 +143,8 @@ export function useSecurityBadges() {
     loadEvents,
     loadOpinions,
     upcomingEvent,
-    eventTooltip
+    eventTooltip,
+    tagSourceOf
   })
 }
 

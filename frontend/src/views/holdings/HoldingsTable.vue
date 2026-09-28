@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowRight, EditPen } from '@element-plus/icons-vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
@@ -41,10 +42,30 @@ function isAccountView() {
   return props.table.state.viewMode === 'account'
 }
 
-// 合并视图下只有多账户行可展开：单账户行展开内容与主行重复，隐藏其展开箭头
+// 合并视图下只有多账户行可展开：单账户行展开内容与主行重复，隐藏其展开箭头；
+// 深链定位的目标行加高亮
 function rowClassName({ row }: { row: HoldingRow }) {
-  return !isAccountView() && row.accounts.length <= 1 ? 'single-account-row' : ''
+  const classes: string[] = []
+  if (!isAccountView() && row.accounts.length <= 1) classes.push('single-account-row')
+  if (props.table.isFocused(row)) classes.push('holding-focus-row')
+  return classes.join(' ')
 }
+
+// 深链定位：目标行渲染出来后滚到视口中间，每个定位目标只滚一次（之后排序/改价不再抢滚动）
+const rootEl = ref<HTMLElement | null>(null)
+let scrolledFocus: object | null = null
+watch(
+  () => [props.table.state.focus, props.table.rows, isMobileView.value] as const,
+  async ([focus]) => {
+    if (!focus || focus === scrolledFocus) return
+    await nextTick()
+    const target = rootEl.value?.querySelector('.holding-focus-row, .mobile-card--focus')
+    if (!target) return
+    scrolledFocus = focus
+    target.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  },
+  { flush: 'post' }
+)
 
 function onSortChange({ prop, order }: { prop: string | null; order: SortOrder }) {
   props.table.setSort({ prop, order })
@@ -67,7 +88,7 @@ function riskText(level: string) {
 </script>
 
 <template>
-  <div v-if="!isMobileView" class="responsive-table desktop-data-table">
+  <div v-if="!isMobileView" ref="rootEl" class="responsive-table desktop-data-table">
     <!-- 排序由 useHoldingsTable 做（sortable="custom"）：缺价/缺汇率的行无论升降序都沉底；
          default-sort 只负责让表头箭头高亮出当前排序 -->
     <el-table
@@ -80,7 +101,10 @@ function riskText(level: string) {
       @sort-change="onSortChange"
     >
       <template #empty>
-        <el-empty description="暂无持仓数据" :image-size="88" />
+        <el-empty
+          :description="table.isFiltered ? '没有符合筛选条件的持仓' : '暂无持仓数据'"
+          :image-size="88"
+        />
       </template>
 
       <!-- 合并视图：多账户行展开看各账户明细与转仓；单账户行不可展开（账户名在副行），
@@ -354,11 +378,12 @@ function riskText(level: string) {
     </el-table>
   </div>
 
-  <div v-else v-loading="table.state.loading" class="mobile-card-list">
+  <div v-else ref="rootEl" v-loading="table.state.loading" class="mobile-card-list">
     <article
       v-for="row in table.rows"
       :key="row.key"
       class="mobile-card"
+      :class="{ 'mobile-card--focus': table.isFocused(row) }"
       data-testid="holding-card"
     >
       <div class="mobile-card-head">
@@ -498,7 +523,7 @@ function riskText(level: string) {
     </article>
     <el-empty
       v-if="!table.state.loading && table.rows.length === 0"
-      description="暂无持仓数据"
+      :description="table.isFiltered ? '没有符合筛选条件的持仓' : '暂无持仓数据'"
       :image-size="88"
     />
   </div>
@@ -586,6 +611,16 @@ function riskText(level: string) {
 
 .account-name {
   font-weight: 500;
+}
+
+/* 深链定位的目标行 */
+.holdings-table :deep(.holding-focus-row > td.el-table__cell) {
+  background-color: var(--app-primary-tint);
+}
+
+.mobile-card--focus {
+  outline: 2px solid var(--app-primary);
+  outline-offset: -2px;
 }
 
 /* 单账户行：展开内容与主行重复，隐藏展开箭头（多账户行照常可展开） */
