@@ -1,15 +1,10 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models.user import User
-from ..schemas.user import (
-    User as UserSchema,
-    UserCreate,
-    UserUpdate,
-    UserPasswordReset
-)
+from ..schemas.user import User as UserSchema, UserCreate, UserUpdate, UserPasswordReset
 from ..core.security import get_password_hash
 from ..services.auth_session_service import revoke_user_sessions
 from ..core.deps import get_current_admin_user
@@ -19,10 +14,10 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 
 @router.get("", response_model=List[UserSchema])
 def list_users(
-    skip: int = 0,
-    limit: int = 100,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Get list of all users (admin only).
@@ -44,7 +39,7 @@ def list_users(
 def create_user(
     user_data: UserCreate,
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Create a new user (admin only).
@@ -63,19 +58,13 @@ def create_user(
     # Check if username already exists
     existing_user = db.query(User).filter(User.username == user_data.username).first()
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户名已被注册"
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被注册")
 
     # Check if email already exists (if provided)
     if user_data.email:
         existing_email = db.query(User).filter(User.email == user_data.email).first()
         if existing_email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="邮箱已被注册"
-            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="邮箱已被注册")
 
     # Create new user
     db_user = User(
@@ -83,7 +72,7 @@ def create_user(
         email=user_data.email,
         hashed_password=get_password_hash(user_data.password),
         is_active=user_data.is_active,
-        is_admin=user_data.is_admin
+        is_admin=user_data.is_admin,
     )
     db.add(db_user)
     db.commit()
@@ -91,22 +80,6 @@ def create_user(
 
     return UserSchema.model_validate(db_user)
 
-
-
-@router.get("/{user_id}", response_model=UserSchema)
-def get_user(
-    user_id: int,
-    current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
-):
-    """Get user by ID (admin only). 兼容保留：外部 API 客户端可能依赖。"""
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="用户不存在"
-        )
-    return UserSchema.model_validate(user)
 
 # 所有"会缩小活跃管理员集合"的路径共用的事务级顾问锁。任意常量即可，只要
 # 全仓唯一；取 users 表名的稳定哈希，避免和别处的 advisory lock 撞号。
@@ -142,7 +115,7 @@ def _guard_last_active_admin(
     target_stays_admin = (not removing) and target.is_admin and target.is_active
     if target.id == current_user.id and not target_stays_admin:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="不能撤销自己的管理员权限或停用自己的账号",
         )
     remaining = (
@@ -152,7 +125,7 @@ def _guard_last_active_admin(
     )
     if remaining == 0 and not target_stays_admin:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_409_CONFLICT,
             detail="系统必须保留至少一个活跃的管理员账号",
         )
 
@@ -162,7 +135,7 @@ def update_user(
     user_id: int,
     user_data: UserUpdate,
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update user information (admin only).
@@ -181,29 +154,20 @@ def update_user(
     """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="用户不存在"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
 
     # Check if new username already exists
     if user_data.username and user_data.username != user.username:
         existing_user = db.query(User).filter(User.username == user_data.username).first()
         if existing_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="用户名已被注册"
-            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="用户名已被注册")
         user.username = user_data.username
 
     # Check if new email already exists
     if user_data.email and user_data.email != user.email:
         existing_email = db.query(User).filter(User.email == user_data.email).first()
         if existing_email:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="邮箱已被注册"
-            )
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="邮箱已被注册")
         user.email = user_data.email
     elif user_data.email is None and "email" in user_data.model_fields_set:
         # 显式传 null = 清空邮箱（邮箱非必填，#219）；不传该字段则保持不变
@@ -235,7 +199,7 @@ def update_user(
 def delete_user(
     user_id: int,
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Delete a user (admin only).
@@ -252,17 +216,11 @@ def delete_user(
     """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="用户不存在"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
 
     # Prevent deleting yourself
     if user.id == current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="不能删除自己的账户"
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="不能删除自己的账户")
 
     # 删除同样会缩小活跃管理员集合，必须和 update 走同一把锁重新计数：
     # A 删 B 与 B 降权 A 并发时，各自都以为对方还在。
@@ -278,7 +236,7 @@ def reset_user_password(
     user_id: int,
     password_data: UserPasswordReset,
     current_user: User = Depends(get_current_admin_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Reset user password (admin only).
@@ -297,10 +255,7 @@ def reset_user_password(
     """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="用户不存在"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
 
     user.hashed_password = get_password_hash(password_data.new_password)
     db.commit()

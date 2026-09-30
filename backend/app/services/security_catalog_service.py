@@ -43,9 +43,12 @@ from ..models.security_catalog import SecurityCatalogEntry, SecurityCatalogSync
 from ..models.transaction import Transaction
 from ..models.watchlist_item import WatchlistItem
 from .stock_price_service import (
+    QuoteNameLookupError,
+    TushareEmptyResult,
     classify_tushare_error,
     fetch_tencent_quote_name,
     get_exchange_type,
+    tushare_configured,
     tushare_query,
 )
 from .job_worker import PeriodicOutcome, periodic_outcome_task
@@ -72,9 +75,7 @@ A_MARKET, B_MARKET, HK_MARKET, US_MARKET = "A股", "B股", "港股", "美股"
 CATALOG_MARKETS = (A_MARKET, B_MARKET, HK_MARKET, US_MARKET)
 TENCENT_RESOLVE_MARKETS = CATALOG_MARKETS
 
-HKEX_LIST_URL_ZH = (
-    "https://www.hkex.com.hk/chi/services/trading/securities/securitieslists/ListOfSecurities_c.xlsx"
-)
+HKEX_LIST_URL_ZH = "https://www.hkex.com.hk/chi/services/trading/securities/securitieslists/ListOfSecurities_c.xlsx"
 HKEX_LIST_URL_EN = (
     "https://www.hkex.com.hk/eng/services/trading/securities/securitieslists/ListOfSecurities.xlsx"
 )
@@ -93,13 +94,12 @@ UPSERT_CHUNK = 1000
 SOURCE_TENCENT = "tencent-quote"
 SOURCE_HKEX_DAYQUOT = "hkex-dayquot"
 
-COVERAGE_NOTES = [
-    "A股：Tushare stock_basic（含已退市）+ 场内 ETF/LOF（fund_basic）",
-    "港股：港交所證券名單（股本 / ETF / REIT，不含窝轮牛熊证债券）+ Tushare hk_basic 补简体名与拼音",
-    "美股：Tushare us_basic（普通股 / ADR / 优先股 / GDR）",
-    "B股：无免费全量名单，输入代码时按需向腾讯行情解析名称并沉淀",
-    "新加坡股 / 加密货币：无来源，请手工填写名称",
-]
+# 覆盖范围：
+# - A股：Tushare stock_basic（含已退市）+ 场内 ETF/LOF（fund_basic）
+# - 港股：港交所證券名單（股本 / ETF / REIT，不含窝轮牛熊证债券）+ Tushare hk_basic 补简体名与拼音
+# - 美股：Tushare us_basic（普通股 / ADR / 优先股 / GDR）
+# - B股：无免费全量名单，输入代码时按需向腾讯行情解析名称并沉淀
+# - 新加坡股 / 加密货币：无来源，只能手工填写名称
 
 
 class CatalogFormatError(ValueError):
@@ -432,7 +432,9 @@ def rows_from_hk_basic(df) -> List[CatalogRow]:
         inferred, inferred_source = infer_hk_currency(symbol)
         curr_type = _clean(record.get("curr_type"))
         currency, currency_source = (
-            (inferred, inferred_source) if inferred else (curr_type, "tushare" if curr_type else None)
+            (inferred, inferred_source)
+            if inferred
+            else (curr_type, "tushare" if curr_type else None)
         )
         rows.append(
             CatalogRow(
@@ -495,22 +497,15 @@ def fetch_hkex_list(url: str) -> bytes:
     return response.content
 
 
-def tushare_available() -> bool:
-    import os
-
-    return bool((os.environ.get("TUSHARE_TOKEN") or settings.tushare_token or "").strip())
-
-
 def _tushare_frame(api_name: str, *, required: bool, **kwargs):
-    """tushare_query 对空返回抛 ValueError（已重试）。**只有附加查询允许为空**（退市腿、
+    """tushare_query 对空返回抛 TushareEmptyResult（上游故障是另一类异常，照常上抛）。
+    **只有附加查询允许为空**（退市腿、
     翻页尾页）；主查询（stock_basic L / fund_basic / hk_basic L / us_basic 第一页）返回空表
     只能是上游故障、权限或契约漂移——必须抛 CatalogFormatError 让该源记 failed，
     否则 0 行会被标成 ok、last_success_at 前移，接下来一周都不再重试且 health 显示正常。"""
     try:
         frame = tushare_query(api_name, **kwargs)
-    except ValueError as exc:
-        if "返回空数据" not in str(exc):
-            raise
+    except TushareEmptyResult:
         frame = None
     if frame is None or getattr(frame, "empty", True):
         if required:
@@ -559,7 +554,9 @@ def load_hkex_list() -> List[CatalogRow]:
 
 
 def load_tushare_hk_basic() -> List[CatalogRow]:
-    fields = "ts_code,name,fullname,enname,cn_spell,curr_type,market,list_status,list_date,delist_date"
+    fields = (
+        "ts_code,name,fullname,enname,cn_spell,curr_type,market,list_status,list_date,delist_date"
+    )
     rows = rows_from_hk_basic(
         _tushare_frame("hk_basic", required=True, list_status="L", fields=fields)
     )
@@ -625,7 +622,14 @@ LOADER_BY_SOURCE = {spec.source: spec for spec in LOADERS}
 # ---------------------------------------------------------------- 写库
 
 _COALESCE_COLUMNS = (
-    "name", "name_en", "name_trad", "pinyin", "board", "exchange", "list_date", "delist_date",
+    "name",
+    "name_en",
+    "name_trad",
+    "pinyin",
+    "board",
+    "exchange",
+    "list_date",
+    "delist_date",
 )
 
 
@@ -687,9 +691,7 @@ def upsert_catalog_rows(db: Session, rows: Iterable[CatalogRow], *, source: str)
         set_["detail"] = table.detail.op("||")(excluded.detail)
         set_["source"] = excluded.source
         set_["synced_at"] = func.now()
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_security_catalog_symbol_market", set_=set_
-        )
+        stmt = stmt.on_conflict_do_update(constraint="uq_security_catalog_symbol_market", set_=set_)
         db.execute(stmt)
     db.commit()
     return len(values)
@@ -740,7 +742,7 @@ def sync_security_catalog(
     interval = timedelta(hours=settings.security_catalog_sync_interval_hours)
     started = _now()
     report: List[Dict[str, Any]] = []
-    tushare_ok = tushare_available()
+    tushare_ok = tushare_configured()
     tushare_dead = False
 
     if not _sync_lock.acquire(blocking=False):
@@ -765,8 +767,13 @@ def sync_security_catalog(
             if spec.needs_tushare and (not tushare_ok or tushare_dead):
                 reason = "tushare_fatal" if tushare_dead else "no_token"
                 _mark(
-                    db, spec, status="skipped", started_at=_now(), finished_at=_now(),
-                    error=None, detail={"reason": reason},
+                    db,
+                    spec,
+                    status="skipped",
+                    started_at=_now(),
+                    finished_at=_now(),
+                    error=None,
+                    detail={"reason": reason},
                 )
                 entry.update(status="skipped", reason=reason)
                 report.append(entry)
@@ -787,8 +794,15 @@ def sync_security_catalog(
                 continue
             finished = _now()
             _mark(
-                db, spec, status="ok", finished_at=finished, last_success_at=finished,
-                rows_seen=len(rows), rows_upserted=upserted, error=None, detail={},
+                db,
+                spec,
+                status="ok",
+                finished_at=finished,
+                last_success_at=finished,
+                rows_seen=len(rows),
+                rows_upserted=upserted,
+                error=None,
+                detail={},
             )
             entry.update(status="ok", rows_seen=len(rows), rows_upserted=upserted)
             report.append(entry)
@@ -833,7 +847,8 @@ def periodic_refresh_security_catalog() -> PeriodicOutcome:
     failed = [item for item in result["sources"] if item["status"] == "failed"]
     if failed:
         return PeriodicOutcome.failed(
-            "标的目录来源失败：" + "；".join(
+            "标的目录来源失败："
+            + "；".join(
                 f"{item['source']}: {str(item.get('error') or '')[:120]}" for item in failed
             ),
             count=len(ok),
@@ -863,42 +878,6 @@ def catalog_health(db: Session) -> Dict[str, Any]:
         "last_success_at": latest,
         "failing_sources": [row.source for row in sync_rows if row.status == "failed"],
         "capabilities": {"pinyin": PINYIN_AVAILABLE, "simplified": ZHCONV_AVAILABLE},
-    }
-
-
-def catalog_status(db: Session) -> Dict[str, Any]:
-    by_source = {row.source: row for row in db.query(SecurityCatalogSync).all()}
-    sources = []
-    for spec in LOADERS:
-        row = by_source.get(spec.source)
-        if row is None:
-            sources.append({"source": spec.source, "markets": list(spec.markets), "status": "never"})
-            continue
-        sources.append(
-            {
-                "source": row.source,
-                "markets": list(row.markets or spec.markets),
-                "status": row.status if row.status != "never" else "never",
-                "started_at": row.started_at,
-                "finished_at": row.finished_at,
-                "last_success_at": row.last_success_at,
-                "rows_seen": row.rows_seen,
-                "rows_upserted": row.rows_upserted,
-                "error": row.error,
-                "detail": row.detail or {},
-            }
-        )
-    by_market = dict(
-        db.query(SecurityCatalogEntry.market, func.count(SecurityCatalogEntry.id))
-        .group_by(SecurityCatalogEntry.market)
-        .all()
-    )
-    return {
-        "health": catalog_health(db),
-        "sources": sources,
-        "total_rows": sum(by_market.values()),
-        "by_market": by_market,
-        "coverage_notes": list(COVERAGE_NOTES),
     }
 
 
@@ -959,8 +938,12 @@ def collect_ledger_candidates(db: Session, user_id: int) -> Dict[Tuple[str, str]
         entry = merged.setdefault(
             (symbol, market),
             {
-                "symbol": symbol, "market": market, "name": None, "currency": None,
-                "last_used": None, "origins": [],
+                "symbol": symbol,
+                "market": market,
+                "name": None,
+                "currency": None,
+                "last_used": None,
+                "origins": [],
             },
         )
         if name and not entry["name"]:
@@ -986,21 +969,30 @@ def collect_ledger_candidates(db: Session, user_id: int) -> Dict[Tuple[str, str]
         upsert(row.symbol, row.market, name=row.name, origin="watchlist")
     latest_tx = (
         db.query(
-            Transaction.symbol, Transaction.market, Transaction.name,
-            Transaction.currency, Transaction.transaction_date,
+            Transaction.symbol,
+            Transaction.market,
+            Transaction.name,
+            Transaction.currency,
+            Transaction.transaction_date,
         )
         .filter(Transaction.user_id == user_id)
         .distinct(Transaction.symbol, Transaction.market)
         .order_by(
-            Transaction.symbol, Transaction.market,
-            Transaction.transaction_date.desc(), Transaction.id.desc(),
+            Transaction.symbol,
+            Transaction.market,
+            Transaction.transaction_date.desc(),
+            Transaction.id.desc(),
         )
         .all()
     )
     for row in latest_tx:
         upsert(
-            row.symbol, row.market, name=row.name, currency=row.currency,
-            last_used=row.transaction_date, origin="history",
+            row.symbol,
+            row.market,
+            name=row.name,
+            currency=row.currency,
+            last_used=row.transaction_date,
+            origin="history",
         )
     return merged
 
@@ -1039,7 +1031,9 @@ def enrich_with_catalog(db: Session, candidates: Dict[Tuple[str, str], Dict[str,
         return
     rows = (
         db.query(SecurityCatalogEntry)
-        .filter(tuple_(SecurityCatalogEntry.symbol, SecurityCatalogEntry.market).in_(list(candidates)))
+        .filter(
+            tuple_(SecurityCatalogEntry.symbol, SecurityCatalogEntry.market).in_(list(candidates))
+        )
         .all()
     )
     for entry in rows:
@@ -1095,7 +1089,8 @@ def search_securities(
         candidates = {key: value for key, value in candidates.items() if key[1] == market}
     enrich_with_catalog(db, candidates)
     ranked = [
-        entry for entry in candidates.values()
+        entry
+        for entry in candidates.values()
         if _ledger_tier(entry, query_upper, query_raw) is not None
     ]
     ranked.sort(key=lambda entry: entry["symbol"])
@@ -1110,7 +1105,11 @@ def search_securities(
     remaining = limit - len(items)
     if remaining > 0 and query_raw:
         catalog_rows = search_catalog(
-            db, q=query_raw, market=market, limit=remaining, exclude_keys=set(candidates),
+            db,
+            q=query_raw,
+            market=market,
+            limit=remaining,
+            exclude_keys=set(candidates),
         )
         items.extend(_entry_item(row) for row in catalog_rows)
     return items, catalog_health(db)
@@ -1136,13 +1135,17 @@ def display_names(
             names[(symbol, market)] = name
     remaining = wanted - set(names)
     if remaining:
-        ledger = db.query(Holding.symbol, Holding.market, Holding.name).filter(
-            Holding.user_id == user_id,
-            tuple_(Holding.symbol, Holding.market).in_(remaining),
-        ).union_all(
-            db.query(WatchlistItem.symbol, WatchlistItem.market, WatchlistItem.name).filter(
-                WatchlistItem.user_id == user_id,
-                tuple_(WatchlistItem.symbol, WatchlistItem.market).in_(remaining),
+        ledger = (
+            db.query(Holding.symbol, Holding.market, Holding.name)
+            .filter(
+                Holding.user_id == user_id,
+                tuple_(Holding.symbol, Holding.market).in_(remaining),
+            )
+            .union_all(
+                db.query(WatchlistItem.symbol, WatchlistItem.market, WatchlistItem.name).filter(
+                    WatchlistItem.user_id == user_id,
+                    tuple_(WatchlistItem.symbol, WatchlistItem.market).in_(remaining),
+                )
             )
         )
         for symbol, market, name in ledger:
@@ -1158,7 +1161,9 @@ def lookup_catalog_name(symbol: str, market: str) -> Optional[str]:
     try:
         entry = (
             db.query(SecurityCatalogEntry.name)
-            .filter(SecurityCatalogEntry.symbol == normalized, SecurityCatalogEntry.market == market)
+            .filter(
+                SecurityCatalogEntry.symbol == normalized, SecurityCatalogEntry.market == market
+            )
             .first()
         )
         return entry[0] if entry and entry[0] else None
@@ -1196,9 +1201,16 @@ def resolve_security(db: Session, *, symbol: str, market: str) -> Dict[str, Any]
     （B股由此逐渐补齐）；解析不到显式返回 name=None + error，不落库。"""
     normalized = normalize_manual_symbol(symbol, market)
     base = {
-        "symbol": normalized, "market": market, "name": None, "name_en": None,
-        "currency": None, "security_type": "unknown", "list_status": "unknown",
-        "in_catalog": False, "resolved_from": None, "error": None,
+        "symbol": normalized,
+        "market": market,
+        "name": None,
+        "name_en": None,
+        "currency": None,
+        "security_type": "unknown",
+        "list_status": "unknown",
+        "in_catalog": False,
+        "resolved_from": None,
+        "error": None,
     }
     if not normalized:
         return {**base, "error": "代码不能为空"}
@@ -1211,7 +1223,11 @@ def resolve_security(db: Session, *, symbol: str, market: str) -> Dict[str, Any]
         return _resolve_payload(entry, "catalog")
     if market not in TENCENT_RESOLVE_MARKETS:
         return {**base, "error": "该市场没有自动解析来源，请手工填写名称"}
-    name = _clean(fetch_tencent_quote_name(normalized, market))  # 全角 Ｂ → B
+    try:
+        name = _clean(fetch_tencent_quote_name(normalized, market))  # 全角 Ｂ → B
+    except QuoteNameLookupError:
+        # 网络/上游故障不是「代码不存在」：提示用户稍后重试，而不是去怀疑自己输错了
+        return {**base, "error": "腾讯行情暂时无法访问，请稍后重试或手工填写名称"}
     if not name:
         return {**base, "error": "腾讯行情未返回该代码，请确认代码与市场后手工填写名称"}
     if market == A_MARKET:
@@ -1227,9 +1243,13 @@ def resolve_security(db: Session, *, symbol: str, market: str) -> Dict[str, Any]
         db,
         [
             CatalogRow(
-                symbol=normalized, market=market, name=name,
-                pinyin=pinyin_abbreviation(name), currency=currency,
-                currency_source=currency_source, exchange=_exchange_for(normalized, market),
+                symbol=normalized,
+                market=market,
+                name=name,
+                pinyin=pinyin_abbreviation(name),
+                currency=currency,
+                currency_source=currency_source,
+                exchange=_exchange_for(normalized, market),
             )
         ],
         source=SOURCE_TENCENT,
@@ -1258,7 +1278,9 @@ def apply_hk_dayquot_metadata(db: Session, quotes: Dict[int, Any]) -> int:
         currency = getattr(quote, "currency", None)
         name_en = getattr(quote, "name", None)
         touched = False
-        if currency and (entry.currency != currency or entry.currency_source != SOURCE_HKEX_DAYQUOT):
+        if currency and (
+            entry.currency != currency or entry.currency_source != SOURCE_HKEX_DAYQUOT
+        ):
             entry.currency = currency
             entry.currency_source = SOURCE_HKEX_DAYQUOT
             touched = True

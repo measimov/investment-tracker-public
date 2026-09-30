@@ -32,6 +32,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
+from .payload_versions import versions_current
+
 # v5：EPS 与雅虎相差 >20% 且更晚报告比较列解释不了 → error（基本与摊薄各一条）
 STATEMENT_VALIDATION_VERSION = 5
 
@@ -86,15 +88,44 @@ SUM_DERIVED_FIELDS: Dict[str, List[str]] = {
 }
 
 # 参与"清洗"的数值科目（元数据与 validation 自身不在其列）
-NUMERIC_FIELDS = frozenset({
-    "total_revenue", "cost_of_revenue", "gross_profit", "operating_income", "n_income_attr_p",
-    "total_profit", "income_tax", "ebitda", "sga_exp", "int_exp", "basic_eps", "diluted_eps",
-    "total_assets", "total_nca", "total_cur_assets", "total_cur_liab", "total_ncl",
-    "accounts_receiv", "inventories", "fix_assets", "money_cap", "total_liab",
-    "total_hldr_eqy_exc_min_int", "total_equity", "minority_int", "total_debt",
-    "n_cashflow_act", "capex", "depr_fa_coga_dpba", "free_cashflow", "mezzanine_equity",
-    "lt_borr", "st_borr", "div_paid_owners",
-})
+NUMERIC_FIELDS = frozenset(
+    {
+        "total_revenue",
+        "cost_of_revenue",
+        "gross_profit",
+        "operating_income",
+        "n_income_attr_p",
+        "total_profit",
+        "income_tax",
+        "ebitda",
+        "sga_exp",
+        "int_exp",
+        "basic_eps",
+        "diluted_eps",
+        "total_assets",
+        "total_nca",
+        "total_cur_assets",
+        "total_cur_liab",
+        "total_ncl",
+        "accounts_receiv",
+        "inventories",
+        "fix_assets",
+        "money_cap",
+        "total_liab",
+        "total_hldr_eqy_exc_min_int",
+        "total_equity",
+        "minority_int",
+        "total_debt",
+        "n_cashflow_act",
+        "capex",
+        "depr_fa_coga_dpba",
+        "free_cashflow",
+        "mezzanine_equity",
+        "lt_borr",
+        "st_borr",
+        "div_paid_owners",
+    }
+)
 
 
 def header_restated(header: Sequence[str]) -> bool:
@@ -142,7 +173,10 @@ def _identity(
     values = [_num(row, field) for field in addends]
     if lhs is None or any(value is None for value in values):
         return {
-            "id": check_id, "severity": severity, "status": "skipped", "fields": fields,
+            "id": check_id,
+            "severity": severity,
+            "status": "skipped",
+            "fields": fields,
             "detail": skip_reason or "科目缺失，未校验",
         }
     signs = list(signs or [1] * len(addends))
@@ -152,10 +186,18 @@ def _identity(
     detail = "" if status == "ok" else f"{lhs_field}={lhs:.0f} 与分项合计 {rhs:.0f} 相差 {rel:.1%}"
     if status == "suspect" and allow_lhs_excess and lhs > rhs:
         status = "ok"
-        detail = f"{lhs_field} 比分项合计多 {rel:.1%}（可能含永久资本证券等其他权益工具，单边校验通过）"
+        detail = (
+            f"{lhs_field} 比分项合计多 {rel:.1%}（可能含永久资本证券等其他权益工具，单边校验通过）"
+        )
     return {
-        "id": check_id, "severity": severity, "status": status, "fields": fields,
-        "lhs": lhs, "rhs": rhs, "rel_diff": rel, "tol": tol,
+        "id": check_id,
+        "severity": severity,
+        "status": status,
+        "fields": fields,
+        "lhs": lhs,
+        "rhs": rhs,
+        "rel_diff": rel,
+        "tol": tol,
         "detail": detail,
     }
 
@@ -169,42 +211,82 @@ def balance_identity_addends(row: Dict[str, Any]) -> tuple:
 
 def identity_checks(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     checks = [
-        _identity("gross_profit_identity", row, lhs_field="gross_profit",
-                  addends=("total_revenue", "cost_of_revenue"), signs=(1, -1)),
-        _identity("total_assets_identity", row, lhs_field="total_assets",
-                  addends=("total_nca", "total_cur_assets")),
-        _identity("total_liab_identity", row, lhs_field="total_liab",
-                  addends=("total_cur_liab", "total_ncl")),
-        _identity("total_equity_identity", row, lhs_field="total_equity",
-                  addends=("total_hldr_eqy_exc_min_int", "minority_int"), allow_lhs_excess=True),
+        _identity(
+            "gross_profit_identity",
+            row,
+            lhs_field="gross_profit",
+            addends=("total_revenue", "cost_of_revenue"),
+            signs=(1, -1),
+        ),
+        _identity(
+            "total_assets_identity",
+            row,
+            lhs_field="total_assets",
+            addends=("total_nca", "total_cur_assets"),
+        ),
+        _identity(
+            "total_liab_identity",
+            row,
+            lhs_field="total_liab",
+            addends=("total_cur_liab", "total_ncl"),
+        ),
+        _identity(
+            "total_equity_identity",
+            row,
+            lhs_field="total_equity",
+            addends=("total_hldr_eqy_exc_min_int", "minority_int"),
+            allow_lhs_excess=True,
+        ),
         # 资产 = 负债 + 夹层权益 + 权益总额（含少数股东）。没抽到权益总额时**不能**拿归母权益
         # 冒充——少数股东权益为负的公司（09926）会假阳性。夹层权益（美国准则口径的可赎回非控制
         # 性权益，09618 2019/2020）既不是负债也不是权益，缺了它恒等式差的正好是这一行
-        _identity("balance_sheet_identity", row, lhs_field="total_assets",
-                  addends=balance_identity_addends(row),
-                  skip_reason="权益总额未知（含少数股东权益），资产恒等式未校验"),
+        _identity(
+            "balance_sheet_identity",
+            row,
+            lhs_field="total_assets",
+            addends=balance_identity_addends(row),
+            skip_reason="权益总额未知（含少数股东权益），资产恒等式未校验",
+        ),
     ]
     cfo, capex, fcf = _num(row, "n_cashflow_act"), _num(row, "capex"), _num(row, "free_cashflow")
     if cfo is None or capex is None or fcf is None:
-        checks.append({
-            "id": "free_cashflow_identity", "severity": "error", "status": "skipped",
-            "fields": ["free_cashflow", "n_cashflow_act", "capex"], "detail": "科目缺失，未校验",
-        })
+        checks.append(
+            {
+                "id": "free_cashflow_identity",
+                "severity": "error",
+                "status": "skipped",
+                "fields": ["free_cashflow", "n_cashflow_act", "capex"],
+                "detail": "科目缺失，未校验",
+            }
+        )
     else:
         expected = cfo - abs(capex)
         rel = _rel_diff(fcf, expected)
-        checks.append({
-            "id": "free_cashflow_identity", "severity": "error",
-            "status": "ok" if rel <= IDENTITY_REL_TOL else "suspect",
-            "fields": ["free_cashflow", "n_cashflow_act", "capex"],
-            "lhs": fcf, "rhs": expected, "rel_diff": rel, "tol": IDENTITY_REL_TOL,
-            "detail": "" if rel <= IDENTITY_REL_TOL else f"自由现金流 {fcf:.0f} ≠ CFO−|capex| {expected:.0f}",
-        })
+        checks.append(
+            {
+                "id": "free_cashflow_identity",
+                "severity": "error",
+                "status": "ok" if rel <= IDENTITY_REL_TOL else "suspect",
+                "fields": ["free_cashflow", "n_cashflow_act", "capex"],
+                "lhs": fcf,
+                "rhs": expected,
+                "rel_diff": rel,
+                "tol": IDENTITY_REL_TOL,
+                "detail": ""
+                if rel <= IDENTITY_REL_TOL
+                else f"自由现金流 {fcf:.0f} ≠ CFO−|capex| {expected:.0f}",
+            }
+        )
     if capex is not None and capex > 0:
-        checks.append({
-            "id": "capex_sign", "severity": "info", "status": "suspect", "fields": ["capex"],
-            "detail": "capex 为正（报表符号通常为负），已按绝对值计入自由现金流",
-        })
+        checks.append(
+            {
+                "id": "capex_sign",
+                "severity": "info",
+                "status": "suspect",
+                "fields": ["capex"],
+                "detail": "capex 为正（报表符号通常为负），已按绝对值计入自由现金流",
+            }
+        )
     return checks
 
 
@@ -216,34 +298,56 @@ def sanity_checks(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     current_assets = _num(row, "total_cur_assets")
     revenue = _num(row, "total_revenue")
     if total_assets is not None:
-        checks.append({
-            "id": "total_assets_positive", "severity": "error", "hard": True,
-            "status": "ok" if total_assets > 0 else "suspect", "fields": ["total_assets"],
-            "detail": "" if total_assets > 0 else f"总资产 {total_assets:.0f} ≤ 0",
-        })
+        checks.append(
+            {
+                "id": "total_assets_positive",
+                "severity": "error",
+                "hard": True,
+                "status": "ok" if total_assets > 0 else "suspect",
+                "fields": ["total_assets"],
+                "detail": "" if total_assets > 0 else f"总资产 {total_assets:.0f} ≤ 0",
+            }
+        )
     if total_assets is not None and current_assets is not None:
         ok = current_assets <= total_assets * (1 + IDENTITY_REL_TOL)
-        checks.append({
-            "id": "current_assets_within_total", "severity": "error", "hard": True,
-            "status": "ok" if ok else "suspect", "fields": ["total_cur_assets", "total_assets"],
-            "detail": "" if ok else f"流动资产 {current_assets:.0f} 大于总资产 {total_assets:.0f}",
-        })
+        checks.append(
+            {
+                "id": "current_assets_within_total",
+                "severity": "error",
+                "hard": True,
+                "status": "ok" if ok else "suspect",
+                "fields": ["total_cur_assets", "total_assets"],
+                "detail": ""
+                if ok
+                else f"流动资产 {current_assets:.0f} 大于总资产 {total_assets:.0f}",
+            }
+        )
     if total_assets is not None and equity is not None and equity != 0:
         ok = total_assets >= HARD_MAGNITUDE_RATIO * abs(equity)
-        checks.append({
-            "id": "assets_magnitude_guard", "severity": "error", "hard": True,
-            "status": "ok" if ok else "suspect",
-            "fields": ["total_assets", "total_hldr_eqy_exc_min_int"],
-            "detail": "" if ok else (
-                f"总资产 {total_assets:.0f} 不足归母权益 {equity:.0f} 的一半——像是数字被拆开或错列"
-            ),
-        })
+        checks.append(
+            {
+                "id": "assets_magnitude_guard",
+                "severity": "error",
+                "hard": True,
+                "status": "ok" if ok else "suspect",
+                "fields": ["total_assets", "total_hldr_eqy_exc_min_int"],
+                "detail": ""
+                if ok
+                else (
+                    f"总资产 {total_assets:.0f} 不足归母权益 {equity:.0f} 的一半——像是数字被拆开或错列"
+                ),
+            }
+        )
     if revenue is not None:
-        checks.append({
-            "id": "revenue_non_negative", "severity": "error",
-            "status": "ok" if revenue >= 0 else "suspect", "fields": ["total_revenue"],
-            "detail": "" if revenue >= 0 else f"收入 {revenue:.0f} 为负",
-        })
+        checks.append(
+            {
+                "id": "revenue_non_negative",
+                "severity": "error",
+                "status": "ok" if revenue >= 0 else "suspect",
+                "fields": ["total_revenue"],
+                "detail": "" if revenue >= 0 else f"收入 {revenue:.0f} 为负",
+            }
+        )
     return checks
 
 
@@ -252,12 +356,19 @@ def currency_check(row: Dict[str, Any]) -> Dict[str, Any]:
     known = sorted({str(value) for value in by_kind.values() if value})
     if len(known) > 1:
         return {
-            "id": "currency_consistency", "severity": "error", "hard": True, "status": "suspect",
-            "fields": [], "detail": f"三张表币种不一致: {by_kind}",
+            "id": "currency_consistency",
+            "severity": "error",
+            "hard": True,
+            "status": "suspect",
+            "fields": [],
+            "detail": f"三张表币种不一致: {by_kind}",
         }
     return {
-        "id": "currency_consistency", "severity": "error", "status": "ok" if known else "skipped",
-        "fields": [], "detail": "" if known else "表头未识别出币种",
+        "id": "currency_consistency",
+        "severity": "error",
+        "status": "ok" if known else "skipped",
+        "fields": [],
+        "detail": "" if known else "表头未识别出币种",
     }
 
 
@@ -297,7 +408,11 @@ def _explain_yahoo_diff(
       含/不含某些项目）→ `yahoo_definition_diff`；
     - 更晚报告标注了重列、且它的重列数与雅虎一致：雅虎取的是重列后的数（02669 2024 CFO）
       → `yahoo_restated`，保留首次披露值。"""
-    if not comparative or not _same_currency(row, comparative) or not _evidence_later(row, comparative):
+    if (
+        not comparative
+        or not _same_currency(row, comparative)
+        or not _evidence_later(row, comparative)
+    ):
         return None
     later = _num(comparative, field)
     if later is None:
@@ -309,7 +424,10 @@ def _explain_yahoo_diff(
             "reason": "yahoo_definition_diff",
             "detail": f"{field} 与雅虎相差 {rel:.1%}，但与 {source} 比较列一致（雅虎口径不同）",
         }
-    if evidence_restated(row, comparative, field) and _rel_diff(later, theirs) <= DEFINITION_MATCH_TOL:
+    if (
+        evidence_restated(row, comparative, field)
+        and _rel_diff(later, theirs) <= DEFINITION_MATCH_TOL
+    ):
         return {
             "reason": "yahoo_restated",
             "detail": (
@@ -337,15 +455,21 @@ def _eps_check(
     if ours is None or theirs is None or not _same_currency(row, yahoo_row):
         return None
     base: Dict[str, Any] = {
-        "id": f"yahoo_{field}", "fields": [field], "source": "yahoo_fundamentals",
-        "ours": ours, "theirs": theirs,
+        "id": f"yahoo_{field}",
+        "fields": [field],
+        "source": "yahoo_fundamentals",
+        "ours": ours,
+        "theirs": theirs,
     }
     if theirs != 0:
         ratio = ours / theirs
         low, high = EPS_CENTS_RATIO_RANGE
         if low <= ratio <= high:
             return {
-                **base, "severity": "error", "status": "suspect", "reason": "eps_unit_100x",
+                **base,
+                "severity": "error",
+                "status": "suspect",
+                "reason": "eps_unit_100x",
                 "detail": f"{field} {ours:g} 是雅虎 {theirs:g} 的 {ratio:.0f} 倍，疑似以仙列示未折元",
             }
     rel = _rel_diff(ours, theirs)
@@ -353,14 +477,21 @@ def _eps_check(
         return {**base, "severity": "info", "status": "ok", "rel_diff": rel, "detail": ""}
     if rel <= EPS_MISMATCH_TOL:
         return {
-            **base, "severity": "info", "status": "suspect", "rel_diff": rel,
+            **base,
+            "severity": "info",
+            "status": "suspect",
+            "rel_diff": rel,
             "detail": f"{field} 与雅虎相差 {rel:.1%}",
         }
     explained = _explain_yahoo_diff(row, comparative, field, ours, theirs)
     if explained:
         return {**base, "severity": "info", "status": "suspect", "rel_diff": rel, **explained}
     return {
-        **base, "severity": "error", "status": "suspect", "rel_diff": rel, "reason": "eps_mismatch",
+        **base,
+        "severity": "error",
+        "status": "suspect",
+        "rel_diff": rel,
+        "reason": "eps_mismatch",
         "detail": f"{field} {ours:g} 与雅虎 {theirs:g} 相差 {rel:.1%}，疑似映射到非每股盈利行",
     }
 
@@ -389,23 +520,38 @@ def cross_check_row(
             check_id = f"{'yahoo' if is_yahoo else 'comparative'}_{field}"
             ours, theirs = _num(row, field), _num(other, field)
             if ours is None or theirs is None:
-                checks.append({
-                    "id": check_id, "severity": severity, "status": "skipped", "fields": [field],
-                    "source": source, "detail": "对方或本行缺该科目",
-                })
+                checks.append(
+                    {
+                        "id": check_id,
+                        "severity": severity,
+                        "status": "skipped",
+                        "fields": [field],
+                        "source": source,
+                        "detail": "对方或本行缺该科目",
+                    }
+                )
                 continue
             if not ours_currency or not theirs_currency or ours_currency != theirs_currency:
-                checks.append({
-                    "id": check_id, "severity": severity, "status": "skipped", "fields": [field],
-                    "source": source,
-                    "detail": f"币种未知或不同（{ours_currency} vs {theirs_currency}），不比较",
-                })
+                checks.append(
+                    {
+                        "id": check_id,
+                        "severity": severity,
+                        "status": "skipped",
+                        "fields": [field],
+                        "source": source,
+                        "detail": f"币种未知或不同（{ours_currency} vs {theirs_currency}），不比较",
+                    }
+                )
                 continue
             rel = _rel_diff(ours, theirs)
             label = "雅虎" if is_yahoo else f"{source} 比较列"
             check: Dict[str, Any] = {
-                "id": check_id, "fields": [field], "source": source,
-                "ours": ours, "theirs": theirs, "rel_diff": rel,
+                "id": check_id,
+                "fields": [field],
+                "source": source,
+                "ours": ours,
+                "theirs": theirs,
+                "rel_diff": rel,
             }
             explained = (
                 _explain_yahoo_diff(row, comparative_row, field, ours, theirs)
@@ -417,7 +563,10 @@ def cross_check_row(
             elif not is_yahoo and evidence_restated(row, other, field):
                 # 更晚的报告自己标注了重列：差异是公司重列，不是抽取错误——保留原值只标注
                 check.update(
-                    status="suspect", severity="info", tol=suspect_tol, reason="comparative_restated",
+                    status="suspect",
+                    severity="info",
+                    tol=suspect_tol,
+                    reason="comparative_restated",
                     detail=f"{field} 与{label}相差 {rel:.1%}（该报告表头标注重列，保留首次披露值）",
                 )
             elif explained:
@@ -425,12 +574,15 @@ def cross_check_row(
             elif rel <= suspect_tol:
                 # 比较列 1-5%、没有重列标记：可能是未标注的重述，只记不判
                 check.update(
-                    status="suspect", severity="info", tol=suspect_tol,
+                    status="suspect",
+                    severity="info",
+                    tol=suspect_tol,
                     detail=f"{field} 与{label}相差 {rel:.1%}",
                 )
             else:
                 check.update(
-                    status="suspect", severity=severity,
+                    status="suspect",
+                    severity=severity,
                     tol=info_tol if severity == "error" else suspect_tol,
                     detail=f"{field} 与{label}相差 {rel:.1%}",
                 )
@@ -491,7 +643,12 @@ def validate_period_row(
     row: Dict[str, Any], *, extra_checks: Optional[Sequence[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """行 → validation 块（不修改 row）。extra_checks = 服务层做的交叉核对。"""
-    checks = [*identity_checks(row), *sanity_checks(row), currency_check(row), *(extra_checks or [])]
+    checks = [
+        *identity_checks(row),
+        *sanity_checks(row),
+        currency_check(row),
+        *(extra_checks or []),
+    ]
     suspect_fields = _suspect_fields(checks)
     row_level = _row_level_failure(checks)
     # status=suspect 当且仅当有科目要清洗或整行不可信；一条 error 检查不通过但责任科目全部
@@ -515,15 +672,17 @@ def finalize_validation(
 
 
 def validation_current(payload: Dict[str, Any]) -> bool:
-    validation = payload.get("validation") or {}
-    return int(validation.get("version") or 0) == STATEMENT_VALIDATION_VERSION
+    return versions_current(payload.get("validation"), version=STATEMENT_VALIDATION_VERSION)
 
 
 def statement_row_usable(payload: Dict[str, Any]) -> bool:
     """当前版本且未存疑（供只想要"可信行"的读者使用；分析路径按科目清洗，不整行剔除）。"""
     from .report_statement_prompts import statement_row_current
 
-    return statement_row_current(payload) and (payload.get("validation") or {}).get("status") != "suspect"
+    return (
+        statement_row_current(payload)
+        and (payload.get("validation") or {}).get("status") != "suspect"
+    )
 
 
 def derived_field_inputs(payload: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -600,6 +759,8 @@ def validation_summary(payload: Dict[str, Any]) -> str:
     reasons = [
         check.get("detail")
         for check in validation.get("checks") or []
-        if check.get("severity") == "error" and check.get("status") == "suspect" and check.get("detail")
+        if check.get("severity") == "error"
+        and check.get("status") == "suspect"
+        and check.get("detail")
     ]
     return "；".join(reasons[:3])

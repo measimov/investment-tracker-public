@@ -10,12 +10,17 @@
             <el-button type="primary" :icon="Plus" @click="formDialog?.openAdd()">
               新增交易
             </el-button>
+            <!-- 移动端筛选默认折叠：展开时整张表单占满第一屏（#286） -->
+            <el-button v-if="isMobileView" @click="filtersOpen = !filtersOpen">
+              {{ filtersOpen ? '收起筛选' : '筛选'
+              }}{{ activeFilterCount ? `（${activeFilterCount}）` : '' }}
+            </el-button>
           </div>
         </div>
       </template>
 
       <!-- Filters -->
-      <el-form :inline="true" class="filter-form">
+      <el-form v-show="!isMobileView || filtersOpen" :inline="true" class="filter-form">
         <el-form-item label="代码">
           <SecuritySelect
             v-model="list.filters.symbol"
@@ -62,11 +67,11 @@
             @change="list.handleSearch"
             @clear="list.handleSearch"
           >
-            <el-option :label="UNASSIGNED_ACCOUNT_LABEL" value="UNASSIGNED" />
+            <el-option :label="UNASSIGNED_ACCOUNT_LABEL" :value="UNASSIGNED_ACCOUNT" />
             <el-option
               v-for="account in brokerAccounts"
               :key="account.id"
-              :label="brokerAccountLabel(account)"
+              :label="accountOptionLabel(account)"
               :value="account.id"
             />
           </el-select>
@@ -117,7 +122,8 @@
 <script setup lang="ts">
 import { showApiError } from '@/utils/showApiError'
 import { Upload, Download, Plus } from '@element-plus/icons-vue'
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { useMediaQuery } from '@/composables/useMediaQuery'
 import { ElMessage } from 'element-plus'
 import api from '../api'
 import SecuritySelect from '../components/SecuritySelect.vue'
@@ -126,13 +132,18 @@ import { getApiErrorMessage } from '../utils/apiErrors'
 import type { BrokerAccount, SecuritySearchItem } from '../types'
 import { downloadFile, todayLocalISODate } from '../utils/helpers'
 import { MARKETS } from '../utils/securities'
-import { TRANSACTION_TYPE_LABELS, UNASSIGNED_ACCOUNT_LABEL, optionsOf } from '../utils/labels'
+import {
+  accountOptionLabel,
+  optionsOf,
+  TRANSACTION_TYPE_LABELS,
+  UNASSIGNED_ACCOUNT,
+  UNASSIGNED_ACCOUNT_LABEL
+} from '../utils/labels'
 
 const transactionTypeOptions = optionsOf(TRANSACTION_TYPE_LABELS)
 import TransactionsTable from './transactions/TransactionsTable.vue'
 import TransactionFormDialog from './transactions/TransactionFormDialog.vue'
 import ImportDialog from './transactions/ImportDialog.vue'
-import { brokerAccountLabel } from './transactions/shared'
 import { useTransactionsList } from './transactions/useTransactionsList'
 
 // 壳层职责（issue #140）：页头（导入/导出/新增）、过滤表单、分页与三个
@@ -140,6 +151,17 @@ import { useTransactionsList } from './transactions/useTransactionsList'
 // 各自成自足 dialog（expose open*，保存/入账后回调壳层刷新）。
 const transactionsStore = useTransactionsStore()
 const list = useTransactionsList()
+const isMobileView = useMediaQuery('(max-width: 640px)')
+const filtersOpen = ref(false)
+const activeFilterCount = computed(
+  () =>
+    [
+      list.filters.symbol,
+      list.filters.market,
+      list.filters.transaction_type,
+      list.filters.account
+    ].filter((value) => value !== '' && value !== null && value !== undefined).length
+)
 
 // 筛选框选中候选：代码与市场一起定，否则 00700 配 A股 筛选查空
 function onFilterSymbolSelected(item: SecuritySearchItem) {

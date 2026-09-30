@@ -36,6 +36,7 @@ from ..models.holding import Holding
 from ..models.security_industry import SecurityIndustry
 from ..models.user import User
 from ..models.watchlist_item import WatchlistItem
+from .http_source import throttle
 from .job_worker import PeriodicOutcome, periodic_outcome_task
 from .security_rule_service import get_industry_overrides
 
@@ -66,42 +67,119 @@ def _now() -> datetime:
 # 最长前缀优先：4 位 > 3 位 > 2 位。只收录能区分出有意义行业的码段，其余落到大类。
 _SIC_LABELS: Dict[str, str] = {
     # 4 位
-    "2834": "医药", "2835": "医药", "2836": "生物制品",
-    "3571": "计算机硬件", "3572": "计算机硬件", "3575": "计算机硬件", "3577": "计算机硬件",
+    "2834": "医药",
+    "2835": "医药",
+    "2836": "生物制品",
+    "3571": "计算机硬件",
+    "3572": "计算机硬件",
+    "3575": "计算机硬件",
+    "3577": "计算机硬件",
     "3674": "半导体",
-    "3711": "汽车", "3714": "汽车零部件",
-    "4812": "电信服务", "4813": "电信服务",
+    "3711": "汽车",
+    "3714": "汽车零部件",
+    "4812": "电信服务",
+    "4813": "电信服务",
     "5961": "电商零售",
     "6798": "REIT",
-    "7370": "信息技术服务", "7371": "信息技术服务", "7372": "软件", "7373": "信息技术服务",
+    "7370": "信息技术服务",
+    "7371": "信息技术服务",
+    "7372": "软件",
+    "7373": "信息技术服务",
     "7374": "信息技术服务",
     "7389": "商业服务",
     "9995": "空壳公司",
     # 3 位
-    "131": "石油天然气", "283": "医药", "357": "计算机硬件", "366": "通信设备",
-    "367": "电子元器件", "384": "医疗器械", "737": "信息技术服务", "581": "餐饮",
+    "131": "石油天然气",
+    "283": "医药",
+    "357": "计算机硬件",
+    "366": "通信设备",
+    "367": "电子元器件",
+    "384": "医疗器械",
+    "737": "信息技术服务",
+    "581": "餐饮",
     # 2 位（SIC Major Group）
-    "01": "农林牧渔", "02": "农林牧渔", "07": "农林牧渔", "08": "农林牧渔", "09": "农林牧渔",
-    "10": "金属采矿", "12": "煤炭", "13": "石油天然气", "14": "非金属采矿",
-    "15": "建筑", "16": "建筑", "17": "建筑",
-    "20": "食品饮料", "21": "烟草", "22": "纺织", "23": "服装", "24": "木材",
-    "25": "家具", "26": "造纸", "27": "印刷出版", "28": "化工", "29": "石油炼化",
-    "30": "橡胶塑料", "31": "皮革制品", "32": "建材", "33": "钢铁有色", "34": "金属制品",
-    "35": "机械设备", "36": "电子电气设备", "37": "交通运输设备", "38": "仪器仪表",
+    "01": "农林牧渔",
+    "02": "农林牧渔",
+    "07": "农林牧渔",
+    "08": "农林牧渔",
+    "09": "农林牧渔",
+    "10": "金属采矿",
+    "12": "煤炭",
+    "13": "石油天然气",
+    "14": "非金属采矿",
+    "15": "建筑",
+    "16": "建筑",
+    "17": "建筑",
+    "20": "食品饮料",
+    "21": "烟草",
+    "22": "纺织",
+    "23": "服装",
+    "24": "木材",
+    "25": "家具",
+    "26": "造纸",
+    "27": "印刷出版",
+    "28": "化工",
+    "29": "石油炼化",
+    "30": "橡胶塑料",
+    "31": "皮革制品",
+    "32": "建材",
+    "33": "钢铁有色",
+    "34": "金属制品",
+    "35": "机械设备",
+    "36": "电子电气设备",
+    "37": "交通运输设备",
+    "38": "仪器仪表",
     "39": "其他制造",
-    "40": "铁路运输", "41": "公共交通", "42": "货运物流", "44": "水上运输", "45": "航空运输",
-    "46": "管道运输", "47": "运输服务", "48": "通信", "49": "公用事业",
-    "50": "批发", "51": "批发",
-    "52": "零售", "53": "零售", "54": "零售", "55": "零售", "56": "零售", "57": "零售",
-    "58": "餐饮", "59": "零售",
-    "60": "银行", "61": "信贷金融", "62": "证券", "63": "保险", "64": "保险",
-    "65": "房地产", "67": "投资控股",
-    "70": "酒店", "72": "个人服务", "73": "商业服务", "75": "汽车服务", "76": "维修服务",
-    "78": "影视", "79": "娱乐休闲", "80": "医疗服务", "81": "法律服务", "82": "教育",
-    "83": "社会服务", "84": "文化场馆", "86": "会员组织", "87": "工程与专业服务",
-    "88": "个人服务", "89": "其他服务",
-    "91": "公共管理", "92": "公共管理", "93": "公共管理", "94": "公共管理",
-    "95": "公共管理", "96": "公共管理", "97": "公共管理", "99": "未分类",
+    "40": "铁路运输",
+    "41": "公共交通",
+    "42": "货运物流",
+    "44": "水上运输",
+    "45": "航空运输",
+    "46": "管道运输",
+    "47": "运输服务",
+    "48": "通信",
+    "49": "公用事业",
+    "50": "批发",
+    "51": "批发",
+    "52": "零售",
+    "53": "零售",
+    "54": "零售",
+    "55": "零售",
+    "56": "零售",
+    "57": "零售",
+    "58": "餐饮",
+    "59": "零售",
+    "60": "银行",
+    "61": "信贷金融",
+    "62": "证券",
+    "63": "保险",
+    "64": "保险",
+    "65": "房地产",
+    "67": "投资控股",
+    "70": "酒店",
+    "72": "个人服务",
+    "73": "商业服务",
+    "75": "汽车服务",
+    "76": "维修服务",
+    "78": "影视",
+    "79": "娱乐休闲",
+    "80": "医疗服务",
+    "81": "法律服务",
+    "82": "教育",
+    "83": "社会服务",
+    "84": "文化场馆",
+    "86": "会员组织",
+    "87": "工程与专业服务",
+    "88": "个人服务",
+    "89": "其他服务",
+    "91": "公共管理",
+    "92": "公共管理",
+    "93": "公共管理",
+    "94": "公共管理",
+    "95": "公共管理",
+    "96": "公共管理",
+    "97": "公共管理",
+    "99": "未分类",
 }
 
 
@@ -244,9 +322,7 @@ def eastmoney_symbol(market: str, row: Dict[str, Any]) -> Optional[str]:
     return code.replace("_", ".") if market == "美股" else code
 
 
-def parse_eastmoney_industries(
-    market: str, payload: Any
-) -> Dict[str, Dict[str, Any]]:
+def parse_eastmoney_industries(market: str, payload: Any) -> Dict[str, Dict[str, Any]]:
     """响应 → {账本代码: {industry, raw}}；没有行业的行跳过。"""
     parsed: Dict[str, Dict[str, Any]] = {}
     for row in parse_eastmoney_rows(payload):
@@ -259,18 +335,9 @@ def parse_eastmoney_industries(
     return parsed
 
 
-_eastmoney_lock = threading.Lock()
-_eastmoney_last_at = 0.0
-
-
 def _eastmoney_get(params: Dict[str, str]) -> Any:
     """进程级限速（≥1s 间隔）的 GET；网络/HTTP/非 JSON 一律 EastmoneyError。"""
-    global _eastmoney_last_at
-    with _eastmoney_lock:
-        wait = EASTMONEY_MIN_INTERVAL_SECONDS - (time.monotonic() - _eastmoney_last_at)
-        if wait > 0:
-            time.sleep(wait)
-        _eastmoney_last_at = time.monotonic()
+    throttle("eastmoney", EASTMONEY_MIN_INTERVAL_SECONDS)
     try:
         response = requests.get(
             EASTMONEY_URL,
@@ -286,11 +353,11 @@ def _eastmoney_get(params: Dict[str, str]) -> Any:
         raise EastmoneyError("东方财富响应不是合法 JSON") from exc
 
 
-def fetch_eastmoney_industries(
-    market: str, symbols: Sequence[str]
-) -> Dict[str, Dict[str, Any]]:
+def fetch_eastmoney_industries(market: str, symbols: Sequence[str]) -> Dict[str, Dict[str, Any]]:
     """一批（≤ EASTMONEY_BATCH_SIZE）代码的行业；失败抛 EastmoneyError。"""
-    return parse_eastmoney_industries(market, _eastmoney_get(build_eastmoney_params(market, symbols)))
+    return parse_eastmoney_industries(
+        market, _eastmoney_get(build_eastmoney_params(market, symbols))
+    )
 
 
 # ---------------------------------------------------------------- 官方来源取数
@@ -298,11 +365,11 @@ def fetch_eastmoney_industries(
 
 def load_tushare_industry_map() -> Dict[str, str]:
     """A股 代码 → Tushare 行业（进程内 24h 缓存的 stock_basic 目录）；失败上抛。"""
-    from .business_profile_service import _load_stock_basic
+    from .business_profile_service import load_stock_basic
 
     return {
         str(entry.get("symbol") or "").strip(): str(entry.get("industry") or "").strip()
-        for entry in _load_stock_basic()
+        for entry in load_stock_basic()
         if str(entry.get("industry") or "").strip()
     }
 
@@ -435,7 +502,11 @@ def _note_miss(source: str, key: Key) -> None:
 
 def _upsert(db: Session, key: Key, source: str, industry: str, raw: Dict[str, Any]) -> None:
     statement = pg_insert(SecurityIndustry).values(
-        symbol=key[0], market=key[1], source=source, industry=industry[:100], raw=raw,
+        symbol=key[0],
+        market=key[1],
+        source=source,
+        industry=industry[:100],
+        raw=raw,
         fetched_at=_now(),
     )
     db.execute(
@@ -649,11 +720,15 @@ def periodic_refresh_security_industries() -> PeriodicOutcome:
     if written or failing:
         logger.info(
             "行业分类同步：范围 %d 只，写入 %d 行，未取得 %d 只，失败来源 %s",
-            result["scope"], written, len(result["unresolved"]), failing or "无",
+            result["scope"],
+            written,
+            len(result["unresolved"]),
+            failing or "无",
         )
     if failing:
         return PeriodicOutcome.failed(
-            "行业分类来源失败：" + "；".join(
+            "行业分类来源失败："
+            + "；".join(
                 f"{source}: {str(errors[0])[:120] if errors else '失败'}"
                 for source, errors in failing.items()
             ),

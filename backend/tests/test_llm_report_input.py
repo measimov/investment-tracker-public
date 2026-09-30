@@ -59,8 +59,12 @@ def _fake_snapshot(holding_count: int) -> dict:
                 "realized_pnl_rate": 12.3,
                 "data_quality": {"invalid_sell_event_count": 0},
                 "trades_detail": [
-                    {"symbol": f"S{i}", "market": "A股", "realized_pnl_cny": float(i * 10),
-                     "realized_pnl_rate": 1.0}
+                    {
+                        "symbol": f"S{i}",
+                        "market": "A股",
+                        "realized_pnl_cny": float(i * 10),
+                        "realized_pnl_rate": 1.0,
+                    }
                     for i in range(25)
                 ],
                 "closed_trades": [{"symbol": "S1", "date": "2026-01-01"}] * 5,
@@ -95,8 +99,13 @@ def _fake_snapshot(holding_count: int) -> dict:
                     "snapshot_date": "2026-07-27",
                     "status": "MISMATCHED",
                     "all_scoped": False,
-                    "scopes": [{"statement_scope": None, "status": "MISMATCHED",
-                                "compared_at": "2026-07-29T00:00:00"}],
+                    "scopes": [
+                        {
+                            "statement_scope": None,
+                            "status": "MISMATCHED",
+                            "compared_at": "2026-07-29T00:00:00",
+                        }
+                    ],
                 },
             }
         ],
@@ -135,8 +144,10 @@ def _fake_analytics() -> dict:
                     "beta": None,
                 },
                 "points": [
-                    {"date": f"2026-{month:02d}-{day:02d}",
-                     "cumulative_return_rate": float(month) / 2}
+                    {
+                        "date": f"2026-{month:02d}-{day:02d}",
+                        "cumulative_return_rate": float(month) / 2,
+                    }
                     for month in range(1, 7)
                     for day in (5, 15, 28)
                 ],
@@ -147,8 +158,9 @@ def _fake_analytics() -> dict:
 
 
 def test_compact_caps_arrays_and_preserves_estimate_labels():
-    payload = _compact(_fake_snapshot(35), _fake_analytics(), [{"period": "2026-06"}] * 30,
-                       PRIMARY_CAPS)
+    payload = _compact(
+        _fake_snapshot(35), _fake_analytics(), [{"period": "2026-06"}] * 30, PRIMARY_CAPS
+    )
 
     # 持仓 cap 30 + 尾部合计行
     assert len(payload["holdings"]) == 31
@@ -198,8 +210,8 @@ def test_month_end_downsample_keeps_first_last_and_month_ends():
         for d in range(1, 29)
     ]
     points = _month_end_downsample(curve, 36)
-    assert points[0]["date"] == "2024-01-01"      # 首点
-    assert points[-1]["date"] == "2024-12-28"     # 末点
+    assert points[0]["date"] == "2024-01-01"  # 首点
+    assert points[-1]["date"] == "2024-12-28"  # 末点
     assert len(points) <= 13
     assert any(p["date"] == "2024-06-28" for p in points)  # 月末点
 
@@ -239,16 +251,34 @@ def test_build_input_smoke_on_real_db():
         db.query(model).delete()
     db.commit()
     try:
-        db.add(Transaction(
-            user_id=1, symbol="600000", name="冒烟标的", market="A股",
-            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-            fee=Decimal("0"), transaction_date=date(2026, 1, 5), currency="CNY",
-        ))
-        db.add(Holding(
-            user_id=1, broker_account_id=None, symbol="600000", name="冒烟标的",
-            market="A股", quantity=Decimal("100"), avg_cost=Decimal("10"),
-            total_cost=Decimal("1000"), currency="CNY", current_price=Decimal("12"),
-        ))
+        db.add(
+            Transaction(
+                user_id=1,
+                symbol="600000",
+                name="冒烟标的",
+                market="A股",
+                transaction_type="BUY",
+                quantity=Decimal("100"),
+                price=Decimal("10"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 1, 5),
+                currency="CNY",
+            )
+        )
+        db.add(
+            Holding(
+                user_id=1,
+                broker_account_id=None,
+                symbol="600000",
+                name="冒烟标的",
+                market="A股",
+                quantity=Decimal("100"),
+                avg_cost=Decimal("10"),
+                total_cost=Decimal("1000"),
+                currency="CNY",
+                current_price=Decimal("12"),
+            )
+        )
         db.commit()
 
         payload = build_llm_report_input(db, 1)
@@ -258,8 +288,17 @@ def test_build_input_smoke_on_real_db():
 
         json_module.dumps(payload)  # 不带 default，任何非原生类型都会抛错
         assert set(payload) >= {
-            "meta", "account_return", "holdings", "realized_pnl", "dividends",
-            "price_quality", "markets", "accounts", "data_quality", "analytics", "monthly",
+            "meta",
+            "account_return",
+            "holdings",
+            "realized_pnl",
+            "dividends",
+            "price_quality",
+            "markets",
+            "accounts",
+            "data_quality",
+            "analytics",
+            "monthly",
         }
         assert len(serialize_input(payload)) <= CHAR_BUDGET
         assert payload["holdings"][0]["symbol"] == "600000"

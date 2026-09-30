@@ -46,14 +46,16 @@ LANE_FAST = "fast"
 # 批量任务永远不冻结 price_refresh / 汇率 / 分红 / LLM 报告的队列。
 # 刻意写字面量而不 import：job_worker 必须保持领域无关（不能反向依赖 jobs 模块）；
 # 两边不漂移由 tests/test_job_worker_lanes.py 的分区断言守住。
-SLOW_LANE_JOB_TYPES = frozenset({
-    "security_analysis",
-    "security_analysis_batch",
-    "report_digest_backfill",
-    "report_digest_batch",
-    "opinion_summary",
-    "opinion_summary_batch",
-})
+SLOW_LANE_JOB_TYPES = frozenset(
+    {
+        "security_analysis",
+        "security_analysis_batch",
+        "report_digest_backfill",
+        "report_digest_batch",
+        "opinion_summary",
+        "opinion_summary_batch",
+    }
+)
 
 _runners: Dict[str, Callable[[Dict[str, Any]], None]] = {}
 _worker_singleton: Optional["JobWorker"] = None
@@ -82,7 +84,32 @@ def _lane_job_types(lane: str) -> List[str]:
 # 通用周期任务钩子：跑在独立的调度线程上（与租约回收线程分开——慢的周期
 # 任务不得拖延回收 tick）。领域任务（如 LLM 报告定期入队）经此注册，
 # worker 保持领域无关。
-_periodic_tasks: list = []  # [fn, interval_seconds, next_due_monotonic, name]
+# [fn, interval_seconds, next_due_monotonic, name, group]；group 缺省（4 元素）= DEFAULT_GROUP
+_periodic_tasks: list = []
+
+# 周期任务分组：每组一条调度线程，组内串行（#273）。此前 14 个任务挂在同一条线程上，一个慢任务
+# （目录/行业同步、港交所日报下载）就会推迟行情刷新与告警检查；某个外呼卡住时连告警检查本身也停。
+DEFAULT_GROUP = "default"
+ALERTS_GROUP = "alerts"
+QUOTES_GROUP = "quotes"
+# 单个任务耗时超过该秒数记 warning（进程内记录最近一次耗时，供排查）
+SLOW_PERIODIC_TASK_SECONDS = 300
+_periodic_durations: Dict[str, float] = {}
+
+
+def task_group(task) -> str:
+    return task[4] if len(task) > 4 else DEFAULT_GROUP
+
+
+def periodic_task_groups() -> List[str]:
+    """已注册周期任务的全部分组（告警检查按组核对调度心跳）。"""
+    return sorted({task_group(task) for task in list(_periodic_tasks)})
+
+
+def scheduler_heartbeat_name(group: str) -> str:
+    """scheduled_task_state 里调度线程心跳行的名字；alert_checks 据此判停摆。"""
+    return f"scheduler:{group}"
+
 
 PERIODIC_SUCCEEDED = "succeeded"
 PERIODIC_FAILED = "failed"
@@ -127,11 +154,26 @@ def periodic_outcome_task(fn: Callable[[], Any]) -> Callable[[], Any]:
 
 
 def register_periodic_task(
-    fn: Callable[[], Any], interval_seconds: float, *, name: Optional[str] = None
+    fn: Callable[[], Any],
+    interval_seconds: float,
+    *,
+    name: Optional[str] = None,
+    group: str = DEFAULT_GROUP,
 ) -> None:
-    """name 缺省取函数名；它是告警键 `periodic:<name>` 的一部分，改名等于换一个告警。"""
+    """name 缺省取函数名；它是告警键 `periodic:<name>` 的一部分，改名等于换一个告警。
+
+    同名重复注册是 no-op（注册集中在 periodic_registry，允许被多次调用）。"""
+    task_name = name or periodic_task_name(fn)
     with _registry_lock:
-        _periodic_tasks.append([fn, interval_seconds, 0.0, name or periodic_task_name(fn)])
+        if any(task[3] == task_name for task in _periodic_tasks):
+            return
+        _periodic_tasks.append([fn, interval_seconds, 0.0, task_name, group])
+
+
+def periodic_task_durations() -> Dict[str, float]:
+    """各周期任务最近一次的耗时（秒）快照。"""
+    with _failures_lock:
+        return dict(_periodic_durations)
 
 
 # 周期任务的连续失败计数（进程内）：告警检查器（alert_checks.check_periodic_tasks）读取，
@@ -208,7 +250,9 @@ def execute_claimed_job(claimed: Dict[str, Any]) -> None:
             claimed.get("attempt_count"),
         )
         store.handle_job_failure(
-            claimed["id"], claimed["job_type"], str(exc),
+            claimed["id"],
+            claimed["job_type"],
+            str(exc),
             # 只有本次 attempt 仍是当前 attempt 时才改写：租约过期被接管后，
             # 旧 runner 的异常不得把接管者的执行重新排队/标失败
             required_attempt_count=claimed.get("attempt_count"),
@@ -235,17 +279,43 @@ class JobWorker:
         if any(thread.is_alive() for thread in self._threads):
             return
         self._stop_event.clear()
+        if not settings.periodic_tasks_enabled:
+            # 告警检查本身也是周期任务：关掉之后没有任何告警源能报出「周期任务全停了」
+            logger.warning(
+                "PERIODIC_TASKS_ENABLED=false：周期任务（含告警检查）全部停用，仅供 E2E/测试"
+            )
+        # 总开关只决定是否起调度线程；_run_due_periodic_tasks 本身不看它（测试直接驱动）。
+        # 每个任务分组一条线程（#273）：告警检查、行情刷新不再排在慢任务后面
+        with _registry_lock:
+            groups = sorted({task_group(task) for task in _periodic_tasks} | {DEFAULT_GROUP})
+        scheduler = (
+            [
+                threading.Thread(
+                    target=self._periodic_loop,
+                    args=(group,),
+                    name=(
+                        "background-job-scheduler"
+                        if group == DEFAULT_GROUP
+                        else f"background-job-scheduler-{group}"
+                    ),
+                    daemon=True,
+                )
+                for group in groups
+            ]
+            if settings.periodic_tasks_enabled
+            else []
+        )
         self._threads = [
             threading.Thread(
                 target=self._reconcile_loop, name="background-job-reconciler", daemon=True
             ),
-            threading.Thread(
-                target=self._periodic_loop, name="background-job-scheduler", daemon=True
-            ),
+            *scheduler,
             *(
                 threading.Thread(
-                    target=self._lane_loop, args=(lane,),
-                    name=f"background-job-lane-{lane}", daemon=True,
+                    target=self._lane_loop,
+                    args=(lane,),
+                    name=f"background-job-lane-{lane}",
+                    daemon=True,
                 )
                 for lane in (LANE_SLOW, LANE_FAST)
             ),
@@ -254,14 +324,15 @@ class JobWorker:
             thread.start()
         logger.info(
             "Background job worker started (owner=%s, threads=%s)",
-            self.owner, len(self._threads),
+            self.owner,
+            len(self._threads),
         )
 
     def stop(self, timeout: float = 10.0) -> None:
         """停止认领并尽力回收空闲线程；**不等待在飞的长任务**。
 
         timeout 是所有线程共享的**总**预算：stop_worker() 在
-        @app.on_event("shutdown") 里同步调用，逐线程各等 timeout 会把最坏
+        main.py lifespan 的 finally 里同步调用，逐线程各等 timeout 会把最坏
         shutdown 从 10s 拉到 40s，阻塞 uvicorn 的事件循环。
 
         在飞的长任务不发 cancel 信号：线程是 daemon，随进程消亡；租约
@@ -279,7 +350,8 @@ class JobWorker:
             logger.warning(
                 "Background job worker stop timed out with in-flight lanes: %s "
                 "(daemon 线程随进程消亡；租约 %ss 后过期并在下次启动时被接管)",
-                stuck, settings.background_job_lease_seconds,
+                stuck,
+                settings.background_job_lease_seconds,
             )
         logger.info("Background job worker stopped (owner=%s)", self.owner)
 
@@ -290,9 +362,7 @@ class JobWorker:
         """
         while not self._stop_event.is_set():
             try:
-                claimed = store.claim_next_runnable_job(
-                    _lane_job_types(lane), owner=self.owner
-                )
+                claimed = store.claim_next_runnable_job(_lane_job_types(lane), owner=self.owner)
                 if claimed is not None:
                     execute_claimed_job(claimed)
                     continue  # drain runnable jobs without sleeping
@@ -309,12 +379,12 @@ class JobWorker:
                 logger.exception("Background job housekeeping iteration failed")
             self._stop_event.wait(self.housekeeping_interval)
 
-    def _periodic_loop(self) -> None:
+    def _periodic_loop(self, group: str = DEFAULT_GROUP) -> None:
         while not self._stop_event.is_set():
             try:
-                self._run_due_periodic_tasks()
+                self._run_due_periodic_tasks(group=group)
             except Exception:  # noqa: BLE001
-                logger.exception("Background job periodic tick failed")
+                logger.exception("Background job periodic tick failed (group=%s)", group)
             self._stop_event.wait(self.periodic_tick)
 
     def _housekeep(self) -> None:
@@ -329,23 +399,70 @@ class JobWorker:
                 deleted,
             )
 
-    def _run_due_periodic_tasks(self) -> None:
+    def _run_due_periodic_tasks(self, group: Optional[str] = None) -> None:
+        """跑到期的周期任务；group=None 跑全部分组（测试直接驱动），否则只跑该组。
+
+        每个 tick 与每个任务开跑前都写一次该组的心跳（含当前任务名），alert_checks 据此发现
+        调度线程停摆或卡在某个任务里——此前线程卡住没有任何出口能看见（#273）。"""
         now = time.monotonic()
         with _registry_lock:
-            due = [task for task in _periodic_tasks if now >= task[2]]
+            due = [
+                task
+                for task in _periodic_tasks
+                if now >= task[2] and (group is None or task_group(task) == group)
+            ]
+        if group is not None:
+            _write_scheduler_heartbeat(group, current_task=None)
         # 绝不持锁调 fn：一个慢周期任务会卡住所有注册
         for task in due:
-            fn, interval, _, name = task
-            task[2] = now + interval  # next_due 只有本线程写
+            fn, interval, _, name = task[:4]
+            task[2] = now + interval  # next_due 只有本组线程写
+            if group is not None:
+                _write_scheduler_heartbeat(group, current_task=name)
+            started = time.monotonic()
             try:
                 outcome = as_periodic_outcome(fn())
             except Exception as exc:  # noqa: BLE001 - 周期任务失败不拖垮 worker
                 logger.exception("Periodic task %s failed", name)
                 record_periodic_result(name, exc)
                 continue
+            finally:
+                elapsed = time.monotonic() - started
+                with _failures_lock:
+                    _periodic_durations[name] = round(elapsed, 3)
+                if elapsed > SLOW_PERIODIC_TASK_SECONDS:
+                    logger.warning(
+                        "Periodic task %s took %.0fs (group=%s)", name, elapsed, task_group(task)
+                    )
             if outcome.status == PERIODIC_FAILED:
                 logger.warning("Periodic task %s reported failure: %s", name, outcome.reason)
             record_periodic_outcome(name, outcome)
+        if group is not None and due:
+            _write_scheduler_heartbeat(group, current_task=None)
+
+
+def _write_scheduler_heartbeat(group: str, *, current_task: Optional[str]) -> None:
+    """调度线程心跳（scheduled_task_state 的 scheduler:<group> 行）；写失败只记日志。"""
+    try:
+        from ..database import SessionLocal
+        from . import scheduled_state
+
+        db = SessionLocal()
+        try:
+            scheduled_state.mark_ran(
+                db,
+                scheduler_heartbeat_name(group),
+                detail={
+                    "current_task": current_task,
+                    "current_task_started_at": (
+                        datetime.now(timezone.utc).isoformat() if current_task else None
+                    ),
+                },
+            )
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 - 心跳失败不影响任务本身
+        logger.exception("Scheduler heartbeat write failed (group=%s)", group)
 
 
 def start_worker() -> Optional[JobWorker]:

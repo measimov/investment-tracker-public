@@ -2,8 +2,14 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '../api'
 import { paramsKey } from '../utils/cacheKey'
+import { dataEpoch, isDataEpochCurrent, onLedgerEvent } from '../utils/ledgerEvents'
 import { useHoldingsStore } from './holdings'
-import type { Transaction as GeneratedTransaction } from '../types'
+import type {
+  Transaction as GeneratedTransaction,
+  TransactionCreate,
+  TransactionUpdate,
+  TransferCreate
+} from '../types'
 
 // 后端 TransactionResponse schema 为准（PR #172 复审）
 export type Transaction = GeneratedTransaction
@@ -27,9 +33,10 @@ export const useTransactionsStore = defineStore('transactions', () => {
     }
 
     loadingKeys.value[key] = true
+    const epoch = dataEpoch()
     try {
       const response = await api.getTransactions(params)
-      listCache.value[key] = response.data
+      if (isDataEpochCurrent(epoch)) listCache.value[key] = response.data
       return response.data
     } finally {
       loadingKeys.value[key] = false
@@ -45,9 +52,10 @@ export const useTransactionsStore = defineStore('transactions', () => {
       return countCache.value[key]
     }
 
+    const epoch = dataEpoch()
     const response = await api.getTransactionsCount(params)
     const total = response.data.total || 0
-    countCache.value[key] = total
+    if (isDataEpochCurrent(epoch)) countCache.value[key] = total
     return total
   }
 
@@ -57,18 +65,21 @@ export const useTransactionsStore = defineStore('transactions', () => {
     loadingKeys.value = {}
   }
 
+  onLedgerEvent('ledger-mutated', invalidate)
+  onLedgerEvent('session-changed', invalidate)
+
   function invalidateDependentData() {
     invalidate()
     useHoldingsStore().invalidate()
   }
 
-  async function createTransaction(data: Record<string, unknown>) {
+  async function createTransaction(data: TransactionCreate) {
     const response = await api.createTransaction(data)
     invalidateDependentData()
     return response
   }
 
-  async function updateTransaction(id: number | string, data: Record<string, unknown>) {
+  async function updateTransaction(id: number | string, data: TransactionUpdate) {
     const response = await api.updateTransaction(id, data)
     invalidateDependentData()
     return response
@@ -81,7 +92,7 @@ export const useTransactionsStore = defineStore('transactions', () => {
   }
 
   // 转仓创建 TRANSFER_OUT/IN 交易对并重算持仓：交易列表与持仓缓存都要失效
-  async function createTransfer(data: Record<string, unknown>) {
+  async function createTransfer(data: TransferCreate) {
     const response = await api.createTransfer(data)
     invalidateDependentData()
     return response

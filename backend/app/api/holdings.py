@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
@@ -18,17 +18,13 @@ from ..services.price_refresh_jobs import (
     start_price_refresh_job,
 )
 from ..core.deps import get_current_active_user, get_current_admin_user
+from ..core.logging import get_app_logger
+
+logger = get_app_logger(__name__)
 
 router = APIRouter()
 
 MANUAL_PRICE_SOURCE = "manual"
-_DATETIME_MIN = datetime.min.replace(tzinfo=timezone.utc)
-
-
-def _aware(value: Optional[datetime]) -> datetime:
-    if value is None:
-        return _DATETIME_MIN
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 def _apply_manual_price(row: Holding, price: Decimal, updated_at: datetime) -> None:
@@ -55,69 +51,6 @@ def get_holdings(
     return holdings
 
 
-@router.get("/{symbol}", response_model=HoldingResponse)
-def get_holding(
-    symbol: str,
-    market: Optional[str] = Query(None),
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    """Get a specific holding by symbol for the authenticated user.
-
-    账户级持仓下同一 symbol 可能存在多行（每账户一行）；本端点保持单对象响应，
-    多行时聚合数量与成本（加权均价），broker_account_id 置空表示跨账户汇总。
-    """
-    query = db.query(Holding).filter(Holding.symbol == symbol, Holding.user_id == current_user.id)
-
-    if market:
-        query = query.filter(Holding.market == market)
-
-    rows = query.order_by(Holding.id).all()
-    if not rows:
-        raise HTTPException(status_code=404, detail="Holding not found")
-    if len(rows) == 1:
-        return rows[0]
-
-    # 只在单一市场内做跨账户聚合：同一代码存在于多个市场时（价格键本就是
-    # market-qualified），币种与数值不可混合，要求调用方用 market 消歧。
-    markets = {row.market for row in rows}
-    if len(markets) > 1:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Symbol {symbol} exists in multiple markets "
-            f"({', '.join(sorted(markets))}); pass the market query parameter",
-        )
-
-    total_quantity = sum(Decimal(str(row.quantity)) for row in rows)
-    total_cost = sum(Decimal(str(row.total_cost)) for row in rows)
-    first = rows[0]
-    # 价格/写库时刻/行情日/来源是同一候选：取写库最晚的那一行整组返回，
-    # 不让一行的价格配上另一行的时间戳（与 resolve_server_prices 同口径）。
-    priced = [row for row in rows if row.current_price]
-    price_row = max(
-        priced,
-        key=lambda row: _aware(row.price_updated_at),
-        default=None,
-    )
-    return HoldingResponse(
-        id=first.id,
-        user_id=first.user_id,
-        broker_account_id=None,
-        symbol=first.symbol,
-        name=first.name,
-        market=first.market,
-        quantity=total_quantity,
-        avg_cost=(total_cost / total_quantity) if total_quantity > 0 else Decimal("0"),
-        total_cost=total_cost,
-        currency=first.currency,
-        current_price=price_row.current_price if price_row else None,
-        price_updated_at=price_row.price_updated_at if price_row else None,
-        price_as_of=price_row.price_as_of if price_row else None,
-        price_source=price_row.price_source if price_row else None,
-        updated_at=max(row.updated_at for row in rows),
-    )
-
-
 @router.put("/{holding_id}/price", response_model=HoldingResponse)
 def update_holding_price(
     holding_id: int,
@@ -135,7 +68,7 @@ def update_holding_price(
         .first()
     )
     if not holding:
-        raise HTTPException(status_code=404, detail="Holding not found")
+        raise HTTPException(status_code=404, detail="持仓不存在")
 
     # Price is security-level: keep every account-scoped row of this security
     # in sync, otherwise resolve_server_prices would pick between fresh and
@@ -205,9 +138,11 @@ def batch_update_prices(
             "success_list": success_list,
             "failed_list": failed_list,
         }
-    except Exception as e:
+    except Exception:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"批量更新失败: {str(e)}")
+        # 数据库异常原文（SQL 片段、约束名）只进日志，不回显给客户端（#277）
+        logger.exception("批量更新持仓价格失败 user=%s", current_user.id)
+        raise HTTPException(status_code=500, detail="批量更新价格失败，请稍后重试")
 
 
 @router.post("/prices/refresh-from-api")
@@ -231,7 +166,7 @@ def get_refresh_job_status(
 ) -> Dict[str, Any]:
     job = get_price_refresh_job(job_id, current_user.id)
     if not job:
-        raise HTTPException(status_code=404, detail="Refresh job not found")
+        raise HTTPException(status_code=404, detail="刷新任务不存在")
     return job
 
 
@@ -268,7 +203,7 @@ def get_user_holdings_admin(
     if user is None:
         # 与 GET /api/users/{user_id} 同口径：不存在的用户是 404，
         # 不是空列表（后者与"该用户没有持仓"混为一谈）。
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="用户不存在")
     holdings = (
         db.query(Holding)
         .filter(Holding.user_id == user_id)

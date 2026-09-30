@@ -254,7 +254,7 @@ def test_statement_preview_rejects_missing_foreign_or_wrong_broker_account(
 
         with pytest.raises(ValueError, match=missing_message):
             preview(db, 1, b"%PDF", "statement.pdf")
-        with pytest.raises(ValueError, match="belongs to"):
+        with pytest.raises(ValueError, match="所选账户属于"):
             preview(
                 db,
                 1,
@@ -262,7 +262,7 @@ def test_statement_preview_rejects_missing_foreign_or_wrong_broker_account(
                 "statement.pdf",
                 broker_account_id=wrong_broker.id,
             )
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ValueError, match="券商账户不存在"):
             preview(
                 db,
                 1,

@@ -1,16 +1,13 @@
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from ..core.deps import get_current_active_user
 from ..database import get_db
 from ..models.broker_account import BrokerAccount
-from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.cash_event import CashEvent
-from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.user import User
 from ..schemas.cash_event import (
     CashEventCreate,
@@ -18,7 +15,7 @@ from ..schemas.cash_event import (
     CashEventType,
     CashEventUpdate,
 )
-from ._ownership import get_owned_record
+from ._ownership import annotate_read_only, ensure_record_is_mutable, get_owned_record
 
 
 router = APIRouter()
@@ -30,36 +27,17 @@ def _validate_broker_account(db: Session, user_id: int, account_id: int) -> None
         BrokerAccount,
         account_id,
         user_id,
-        "Broker account not found",
+        "券商账户不存在",
     )
 
 
-def _ensure_cash_event_is_mutable(
-    db: Session,
-    user_id: int,
-    event_id: int,
-) -> None:
-    broker_source = db.query(BrokerFundFlow.id).filter(
-        BrokerFundFlow.user_id == user_id,
-        BrokerFundFlow.cash_event_id == event_id,
-    ).first()
-    if broker_source is None:
-        broker_source = db.query(IbkrActivityFlow.id).filter(
-            IbkrActivityFlow.user_id == user_id,
-            or_(
-                IbkrActivityFlow.cash_event_id == event_id,
-                IbkrActivityFlow.fx_quote_cash_event_id == event_id,
-                IbkrActivityFlow.fx_fee_cash_event_id == event_id,
-            ),
-        ).first()
-    if broker_source:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Imported cash events cannot be modified or deleted; "
-                "correct the source import instead."
-            ),
-        )
+IMMUTABLE_IMPORTED_CASH_EVENT_DETAIL = "导入的现金事件不能修改或删除；请更正来源对账单后重新导入"
+
+
+def _ensure_cash_event_is_mutable(db: Session, user_id: int, event: CashEvent) -> None:
+    ensure_record_is_mutable(
+        db, user_id, event, kind="cash_event", detail=IMMUTABLE_IMPORTED_CASH_EVENT_DETAIL
+    )
 
 
 @router.post("", response_model=CashEventResponse, status_code=201)
@@ -105,34 +83,7 @@ def list_cash_events(
         .limit(limit)
         .all()
     )
-    linked_ids = set()
-    if events:
-        event_ids = [event.id for event in events]
-        linked_ids.update(
-            event_id
-            for (event_id,) in db.query(BrokerFundFlow.cash_event_id).filter(
-                BrokerFundFlow.user_id == current_user.id,
-                BrokerFundFlow.cash_event_id.in_(event_ids),
-            )
-        )
-        for column in (
-            IbkrActivityFlow.cash_event_id,
-            IbkrActivityFlow.fx_quote_cash_event_id,
-            IbkrActivityFlow.fx_fee_cash_event_id,
-        ):
-            linked_ids.update(
-                event_id
-                for (event_id,) in db.query(column).filter(
-                    IbkrActivityFlow.user_id == current_user.id,
-                    column.in_(event_ids),
-                )
-            )
-    responses = []
-    for event in events:
-        payload = CashEventResponse.model_validate(event)
-        payload.imported = event.id in linked_ids
-        responses.append(payload)
-    return responses
+    return annotate_read_only(db, current_user.id, "cash_event", events)
 
 
 @router.get("/{event_id:int}", response_model=CashEventResponse)
@@ -141,13 +92,8 @@ def get_cash_event(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    return get_owned_record(
-        db,
-        CashEvent,
-        event_id,
-        current_user.id,
-        "Cash event not found",
-    )
+    event = get_owned_record(db, CashEvent, event_id, current_user.id, "现金事件不存在")
+    return annotate_read_only(db, current_user.id, "cash_event", [event])[0]
 
 
 @router.put("/{event_id:int}", response_model=CashEventResponse)
@@ -162,9 +108,9 @@ def update_cash_event(
         CashEvent,
         event_id,
         current_user.id,
-        "Cash event not found",
+        "现金事件不存在",
     )
-    _ensure_cash_event_is_mutable(db, current_user.id, db_event.id)
+    _ensure_cash_event_is_mutable(db, current_user.id, db_event)
     update_data = cash_event_update.model_dump(exclude_unset=True)
     account_id = update_data.get("broker_account_id")
     if account_id is not None:
@@ -187,9 +133,9 @@ def delete_cash_event(
         CashEvent,
         event_id,
         current_user.id,
-        "Cash event not found",
+        "现金事件不存在",
     )
-    _ensure_cash_event_is_mutable(db, current_user.id, db_event.id)
+    _ensure_cash_event_is_mutable(db, current_user.id, db_event)
     db.delete(db_event)
     db.commit()
     return None

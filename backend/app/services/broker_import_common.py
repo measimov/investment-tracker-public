@@ -21,11 +21,13 @@ from datetime import date
 from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..models.broker_fund_flow import BrokerFundFlow
 from ..models.corporate_action import CorporateAction
-from .holding_service import UNPERSISTED_SORT_ID
+from .holding_service import UNPERSISTED_SORT_ID, lock_record
+from .import_batch_service import fail_import_batch
 
 HASH_DUPLICATE_OCCURRENCE_FIELD = "duplicate_occurrence"
 STRICT_DECIMAL_PATTERN = re.compile(r"^[+-]?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)$")
@@ -81,6 +83,36 @@ def disambiguated_row_hash(
     return compute(values)
 
 
+def import_note(broker: str, *parts: Optional[str]) -> str:
+    """导入产物（交易/公司行动/现金事件）的备注：人能读懂的一句话（#286）。
+
+    行号、row_hash、流水号、scope 等追溯字段已经在来源流水（BrokerFundFlow / IbkrActivityFlow）
+    上并有链接可查，不再塞进用户可见、可编辑的「备注」——此前东财交易的备注是
+    「东方财富证券对账单; scope=stock; row=1; 业务=证券买入; source_cny_price=…」。
+    """
+    return " · ".join([f"{broker}对账单导入", *[part for part in parts if part]])
+
+
+def append_note(existing: Optional[str], addition: str) -> str:
+    """往已有备注里追加一句（已包含则不重复，同一笔股息的多行税只记一次）。"""
+    current = (existing or "").strip()
+    if addition in current:
+        return current
+    return f"{current} · {addition}" if current else addition
+
+
+def lock_broker_import(db: Session, user_id: int) -> None:
+    """同一用户的券商导入串行化（事务级，随最终 commit/rollback 释放）。
+
+    导入端点改成同步 def 后在线程池里真正并发（#269）：疑似重复守卫（#190）在事务开头读
+    已入账行、不持锁，同一账户新旧两份导出几乎同时提交会各自看不到对方而双份入账；
+    三家导入对 affected_symbols 逐个取时间线锁，交集 ≥2 只时还可能交叉等锁死锁。
+    必须在批次行提交之后、首次读取既有来源之前取，且之后不得有中途 commit。
+    锁层级：先这把记录锁、后时间线锁（按键排序），与 lock_record 的纪律一致。
+    """
+    lock_record(db, "broker-import", user_id)
+
+
 def reject_unassigned_legacy_sources(db: Session, user_id: int, broker: str) -> None:
     """领养路径已退役：NULL 账户历史来源必须显式拒绝，绝不静默双记。
 
@@ -116,6 +148,91 @@ def archived_row_count(db: Session, model, batch_id: int) -> int:
         return db.query(model).filter(model.import_batch_id == batch_id).count()
     except Exception:
         return 0
+
+
+LINK_COLUMNS = ("transaction_id", "corporate_action_id", "cash_event_id")
+
+
+def booked_source_rows(
+    db: Session, model, batch_id: int, revived_hashes: Iterable[str] = ()
+) -> int:
+    """本批**入账来源行数**（#279：三家统一的 imported_count 口径）。
+
+    = 本批新建且链接到规范记录的来源行 ∪ 本批在旧归档行上原地转正的行（它们仍挂在原批次
+    下，按批次查不到，由 archive_and_link 记下 hash）。此前招商、东财传入账对象数（交易 +
+    公司行动 + 税调整 + 现金事件）、IBKR 传来源行数，批次服务只能靠 min() 调和两种单位。
+    """
+    linked = db.query(model.row_hash).filter(model.import_batch_id == batch_id)
+    columns = [getattr(model, name) for name in LINK_COLUMNS if hasattr(model, name)]
+    linked = linked.filter(or_(*[column.isnot(None) for column in columns]))
+    return len({row_hash for (row_hash,) in linked} | set(revived_hashes))
+
+
+def archive_and_link(
+    db: Session,
+    held: Dict[str, Any],
+    row_hash: str,
+    *,
+    revive: Callable[[Any], Any],
+    create: Callable[[], Any],
+    revived: Optional[set] = None,
+):
+    """来源行入账的唯一写法：上次已归档（held 里有同 hash 行）就在原行上转正，否则新建。
+
+    绝不插第二条同 hash 行（row_hash 唯一约束，撞上即整批回滚）。此前「pop → 原地转正，
+    否则 create_*_flow」在三家导入器里各写了多遍（#279）。revived 记下原地转正的 hash，
+    供 booked_source_rows 计入本批。
+    """
+    preserved = held.pop(row_hash, None)
+    if preserved is not None:
+        row = revive(preserved)
+        if revived is not None:
+            revived.add(row_hash)
+    else:
+        row = create()
+    db.add(row)
+    return row
+
+
+def fail_broker_import(
+    db: Session,
+    batch_id: int,
+    exc: BaseException,
+    *,
+    model,
+    records_committed: bool,
+    row_count: int,
+    duplicate_count: int = 0,
+    imported_count: Optional[int] = None,
+    revived_hashes: Iterable[str] = (),
+) -> None:
+    """三家导入器的异常收尾（#279：此前三份拷贝，计数口径各不相同）。
+
+    已提交后才失败（结果组装、批次收尾出错）：回滚后按库里实际状态重数归档行与入账来源行；
+    未提交：fail_import_batch 自己回滚并把计数清零。imported_count 缺省按 booked_source_rows 算。
+    """
+    archived = 0
+    booked = 0
+    if records_committed:
+        db.rollback()
+        archived = archived_row_count(db, model, batch_id)
+        if imported_count is None:
+            try:
+                booked = booked_source_rows(db, model, batch_id, revived_hashes)
+            except Exception:  # 另一个异常正在处理，统计失败不得盖掉它
+                booked = 0
+        else:
+            booked = imported_count
+    fail_import_batch(
+        db,
+        batch_id,
+        exc,
+        records_committed=records_committed,
+        row_count=row_count,
+        imported_count=booked,
+        duplicate_count=duplicate_count,
+        archived_count=archived,
+    )
 
 
 def parse_strict_decimal(
@@ -285,6 +402,7 @@ def base_import_result(
 # 无量纲比值、数量级桶与字符类模式。脱敏靠"报告里根本没有这个字段"保证，
 # 不靠事后过滤。
 # ---------------------------------------------------------------------------
+
 
 def digit_class(value: Any, *, strip: Callable[[Any], str] = strip_text) -> str:
     """把单元格文本降级成字符类模式：ASCII 数字→`d`，非 ASCII 数字→`D`，其余原样。
@@ -700,9 +818,7 @@ def attribute_tax_source(source, corporate_action_id: int):
     """就地转正：补链接、清标记、留痕。绝不插新行（row_hash 唯一约束）。"""
     source.corporate_action_id = corporate_action_id
     source.skip_reason = None
-    source.notes = (
-        f"{source.notes or ''}; attributed during account-scoped re-import"
-    ).strip("; ")
+    source.notes = (f"{source.notes or ''}; attributed during account-scoped re-import").strip("; ")
     return source
 
 
@@ -752,9 +868,9 @@ def book_suspected_source(source, transaction_id: int):
     """人工确认为真实成交后就地转正：补交易链接、清标记、留痕。绝不插新行。"""
     source.transaction_id = transaction_id
     source.skip_reason = None
-    source.notes = (
-        f"{source.notes or ''}; confirmed as a distinct trade during re-import"
-    ).strip("; ")
+    source.notes = (f"{source.notes or ''}; confirmed as a distinct trade during re-import").strip(
+        "; "
+    )
     return source
 
 

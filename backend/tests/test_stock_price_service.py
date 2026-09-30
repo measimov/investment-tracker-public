@@ -5,7 +5,7 @@ import pytest
 from app.services import stock_price_service
 from app.services.stock_price_service import (
     Market,
-    configure_tushare_client_endpoint,
+    get_tushare_api_base_url,
     get_exchange_type,
     parse_tencent_quote_price,
     to_tencent_quote_code,
@@ -52,29 +52,13 @@ def test_parse_tencent_quote_price_rejects_missing_or_invalid_price():
         parse_tencent_quote_price('v_sh600000="1~浦发银行~600000~0";', "sh600000")
 
 
-def test_configure_tushare_client_endpoint_uses_https_default(monkeypatch):
+def test_tushare_endpoint_uses_https_default(monkeypatch):
     monkeypatch.setattr(stock_price_service.settings, "tushare_api_base_url", "")
-
-    class DummyClient:
-        _DataApi__http_url = "http://api.waditu.com/dataapi"
-
-    client = DummyClient()
-
-    configure_tushare_client_endpoint(client)
-
-    assert client._DataApi__http_url == "https://api.waditu.com/dataapi"
+    assert get_tushare_api_base_url() == "https://api.waditu.com/dataapi"
 
 
-def test_configure_tushare_client_endpoint_accepts_override(monkeypatch):
+def test_tushare_endpoint_accepts_override(monkeypatch):
     monkeypatch.setattr(
         stock_price_service.settings, "tushare_api_base_url", "https://api.tushare.pro/dataapi/"
     )
-
-    class DummyClient:
-        _DataApi__http_url = "http://api.waditu.com/dataapi"
-
-    client = DummyClient()
-
-    configure_tushare_client_endpoint(client)
-
-    assert client._DataApi__http_url == "https://api.tushare.pro/dataapi"
+    assert get_tushare_api_base_url() == "https://api.tushare.pro/dataapi"

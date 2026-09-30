@@ -8,6 +8,78 @@ export type TagKind = 'success' | 'warning' | 'info' | 'primary' | 'danger'
 
 /** 没有归属账户的持仓/交易/行动（后端 broker_account_id IS NULL）——与后端文案一致 */
 export const UNASSIGNED_ACCOUNT_LABEL = '未指定账户'
+// 账户筛选/选择里「未指定账户」的哨兵值（唯一定义，#284：此前交易页用 'UNASSIGNED'、
+// 公司行动/持仓/转仓用 'unassigned'）。发给后端时换成 unassigned_account=true 或 null
+export const UNASSIGNED_ACCOUNT = 'unassigned' as const
+export type UnassignedAccount = typeof UNASSIGNED_ACCOUNT
+
+interface AccountLike {
+  id?: number | null
+  account_name?: string | null
+  broker?: string | null
+  account_number_masked?: string | null
+}
+
+// 账户号展示脱敏（#286：此前 IBKR 尾号打了码、账户名里却是完整账号；招商的股东代码完全不打码）。
+// 只改展示，库里的值不动（导入器按原值匹配账户）。判据：≥6 位字母数字、其中 ≥5 位数字的串
+const ID_TOKEN = /[A-Za-z0-9]{6,}/g
+
+function maskToken(token: string): string {
+  if ((token.match(/\d/g) || []).length < 5) return token
+  if (token.includes('*')) return token
+  const head = /^[A-Za-z]/.test(token) ? token[0] : ''
+  return `${head}***${token.slice(-4)}`
+}
+
+/** 自由文本（账户名）里夹带的账号打码：`IBKR U12345678` → `IBKR U***5678` */
+export function maskInlineIds(text: string | null | undefined): string {
+  return (text || '').replace(ID_TOKEN, maskToken)
+}
+
+/** 账号字段：多个号码（招商一个资金账户挂多个股东代码）只显示第一个 + 数量 */
+export function maskAccountNumber(text: string | null | undefined): string {
+  const tokens = (text || '').split(/\s+/).filter(Boolean)
+  if (!tokens.length) return ''
+  const first = maskToken(tokens[0])
+  return tokens.length > 1 ? `${first} 等 ${tokens.length} 个` : first
+}
+
+/** 账户简称：名称；没有名称退回「券商 尾号」，再退回「未命名账户」。表格单元格用它（#284/#286：
+ *  此前四份实现输出各不相同，交易表的「名称 · 券商 · 尾号」把账户列撑成两三行）。 */
+export function accountShortName(account: AccountLike | null | undefined): string {
+  return (
+    maskInlineIds(account?.account_name) ||
+    [account?.broker, maskAccountNumber(account?.account_number_masked)]
+      .filter(Boolean)
+      .join(' ') ||
+    '未命名账户'
+  )
+}
+
+/** 账户全称「名称 · 券商 · 尾号」：下拉选项里用，同名账户靠券商与尾号区分。 */
+export function accountOptionLabel(account: AccountLike): string {
+  return (
+    [
+      maskInlineIds(account.account_name),
+      account.broker,
+      maskAccountNumber(account.account_number_masked)
+    ]
+      .filter(Boolean)
+      .join(' · ') || '未命名账户'
+  )
+}
+
+/** 按 id 取账户显示名：null/空 → 未指定账户；列表里找不到 → 已删除账户。全站唯一实现。 */
+export function accountLabel(
+  accounts: readonly AccountLike[],
+  id: unknown,
+  { full = false }: { full?: boolean } = {}
+): string {
+  if (id === null || id === undefined || id === '') return UNASSIGNED_ACCOUNT_LABEL
+  const account = accounts.find((item) => String(item.id) === String(id))
+  if (!account) return DELETED_ACCOUNT_LABEL
+  return full ? accountOptionLabel(account) : accountShortName(account)
+}
 /** 引用了已删除的券商账户 */
 export const DELETED_ACCOUNT_LABEL = '已删除账户'
 
@@ -52,6 +124,15 @@ export const ACTION_TYPE_TAGS: Record<string, TagKind> = {
   REVERSE_SPLIT: 'primary',
   BONUS_ISSUE: 'warning',
   OPENING_POSITION: 'info'
+}
+
+export function actionTypeLabel(type: string): string {
+  return ACTION_TYPE_LABELS[type] || type
+}
+
+/** 未知类型返回 undefined = el-tag 默认样式 */
+export function actionTypeTag(type: string): TagKind | undefined {
+  return ACTION_TYPE_TAGS[type]
 }
 
 export const CASH_EVENT_TYPE_LABELS: Record<string, string> = {

@@ -5,7 +5,7 @@
  * 不是全局共享组件层的一部分。
  */
 
-import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
+import { ElMessage, type FormInstance } from 'element-plus'
 import { MARKETS } from '@/utils/securities'
 import { DELETED_ACCOUNT_LABEL, UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
 import type { Ref } from 'vue'
@@ -20,29 +20,11 @@ import { formatLocalDate } from '@/utils/dateRange'
 import { todayLocalISODate } from '@/utils/helpers'
 import { showApiError } from '@/utils/showApiError'
 
-// 生成类型为准；旧别名字段（历史模板回退读多种键名）以交集补充（下同）
-export type AccountRow = BrokerAccount & {
-  name?: string
-  broker_name?: string
-  [key: string]: unknown
-}
-
-export type CashEventRow = CashEvent & {
-  account_id?: number | null
-  occurred_at?: string
-  [key: string]: unknown
-}
-
-export type ImportBatchRow = ImportBatch & {
-  account_id?: number | null
-  imported_at?: string
-  statement_start_date?: string
-  statement_end_date?: string
-  original_filename?: string | null
-  file_sha256?: string | null
-  total_rows?: number | null
-  [key: string]: unknown
-}
+// 行类型即生成类型（此前叠加的一批旧键名与 `[key: string]: unknown` 已删除：
+// 那些键后端早已不返回，索引签名还会让拼错的字段名照样通过 typecheck）
+export type AccountRow = BrokerAccount
+export type CashEventRow = CashEvent
+export type ImportBatchRow = ImportBatch
 
 export interface DiffDetail {
   positions?: Array<Record<string, unknown>>
@@ -53,12 +35,9 @@ export interface DiffDetail {
   [key: string]: unknown
 }
 
-export type SnapshotRow = ReconciliationSnapshot & {
-  account_id?: number | null
-  reported_cash?: unknown
-  reported_positions?: unknown
+// diff_detail 在后端是自由 JSON，这里收窄成比对结果的已知形状
+export type SnapshotRow = Omit<ReconciliationSnapshot, 'diff_detail'> & {
   diff_detail?: DiffDetail | null
-  [key: string]: unknown
 }
 
 export type SecurityRuleRow = SecurityRule
@@ -98,8 +77,7 @@ export function signedDelta(value: unknown, decimals = 2): string {
   if (body === '0') return '0'
   return `${number > 0 ? '+' : '-'}${body}`
 }
-export const currencyOptions = ['CNY', 'HKD', 'USD', 'SGD']
-// 与后端 VALID_MARKETS 对齐（快照持仓行与特例规则表单共用）；唯一权威在 utils/securities
+// 与后端 MANUAL_MARKETS 对齐（快照持仓行与特例规则表单共用）；唯一权威在 utils/securities
 export const marketOptions: readonly string[] = MARKETS
 
 export const today = () => todayLocalISODate()
@@ -108,28 +86,8 @@ export const monthEnd = () => {
   return formatLocalDate(new Date(now.getFullYear(), now.getMonth(), 0))
 }
 
-export const accountName = (account: AccountRow | null | undefined) =>
-  account?.account_name ||
-  account?.name ||
-  [account?.broker, account?.account_number_masked].filter(Boolean).join(' ') ||
-  '未命名账户'
-
-export const accountLabelIn = (accounts: AccountRow[], id: unknown) => {
-  const account = accounts.find((item) => String(item.id) === String(id))
-  if (id === null || id === undefined || id === '') return UNASSIGNED_ACCOUNT_LABEL
-  return account ? accountName(account) : DELETED_ACCOUNT_LABEL
-}
-
-export async function confirmDelete(title: string, message: string) {
-  await ElMessageBox.confirm(message, title, {
-    type: 'warning',
-    confirmButtonText: '删除',
-    cancelButtonText: '取消'
-  })
-}
-
 // 表单保存工厂：校验 → 创建/更新 → 按分支提示 → 关窗重载（快照另有专属校验，不并入）
-export function makeSaver({
+export function makeSaver<TPayload>({
   formRef,
   dialog,
   buildPayload,
@@ -140,9 +98,9 @@ export function makeSaver({
 }: {
   formRef: Ref<FormInstance | undefined>
   dialog: DialogState
-  buildPayload: () => Record<string, unknown>
-  update: (id: number, payload: Record<string, unknown>) => Promise<unknown>
-  create: (payload: Record<string, unknown>) => Promise<unknown>
+  buildPayload: () => TPayload
+  update: (id: number, payload: TPayload) => Promise<unknown>
+  create: (payload: TPayload) => Promise<unknown>
   messages: { updated: string; created: string; failure: string }
   reload: () => Promise<unknown>
 }) {
@@ -164,30 +122,30 @@ export function makeSaver({
   }
 }
 
-// 删除处理工厂：确认 → 删除 → 成功提示 → 重载；message 支持函数以插入行数据
-export function makeRemover<T>({
-  title,
-  message,
-  request,
-  successMessage,
-  failureMessage,
-  reload
-}: {
-  title: string
-  message: string | ((row: T) => string)
-  request: (row: T) => Promise<unknown>
-  successMessage: string
-  failureMessage: string
-  reload: () => Promise<unknown>
-}) {
-  return async (row: T) => {
-    try {
-      await confirmDelete(title, typeof message === 'function' ? message(row) : message)
-      await request(row)
-      ElMessage.success(successMessage)
-      await reload()
-    } catch (error) {
-      if (error !== 'cancel' && error !== 'close') showApiError(error, failureMessage)
-    }
+/**
+ * 「月末核对」汇总按账户计（#286：此前按快照条数「4/4」，与仪表盘「IBKR、HSBC 未对账」并排时
+ * 容易误读成 4 个账户都核对通过）。每个启用账户看它**最近一个快照日**的全部快照（同日可能有
+ * 东财普通股票/港股通两份范围），任一不是 MATCHED 即不算通过——与仪表盘徽标同一「最差胜出」规则。
+ */
+export function reconciledAccountSummary(
+  accounts: Array<{ id: number; is_active?: boolean | null }>,
+  snapshots: Array<{
+    broker_account_id?: number | null
+    snapshot_date?: string | null
+    status?: string | null
+  }>
+): { matched: number; total: number } {
+  const active = accounts.filter((account) => account.is_active !== false)
+  let matched = 0
+  for (const account of active) {
+    const own = snapshots.filter((row) => row.broker_account_id === account.id && row.snapshot_date)
+    if (!own.length) continue
+    const latestDate = own
+      .map((row) => row.snapshot_date as string)
+      .sort()
+      .at(-1)
+    const latest = own.filter((row) => row.snapshot_date === latestDate)
+    if (latest.every((row) => String(row.status).toUpperCase() === 'MATCHED')) matched += 1
   }
+  return { matched, total: active.length }
 }

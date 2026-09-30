@@ -38,46 +38,196 @@ def _text(name: str) -> str:
 # (文件, 代码, 状态, 类型, 性质, 报告期末, 宣派, 派发, 汇率, 除净日, 记录日, 派息日,
 #  暂停过户, 代扣适用, 税率集合, 非居民企业税率, 港股通个人税率)
 GOLDEN = [
-    ("00700_final_2025.txt", "00700", "new", "末期", "普通股息", date(2025, 12, 31),
-     ("5.3", "HKD"), ("5.3", "HKD"), ("HKD", "HKD", "1"), date(2026, 5, 15),
-     date(2026, 5, 20), date(2026, 6, 1), (date(2026, 5, 19), date(2026, 5, 20)),
-     False, [], None, None),
-    ("00728_final_2025_update.txt", "00728", "update", "末期", "普通股息", date(2025, 12, 31),
-     ("0.0908", "CNY"), ("0.10391", "HKD"), ("CNY", "HKD", "1.144387"), date(2026, 6, 2),
-     date(2026, 6, 9), date(2026, 7, 8), (date(2026, 6, 4), date(2026, 6, 9)),
-     True, ["10", "20"], "10", "20"),
-    ("00883_interim_2026.txt", "00883", "new", "中期（半年期）", "普通股息", date(2026, 6, 30),
-     ("0.94", "HKD"), ("0.94", "HKD"), ("HKD", "HKD", "1"), date(2026, 9, 10),
-     date(2026, 9, 18), date(2026, 10, 16), (date(2026, 9, 14), date(2026, 9, 18)),
-     True, ["10"], "10", None),
-    ("03900_final_2024_update.txt", "03900", "update", "末期", "普通股息", date(2024, 12, 31),
-     ("0.3", "CNY"), ("0.328", "HKD"), ("CNY", "HKD", "1.0941"), date(2025, 6, 25),
-     date(2025, 7, 2), date(2025, 7, 31), (date(2025, 6, 27), date(2025, 7, 2)),
-     False, [], None, None),
-    ("06049_final_2025_update.txt", "06049", "update", "末期", "普通股息", date(2025, 12, 31),
-     ("1.401", "CNY"), ("1.60706", "HKD"), ("CNY", "HKD", "1.14708"), date(2026, 6, 2),
-     date(2026, 6, 5), date(2026, 7, 15), (date(2026, 6, 4), date(2026, 6, 5)),
-     True, ["10", "20"], "10", "20"),
-    ("09618_final_2025_usd.txt", "09618", "new", "末期", "普通股息", date(2025, 12, 31),
-     ("0.5", "USD"), ("0.5", "USD"), ("USD", "USD", "1"), date(2026, 4, 8),
-     date(2026, 4, 9), date(2026, 4, 23), None,
-     False, [], None, None),
-    ("00148_special_final_2025.txt", "00148", "new", "末期", "特別股息", date(2025, 12, 31),
-     ("0.4", "HKD"), ("0.4", "HKD"), ("HKD", "HKD", "1"), date(2026, 6, 11),
-     date(2026, 6, 18), date(2026, 7, 8), (date(2026, 6, 15), date(2026, 6, 18)),
-     False, [], None, None),
-    ("00799_special_2025.txt", "00799", "new", "其他 特別股息", "特別股息", date(2025, 12, 31),
-     ("0.477", "HKD"), ("0.477", "HKD"), ("HKD", "HKD", "1"), date(2026, 4, 10),
-     date(2026, 4, 16), date(2026, 4, 27), (date(2026, 4, 14), date(2026, 4, 16)),
-     False, [], None, None),
-    ("01579_final_2021_update.txt", "01579", "update", "末期", "普通股息", date(2021, 12, 31),
-     ("0.219563", "CNY"), ("0.27006249", "HKD"), ("CNY", "HKD", "1.23"), date(2022, 5, 24),
-     date(2022, 5, 30), date(2022, 6, 16), (date(2022, 5, 26), date(2022, 5, 30)),
-     False, [], None, None),
-    ("01579_interim_2026.txt", "01579", "new", "中期（半年期）", "普通股息", date(2026, 6, 30),
-     ("0.4188", "HKD"), ("0.4188", "HKD"), ("HKD", "HKD", "1"), date(2026, 9, 8),
-     date(2026, 9, 15), date(2026, 9, 24), (date(2026, 9, 10), date(2026, 9, 15)),
-     False, [], None, None),
+    (
+        "00700_final_2025.txt",
+        "00700",
+        "new",
+        "末期",
+        "普通股息",
+        date(2025, 12, 31),
+        ("5.3", "HKD"),
+        ("5.3", "HKD"),
+        ("HKD", "HKD", "1"),
+        date(2026, 5, 15),
+        date(2026, 5, 20),
+        date(2026, 6, 1),
+        (date(2026, 5, 19), date(2026, 5, 20)),
+        False,
+        [],
+        None,
+        None,
+    ),
+    (
+        "00728_final_2025_update.txt",
+        "00728",
+        "update",
+        "末期",
+        "普通股息",
+        date(2025, 12, 31),
+        ("0.0908", "CNY"),
+        ("0.10391", "HKD"),
+        ("CNY", "HKD", "1.144387"),
+        date(2026, 6, 2),
+        date(2026, 6, 9),
+        date(2026, 7, 8),
+        (date(2026, 6, 4), date(2026, 6, 9)),
+        True,
+        ["10", "20"],
+        "10",
+        "20",
+    ),
+    (
+        "00883_interim_2026.txt",
+        "00883",
+        "new",
+        "中期（半年期）",
+        "普通股息",
+        date(2026, 6, 30),
+        ("0.94", "HKD"),
+        ("0.94", "HKD"),
+        ("HKD", "HKD", "1"),
+        date(2026, 9, 10),
+        date(2026, 9, 18),
+        date(2026, 10, 16),
+        (date(2026, 9, 14), date(2026, 9, 18)),
+        True,
+        ["10"],
+        "10",
+        None,
+    ),
+    (
+        "03900_final_2024_update.txt",
+        "03900",
+        "update",
+        "末期",
+        "普通股息",
+        date(2024, 12, 31),
+        ("0.3", "CNY"),
+        ("0.328", "HKD"),
+        ("CNY", "HKD", "1.0941"),
+        date(2025, 6, 25),
+        date(2025, 7, 2),
+        date(2025, 7, 31),
+        (date(2025, 6, 27), date(2025, 7, 2)),
+        False,
+        [],
+        None,
+        None,
+    ),
+    (
+        "06049_final_2025_update.txt",
+        "06049",
+        "update",
+        "末期",
+        "普通股息",
+        date(2025, 12, 31),
+        ("1.401", "CNY"),
+        ("1.60706", "HKD"),
+        ("CNY", "HKD", "1.14708"),
+        date(2026, 6, 2),
+        date(2026, 6, 5),
+        date(2026, 7, 15),
+        (date(2026, 6, 4), date(2026, 6, 5)),
+        True,
+        ["10", "20"],
+        "10",
+        "20",
+    ),
+    (
+        "09618_final_2025_usd.txt",
+        "09618",
+        "new",
+        "末期",
+        "普通股息",
+        date(2025, 12, 31),
+        ("0.5", "USD"),
+        ("0.5", "USD"),
+        ("USD", "USD", "1"),
+        date(2026, 4, 8),
+        date(2026, 4, 9),
+        date(2026, 4, 23),
+        None,
+        False,
+        [],
+        None,
+        None,
+    ),
+    (
+        "00148_special_final_2025.txt",
+        "00148",
+        "new",
+        "末期",
+        "特別股息",
+        date(2025, 12, 31),
+        ("0.4", "HKD"),
+        ("0.4", "HKD"),
+        ("HKD", "HKD", "1"),
+        date(2026, 6, 11),
+        date(2026, 6, 18),
+        date(2026, 7, 8),
+        (date(2026, 6, 15), date(2026, 6, 18)),
+        False,
+        [],
+        None,
+        None,
+    ),
+    (
+        "00799_special_2025.txt",
+        "00799",
+        "new",
+        "其他 特別股息",
+        "特別股息",
+        date(2025, 12, 31),
+        ("0.477", "HKD"),
+        ("0.477", "HKD"),
+        ("HKD", "HKD", "1"),
+        date(2026, 4, 10),
+        date(2026, 4, 16),
+        date(2026, 4, 27),
+        (date(2026, 4, 14), date(2026, 4, 16)),
+        False,
+        [],
+        None,
+        None,
+    ),
+    (
+        "01579_final_2021_update.txt",
+        "01579",
+        "update",
+        "末期",
+        "普通股息",
+        date(2021, 12, 31),
+        ("0.219563", "CNY"),
+        ("0.27006249", "HKD"),
+        ("CNY", "HKD", "1.23"),
+        date(2022, 5, 24),
+        date(2022, 5, 30),
+        date(2022, 6, 16),
+        (date(2022, 5, 26), date(2022, 5, 30)),
+        False,
+        [],
+        None,
+        None,
+    ),
+    (
+        "01579_interim_2026.txt",
+        "01579",
+        "new",
+        "中期（半年期）",
+        "普通股息",
+        date(2026, 6, 30),
+        ("0.4188", "HKD"),
+        ("0.4188", "HKD"),
+        ("HKD", "HKD", "1"),
+        date(2026, 9, 8),
+        date(2026, 9, 15),
+        date(2026, 9, 24),
+        (date(2026, 9, 10), date(2026, 9, 15)),
+        False,
+        [],
+        None,
+        None,
+    ),
 ]
 
 
@@ -86,43 +236,211 @@ PENDING_FIXTURES = ["00728_final_2021_pending.txt"]
 # v2 变体金样：(文件, 代码, 模板, 状态, 类型, 性质, 锚点来源, 报告期末, 財政年末, 公告日期,
 #  派发, 除净日, 待定, 以股代息, 可选货币)
 V2_GOLDEN = [
-    ("00270_interim_2026_ef002.txt", "00270", "EF002", "new", "中期（半年期）", "普通股息",
-     "period_end", date(2026, 6, 30), date(2026, 12, 31), date(2026, 8, 28),
-     ("0.2919", "HKD"), date(2026, 9, 11), False, False, True),
-    ("00270_interim_2026_ef002_update.txt", "00270", "EF002", "update", "中期（半年期）",
-     "普通股息", "period_end", date(2026, 6, 30), date(2026, 12, 31), date(2026, 9, 21),
-     ("0.2919", "HKD"), date(2026, 9, 11), False, False, True),
-    ("02688_final_2023_ef002.txt", "02688", "EF002", "new", "末期", "普通股息",
-     "financial_year_end", None, date(2023, 12, 31), date(2024, 3, 22),
-     ("2.31", "HKD"), date(2024, 6, 5), False, False, True),
-    ("02156_final_2022_ef003_update.txt", "02156", "EF003", "update", "末期", "普通股息",
-     "period_end", date(2022, 12, 31), date(2022, 12, 31), date(2023, 6, 8),
-     ("0.1", "HKD"), date(2023, 6, 1), False, True, False),
-    ("00288_special_2025_ef003.txt", "00288", "EF003", "new",
-     "其他 史密斯菲爾德食品有限公司之股票", "特別股息", "financial_year_end", None,
-     date(2025, 12, 31), date(2025, 2, 6), ("0.01673", "HKD"), date(2025, 2, 18),
-     False, True, False),
-    ("00288_special_2025_no_period.txt", "00288", "EF001", "new", "其他 特別股息", "特別股息",
-     "none", None, None, date(2025, 2, 28), ("0.18", "HKD"), date(2025, 3, 13),
-     False, False, False),
+    (
+        "00270_interim_2026_ef002.txt",
+        "00270",
+        "EF002",
+        "new",
+        "中期（半年期）",
+        "普通股息",
+        "period_end",
+        date(2026, 6, 30),
+        date(2026, 12, 31),
+        date(2026, 8, 28),
+        ("0.2919", "HKD"),
+        date(2026, 9, 11),
+        False,
+        False,
+        True,
+    ),
+    (
+        "00270_interim_2026_ef002_update.txt",
+        "00270",
+        "EF002",
+        "update",
+        "中期（半年期）",
+        "普通股息",
+        "period_end",
+        date(2026, 6, 30),
+        date(2026, 12, 31),
+        date(2026, 9, 21),
+        ("0.2919", "HKD"),
+        date(2026, 9, 11),
+        False,
+        False,
+        True,
+    ),
+    (
+        "02688_final_2023_ef002.txt",
+        "02688",
+        "EF002",
+        "new",
+        "末期",
+        "普通股息",
+        "financial_year_end",
+        None,
+        date(2023, 12, 31),
+        date(2024, 3, 22),
+        ("2.31", "HKD"),
+        date(2024, 6, 5),
+        False,
+        False,
+        True,
+    ),
+    (
+        "02156_final_2022_ef003_update.txt",
+        "02156",
+        "EF003",
+        "update",
+        "末期",
+        "普通股息",
+        "period_end",
+        date(2022, 12, 31),
+        date(2022, 12, 31),
+        date(2023, 6, 8),
+        ("0.1", "HKD"),
+        date(2023, 6, 1),
+        False,
+        True,
+        False,
+    ),
+    (
+        "00288_special_2025_ef003.txt",
+        "00288",
+        "EF003",
+        "new",
+        "其他 史密斯菲爾德食品有限公司之股票",
+        "特別股息",
+        "financial_year_end",
+        None,
+        date(2025, 12, 31),
+        date(2025, 2, 6),
+        ("0.01673", "HKD"),
+        date(2025, 2, 18),
+        False,
+        True,
+        False,
+    ),
+    (
+        "00288_special_2025_no_period.txt",
+        "00288",
+        "EF001",
+        "new",
+        "其他 特別股息",
+        "特別股息",
+        "none",
+        None,
+        None,
+        date(2025, 2, 28),
+        ("0.18", "HKD"),
+        date(2025, 3, 13),
+        False,
+        False,
+        False,
+    ),
     # 更新公告沿用原公告日期（2023-03-29），清单时间 2023-04-25/05-17
-    ("06049_final_2022_update_pending.txt", "06049", "EF001", "update", "末期", "普通股息",
-     "financial_year_end", None, date(2022, 12, 31), date(2023, 3, 29),
-     None, date(2023, 6, 8), True, False, False),
-    ("06049_final_2022_update.txt", "06049", "EF001", "update", "末期", "普通股息",
-     "financial_year_end", None, date(2022, 12, 31), date(2023, 3, 29),
-     ("0.56795", "HKD"), date(2023, 6, 8), False, False, False),
-    ("02669_special_2025.txt", "02669", "EF001", "new", "其他 特別股息", "特別股息",
-     "financial_year_end", None, date(2025, 12, 31), date(2025, 8, 25),
-     ("0.01", "HKD"), date(2025, 9, 19), False, False, False),
-    ("00878_special_2025_no_period.txt", "00878", "EF001", "new", "其他 特別", "特別股息",
-     "none", None, None, date(2025, 4, 30), ("1", "HKD"), date(2025, 5, 28),
-     False, False, False),
-    ("00878_special_2025_withdrawal.txt", "00878", "EF001", "withdrawal", "其他 特別",
-     "特別股息", "none", None, None, date(2025, 5, 26), None, None, False, False, False),
-    ("09898_special_2024_no_period.txt", "09898", "EF001", "new", "其他 微博股份有限公司",
-     "特別股息", "none", None, None, date(2024, 3, 14), ("0.82", "USD"), date(2024, 4, 11),
-     False, False, False),
+    (
+        "06049_final_2022_update_pending.txt",
+        "06049",
+        "EF001",
+        "update",
+        "末期",
+        "普通股息",
+        "financial_year_end",
+        None,
+        date(2022, 12, 31),
+        date(2023, 3, 29),
+        None,
+        date(2023, 6, 8),
+        True,
+        False,
+        False,
+    ),
+    (
+        "06049_final_2022_update.txt",
+        "06049",
+        "EF001",
+        "update",
+        "末期",
+        "普通股息",
+        "financial_year_end",
+        None,
+        date(2022, 12, 31),
+        date(2023, 3, 29),
+        ("0.56795", "HKD"),
+        date(2023, 6, 8),
+        False,
+        False,
+        False,
+    ),
+    (
+        "02669_special_2025.txt",
+        "02669",
+        "EF001",
+        "new",
+        "其他 特別股息",
+        "特別股息",
+        "financial_year_end",
+        None,
+        date(2025, 12, 31),
+        date(2025, 8, 25),
+        ("0.01", "HKD"),
+        date(2025, 9, 19),
+        False,
+        False,
+        False,
+    ),
+    (
+        "00878_special_2025_no_period.txt",
+        "00878",
+        "EF001",
+        "new",
+        "其他 特別",
+        "特別股息",
+        "none",
+        None,
+        None,
+        date(2025, 4, 30),
+        ("1", "HKD"),
+        date(2025, 5, 28),
+        False,
+        False,
+        False,
+    ),
+    (
+        "00878_special_2025_withdrawal.txt",
+        "00878",
+        "EF001",
+        "withdrawal",
+        "其他 特別",
+        "特別股息",
+        "none",
+        None,
+        None,
+        date(2025, 5, 26),
+        None,
+        None,
+        False,
+        False,
+        False,
+    ),
+    (
+        "09898_special_2024_no_period.txt",
+        "09898",
+        "EF001",
+        "new",
+        "其他 微博股份有限公司",
+        "特別股息",
+        "none",
+        None,
+        None,
+        date(2024, 3, 14),
+        ("0.82", "USD"),
+        date(2024, 4, 11),
+        False,
+        False,
+        False,
+    ),
 ]
 
 
@@ -134,8 +452,25 @@ def test_every_fixture_has_a_golden_row():
 
 @pytest.mark.parametrize("golden", GOLDEN, ids=[g[0] for g in GOLDEN])
 def test_parse_real_forms(golden):
-    (name, code, kind, dtype, nature, period_end, declared, payment, rate, ex_date,
-     record_date, pay_date, book_close, wh_applicable, rates, nre, southbound) = golden
+    (
+        name,
+        code,
+        kind,
+        dtype,
+        nature,
+        period_end,
+        declared,
+        payment,
+        rate,
+        ex_date,
+        record_date,
+        pay_date,
+        book_close,
+        wh_applicable,
+        rates,
+        nre,
+        southbound,
+    ) = golden
     form, reason = src.parse_dividend_form_with_reason(_text(name))
     assert reason is None
     assert form["stock_code"] == code
@@ -147,7 +482,9 @@ def test_parse_real_forms(golden):
     assert form["payment"] == {"amount": Decimal(payment[0]), "currency": payment[1]}
     assert form["exchange_rate"] == {"from": rate[0], "to": rate[1], "rate": Decimal(rate[2])}
     assert (form["ex_date"], form["record_date"], form["pay_date"]) == (
-        ex_date, record_date, pay_date
+        ex_date,
+        record_date,
+        pay_date,
     )
     assert form["book_close"] == (
         {"start": book_close[0], "end": book_close[1]} if book_close else None
@@ -217,19 +554,28 @@ def test_not_a_dividend_form():
     assert form is None and "不是" in reason
 
 
-@pytest.mark.parametrize("mutate, expected", [
-    (lambda t: t.replace("除淨日 2026年5月15日", "除淨日 待定"), "缺少除淨日"),
-    (lambda t: t.replace("公告狀態 新公告", "公告狀態 其他"), "無法識別的公告狀態"),
-    # 「不適用」退到財政年末（test_period_not_applicable_falls_back_to_financial_year_end），
-    # 缺失或写了认不出的内容才是缺项
-    (lambda t: t.replace("宣派股息的報告期末 2025年12月31日", "宣派股息的報告期末 待定"),
-     "缺少宣派股息的報告期末"),
-    (lambda t: t.replace("宣派股息的報告期末 2025年12月31日", "宣派股息的報告期末 不適用")
-     .replace("財政年末 2025年12月31日", "財政年末 待定"), "缺少宣派股息的報告期末"),
-    (lambda t: t.replace(" 每 股 5.3HKD", ""), "缺少每股派息金額"),
-    (lambda t: t.replace("每 股 5.3HKD", "待定"), "無法識別派息金額"),
-    (lambda t: t.replace("公告日期 2026年3月18日", "公告日期"), "缺少公告日期"),
-])
+@pytest.mark.parametrize(
+    "mutate, expected",
+    [
+        (lambda t: t.replace("除淨日 2026年5月15日", "除淨日 待定"), "缺少除淨日"),
+        (lambda t: t.replace("公告狀態 新公告", "公告狀態 其他"), "無法識別的公告狀態"),
+        # 「不適用」退到財政年末（test_period_not_applicable_falls_back_to_financial_year_end），
+        # 缺失或写了认不出的内容才是缺项
+        (
+            lambda t: t.replace("宣派股息的報告期末 2025年12月31日", "宣派股息的報告期末 待定"),
+            "缺少宣派股息的報告期末",
+        ),
+        (
+            lambda t: t.replace(
+                "宣派股息的報告期末 2025年12月31日", "宣派股息的報告期末 不適用"
+            ).replace("財政年末 2025年12月31日", "財政年末 待定"),
+            "缺少宣派股息的報告期末",
+        ),
+        (lambda t: t.replace(" 每 股 5.3HKD", ""), "缺少每股派息金額"),
+        (lambda t: t.replace("每 股 5.3HKD", "待定"), "無法識別派息金額"),
+        (lambda t: t.replace("公告日期 2026年3月18日", "公告日期"), "缺少公告日期"),
+    ],
+)
 def test_missing_required_fields_return_reason(mutate, expected):
     form, reason = src.parse_dividend_form_with_reason(mutate(_text("00700_final_2025.txt")))
     assert form is None
@@ -252,18 +598,23 @@ def test_payment_falls_back_to_declared_only_when_same_currency():
 
 def test_amount_variants():
     assert src.parse_per_share_amount("每 10 股 3HKD") == {
-        "amount": Decimal("0.3"), "currency": "HKD"
+        "amount": Decimal("0.3"),
+        "currency": "HKD",
     }
     assert src.parse_per_share_amount("每股 RMB 0.25") == {
-        "amount": Decimal("0.25"), "currency": "CNY"
+        "amount": Decimal("0.25"),
+        "currency": "CNY",
     }
     assert src.parse_per_share_amount("每 股 1,234.5USD") == {
-        "amount": Decimal("1234.5"), "currency": "USD"
+        "amount": Decimal("1234.5"),
+        "currency": "USD",
     }
     assert src.parse_per_share_amount("每 股 HKD 0.3 RMB") is None  # 两个币种不猜
     assert src.parse_per_share_amount("不適用") is None
     assert src.parse_exchange_rate("1 RMB : 1.0869HKD") == {
-        "from": "CNY", "to": "HKD", "rate": Decimal("1.0869")
+        "from": "CNY",
+        "to": "HKD",
+        "rate": Decimal("1.0869"),
     }
 
 
@@ -295,14 +646,31 @@ def test_scrip_and_currency_election_flags():
 
 @pytest.mark.parametrize("golden", V2_GOLDEN, ids=[g[0] for g in V2_GOLDEN])
 def test_parse_v2_variants(golden):
-    (name, code, template, kind, dtype, nature, basis, period_end, fy, announced, payment,
-     ex_date, pending, scrip, currency_election) = golden
+    (
+        name,
+        code,
+        template,
+        kind,
+        dtype,
+        nature,
+        basis,
+        period_end,
+        fy,
+        announced,
+        payment,
+        ex_date,
+        pending,
+        scrip,
+        currency_election,
+    ) = golden
     form, reason = src.parse_dividend_form_with_reason(_text(name))
     assert reason is None
     assert (form["stock_code"], form["template"], form["status_kind"]) == (code, template, kind)
     assert (form["dividend_type"], form["dividend_nature"]) == (dtype, nature)
     assert (form["period_basis"], form["period_end"], form["financial_year_end"]) == (
-        basis, period_end, fy
+        basis,
+        period_end,
+        fy,
     )
     assert form["announcement_date"] == announced
     assert form["payment"] == (
@@ -325,10 +693,14 @@ def test_ef002_currency_options():
     }
     update = src.parse_dividend_form(_text("00270_interim_2026_ef002_update.txt"))
     assert update["update_reason"] == "更新匯率"
-    assert update["currency_options"]["options"] == [{
-        "currency": "CNY", "amount": "0.2516301",
-        "exchange_rate": {"from": "HKD", "to": "CNY", "rate": "0.862042"}, "pending": False,
-    }]
+    assert update["currency_options"]["options"] == [
+        {
+            "currency": "CNY",
+            "amount": "0.2516301",
+            "exchange_rate": {"from": "HKD", "to": "CNY", "rate": "0.862042"},
+            "pending": False,
+        }
+    ]
     form = src.parse_dividend_form(_text("02688_final_2023_ef002.txt"))
     assert form["currency_options"]["partial_election"] is True
     assert form["currency_options"]["options"][0]["amount"] == "2.096052"
@@ -380,7 +752,9 @@ def test_period_not_applicable_falls_back_to_financial_year_end():
     )
     form = src.parse_dividend_form(text)
     assert (form["period_basis"], form["period_end"], form["financial_year_end"]) == (
-        "financial_year_end", None, date(2025, 12, 31)
+        "financial_year_end",
+        None,
+        date(2025, 12, 31),
     )
     assert src.dividend_identity(form) == (date(2025, 12, 31), "末期", "普通股息")
     # 報告期末写明的末期股息：同一个锚点值，但来源不同（取代关系据此区分描述方式）
@@ -392,7 +766,9 @@ def test_period_not_applicable_falls_back_to_financial_year_end():
 def test_no_period_identity_only_for_new_forms():
     new = src.parse_dividend_form(_text("00288_special_2025_no_period.txt"))
     assert src.dividend_identity(new) == (
-        ("no-period", date(2025, 2, 28)), "其他 特別股息", "特別股息"
+        ("no-period", date(2025, 2, 28)),
+        "其他 特別股息",
+        "特別股息",
     )
     withdrawal = src.parse_dividend_form(_text("00878_special_2025_withdrawal.txt"))
     assert src.dividend_identity(withdrawal)[0] is None
@@ -406,11 +782,11 @@ def test_no_period_identity_only_for_new_forms():
     )
     assert src.parse_dividend_form(garbled_new) is None
     assert src.partial_identity(garbled_new) == (
-        ("no-period", date(2025, 2, 28)), "其他 特別股息", "特別股息"
+        ("no-period", date(2025, 2, 28)),
+        "其他 特別股息",
+        "特別股息",
     )
-    assert src.partial_identity(
-        garbled_new.replace("公告狀態 新公告", "公告狀態 更新公告")
-    ) is None
+    assert src.partial_identity(garbled_new.replace("公告狀態 新公告", "公告狀態 更新公告")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -425,16 +801,20 @@ def _entry(form, sort_key):
 def test_update_supersedes_and_withdrawal_cancels():
     update = src.parse_dividend_form(_text("00728_final_2025_update.txt"))
     original = {
-        **update, "status": "新公告", "status_kind": "new",
+        **update,
+        "status": "新公告",
+        "status_kind": "new",
         "payment": {"amount": Decimal("0.1"), "currency": "HKD"},
         "ex_date": date(2026, 6, 1),
     }
     interim = {**update, "period_end": date(2025, 6, 30), "ex_date": date(2025, 9, 1)}
-    current = src.resolve_current_dividends([
-        _entry(update, ("2026-05-19T21:44:00", "2026051901240")),
-        _entry(original, ("2026-03-24T17:08:00", "2026032400515")),
-        _entry(interim, ("2025-08-14T17:19:00", "2025081400750")),
-    ])
+    current = src.resolve_current_dividends(
+        [
+            _entry(update, ("2026-05-19T21:44:00", "2026051901240")),
+            _entry(original, ("2026-03-24T17:08:00", "2026032400515")),
+            _entry(interim, ("2025-08-14T17:19:00", "2025081400750")),
+        ]
+    )
     assert [(e["form"]["ex_date"], e["form"]["payment"]["amount"]) for e in current] == [
         (date(2025, 9, 1), Decimal("0.10391")),
         (date(2026, 6, 2), Decimal("0.10391")),
@@ -442,25 +822,32 @@ def test_update_supersedes_and_withdrawal_cancels():
 
     # 最新一份是待定公告：进待定列表，不拿更早公告的旧值顶替
     pending = {**update, "pending": True, "ex_date": None, "payment": None}
-    current, pending_list = src.resolve_dividend_states([
-        _entry(original, ("2026-03-24T17:08:00", "2026032400515")),
-        _entry(pending, ("2026-05-19T21:44:00", "2026051901240")),
-    ])
+    current, pending_list = src.resolve_dividend_states(
+        [
+            _entry(original, ("2026-03-24T17:08:00", "2026032400515")),
+            _entry(pending, ("2026-05-19T21:44:00", "2026051901240")),
+        ]
+    )
     assert current == [] and [e["form"] for e in pending_list] == [pending]
 
     withdrawal = {**update, "status": "撤回公告", "status_kind": "withdrawal"}
-    current = src.resolve_current_dividends([
-        _entry(update, ("2026-05-19T21:44:00", "2026051901240")),
-        _entry(withdrawal, ("2026-05-20T09:00:00", "2026052000001")),
-    ])
+    current = src.resolve_current_dividends(
+        [
+            _entry(update, ("2026-05-19T21:44:00", "2026051901240")),
+            _entry(withdrawal, ("2026-05-20T09:00:00", "2026052000001")),
+        ]
+    )
     assert current == []
 
 
 def _cached(doc_id, listed_at, text):
     return {
-        "doc_id": doc_id, "url": f"https://x/{doc_id}.pdf", "listed_at": listed_at,
-        **src._build_payload({"doc_id": doc_id, "url": f"https://x/{doc_id}.pdf",
-                              "listed_at": listed_at}, text),
+        "doc_id": doc_id,
+        "url": f"https://x/{doc_id}.pdf",
+        "listed_at": listed_at,
+        **src._build_payload(
+            {"doc_id": doc_id, "url": f"https://x/{doc_id}.pdf", "listed_at": listed_at}, text
+        ),
     }
 
 
@@ -468,7 +855,8 @@ def test_unparsable_newer_update_blocks_instead_of_reviving_old_form():
     """PR #249 评审 P2 的离线复现：旧的正常公告 + 更新的、派息金额认不出的更新公告。"""
     old = _cached("2026031800477", "2026-03-18T17:09:00", _text("00700_final_2025.txt"))
     newer = _cached(
-        "2026040100001", "2026-04-01T09:00:00",
+        "2026040100001",
+        "2026-04-01T09:00:00",
         _text("00700_final_2025.txt")
         .replace("公告狀態 新公告", "公告狀態 更新公告")
         .replace("派息金額及公司預設派發貨幣 每 股 5.3HKD", "派息金額及公司預設派發貨幣 見附件"),
@@ -484,9 +872,11 @@ def test_unparsable_newer_update_blocks_instead_of_reviving_old_form():
 
     # 认不出的公告比现行公告更早（例如旧版式）：不影响更新的现行值
     older_unparsed = _cached(
-        "2026010100001", "2026-01-01T09:00:00",
-        _text("00700_final_2025.txt").replace("派息金額及公司預設派發貨幣 每 股 5.3HKD",
-                                          "派息金額及公司預設派發貨幣 見附件"),
+        "2026010100001",
+        "2026-01-01T09:00:00",
+        _text("00700_final_2025.txt").replace(
+            "派息金額及公司預設派發貨幣 每 股 5.3HKD", "派息金額及公司預設派發貨幣 見附件"
+        ),
     )
     entries = src.cached_entries([old, older_unparsed])
     assert [e["doc_id"] for e in src.resolve_current_dividends(entries)] == ["2026031800477"]
@@ -504,7 +894,8 @@ def test_unparsable_update_missing_nature_is_unscoped_not_a_new_identity():
     """
     old = _cached("2026031800477", "2026-03-18T17:09:00", _text("00700_final_2025.txt"))
     newer = _cached(
-        "2026040100001", "2026-04-01T09:00:00",
+        "2026040100001",
+        "2026-04-01T09:00:00",
         _without_nature(
             _text("00700_final_2025.txt")
             .replace("公告狀態 新公告", "公告狀態 更新公告")
@@ -518,7 +909,9 @@ def test_unparsable_update_missing_nature_is_unscoped_not_a_new_identity():
 
 
 def test_nature_is_required_even_when_everything_else_parses():
-    form, reason = src.parse_dividend_form_with_reason(_without_nature(_text("00700_final_2025.txt")))
+    form, reason = src.parse_dividend_form_with_reason(
+        _without_nature(_text("00700_final_2025.txt"))
+    )
     assert form is None and reason == "缺少股息性質"
 
 
@@ -537,9 +930,13 @@ def test_withdrawal_missing_nature_is_unscoped():
 
 
 def test_unparsed_form_without_identity_is_unscoped():
-    garbled = _cached("2026040100003", "2026-04-01T11:00:00",
-                      _text("00700_final_2025.txt").replace("宣派股息的報告期末 2025年12月31日", "")
-                      .replace("除淨日 2026年5月15日", ""))
+    garbled = _cached(
+        "2026040100003",
+        "2026-04-01T11:00:00",
+        _text("00700_final_2025.txt")
+        .replace("宣派股息的報告期末 2025年12月31日", "")
+        .replace("除淨日 2026年5月15日", ""),
+    )
     assert garbled["status"] == "unparsed"
     resolution = src.resolve_dividend_resolution(src.cached_entries([garbled]))
     assert [e["doc_id"] for e in resolution.unscoped] == ["2026040100003"]
@@ -559,8 +956,9 @@ def _06049_2022_original():
 
 def test_fy_fallback_update_supersedes_original_with_same_identity():
     original = _cached("2023032900001", "2023-03-29T17:00:00", _06049_2022_original())
-    pending = _cached("2023042502546", "2023-04-25T20:36:00",
-                      _text("06049_final_2022_update_pending.txt"))
+    pending = _cached(
+        "2023042502546", "2023-04-25T20:36:00", _text("06049_final_2022_update_pending.txt")
+    )
     final = _cached("2023051700956", "2023-05-17T22:50:00", _text("06049_final_2022_update.txt"))
     assert {p["status"] for p in (original, pending, final)} == {"ok"}
     forms = [src.form_from_json(p["form"]) for p in (original, pending, final)]
@@ -603,14 +1001,15 @@ def test_fy_fallback_update_cannot_claim_an_interim_special_of_the_same_year():
         .replace("股息類型 末期", "股息類型 其他 特別股息")
         .replace("股息性質 普通股息", "股息性質 特別股息")
     )
-    update = (
-        interim_special.replace("公告狀態 新公告", "公告狀態 更新公告")
-        .replace("宣派股息的報告期末 2025年6月30日", "宣派股息的報告期末 不適用")
+    update = interim_special.replace("公告狀態 新公告", "公告狀態 更新公告").replace(
+        "宣派股息的報告期末 2025年6月30日", "宣派股息的報告期末 不適用"
     )
-    entries = src.cached_entries([
-        _cached("2025082000001", "2025-08-20T17:00:00", interim_special),
-        _cached("2025090100001", "2025-09-01T17:00:00", update),
-    ])
+    entries = src.cached_entries(
+        [
+            _cached("2025082000001", "2025-08-20T17:00:00", interim_special),
+            _cached("2025090100001", "2025-09-01T17:00:00", update),
+        ]
+    )
     assert [e["doc_id"] for e in src.resolve_dividend_resolution(entries).unscoped] == [
         "2025090100001"
     ]
@@ -618,28 +1017,37 @@ def test_fy_fallback_update_cannot_claim_an_interim_special_of_the_same_year():
 
 def test_fy_fallback_of_other_year_or_type_does_not_interfere():
     """06049 2022 末期（不適用→財政年末）与 2023 末期（写明報告期末）是两个族，互不影响。"""
-    entries = src.cached_entries([
-        _cached("2023042502546", "2023-04-25T20:36:00",
-                _text("06049_final_2022_update_pending.txt")),
-        _cached("2023051700956", "2023-05-17T22:50:00", _text("06049_final_2022_update.txt")),
-        _cached("2026052901240", "2026-05-29T18:04:00", _text("06049_final_2025_update.txt")),
-    ])
+    entries = src.cached_entries(
+        [
+            _cached(
+                "2023042502546", "2023-04-25T20:36:00", _text("06049_final_2022_update_pending.txt")
+            ),
+            _cached("2023051700956", "2023-05-17T22:50:00", _text("06049_final_2022_update.txt")),
+            _cached("2026052901240", "2026-05-29T18:04:00", _text("06049_final_2025_update.txt")),
+        ]
+    )
     resolution = src.resolve_dividend_resolution(entries)
     assert resolution.unscoped == []
     assert [e["doc_id"] for e in resolution.current] == ["2023051700956", "2026052901240"]
 
 
 def test_no_period_new_specials_are_standalone():
-    entries = src.cached_entries([
-        _cached("2025020601554", "2025-02-06T18:49:00", _text("00288_special_2025_ef003.txt")),
-        _cached("2025022800888", "2025-02-28T17:26:00",
-                _text("00288_special_2025_no_period.txt")),
-        # 同一标的另一份无期间特別股息（不同公告日期）：各自一笔
-        _cached("2025092201467", "2025-09-22T19:37:00",
+    entries = src.cached_entries(
+        [
+            _cached("2025020601554", "2025-02-06T18:49:00", _text("00288_special_2025_ef003.txt")),
+            _cached(
+                "2025022800888", "2025-02-28T17:26:00", _text("00288_special_2025_no_period.txt")
+            ),
+            # 同一标的另一份无期间特別股息（不同公告日期）：各自一笔
+            _cached(
+                "2025092201467",
+                "2025-09-22T19:37:00",
                 _text("00288_special_2025_no_period.txt")
                 .replace("公告日期 2025年2月28日", "公告日期 2025年9月22日")
-                .replace("除淨日 2025年3月13日", "除淨日 2025年10月6日")),
-    ])
+                .replace("除淨日 2025年3月13日", "除淨日 2025年10月6日"),
+            ),
+        ]
+    )
     resolution = src.resolve_dividend_resolution(entries)
     assert resolution.unscoped == [] and resolution.blocked == []
     assert [(e["form"]["ex_date"], e["form"]["payment"]["amount"]) for e in resolution.current] == [
@@ -670,12 +1078,16 @@ def test_00878_no_period_special_then_withdrawal_blocks_symbol():
     """00878：私有化附带的无期间特別股息（新公告）→ 计划未获批准「撤回股息公告」。
     撤回公告认不出对应哪一笔（公告日期不稳定、无期间），整标的挂起——不能让特別股息
     继续当现行值被写成建议。"""
-    entries = src.cached_entries([
-        _cached("2025043000208", "2025-04-30T06:33:00",
-                _text("00878_special_2025_no_period.txt")),
-        _cached("2025052600440", "2025-05-26T16:40:00",
-                _text("00878_special_2025_withdrawal.txt")),
-    ])
+    entries = src.cached_entries(
+        [
+            _cached(
+                "2025043000208", "2025-04-30T06:33:00", _text("00878_special_2025_no_period.txt")
+            ),
+            _cached(
+                "2025052600440", "2025-05-26T16:40:00", _text("00878_special_2025_withdrawal.txt")
+            ),
+        ]
+    )
     resolution = src.resolve_dividend_resolution(entries)
     assert [e["doc_id"] for e in resolution.unscoped] == ["2025052600440"]
     assert resolution.unscoped[0]["form"]["status_kind"] == "withdrawal"
@@ -685,18 +1097,22 @@ def test_two_new_forms_colliding_on_a_loose_identity_are_unscoped():
     """两份「不適用」退到同一財政年末的新公告、除净日不同：可能是两笔，不让后者静默取代前者。"""
     first = _text("02669_special_2025.txt")
     second = first.replace("除淨日 2025年9月19日", "除淨日 2026年6月23日")
-    entries = src.cached_entries([
-        _cached("2025082500603", "2025-08-25T16:46:00", first),
-        _cached("2026032600001", "2026-03-26T16:35:00", second),
-    ])
+    entries = src.cached_entries(
+        [
+            _cached("2025082500603", "2025-08-25T16:46:00", first),
+            _cached("2026032600001", "2026-03-26T16:35:00", second),
+        ]
+    )
     assert [e["doc_id"] for e in src.resolve_dividend_resolution(entries).unscoped] == [
         "2026032600001"
     ]
     # 同一除净日的重复新公告：按最新一份去重，不挂起
-    entries = src.cached_entries([
-        _cached("2025082500603", "2025-08-25T16:46:00", first),
-        _cached("2025082500999", "2025-08-25T18:00:00", first),
-    ])
+    entries = src.cached_entries(
+        [
+            _cached("2025082500603", "2025-08-25T16:46:00", first),
+            _cached("2025082500999", "2025-08-25T18:00:00", first),
+        ]
+    )
     resolution = src.resolve_dividend_resolution(entries)
     assert resolution.unscoped == []
     assert [e["doc_id"] for e in resolution.current] == ["2025082500999"]
@@ -705,9 +1121,13 @@ def test_two_new_forms_colliding_on_a_loose_identity_are_unscoped():
 def test_stale_cached_payload_is_reparsed_in_memory():
     """只读缓存路径（复权因子重算）：v1 解析失败的缓存行按原文在内存里重解析。"""
     v1 = {
-        "parser_version": 1, "doc_id": "2024032200356", "url": "https://x/2024032200356.pdf",
-        "listed_at": "2024-03-22T16:32:00", "status": "unparsed",
-        "reason": "不是「股票發行人現金股息公告」表格", "form": None,
+        "parser_version": 1,
+        "doc_id": "2024032200356",
+        "url": "https://x/2024032200356.pdf",
+        "listed_at": "2024-03-22T16:32:00",
+        "status": "unparsed",
+        "reason": "不是「股票發行人現金股息公告」表格",
+        "form": None,
         "text": _text("02688_final_2023_ef002.txt"),
     }
     (entry,) = src.cached_entries([v1])
@@ -717,9 +1137,12 @@ def test_stale_cached_payload_is_reparsed_in_memory():
 
 
 def test_document_id():
-    assert src.document_id(
-        "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0318/2026031800477_c.pdf"
-    ) == "2026031800477"
+    assert (
+        src.document_id(
+            "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0318/2026031800477_c.pdf"
+        )
+        == "2026031800477"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +1166,8 @@ def test_backward_factor_hkd_dividend():
         (date(2026, 5, 18), Decimal("520"), "HKD"),
     ]
     out = compute_backward_adj_factors(
-        prices, [{"ex_date": date(2026, 5, 15), "payment": _hkd("5.3"), "declared": _hkd("5.3")}],
+        prices,
+        [{"ex_date": date(2026, 5, 15), "payment": _hkd("5.3"), "declared": _hkd("5.3")}],
         _no_rate,
     )
     ratio = (Decimal("530") - Decimal("5.3")) / Decimal("530")
@@ -788,11 +1212,13 @@ def test_rmb_dividend_is_converted_to_hkd_via_cny_cross():
             self.from_currency, self.to_currency = f, t
             self.rate, self.effective_date = Decimal(r), d
 
-    lookup = ExchangeRateLookup([
-        Rate("HKD", "CNY", "0.90", date(2026, 5, 1)),
-        Rate("HKD", "CNY", "0.95", date(2026, 7, 1)),  # 未来汇率不得使用
-        Rate("USD", "CNY", "7.20", date(2026, 5, 1)),
-    ])
+    lookup = ExchangeRateLookup(
+        [
+            Rate("HKD", "CNY", "0.90", date(2026, 5, 1)),
+            Rate("HKD", "CNY", "0.95", date(2026, 7, 1)),  # 未来汇率不得使用
+            Rate("USD", "CNY", "7.20", date(2026, 5, 1)),
+        ]
+    )
     rate_fn = cross_rate_fn(lookup)
     rmb = {"amount": Decimal("0.9"), "currency": "CNY"}
     component = {"ex_date": date(2026, 6, 2), "payment": rmb, "declared": rmb}
@@ -803,8 +1229,10 @@ def test_rmb_dividend_is_converted_to_hkd_via_cny_cross():
         {"payment": usd, "declared": usd}, "HKD", date(2026, 6, 2), rate_fn
     ) == Decimal("0.5") * Decimal("7.20") / Decimal("0.90")
     # 宣派 RMB、派发 HKD → 直接用派发金额，不折汇
-    mixed = {"payment": _hkd("0.10391"), "declared": {"amount": Decimal("0.0908"),
-                                                      "currency": "CNY"}}
+    mixed = {
+        "payment": _hkd("0.10391"),
+        "declared": {"amount": Decimal("0.0908"), "currency": "CNY"},
+    }
     assert dividend_amount_in(mixed, "HKD", date(2026, 6, 2), _no_rate) == Decimal("0.10391")
 
     prices = [(date(2026, 6, 1), Decimal("10"), "HKD"), (date(2026, 6, 2), Decimal("9"), "HKD")]
@@ -825,12 +1253,15 @@ def test_missing_rate_or_oversized_dividend_leaves_later_factors_unknown():
         prices, [{"ex_date": date(2026, 2, 2), "payment": usd, "declared": usd}], _no_rate
     )
     assert out["factors"] == {
-        date(2026, 1, 2): Decimal("1"), date(2026, 2, 2): None, date(2026, 3, 2): None,
+        date(2026, 1, 2): Decimal("1"),
+        date(2026, 2, 2): None,
+        date(2026, 3, 2): None,
     }
     assert out["events"][0]["reason"] == "missing_fx_rate"
 
     out = compute_backward_adj_factors(
-        prices, [{"ex_date": date(2026, 2, 2), "payment": _hkd("10"), "declared": None}],
+        prices,
+        [{"ex_date": date(2026, 2, 2), "payment": _hkd("10"), "declared": None}],
         _no_rate,
     )
     assert out["factors"][date(2026, 2, 2)] is None
@@ -839,10 +1270,14 @@ def test_missing_rate_or_oversized_dividend_leaves_later_factors_unknown():
 
 def test_events_outside_price_series():
     prices = [(date(2026, 3, 2), Decimal("10"), "HKD"), (date(2026, 3, 3), Decimal("10"), "HKD")]
-    out = compute_backward_adj_factors(prices, [
-        {"ex_date": date(2025, 6, 1), "payment": _hkd("1"), "declared": None},
-        {"ex_date": date(2026, 9, 1), "payment": _hkd("1"), "declared": None},
-    ], _no_rate)
+    out = compute_backward_adj_factors(
+        prices,
+        [
+            {"ex_date": date(2025, 6, 1), "payment": _hkd("1"), "declared": None},
+            {"ex_date": date(2026, 9, 1), "payment": _hkd("1"), "declared": None},
+        ],
+        _no_rate,
+    )
     assert [e["status"] for e in out["events"]] == ["before_series", "pending"]
     assert set(out["factors"].values()) == {Decimal("1")}
 
@@ -865,12 +1300,19 @@ def test_list_dividend_forms_queries_form_category(monkeypatch):
             return None
 
         def json(self):
-            return {"result": json.dumps([
-                {"DATE_TIME": "18/03/2026 17:09",
-                 "TITLE": "截至二零二五年十二月三十一日止年度末期股息",
-                 "FILE_LINK": "/listedco/listconews/sehk/2026/0318/2026031800477_c.pdf"},
-                {"DATE_TIME": "18/03/2026 17:09", "TITLE": "附件", "FILE_LINK": "/x/y.htm"},
-            ], ensure_ascii=False)}
+            return {
+                "result": json.dumps(
+                    [
+                        {
+                            "DATE_TIME": "18/03/2026 17:09",
+                            "TITLE": "截至二零二五年十二月三十一日止年度末期股息",
+                            "FILE_LINK": "/listedco/listconews/sehk/2026/0318/2026031800477_c.pdf",
+                        },
+                        {"DATE_TIME": "18/03/2026 17:09", "TITLE": "附件", "FILE_LINK": "/x/y.htm"},
+                    ],
+                    ensure_ascii=False,
+                )
+            }
 
     def fake_get(url, params=None, headers=None, timeout=None):
         calls.append((url, params, headers))
@@ -881,16 +1323,21 @@ def test_list_dividend_forms_queries_form_category(monkeypatch):
     monkeypatch.setattr(report_fetchers.requests, "get", fake_get)
 
     forms = src.list_dividend_forms("00700", date(2025, 1, 1), date(2026, 9, 29))
-    assert forms == [{
-        "doc_id": "2026031800477",
-        "title": "截至二零二五年十二月三十一日止年度末期股息",
-        "listed_at": "2026-03-18T17:09:00",
-        "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0318/2026031800477_c.pdf",
-    }]
+    assert forms == [
+        {
+            "doc_id": "2026031800477",
+            "title": "截至二零二五年十二月三十一日止年度末期股息",
+            "listed_at": "2026-03-18T17:09:00",
+            "url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2026/0318/2026031800477_c.pdf",
+        }
+    ]
     ((url, params, headers),) = calls
     assert url.endswith("/search/titleSearchServlet.do")
     assert (params["stockId"], params["t1code"], params["t2Gcode"], params["t2code"]) == (
-        "7609", 10000, 3, 13251
+        "7609",
+        10000,
+        3,
+        13251,
     )
     assert (params["fromDate"], params["toDate"]) == ("20250101", "20260929")
     assert "Referer" in headers

@@ -26,6 +26,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from .payload_versions import versions_current
+
 logger = logging.getLogger("investment_tracker.ads_ratio")
 
 MARKET = "美股"
@@ -42,17 +44,51 @@ MAX_FETCH_ATTEMPTS = 3
 # ---------------------------------------------------------------------------
 
 _UNITS = {
-    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
-    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
-    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
-    "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
-    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
 }
 _TENS = ("twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
 _ORDINALS = {
-    "half": 2, "third": 3, "quarter": 4, "fourth": 4, "fifth": 5,
-    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
-    "twelfth": 12, "fifteenth": 15, "twentieth": 20, "fortieth": 40, "fiftieth": 50,
+    "half": 2,
+    "third": 3,
+    "quarter": 4,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+    "twelfth": 12,
+    "fifteenth": 15,
+    "twentieth": 20,
+    "fortieth": 40,
+    "fiftieth": 50,
     "hundredth": 100,
 }
 
@@ -168,7 +204,7 @@ def _truncated_lead(text: str, start: int) -> bool:
     ADSs 起重新匹配并按 1 个 ADS 处理（得出 1 而不是 0.01）；「One hundred and twenty ADSs」
     会只取 twenty（PR #234 评审 P2）。只看以空白紧接匹配起点的那个词（「(1) American
     depositary shares」这类脚注编号被括号隔开，不算）；「and」要再往前一个词也是数量词才算。"""
-    prefix = text[max(0, start - 60):start]
+    prefix = text[max(0, start - 60) : start]
     match = _TOKEN_BEFORE_RE.search(prefix)
     if not match:
         return False
@@ -189,16 +225,16 @@ def _candidates(text: str, *, definitions_only: bool = False) -> List[Tuple[Deci
     found: List[Tuple[Decimal, str]] = []
     for match in _RATIO_RE.finditer(text):
         if definitions_only and not _DEFINITION_RE.search(
-            text[max(0, match.start() - DEFINITION_LOOKBACK): match.start() + 1]
+            text[max(0, match.start() - DEFINITION_LOOKBACK) : match.start() + 1]
         ):
             continue
         if _truncated_lead(text, match.start()):
-            raise _AmbiguousQuantity(text[max(0, match.start() - 40): match.end()])
+            raise _AmbiguousQuantity(text[max(0, match.start() - 40) : match.end()])
         ratio = _match_ratio(match)
         if ratio is None:
             continue
         start = max(0, match.start() - 40)
-        snippet = text[start: match.end()].strip()
+        snippet = text[start : match.end()].strip()
         found.append((_canonical(ratio), snippet[-SOURCE_TEXT_CHARS:]))
     return found
 
@@ -214,7 +250,7 @@ def _cover_region(text: str) -> Optional[str]:
     if not start:
         return None
     end = _COVER_END_RE.search(head, start.end())
-    return head[start.end(): end.start() if end else len(head)]
+    return head[start.end() : end.start() if end else len(head)]
 
 
 def _unanimous(candidates: List[Tuple[Decimal, str]]) -> Optional[Tuple[Decimal, str]]:
@@ -302,7 +338,7 @@ def _load_row(db: Session, symbol: str):
 
 
 def _save(db: Session, symbol: str, payload: Dict[str, Any]) -> None:
-    from .security_profile_service import upsert_profile_row
+    from .profile_store import upsert_profile_row
 
     upsert_profile_row(db, symbol, MARKET, DATASET, PERIOD_KEY, payload)
     db.commit()
@@ -337,7 +373,7 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
     if (
         not force
         and same_filing
-        and int(previous.get("parser_version") or 0) == ADS_PARSER_VERSION
+        and versions_current(previous, parser_version=ADS_PARSER_VERSION)
         and previous.get("status") in ("ok", "not_found")
     ):
         return {"symbol": symbol, "status": "cached", **_summary(previous)}
@@ -350,18 +386,20 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
         return {"symbol": symbol, "status": "capped", "error": previous.get("last_error")}
 
     try:
-        html = edgar_download_filing(
-            lookup["cik"], latest["accession"], latest["primary_document"]
-        )
+        html = edgar_download_filing(lookup["cik"], latest["accession"], latest["primary_document"])
     except Exception as exc:  # 下载失败：保留旧结果，只记重试计数
         error = f"{type(exc).__name__}: {str(exc)[:160]}"
         logger.warning("20-F 下载失败 %s %s: %s", symbol, latest["accession"], error)
-        _save(db, symbol, {
-            **previous,
-            "pending_accession": latest["accession"],
-            "fetch_attempts": pending_attempts + 1,
-            "last_error": error,
-        })
+        _save(
+            db,
+            symbol,
+            {
+                **previous,
+                "pending_accession": latest["accession"],
+                "fetch_attempts": pending_attempts + 1,
+                "last_error": error,
+            },
+        )
         return {"symbol": symbol, "status": "failed", "error": error}
 
     parsed = parse_ads_ratio_html(
@@ -385,7 +423,10 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
         payload["previous_filing_date"] = previous.get("filing_date")
         logger.warning(
             "ADS 换算比变化 %s：%s → %s（%s）",
-            symbol, previous["ratio"], parsed["ratio"], latest["filing_date"],
+            symbol,
+            previous["ratio"],
+            parsed["ratio"],
+            latest["filing_date"],
         )
     _save(db, symbol, payload)
     if parsed is None:

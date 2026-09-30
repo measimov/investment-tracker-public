@@ -95,9 +95,11 @@ def sync_series(
     spec = SERIES[series]
     today = today or local_today()
     target_start = start or history_start(db, today)
-    earliest, latest = db.query(
-        func.min(ReferenceRate.rate_date), func.max(ReferenceRate.rate_date)
-    ).filter(ReferenceRate.series == series).one()
+    earliest, latest = (
+        db.query(func.min(ReferenceRate.rate_date), func.max(ReferenceRate.rate_date))
+        .filter(ReferenceRate.series == series)
+        .one()
+    )
 
     ranges: List[Tuple[date, date]] = []
     if earliest is None:
@@ -158,9 +160,7 @@ def refresh_reference_rates() -> int:
     return periodic_refresh_reference_rates().count
 
 
-def load_points(
-    db: Session, series: str, start: date, end: date
-) -> List[Tuple[date, Decimal]]:
+def load_points(db: Session, series: str, start: date, end: date) -> List[Tuple[date, Decimal]]:
     """[start, end] 内的发布值，外加 start 之前最近的一个（供向前填充区间首日）。"""
     prior = (
         db.query(ReferenceRate.rate_date, ReferenceRate.value)

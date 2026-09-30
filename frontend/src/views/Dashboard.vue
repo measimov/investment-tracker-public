@@ -35,7 +35,7 @@
         </el-card>
       </el-col>
       <el-col :xs="24" :sm="12" :md="6">
-        <el-card class="summary-card" :class="toneClass(performance.total_return)">
+        <el-card class="summary-card" :class="cardTone(performance.total_return)">
           <div class="card-content">
             <div class="card-icon-wrap">
               <el-icon class="card-icon"><TrendCharts /></el-icon>
@@ -56,13 +56,21 @@
         </el-card>
       </el-col>
       <el-col :xs="24" :sm="12" :md="6">
-        <el-card class="summary-card" :class="toneClass(performance.unrealized_pnl)">
+        <el-card class="summary-card" :class="cardTone(performance.unrealized_pnl)">
           <div class="card-content">
             <div class="card-icon-wrap">
               <el-icon class="card-icon"><DataLine /></el-icon>
             </div>
             <div class="card-info">
-              <div class="card-title">未实现盈亏</div>
+              <div class="card-title">
+                未实现盈亏
+                <el-tooltip
+                  placement="top"
+                  content="按 FIFO 剩余批次成本计算（与已实现盈亏同一套批次）。持仓页的「浮动盈亏」按摊薄平均成本，部分卖出过的证券两者会有差异；两种口径下已实现 + 未实现的总收益一致，只是拆分归属不同"
+                >
+                  <el-icon class="period-help"><InfoFilled /></el-icon>
+                </el-tooltip>
+              </div>
               <div class="card-value" :style="{ color: profitColor(performance.unrealized_pnl) }">
                 {{ formatCurrency(performance.unrealized_pnl) }}
               </div>
@@ -72,7 +80,7 @@
         </el-card>
       </el-col>
       <el-col :xs="24" :sm="12" :md="6">
-        <el-card class="summary-card" :class="toneClass(performance.realized_return)">
+        <el-card class="summary-card" :class="cardTone(performance.realized_return)">
           <div class="card-content">
             <div class="card-icon-wrap">
               <el-icon class="card-icon"><Coin /></el-icon>
@@ -95,7 +103,7 @@
         <el-card
           class="summary-card period-card"
           :class="
-            toneClass(
+            cardTone(
               periodPnl.periods[key].status === 'unavailable'
                 ? null
                 : periodPnl.periods[key].pnl_cny
@@ -147,7 +155,13 @@
       </el-col>
     </el-row>
 
-    <!-- 数据质量警告（陈价/缺价/超卖等） -->
+    <!-- 陈价/缺价：一行摘要 + 展开看名称 + 刷新（#286，与统计页共用） -->
+    <PriceIssuesAlert
+      :freshness="snapshot?.prices?.freshness"
+      :refreshing="refreshingPrices"
+      @refresh="refreshPricesAndReload"
+    />
+    <!-- 其余数据质量警告（超卖、缺汇率、汇率来源、观点停摆等） -->
     <el-alert
       v-for="(warning, index) in warnings"
       :key="index"
@@ -209,7 +223,7 @@
             description="暂无市场分布数据"
             :image-size="88"
           />
-          <v-chart v-else :option="marketChartOption" class="dashboard-chart" autoresize />
+          <market-pie-chart v-else :option="marketChartOption" class="dashboard-chart" />
         </el-card>
       </el-col>
 
@@ -258,8 +272,8 @@
               </el-table-column>
               <el-table-column prop="transaction_type" label="类型" width="80">
                 <template #default="{ row }">
-                  <el-tag :type="typeTagKind(row.transaction_type)" size="small">
-                    {{ typeLabel(row.transaction_type) }}
+                  <el-tag :type="transactionTypeTag(row.transaction_type)" size="small">
+                    {{ transactionTypeLabel(row.transaction_type) }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -286,16 +300,16 @@
 </template>
 
 <script setup lang="ts">
+import PriceIssuesAlert from '@/components/PriceIssuesAlert.vue'
+import { useAliveGuard } from '@/composables/useAliveGuard'
+import { useRefreshPrices } from '@/composables/useRefreshPrices'
+import { isPriceIssueWarning, type PriceFreshnessEntry } from '@/utils/priceIssues'
 import { showApiError } from '@/utils/showApiError'
 import { transactionTypeLabel, transactionTypeTag } from '@/utils/labels'
-import { ref, onMounted, computed } from 'vue'
-import { use } from 'echarts/core'
-import { CanvasRenderer } from 'echarts/renderers'
-import { PieChart as EChartsPieChart } from 'echarts/charts'
-import { TitleComponent, TooltipComponent, LegendComponent } from 'echarts/components'
-import VChart from 'vue-echarts'
+import { ref, onMounted, computed, defineAsyncComponent } from 'vue'
 import { Wallet, TrendCharts, DataLine, Coin, InfoFilled } from '@element-plus/icons-vue'
 import api from '../api'
+import { useAutoReload } from '../composables/useAutoReload'
 import type { MarketStat, PeriodPnlKey, PeriodPnlResponse } from '../types'
 import {
   profitColor,
@@ -308,7 +322,7 @@ import { holdingsLink } from '../utils/securities'
 import { cardTone, mergeDashboardWarnings, periodIsEstimated } from './dashboard/helpers'
 import { CHART_FONT_FAMILY, CHART_PALETTE, chartTooltipCurrency } from '@/styles/tokens'
 
-use([CanvasRenderer, EChartsPieChart, TitleComponent, TooltipComponent, LegendComponent])
+const MarketPieChart = defineAsyncComponent(() => import('./dashboard/MarketPieChart.vue'))
 
 interface ReconciliationBadge {
   status?: string
@@ -341,7 +355,11 @@ interface PortfolioSnapshot {
       net_dividend_income_cny: number
     }
   } | null
-  prices?: { missing_keys?: string[]; stale_keys?: string[] }
+  prices?: {
+    missing_keys?: string[]
+    stale_keys?: string[]
+    freshness?: Record<string, PriceFreshnessEntry>
+  }
   markets?: MarketStat[]
   recent_transactions?: Array<Record<string, unknown>>
   accounts?: AccountBadge[]
@@ -370,7 +388,7 @@ function periodTooltip(key: PeriodPnlKey): string {
       `估算：区间内有 ${period.estimated_inflow_events} 笔成本未知的实物转入，` +
       '按估值价补记为投入，损益随估值价浮动。'
   }
-  if (period.status === 'estimated') {
+  if (period.status === 'estimated' && period.stale_opening_basis.length > 0) {
     const bases = period.stale_opening_basis
       .map(
         (p) =>
@@ -378,6 +396,13 @@ function periodTooltip(key: PeriodPnlKey): string {
       )
       .join('、')
     text += `估算：以下持仓的期初价早于区间起点，损益含此前累积涨跌：${bases}。`
+  }
+  const staleClosing = period.stale_closing_prices ?? []
+  if (staleClosing.length > 0) {
+    const names = staleClosing
+      .map((p) => `${p.symbol}（现价 ${p.price_date}，期初 ${p.basis_date}）`)
+      .join('、')
+    text += `估算：以下持仓的估值价早于期初基准，期末按旧价计：${names}。`
   }
   return text
 }
@@ -389,16 +414,17 @@ const initialLoading = computed(() => loading.value && !hasLoaded.value)
 const performance = computed(() => {
   const perf = snapshot.value?.performance
   if (!perf) {
+    // 加载失败时是「不知道」而不是「0」：卡片显示 —（#284，此前显示 ¥0.00 / +0.00%）
     return {
-      market_value: 0,
-      market_value_usd: 0,
-      total_return: 0,
-      total_return_rate: 0,
+      market_value: null,
+      market_value_usd: null,
+      total_return: null,
+      total_return_rate: null,
       annualized_rate: null,
-      unrealized_pnl: 0,
-      unrealized_rate: 0,
-      realized_return: 0,
-      net_dividends: 0
+      unrealized_pnl: null,
+      unrealized_rate: null,
+      realized_return: null,
+      net_dividends: null
     }
   }
   return {
@@ -424,13 +450,8 @@ const warnings = computed(() =>
     snapshotMissingKeys: snapshot.value?.prices?.missing_keys,
     periodWarnings: periodPnl.value?.data_quality?.warnings,
     periodUnpriced: periodPnl.value?.periods?.daily?.unpriced_positions
-  })
+  }).filter((text) => !isPriceIssueWarning(text))
 )
-
-const typeLabel = transactionTypeLabel
-const typeTagKind = transactionTypeTag
-
-const toneClass = cardTone
 
 const reconciliationLabel = (latest: ReconciliationBadge | null | undefined) => {
   if (!latest) return '未对账'
@@ -473,8 +494,27 @@ const marketChartOption = computed(() => ({
   ]
 }))
 
-async function loadData() {
-  loading.value = true
+// 陈价提示里的「刷新价格」：提交刷新 job、轮询到终态后重读看板（与统计页同一编排）
+const { isUnmounted } = useAliveGuard()
+const { refreshPrices, notifyRefreshResult } = useRefreshPrices(isUnmounted)
+const refreshingPrices = ref(false)
+async function refreshPricesAndReload() {
+  refreshingPrices.value = true
+  try {
+    const result = await refreshPrices()
+    if (!result || isUnmounted()) return
+    await loadData()
+    notifyRefreshResult(result)
+  } catch (error) {
+    if (!isUnmounted()) showApiError(error, { prefix: '刷新价格失败' })
+  } finally {
+    if (!isUnmounted()) refreshingPrices.value = false
+  }
+}
+
+async function loadData(options: { silent?: boolean } = {}) {
+  // silent：自动重读——不转圈、不弹错（失败保留当前数据，下一轮再试）
+  if (!options.silent) loading.value = true
   try {
     const [response, periodResponse] = await Promise.all([
       api.getPortfolioSnapshot(),
@@ -483,12 +523,18 @@ async function loadData() {
     snapshot.value = response.data
     periodPnl.value = periodResponse?.data ?? null
   } catch (error) {
+    if (options.silent) throw error
     showApiError(error, '加载仪表盘失败')
   } finally {
-    loading.value = false
-    hasLoaded.value = true
+    if (!options.silent) {
+      loading.value = false
+      hasLoaded.value = true
+    }
   }
 }
+
+// 报价由后端交易时段每 15 分钟刷新；页面可见时每 5 分钟静默重读一次（只读库）
+useAutoReload(() => loadData({ silent: true }), { paused: () => loading.value })
 
 onMounted(() => {
   loadData()

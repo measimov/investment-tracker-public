@@ -22,7 +22,7 @@ from ..schemas.transaction import TransactionCreate
 from .holding_service import (
     lock_security_timeline,
     recalculate_holdings,
-    validate_no_oversell,
+    validate_account_sequence,
 )
 
 STANDARD_REQUIRED_COLUMNS = [
@@ -228,11 +228,11 @@ def _validate_import_batch_sequence(
     candidates: list[dict],
     broker_account_id: int | None,
 ):
-    """整批 + 库内既有交易一起做超卖校验。
+    """整批 + 库内既有交易 + 该账户可见的数量类公司行动一起做超卖校验（#270）。
 
     按 (symbol, market) 分组、每组只查一次库：逐行调用会是 O(行数) 次全量查询，
-    几千行的对账单导入下不可接受。validate_no_oversell 内部按
-    (日期, 重放序) 排序，所以传入顺序无关。
+    几千行的对账单导入下不可接受。validate_account_sequence 内部按重放序排序，
+    所以传入顺序无关。
     """
     by_key: dict[tuple[str, str], list] = {}
     for data in candidates:
@@ -241,17 +241,15 @@ def _validate_import_batch_sequence(
         )
 
     for (symbol, market), new_rows in by_key.items():
-        query = db.query(Transaction).filter(
-            Transaction.user_id == user_id,
-            Transaction.symbol == symbol,
-            Transaction.market == market,
-        )
-        if broker_account_id is None:
-            query = query.filter(Transaction.broker_account_id.is_(None))
-        else:
-            query = query.filter(Transaction.broker_account_id == broker_account_id)
         try:
-            validate_no_oversell([*query.all(), *new_rows])
+            validate_account_sequence(
+                db,
+                user_id=user_id,
+                broker_account_id=broker_account_id,
+                symbol=symbol,
+                market=market,
+                candidates=new_rows,
+            )
         except ValueError as exc:
             raise ValueError(f"{symbol}（{market}）导入后出现超卖：{exc}") from exc
 

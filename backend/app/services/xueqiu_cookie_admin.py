@@ -67,12 +67,19 @@ _BAD_VALUE_RE = re.compile(r"[\x00-\x1f\x7f;]")
 _HEADER_PREFIX_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
 # J2Team 条目里除 name/value 外原样保留的元数据（其余字段丢弃，不保留未知内容）
 _KEPT_FIELDS = (
-    "domain", "hostOnly", "httpOnly", "path", "sameSite", "secure", "session", "storeId",
+    "domain",
+    "hostOnly",
+    "httpOnly",
+    "path",
+    "sameSite",
+    "secure",
+    "session",
+    "storeId",
 )
 
 NOT_WRITABLE_HINT = (
     "请在宿主上执行一次（见 DEPLOYMENT.md 8.1）："
-    'docker compose run --rm --user root backend sh -c '
+    "docker compose run --rm --user root backend sh -c "
     '"chown -R 10001:$(id -g) /app/secrets && chmod 2770 /app/secrets"'
     "；并确认 docker-compose.yml 里 backend 的 /app/secrets 挂载没有 :ro"
 )
@@ -210,7 +217,7 @@ def parse_cookie_content(content: Union[str, bytes]) -> ParsedCookies:
     text = _decode(content).strip()
     if not text:
         raise _invalid("内容为空")
-    parsed = _parse_json(text) if text[0] in "{[\"" else _parse_header(text)
+    parsed = _parse_json(text) if text[0] in '{["' else _parse_header(text)
     if not parsed.items:
         raise _invalid("没有解析到任何 Cookie")
     if len(parsed.items) > MAX_COOKIE_COUNT:
@@ -249,15 +256,18 @@ def _primary_facts(
     facts = []
     for name in PRIMARY_AUTH_COOKIES:
         expiration = expirations.get(name)
-        facts.append({
-            "name": name,
-            "present": name not in missing,
-            "expires_at": (
-                datetime.fromtimestamp(expiration, tz=timezone.utc)
-                if expiration is not None else None
-            ),
-            "days_left": (expiration - now) / 86400 if expiration is not None else None,
-        })
+        facts.append(
+            {
+                "name": name,
+                "present": name not in missing,
+                "expires_at": (
+                    datetime.fromtimestamp(expiration, tz=timezone.utc)
+                    if expiration is not None
+                    else None
+                ),
+                "days_left": (expiration - now) / 86400 if expiration is not None else None,
+            }
+        )
     return facts
 
 
@@ -485,8 +495,10 @@ def update_cookie(
         actor or "?",
         len(parsed.items),
         parsed.source_format,
-        {fact["name"]: (round(fact["days_left"], 1) if fact["days_left"] is not None else None)
-         for fact in primary},
+        {
+            fact["name"]: (round(fact["days_left"], 1) if fact["days_left"] is not None else None)
+            for fact in primary
+        },
         backup_created,
     )
 

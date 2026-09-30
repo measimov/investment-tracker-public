@@ -11,6 +11,9 @@ field-priority rules are defined exactly once:
   priority; ``shares_received`` (absolute share count) is the fallback.
 - Split / reverse split: ``split_ratio`` ("old:new") takes priority;
   ``new_shares`` (absolute post-split total) is the fallback.
+- Rights issue: counted only with both ``subscription_quantity`` and
+  ``subscription_price``; cost is ``subscription_amount`` first, else qty × price
+  (``rights_issue_lot``).
 
 Both helpers return a multiplicative factor so callers can scale a plain
 quantity, an average-cost holding, or every lot in a FIFO queue identically.
@@ -132,6 +135,26 @@ def opening_position_bucket(action, per_account: bool):
     return getattr(action, "broker_account_id", None) if per_account else None
 
 
+def rights_issue_lot(action):
+    """RIGHTS_ISSUE → (认购数量, 认购总成本)；不计入时返回 None（#270）。
+
+    数量规则（与此前四处手写的双字段守卫一致）：subscription_quantity 与
+    subscription_price 都有才计入——缺认购价的配股在任何重放里都不改变数量。
+    成本：subscription_amount（含费用的实缴金额）优先，否则 数量 × 认购价。
+    此前持仓重算用 数量 × 价格、FIFO 与曲线用金额优先，录了金额的配股两边均价对不上。
+    """
+    if getattr(action, "action_type", None) != "RIGHTS_ISSUE":
+        return None
+    sub_qty = getattr(action, "subscription_quantity", None)
+    sub_price = getattr(action, "subscription_price", None)
+    if not sub_qty or not sub_price:
+        return None
+    quantity = Decimal(str(sub_qty))
+    amount = getattr(action, "subscription_amount", None)
+    cost = Decimal(str(amount)) if amount else quantity * Decimal(str(sub_price))
+    return quantity, cost
+
+
 def action_has_ratio(action) -> bool:
     """行动是否以「每股比例」表达。
 
@@ -161,12 +184,9 @@ def apply_action_quantity(action, quantity: Decimal) -> Decimal:
         factor = split_share_factor(action, quantity)
         return quantity * factor if factor is not None else quantity
     if action_type == "RIGHTS_ISSUE":
-        # 双字段守卫：与 holding_service / fifo / curve 三处一致，缺认购价的
-        # 配股在任何重放里都不计入数量。
-        sub_qty = getattr(action, "subscription_quantity", None)
-        sub_price = getattr(action, "subscription_price", None)
-        if sub_qty and sub_price:
-            return quantity + Decimal(str(sub_qty))
+        lot = rights_issue_lot(action)
+        if lot is not None:
+            return quantity + lot[0]
     if action_type == OPENING_POSITION:
         lot = opening_position_lot(action)
         if lot is not None:

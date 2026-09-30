@@ -44,9 +44,7 @@ RESET_MODELS = [
 
 def _cleanup(session):
     reset_tables(session, RESET_MODELS)
-    session.query(SecurityProfileData).filter(
-        SecurityProfileData.dataset == src.DATASET
-    ).delete()
+    session.query(SecurityProfileData).filter(SecurityProfileData.dataset == src.DATASET).delete()
     session.query(SecurityPrice).filter(SecurityPrice.market == "港股").delete()
     session.query(ExchangeRate).filter(ExchangeRate.source == RATE_SOURCE).delete()
     session.query(BackgroundJob).filter(BackgroundJob.job_type == "dividend_sync").delete()
@@ -87,9 +85,15 @@ class FakeHkex:
     def publish(self, symbol, doc_id, listed_at, text):
         url = f"https://www1.hkexnews.hk/listedco/listconews/sehk/x/{doc_id}_c.pdf"
         self.texts[url] = text
-        self.listings.setdefault(symbol, []).insert(0, {
-            "doc_id": doc_id, "title": "t", "listed_at": listed_at, "url": url,
-        })
+        self.listings.setdefault(symbol, []).insert(
+            0,
+            {
+                "doc_id": doc_id,
+                "title": "t",
+                "listed_at": listed_at,
+                "url": url,
+            },
+        )
         return url
 
     def _list(self, symbol, from_date, to_date):
@@ -103,17 +107,32 @@ class FakeHkex:
 
 
 def _seed_hk_holding(db, symbol, quantity=Decimal("100")):
-    db.add(Holding(
-        user_id=1, symbol=symbol, name=symbol, market="港股", quantity=quantity,
-        avg_cost=Decimal("10"), total_cost=quantity * 10, currency="HKD",
-    ))
+    db.add(
+        Holding(
+            user_id=1,
+            symbol=symbol,
+            name=symbol,
+            market="港股",
+            quantity=quantity,
+            avg_cost=Decimal("10"),
+            total_cost=quantity * 10,
+            currency="HKD",
+        )
+    )
     db.commit()
 
 
 def _buy(db, symbol, quantity, on, account_id=None):
-    add_transaction(db, symbol=symbol, market="港股", currency="HKD", name=symbol,
-                    quantity=Decimal(quantity), transaction_date=on,
-                    broker_account_id=account_id)
+    add_transaction(
+        db,
+        symbol=symbol,
+        market="港股",
+        currency="HKD",
+        name=symbol,
+        quantity=Decimal(quantity),
+        transaction_date=on,
+        broker_account_id=account_id,
+    )
     db.commit()
 
 
@@ -135,9 +154,18 @@ def test_hk_sync_works_without_tushare_and_splits_accounts(db, monkeypatch):
     fake = FakeHkex(monkeypatch)
     fake.publish("00700", "2026031800477", "2026-03-18T17:09:00", _text("00700_final_2025.txt"))
     _seed_hk_holding(db, "00700")
-    db.add(Holding(user_id=1, symbol="600036", name="招商银行", market="A股",
-                   quantity=Decimal("100"), avg_cost=Decimal("30"),
-                   total_cost=Decimal("3000"), currency="CNY"))
+    db.add(
+        Holding(
+            user_id=1,
+            symbol="600036",
+            name="招商银行",
+            market="A股",
+            quantity=Decimal("100"),
+            avg_cost=Decimal("30"),
+            total_cost=Decimal("3000"),
+            currency="CNY",
+        )
+    )
     db.commit()
     a1 = make_account(db, "IBKR", commit=True)
     a2 = make_account(db, "CMB", commit=True)
@@ -145,8 +173,9 @@ def test_hk_sync_works_without_tushare_and_splits_accounts(db, monkeypatch):
     _buy(db, "00700", "100", date(2026, 5, 14), a2.id)  # 除净日前一天：享有
     _buy(db, "00700", "200", date(2026, 5, 15), a1.id)  # 除净日当天买入：不享有（T+2）
     tushare_calls = []
-    monkeypatch.setattr(svc, "fetch_dividend_announcements",
-                        lambda s, m: tushare_calls.append(s) or [])
+    monkeypatch.setattr(
+        svc, "fetch_dividend_announcements", lambda s, m: tushare_calls.append(s) or []
+    )
 
     result = svc.sync_dividends_for_user(db, 1)
 
@@ -159,7 +188,8 @@ def test_hk_sync_works_without_tushare_and_splits_accounts(db, monkeypatch):
 
     rows = _suggestions(db, "00700")
     assert [(r.broker_account_id, Decimal(str(r.record_date_quantity))) for r in rows] == [
-        (a1.id, Decimal("300")), (a2.id, Decimal("100")),
+        (a1.id, Decimal("300")),
+        (a2.id, Decimal("100")),
     ]
     first = rows[0]
     assert first.market == "港股"
@@ -183,7 +213,11 @@ def test_hk_sync_works_without_tushare_and_splits_accounts(db, monkeypatch):
 
     event = db.query(SecurityEvent).one()
     assert (event.symbol, event.market, event.event_type, event.event_date, event.source) == (
-        "00700", "港股", "DIVIDEND_PLAN", date(2026, 5, 15), "hkexnews-dividend",
+        "00700",
+        "港股",
+        "DIVIDEND_PLAN",
+        date(2026, 5, 15),
+        "hkexnews-dividend",
     )
     assert event.payload["currency"] == "HKD"
     assert event.payload["cash_div_tax"] == 5.3
@@ -212,8 +246,9 @@ def test_accepting_hk_suggestion_books_hkd_dividend(db, monkeypatch):
 
 def test_withholding_detail_for_h_share(db, monkeypatch):
     fake = FakeHkex(monkeypatch)
-    fake.publish("00728", "2026051901240", "2026-05-19T21:44:00",
-                 _text("00728_final_2025_update.txt"))
+    fake.publish(
+        "00728", "2026051901240", "2026-05-19T21:44:00", _text("00728_final_2025_update.txt")
+    )
     _seed_hk_holding(db, "00728")
     _buy(db, "00728", "1000", date(2026, 1, 10))
     svc.sync_dividends_for_user(db, 1)
@@ -236,9 +271,17 @@ def test_withholding_detail_for_h_share(db, monkeypatch):
 
 def _broker_dividend(db, symbol, total, currency, *, on, account_id=None):
     action = CorporateAction(
-        user_id=1, symbol=symbol, market="港股", action_type="CASH_DIVIDEND",
-        ex_date=on, payment_date=on, currency=currency, broker_account_id=account_id,
-        total_dividend=Decimal(total), tax_withheld=Decimal("0"), net_dividend=Decimal(total),
+        user_id=1,
+        symbol=symbol,
+        market="港股",
+        action_type="CASH_DIVIDEND",
+        ex_date=on,
+        payment_date=on,
+        currency=currency,
+        broker_account_id=account_id,
+        total_dividend=Decimal(total),
+        tax_withheld=Decimal("0"),
+        net_dividend=Decimal(total),
     )
     db.add(action)
     db.commit()
@@ -266,15 +309,16 @@ def test_dedupe_by_pay_date_window_and_currency(db, monkeypatch):
     assert (s2.status, s2.matched_corporate_action_id) == ("MATCHED", cny.id)
     assert "amount_diff" not in s2.match_detail
     assert s2.match_detail["currency_mismatch"] == {
-        "recorded_currency": "CNY", "suggested_currency": "HKD", "recorded_total": 960.0,
+        "recorded_currency": "CNY",
+        "suggested_currency": "HKD",
+        "recorded_total": 960.0,
     }
 
 
 def test_same_ex_date_final_and_special_merge_into_one_suggestion(db, monkeypatch):
     special = _text("00148_special_final_2025.txt")
-    ordinary = (
-        special.replace("股息性質 特別股息", "股息性質 普通股息")
-        .replace("每 股 0.4HKD", "每 股 0.8HKD")
+    ordinary = special.replace("股息性質 特別股息", "股息性質 普通股息").replace(
+        "每 股 0.4HKD", "每 股 0.8HKD"
     )
     fake = FakeHkex(monkeypatch)
     fake.publish("00148", "2026031600354", "2026-03-16T12:12:00", ordinary)
@@ -292,7 +336,8 @@ def test_same_ex_date_final_and_special_merge_into_one_suggestion(db, monkeypatc
     assert Decimal(str(row.cash_div_pre_tax)) == Decimal("1.2")
     assert Decimal(str(row.estimated_total_dividend)) == Decimal("1200")
     assert [c["dividend_nature"] for c in row.announcement_detail["components"]] == [
-        "普通股息", "特別股息",
+        "普通股息",
+        "特別股息",
     ]
     assert row.status == "MATCHED"
     assert row.match_detail["matched_action_ids"] == sorted([first.id, second.id])
@@ -328,13 +373,15 @@ def test_update_form_supersedes_older_form_and_moves_ex_date(db, monkeypatch):
     assert (row.ex_date, Decimal(str(row.cash_div_pre_tax))) == (date(2026, 6, 1), Decimal("0.1"))
     assert [e.event_date for e in db.query(SecurityEvent).all()] == [date(2026, 6, 1)]
 
-    fake.publish("00728", "2026051901240", "2026-05-19T21:44:00",
-                 _text("00728_final_2025_update.txt"))
+    fake.publish(
+        "00728", "2026051901240", "2026-05-19T21:44:00", _text("00728_final_2025_update.txt")
+    )
     result = svc.sync_dividends_for_user(db, 1)
 
     (row,) = _suggestions(db, "00728")
     assert (row.ex_date, Decimal(str(row.cash_div_pre_tax))) == (
-        date(2026, 6, 2), Decimal("0.10391")
+        date(2026, 6, 2),
+        Decimal("0.10391"),
     )
     assert row.announcement_detail["components"][0]["status"] == "更新公告"
     assert result["stale_removed"] == 1
@@ -355,13 +402,15 @@ def test_update_keeps_accepted_old_suggestion(db, monkeypatch):
     user = db.query(User).filter(User.id == 1).one()
     svc.accept_suggestion(db, user, _suggestions(db, "00728")[0].id, {})
 
-    fake.publish("00728", "2026051901240", "2026-05-19T21:44:00",
-                 _text("00728_final_2025_update.txt"))
+    fake.publish(
+        "00728", "2026051901240", "2026-05-19T21:44:00", _text("00728_final_2025_update.txt")
+    )
     svc.sync_dividends_for_user(db, 1)
     # 已入账的旧建议是账本事实：保留；新除净日的建议判重命中刚入账的记录
     rows = _suggestions(db, "00728")
     assert [(r.ex_date, r.status) for r in rows] == [
-        (date(2026, 6, 1), "ACCEPTED"), (date(2026, 6, 2), "MATCHED"),
+        (date(2026, 6, 1), "ACCEPTED"),
+        (date(2026, 6, 2), "MATCHED"),
     ]
 
 
@@ -392,7 +441,9 @@ def test_pending_form_waits_for_update(db, monkeypatch):
     result = svc.sync_dividends_for_user(db, 1)
     (row,) = _suggestions(db, "00728")
     assert (row.ex_date, row.currency, Decimal(str(row.cash_div_pre_tax))) == (
-        date(2022, 6, 2), "HKD", Decimal("0.2063")
+        date(2022, 6, 2),
+        "HKD",
+        Decimal("0.2063"),
     )
     assert result["hk_pending"] == []
 
@@ -465,7 +516,9 @@ def test_unparsable_update_blocks_that_dividend_instead_of_reviving_old_one(db, 
 
     (blocked,) = result["hk_blocked"]
     assert (blocked["symbol"], blocked["scope"], blocked["doc_id"]) == (
-        "00700", "dividend", "2026040100001",
+        "00700",
+        "dividend",
+        "2026040100001",
     )
     assert (blocked["period_end"], blocked["dividend_type"]) == ("2025-12-31", "末期")
     assert blocked["ex_dates"] == ["2026-05-15"]
@@ -473,7 +526,9 @@ def test_unparsable_update_blocks_that_dividend_instead_of_reviving_old_one(db, 
     # 已有建议与事件原样保留：不按旧金额刷新、也不当成撤回删除
     (after,) = _suggestions(db, "00700")
     assert (after.id, after.updated_at, Decimal(str(after.cash_div_pre_tax))) == (
-        before.id, before.updated_at, Decimal("5.3"),
+        before.id,
+        before.updated_at,
+        Decimal("5.3"),
     )
     assert [e.event_date for e in db.query(SecurityEvent).all()] == event_dates
     assert result["stale_removed"] == 0 and result["events_removed"] == 0
@@ -563,22 +618,25 @@ def test_form_missing_nature_blocks_whole_symbol_and_keeps_old_rows(db, monkeypa
 
     (blocked,) = result["hk_blocked"]
     assert (blocked["scope"], [f["doc_id"] for f in blocked["forms"]]) == (
-        "symbol", ["2026040100005"],
+        "symbol",
+        ["2026040100005"],
     )
     (after,) = _suggestions(db, "00700")
     assert (after.id, after.updated_at, Decimal(str(after.cash_div_pre_tax))) == (
-        before.id, before.updated_at, Decimal("5.3"),
+        before.id,
+        before.updated_at,
+        Decimal("5.3"),
     )
     assert db.query(SecurityEvent).count() == 1
 
 
 def test_download_failure_fails_only_that_symbol(db, monkeypatch):
     fake = FakeHkex(monkeypatch)
-    url = fake.publish("00700", "2026031800477", "2026-03-18T17:09:00",
-                       _text("00700_final_2025.txt"))
+    url = fake.publish(
+        "00700", "2026031800477", "2026-03-18T17:09:00", _text("00700_final_2025.txt")
+    )
     fake.fail_urls.add(url)
-    fake.publish("00883", "2026082600001", "2026-08-26T17:00:00",
-                 _text("00883_interim_2026.txt"))
+    fake.publish("00883", "2026082600001", "2026-08-26T17:00:00", _text("00883_interim_2026.txt"))
     for symbol in ("00700", "00883"):
         _seed_hk_holding(db, symbol)
         _buy(db, symbol, "100", date(2026, 1, 10))
@@ -616,8 +674,9 @@ def test_lost_job_ownership_aborts_instead_of_counting_as_failure(db, monkeypatc
 def test_ef003_scrip_form_yields_default_cash_suggestion(db, monkeypatch):
     """02156 EF003（可選擇以股份代替）：建议金额 = 预设现金（港元），代息股份信息进明细。"""
     fake = FakeHkex(monkeypatch)
-    fake.publish("02156", "2023060801296", "2023-06-08T22:15:00",
-                 _text("02156_final_2022_ef003_update.txt"))
+    fake.publish(
+        "02156", "2023060801296", "2023-06-08T22:15:00", _text("02156_final_2022_ef003_update.txt")
+    )
     _seed_hk_holding(db, "02156")
     _buy(db, "02156", "2000", date(2023, 5, 2))
 
@@ -625,7 +684,9 @@ def test_ef003_scrip_form_yields_default_cash_suggestion(db, monkeypatch):
     assert result["hk_blocked"] == [] and result["hk_unparsed_forms"] == []
     (row,) = _suggestions(db, "02156")
     assert (row.ex_date, row.currency, Decimal(str(row.cash_div_pre_tax))) == (
-        date(2023, 6, 1), "HKD", Decimal("0.1"),
+        date(2023, 6, 1),
+        "HKD",
+        Decimal("0.1"),
     )
     assert Decimal(str(row.estimated_total_dividend)) == Decimal("200")
     detail = row.announcement_detail
@@ -641,10 +702,15 @@ def test_fy_fallback_update_yields_suggestion(db, monkeypatch):
     """06049 2022 末期：两份更新公告的報告期末都「不適用」→ 以財政年末锚定为同一笔，
     待定那份被取代，建议取最新更新公告的港元金额。"""
     fake = FakeHkex(monkeypatch)
-    fake.publish("06049", "2023042502546", "2023-04-25T20:36:00",
-                 _text("06049_final_2022_update_pending.txt"))
-    fake.publish("06049", "2023051700956", "2023-05-17T22:50:00",
-                 _text("06049_final_2022_update.txt"))
+    fake.publish(
+        "06049",
+        "2023042502546",
+        "2023-04-25T20:36:00",
+        _text("06049_final_2022_update_pending.txt"),
+    )
+    fake.publish(
+        "06049", "2023051700956", "2023-05-17T22:50:00", _text("06049_final_2022_update.txt")
+    )
     _seed_hk_holding(db, "06049")
     _buy(db, "06049", "1000", date(2023, 1, 5))
 
@@ -652,13 +718,21 @@ def test_fy_fallback_update_yields_suggestion(db, monkeypatch):
     assert result["hk_blocked"] == [] and result["hk_pending"] == []
     (row,) = _suggestions(db, "06049")
     assert (row.ex_date, row.currency, Decimal(str(row.cash_div_pre_tax))) == (
-        date(2023, 6, 8), "HKD", Decimal("0.56795"),
+        date(2023, 6, 8),
+        "HKD",
+        Decimal("0.56795"),
     )
     # 公告日期取表格原文：06049 的更新公告沿用原公告日期
     assert row.ann_date == date(2023, 3, 29)
     (component,) = row.announcement_detail["components"]
-    assert (component["period_end"], component["period_basis"], component["financial_year_end"]) == (
-        None, "financial_year_end", "2022-12-31",
+    assert (
+        component["period_end"],
+        component["period_basis"],
+        component["financial_year_end"],
+    ) == (
+        None,
+        "financial_year_end",
+        "2022-12-31",
     )
     assert (component["declared_amount"], component["declared_currency"]) == ("0.503", "CNY")
 
@@ -666,23 +740,27 @@ def test_fy_fallback_update_yields_suggestion(db, monkeypatch):
 def test_no_period_special_withdrawal_blocks_symbol(db, monkeypatch):
     """00878：无期间特別股息 + 「撤回股息公告」→ 整标的挂起，不把已撤回的特別股息写成建议。"""
     fake = FakeHkex(monkeypatch)
-    fake.publish("00878", "2025043000208", "2025-04-30T06:33:00",
-                 _text("00878_special_2025_no_period.txt"))
+    fake.publish(
+        "00878", "2025043000208", "2025-04-30T06:33:00", _text("00878_special_2025_no_period.txt")
+    )
     _seed_hk_holding(db, "00878")
     _buy(db, "00878", "1000", date(2025, 1, 5))
     first = svc.sync_dividends_for_user(db, 1)
     assert first["hk_blocked"] == []
     (before,) = _suggestions(db, "00878")
     assert (before.ex_date, Decimal(str(before.cash_div_pre_tax))) == (
-        date(2025, 5, 28), Decimal("1"),
+        date(2025, 5, 28),
+        Decimal("1"),
     )
 
-    fake.publish("00878", "2025052600440", "2025-05-26T16:40:00",
-                 _text("00878_special_2025_withdrawal.txt"))
+    fake.publish(
+        "00878", "2025052600440", "2025-05-26T16:40:00", _text("00878_special_2025_withdrawal.txt")
+    )
     result = svc.sync_dividends_for_user(db, 1)
     (blocked,) = result["hk_blocked"]
     assert (blocked["scope"], [f["doc_id"] for f in blocked["forms"]]) == (
-        "symbol", ["2025052600440"],
+        "symbol",
+        ["2025052600440"],
     )
     assert "均不適用" in blocked["forms"][0]["reason"]
     # 整标的不写不删：已有建议原样保留，由用户核对后自行忽略
@@ -701,7 +779,7 @@ def test_no_period_special_withdrawal_blocks_symbol(db, monkeypatch):
 def test_parser_bump_reparses_stale_rows_outside_listing_without_download(db, monkeypatch):
     """生产 v1 缓存：清单内外都有 v1 判为未解析的表格。升版后同步只从缓存原文重解析，
     零下载；清单窗口外的旧行也重写（复权因子要全部历史）。"""
-    from app.services.security_profile_service import upsert_profile_row
+    from app.services.profile_store import upsert_profile_row
 
     fake = FakeHkex(monkeypatch)
     text_2023 = _text("02688_final_2023_ef002.txt")
@@ -716,11 +794,24 @@ def test_parser_bump_reparses_stale_rows_outside_listing_without_download(db, mo
         ("2024032200356", "2024-03-22T16:32:00", text_2023, in_listing),
         ("2023032200001", "2023-03-22T16:32:00", text_2022, "https://x/2023032200001.pdf"),
     ):
-        upsert_profile_row(db, "02688", "港股", src.DATASET, doc_id, {
-            "parser_version": 1, "doc_id": doc_id, "url": url, "title": "t",
-            "listed_at": listed_at, "status": "unparsed",
-            "reason": "不是「股票發行人現金股息公告」表格", "form": None, "text": text,
-        })
+        upsert_profile_row(
+            db,
+            "02688",
+            "港股",
+            src.DATASET,
+            doc_id,
+            {
+                "parser_version": 1,
+                "doc_id": doc_id,
+                "url": url,
+                "title": "t",
+                "listed_at": listed_at,
+                "status": "unparsed",
+                "reason": "不是「股票發行人現金股息公告」表格",
+                "form": None,
+                "text": text,
+            },
+        )
     db.commit()
     _seed_hk_holding(db, "02688")
     _buy(db, "02688", "100", date(2024, 1, 5))
@@ -750,28 +841,59 @@ def test_parser_bump_reparses_stale_rows_outside_listing_without_download(db, mo
 
 
 def _price(db, symbol, on, close):
-    db.add(SecurityPrice(symbol=symbol, market="港股", price_date=on, currency="HKD",
-                         close_price=Decimal(close), source="test"))
+    db.add(
+        SecurityPrice(
+            symbol=symbol,
+            market="港股",
+            price_date=on,
+            currency="HKD",
+            close_price=Decimal(close),
+            source="test",
+        )
+    )
 
 
 def test_adj_factors_written_for_usd_dividend_converted_to_hkd(db, monkeypatch):
     fake = FakeHkex(monkeypatch)
-    fake.publish("09618", "2026030501475", "2026-03-05T18:10:00",
-                 _text("09618_final_2025_usd.txt"))
+    fake.publish("09618", "2026030501475", "2026-03-05T18:10:00", _text("09618_final_2025_usd.txt"))
     _seed_hk_holding(db, "09618")
     _buy(db, "09618", "100", date(2026, 1, 10))
-    for on, close in [(date(2026, 4, 2), "120"), (date(2026, 4, 7), "125"),
-                      (date(2026, 4, 8), "121"), (date(2026, 4, 9), "122")]:
+    for on, close in [
+        (date(2026, 4, 2), "120"),
+        (date(2026, 4, 7), "125"),
+        (date(2026, 4, 8), "121"),
+        (date(2026, 4, 9), "122"),
+    ]:
         _price(db, "09618", on, close)
-    db.add_all([
-        ExchangeRate(from_currency="USD", to_currency="CNY", rate=Decimal("7.2"),
-                     effective_date=date(2026, 4, 1), source=RATE_SOURCE, is_active=True),
-        ExchangeRate(from_currency="HKD", to_currency="CNY", rate=Decimal("0.9"),
-                     effective_date=date(2026, 4, 1), source=RATE_SOURCE, is_active=True),
-        # 除净日之后的汇率不得参与
-        ExchangeRate(from_currency="USD", to_currency="CNY", rate=Decimal("9"),
-                     effective_date=date(2026, 4, 9), source=RATE_SOURCE, is_active=True),
-    ])
+    db.add_all(
+        [
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("7.2"),
+                effective_date=date(2026, 4, 1),
+                source=RATE_SOURCE,
+                is_active=True,
+            ),
+            ExchangeRate(
+                from_currency="HKD",
+                to_currency="CNY",
+                rate=Decimal("0.9"),
+                effective_date=date(2026, 4, 1),
+                source=RATE_SOURCE,
+                is_active=True,
+            ),
+            # 除净日之后的汇率不得参与
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("9"),
+                effective_date=date(2026, 4, 9),
+                source=RATE_SOURCE,
+                is_active=True,
+            ),
+        ]
+    )
     db.commit()
 
     result = svc.sync_dividends_for_user(db, 1)
@@ -781,9 +903,7 @@ def test_adj_factors_written_for_usd_dividend_converted_to_hkd(db, monkeypatch):
     expected = (1 / ((Decimal("125") - dividend_hkd) / Decimal("125"))).quantize(
         Decimal("0.00000001")
     )
-    rows = {
-        r.price_date: r for r in db.query(SecurityPrice).filter_by(symbol="09618").all()
-    }
+    rows = {r.price_date: r for r in db.query(SecurityPrice).filter_by(symbol="09618").all()}
     assert Decimal(str(rows[date(2026, 4, 2)].adj_factor)) == Decimal("1")
     assert Decimal(str(rows[date(2026, 4, 7)].adj_factor)) == Decimal("1")
     assert Decimal(str(rows[date(2026, 4, 8)].adj_factor)) == expected
@@ -799,18 +919,20 @@ def test_adj_factors_written_for_usd_dividend_converted_to_hkd(db, monkeypatch):
 
 def test_adj_factor_null_after_unresolved_ex_date(db, monkeypatch):
     fake = FakeHkex(monkeypatch)
-    fake.publish("09618", "2026030501475", "2026-03-05T18:10:00",
-                 _text("09618_final_2025_usd.txt"))
+    fake.publish("09618", "2026030501475", "2026-03-05T18:10:00", _text("09618_final_2025_usd.txt"))
     _seed_hk_holding(db, "09618")
     _buy(db, "09618", "100", date(2026, 1, 10))
     _price(db, "09618", date(2026, 4, 7), "125")
     _price(db, "09618", date(2026, 4, 8), "121")
+    # 前提由本用例自己保证：测试库跨用例共享，别的用例可能留下 USD 汇率（此前靠汇率鉴权
+    # 用例按 source 清理时顺手删掉，巧合通过）
+    db.query(ExchangeRate).filter(
+        ExchangeRate.from_currency == "USD", ExchangeRate.to_currency == "CNY"
+    ).delete()
     db.commit()
 
     svc.sync_dividends_for_user(db, 1)  # 汇率表里没有 USD：无法折港元
-    rows = {
-        r.price_date: r for r in db.query(SecurityPrice).filter_by(symbol="09618").all()
-    }
+    rows = {r.price_date: r for r in db.query(SecurityPrice).filter_by(symbol="09618").all()}
     assert Decimal(str(rows[date(2026, 4, 7)].adj_factor)) == Decimal("1")
     assert rows[date(2026, 4, 8)].adj_factor is None
     assert rows[date(2026, 4, 8)].adj_close_price is None
@@ -825,9 +947,18 @@ def test_periodic_entry_without_token_enqueues_only_hk_users(db, monkeypatch):
     from app.services import dividend_sync_jobs as jobs
 
     monkeypatch.setattr(jobs.settings, "dividend_sync_periodic_enabled", True)
-    db.add(Holding(user_id=2, symbol="600036", name="招商银行", market="A股",
-                   quantity=Decimal("100"), avg_cost=Decimal("30"),
-                   total_cost=Decimal("3000"), currency="CNY"))
+    db.add(
+        Holding(
+            user_id=2,
+            symbol="600036",
+            name="招商银行",
+            market="A股",
+            quantity=Decimal("100"),
+            avg_cost=Decimal("30"),
+            total_cost=Decimal("3000"),
+            currency="CNY",
+        )
+    )
     db.commit()
     assert jobs.enqueue_periodic_dividend_sync() == 0
 
@@ -835,3 +966,23 @@ def test_periodic_entry_without_token_enqueues_only_hk_users(db, monkeypatch):
     assert jobs.enqueue_periodic_dividend_sync() == 1
     job = db.query(BackgroundJob).filter(BackgroundJob.job_type == "dividend_sync").one()
     assert job.user_id == 1
+
+
+def test_adj_factor_recompute_failure_does_not_fail_the_sync(db, monkeypatch):
+    """#276：复权因子当前没有读取方，重算失败只记日志，不能让该标的的分红同步失败、
+    也不能回滚已写入的建议。"""
+    fake = FakeHkex(monkeypatch)
+    fake.publish("00700", "2026031800477", "2026-03-18T17:09:00", _text("00700_final_2025.txt"))
+    _seed_hk_holding(db, "00700")
+    account = make_account(db, "IBKR", commit=True)
+    _buy(db, "00700", "300", date(2026, 1, 10), account.id)
+
+    def broken(db_, symbol, **kwargs):
+        raise RuntimeError("汇率表查询失败")
+
+    monkeypatch.setattr(svc, "recompute_hk_adj_factors", broken)
+    result = svc.sync_dividends_for_user(db, 1)
+
+    assert result["failed"] == []
+    assert result["new"] == 1
+    assert len(_suggestions(db, "00700")) == 1

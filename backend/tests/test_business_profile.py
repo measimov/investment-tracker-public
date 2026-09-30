@@ -5,7 +5,7 @@ import pytest
 from app.database import SessionLocal
 from app.models.security_profile import SecurityProfileData
 from app.services import business_profile_service as svc
-from app.services.security_profile_service import upsert_profile_row
+from app.services.profile_store import upsert_profile_row
 from app.services.report_digest_prompts import DIGEST_PROMPT_VERSION
 from app.services.report_sections import SECTION_EXTRACTOR_VERSION
 
@@ -37,15 +37,29 @@ def db():
 
 
 def _seed_digest(db, end_date="20251231"):
-    upsert_profile_row(db, "600036", "A股", "report_digest", f"{end_date}|annual", {
-        "status": "ok", "report_type": "annual", "end_date": end_date,
-        "extractor_version": SECTION_EXTRACTOR_VERSION,
-        "prompt_version": DIGEST_PROMPT_VERSION,
-        "source_url": "http://example/a.pdf",
-        "digest": {"业务分部占比": "零售 57%", "上下游与产业链": "存款为源",
-                   "主营收入结构": "净利息为主", "经营回顾": "稳健",
-                   "会计信号": "无", "关键数字": ["营收 3391 亿"]},
-    })
+    upsert_profile_row(
+        db,
+        "600036",
+        "A股",
+        "report_digest",
+        f"{end_date}|annual",
+        {
+            "status": "ok",
+            "report_type": "annual",
+            "end_date": end_date,
+            "extractor_version": SECTION_EXTRACTOR_VERSION,
+            "prompt_version": DIGEST_PROMPT_VERSION,
+            "source_url": "http://example/a.pdf",
+            "digest": {
+                "业务分部占比": "零售 57%",
+                "上下游与产业链": "存款为源",
+                "主营收入结构": "净利息为主",
+                "经营回顾": "稳健",
+                "会计信号": "无",
+                "关键数字": ["营收 3391 亿"],
+            },
+        },
+    )
     db.commit()
 
 
@@ -107,10 +121,17 @@ def test_parse_enforces_declared_array_contract():
 
 def test_input_assembly_uses_digest_slices_and_business_section(db):
     _seed_digest(db)
-    upsert_profile_row(db, "600036", "A股", "report_section", "20251231|annual", {
-        "extract_status": "ok",
-        "sections": {"business": "业务概要" * 5000, "mdna": "经营分析"},
-    })
+    upsert_profile_row(
+        db,
+        "600036",
+        "A股",
+        "report_section",
+        "20251231|annual",
+        {
+            "extract_status": "ok",
+            "sections": {"business": "业务概要" * 5000, "mdna": "经营分析"},
+        },
+    )
     db.commit()
 
     payload = svc.build_business_profile_input(db, "600036", "A股")
@@ -147,13 +168,30 @@ def test_input_falls_back_to_earlier_successful_business_section(db):
     """[评审回归] 最新报告期抽取失败时，画像输入仍须使用次新的成功节选，
     而不是整块业务概要缺失。"""
     _seed_digest(db)
-    upsert_profile_row(db, "600036", "A股", "report_section", "20251231|annual", {
-        "extract_status": "failed", "error": "PDF 损坏", "attempts": 2, "sections": {},
-    })
-    upsert_profile_row(db, "600036", "A股", "report_section", "20241231|annual", {
-        "extract_status": "ok",
-        "sections": {"business": "2024 业务概要：零售与批发两大板块", "mdna": "经营分析"},
-    })
+    upsert_profile_row(
+        db,
+        "600036",
+        "A股",
+        "report_section",
+        "20251231|annual",
+        {
+            "extract_status": "failed",
+            "error": "PDF 损坏",
+            "attempts": 2,
+            "sections": {},
+        },
+    )
+    upsert_profile_row(
+        db,
+        "600036",
+        "A股",
+        "report_section",
+        "20241231|annual",
+        {
+            "extract_status": "ok",
+            "sections": {"business": "2024 业务概要：零售与批发两大板块", "mdna": "经营分析"},
+        },
+    )
     db.commit()
 
     payload = svc.build_business_profile_input(db, "600036", "A股")
@@ -166,9 +204,11 @@ def test_ensure_profile_regenerates_when_same_period_content_changes(db, monkeyp
     _seed_digest(db)
     calls = []
     monkeypatch.setattr(
-        svc, "chat_completion",
-        lambda messages, **kw: calls.append(messages)
-        or {"content": VALID_PROFILE, "model": "m", "usage": {}},
+        svc,
+        "chat_completion",
+        lambda messages, **kw: (
+            calls.append(messages) or {"content": VALID_PROFILE, "model": "m", "usage": {}}
+        ),
     )
     svc.ensure_business_profile(db, "600036", "A股")
     assert len(calls) == 1
@@ -176,15 +216,29 @@ def test_ensure_profile_regenerates_when_same_period_content_changes(db, monkeyp
     assert len(calls) == 1  # 内容未变 → 缓存命中
 
     # 同报告期摘要内容被修订（end_date 不变）
-    upsert_profile_row(db, "600036", "A股", "report_digest", "20251231|annual", {
-        "status": "ok", "report_type": "annual", "end_date": "20251231",
-        "extractor_version": SECTION_EXTRACTOR_VERSION,
-        "prompt_version": DIGEST_PROMPT_VERSION,
-        "source_url": "https://example/a-revised.pdf",
-        "digest": {"业务分部占比": "零售 61%（修订）", "上下游与产业链": "存款为源",
-                   "主营收入结构": "净利息为主", "经营回顾": "稳健",
-                   "会计信号": "无", "关键数字": ["营收 3391 亿"]},
-    })
+    upsert_profile_row(
+        db,
+        "600036",
+        "A股",
+        "report_digest",
+        "20251231|annual",
+        {
+            "status": "ok",
+            "report_type": "annual",
+            "end_date": "20251231",
+            "extractor_version": SECTION_EXTRACTOR_VERSION,
+            "prompt_version": DIGEST_PROMPT_VERSION,
+            "source_url": "https://example/a-revised.pdf",
+            "digest": {
+                "业务分部占比": "零售 61%（修订）",
+                "上下游与产业链": "存款为源",
+                "主营收入结构": "净利息为主",
+                "经营回顾": "稳健",
+                "会计信号": "无",
+                "关键数字": ["营收 3391 亿"],
+            },
+        },
+    )
     db.commit()
 
     svc.ensure_business_profile(db, "600036", "A股")
@@ -211,14 +265,16 @@ def test_ensure_profile_without_sources_skips_llm(db, monkeypatch):
 def test_llm_failure_keeps_previous_profile(db, monkeypatch):
     _seed_digest(db)
     monkeypatch.setattr(
-        svc, "chat_completion",
+        svc,
+        "chat_completion",
         lambda *a, **k: {"content": VALID_PROFILE, "model": "m", "usage": {}},
     )
     assert svc.ensure_business_profile(db, "600036", "A股") is not None
 
     _seed_digest(db, end_date="20261231")  # 触发重生成
     monkeypatch.setattr(
-        svc, "chat_completion",
+        svc,
+        "chat_completion",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("上游故障")),
     )
     profile = svc.ensure_business_profile(db, "600036", "A股")
@@ -227,11 +283,12 @@ def test_llm_failure_keeps_previous_profile(db, monkeypatch):
 
 
 def test_peer_list_filters_industry_and_caps(db, monkeypatch):
-    listing = [{"symbol": "600036", "name": "招商银行", "industry": "银行"}] + [
-        {"symbol": f"60{i:04d}", "name": f"银行{i}", "industry": "银行"}
-        for i in range(40)
-    ] + [{"symbol": "600519", "name": "贵州茅台", "industry": "白酒"}]
-    monkeypatch.setattr(svc, "_load_stock_basic", lambda: listing)
+    listing = (
+        [{"symbol": "600036", "name": "招商银行", "industry": "银行"}]
+        + [{"symbol": f"60{i:04d}", "name": f"银行{i}", "industry": "银行"} for i in range(40)]
+        + [{"symbol": "600519", "name": "贵州茅台", "industry": "白酒"}]
+    )
+    monkeypatch.setattr(svc, "load_stock_basic", lambda: listing)
 
     peers = svc.ensure_peer_list(db, "600036", "A股")
     assert len(peers) == svc.PEER_LIST_CAP
@@ -247,13 +304,21 @@ def test_peer_list_filters_industry_and_caps(db, monkeypatch):
 
 
 def test_peer_list_failure_returns_cached(db, monkeypatch):
-    upsert_profile_row(db, "600036", "A股", "peer_list", "current", {
-        "industry": "银行", "peers": [{"symbol": "601398", "name": "工商银行",
-                                       "industry": "银行"}],
-    })
+    upsert_profile_row(
+        db,
+        "600036",
+        "A股",
+        "peer_list",
+        "current",
+        {
+            "industry": "银行",
+            "peers": [{"symbol": "601398", "name": "工商银行", "industry": "银行"}],
+        },
+    )
     db.commit()
     monkeypatch.setattr(
-        svc, "_load_stock_basic",
+        svc,
+        "load_stock_basic",
         lambda: (_ for _ in ()).throw(RuntimeError("tushare 不可用")),
     )
     peers = svc.ensure_peer_list(db, "600036", "A股")
@@ -269,23 +334,20 @@ def test_us_peer_list_by_sic(db, monkeypatch):
     from app.services import report_fetchers
 
     monkeypatch.setattr(
-        report_fetchers, "edgar_lookup",
+        report_fetchers,
+        "edgar_lookup",
         lambda symbol: {"cik": 320193, "title": "Apple Inc."},
     )
-    monkeypatch.setattr(
-        report_fetchers, "edgar_submissions", lambda cik: {"sic": "3571"}
-    )
+    monkeypatch.setattr(report_fetchers, "edgar_submissions", lambda cik: {"sic": "3571"})
     # 自身 + 一个非上市 filer（反查无 ticker）+ 40 个上市同业
-    companies = [{"cik": 320193}, {"cik": 999999}] + [
-        {"cik": i} for i in range(1, 41)
-    ]
+    companies = [{"cik": 320193}, {"cik": 999999}] + [{"cik": i} for i in range(1, 41)]
+    monkeypatch.setattr(report_fetchers, "edgar_same_sic_companies", lambda sic: companies)
     monkeypatch.setattr(
-        report_fetchers, "edgar_same_sic_companies", lambda sic: companies
-    )
-    monkeypatch.setattr(
-        report_fetchers, "edgar_reverse_lookup",
-        lambda cik: None if cik == 999999
-        else {"symbol": f"PEER{cik}", "title": f"Peer {cik} Inc."},
+        report_fetchers,
+        "edgar_reverse_lookup",
+        lambda cik: (
+            None if cik == 999999 else {"symbol": f"PEER{cik}", "title": f"Peer {cik} Inc."}
+        ),
     )
 
     peers = svc.ensure_peer_list(db, "AAPL", "美股")
@@ -296,8 +358,7 @@ def test_us_peer_list_by_sic(db, monkeypatch):
 
     row = (
         db.query(SecurityProfileData)
-        .filter_by(symbol="AAPL", market="美股", dataset="peer_list",
-                   period_key="current")
+        .filter_by(symbol="AAPL", market="美股", dataset="peer_list", period_key="current")
         .one()
     )
     assert len(row.payload["peers"]) == svc.PEER_LIST_CAP
@@ -314,9 +375,7 @@ def test_us_peer_list_by_sic(db, monkeypatch):
 def test_us_peer_list_missing_sic_returns_empty(db, monkeypatch):
     from app.services import report_fetchers
 
-    monkeypatch.setattr(
-        report_fetchers, "edgar_lookup", lambda symbol: {"cik": "1", "title": "X"}
-    )
+    monkeypatch.setattr(report_fetchers, "edgar_lookup", lambda symbol: {"cik": "1", "title": "X"})
     monkeypatch.setattr(report_fetchers, "edgar_submissions", lambda cik: {"sic": ""})
     assert svc.ensure_peer_list(db, "XXXX", "美股") == []
 
@@ -328,18 +387,21 @@ def test_peer_list_hits_ttl_cache_without_refetching(db, monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        report_fetchers, "edgar_lookup",
+        report_fetchers,
+        "edgar_lookup",
         lambda symbol: {"cik": 320193, "title": "Apple Inc."},
     )
     monkeypatch.setattr(
-        report_fetchers, "edgar_submissions",
+        report_fetchers,
+        "edgar_submissions",
         lambda cik: calls.append(cik) or {"sic": "3571"},
     )
     monkeypatch.setattr(
         report_fetchers, "edgar_same_sic_companies", lambda sic: [{"cik": 1}, {"cik": 2}]
     )
     monkeypatch.setattr(
-        report_fetchers, "edgar_reverse_lookup",
+        report_fetchers,
+        "edgar_reverse_lookup",
         lambda cik: {"symbol": f"P{cik}", "title": f"Peer {cik}"},
     )
 
@@ -356,15 +418,12 @@ def test_peer_list_refetches_after_ttl(db, monkeypatch):
 
     from app.services import report_fetchers
 
-    monkeypatch.setattr(
-        report_fetchers, "edgar_lookup", lambda symbol: {"cik": 1, "title": "X"}
-    )
+    monkeypatch.setattr(report_fetchers, "edgar_lookup", lambda symbol: {"cik": 1, "title": "X"})
     monkeypatch.setattr(report_fetchers, "edgar_submissions", lambda cik: {"sic": "3571"})
+    monkeypatch.setattr(report_fetchers, "edgar_same_sic_companies", lambda sic: [{"cik": 9}])
     monkeypatch.setattr(
-        report_fetchers, "edgar_same_sic_companies", lambda sic: [{"cik": 9}]
-    )
-    monkeypatch.setattr(
-        report_fetchers, "edgar_reverse_lookup",
+        report_fetchers,
+        "edgar_reverse_lookup",
         lambda cik: {"symbol": "P9", "title": "Peer 9"},
     )
     svc.ensure_peer_list(db, "AAPL", "美股")
@@ -375,7 +434,8 @@ def test_peer_list_refetches_after_ttl(db, monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        report_fetchers, "edgar_submissions",
+        report_fetchers,
+        "edgar_submissions",
         lambda cik: calls.append(cik) or {"sic": "3571"},
     )
     svc.ensure_peer_list(db, "AAPL", "美股")

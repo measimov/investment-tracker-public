@@ -73,7 +73,9 @@ def main() -> int:
                         counts["new"] += 1
                     elif (current.source or "manual") == "manual":
                         counts["manual_kept"] += 1
-                    elif current.source == fx.OFFICIAL_SOURCE and Decimal(str(current.rate)) == rate:
+                    elif (
+                        current.source == fx.OFFICIAL_SOURCE and Decimal(str(current.rate)) == rate
+                    ):
                         counts["unchanged"] += 1
                     else:
                         counts["replace_third_party"] += 1

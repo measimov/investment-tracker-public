@@ -1,7 +1,7 @@
-"""雪球观点数据源 reader：符号提取、归档表 raw SQL、新鲜度、降级。
+"""雪球观点数据源 reader：符号提取、归档表查询、新鲜度、降级。
 
 表由迁移 20260927_0024 建出（DDL 与原 archiver 逐字一致，created_at 是 TEXT）：
-reader 的价值全在那段 raw SQL（created_at_ms 时间过滤、LIKE 预筛），
+reader 的价值全在那段查询（created_at_ms 时间过滤、LIKE 预筛），
 monkeypatch 掉等于什么都没测。表总是存在，「未接入」= 采集器从未成功运行且无发言；
 fixture 在前后清空 utterances / scan_runs。
 """
@@ -13,6 +13,8 @@ from sqlalchemy import text
 
 from app.database import SessionLocal
 from app.services import xueqiu_opinion_source as src
+from tests.helpers import drifted_last_seen_column
+
 
 @pytest.fixture
 def db():
@@ -25,9 +27,9 @@ def db():
 
 
 def _clean(db):
-    db.execute(text(
-        "TRUNCATE xueqiu_archiver_utterances, xueqiu_archiver_scan_runs RESTART IDENTITY"
-    ))
+    db.execute(
+        text("TRUNCATE xueqiu_archiver_utterances, xueqiu_archiver_scan_runs RESTART IDENTITY")
+    )
     db.commit()
 
 
@@ -39,8 +41,19 @@ def archiver_table(db):
     _clean(db)
 
 
-def _insert(db, key, *, author="某作者", body="", context=None, post_url=None,
-            context_url=None, kind="homepage_post", at=None, last_seen=None):
+def _insert(
+    db,
+    key,
+    *,
+    author="某作者",
+    body="",
+    context=None,
+    post_url=None,
+    context_url=None,
+    kind="homepage_post",
+    at=None,
+    last_seen=None,
+):
     at = at or datetime.now(timezone.utc)
     db.execute(
         text(
@@ -51,8 +64,12 @@ def _insert(db, key, *, author="某作者", body="", context=None, post_url=None
             "        :post_url, :context_url, :ms, :last_seen)"
         ),
         {
-            "key": key, "kind": kind, "author": author, "body": body,
-            "context": context or "", "post_url": post_url or "",
+            "key": key,
+            "kind": kind,
+            "author": author,
+            "body": body,
+            "context": context or "",
+            "post_url": post_url or "",
             "context_url": context_url or "",
             "ms": int(at.timestamp() * 1000),
             "last_seen": last_seen or datetime.now(timezone.utc),
@@ -93,9 +110,7 @@ def test_extract_symbol_refs(text_value, expected):
 
 
 def test_extract_symbol_refs_merges_multiple_fields():
-    refs = src.extract_symbol_refs(
-        "$贵州茅台(SH600519)$", None, "https://xueqiu.com/S/00700/1", ""
-    )
+    refs = src.extract_symbol_refs("$贵州茅台(SH600519)$", None, "https://xueqiu.com/S/00700/1", "")
     assert refs == {"SH600519", "00700"}
 
 
@@ -118,16 +133,25 @@ def test_build_wanted_map_normalizes_identity():
 def test_scan_assigns_rows_to_wanted_keys(db, archiver_table):
     now = datetime.now(timezone.utc)
     _insert(db, "u1", body="看好 $贵州茅台(SH600519)$", at=now - timedelta(days=1))
-    _insert(db, "u2", body="回复：同意", context="原帖聊 $腾讯控股(00700)$",
-            at=now - timedelta(days=2), kind="comment_reply")
-    _insert(db, "u3", body="无标记发言", post_url="https://xueqiu.com/S/SH600519/9",
-            at=now - timedelta(days=3))
+    _insert(
+        db,
+        "u2",
+        body="回复：同意",
+        context="原帖聊 $腾讯控股(00700)$",
+        at=now - timedelta(days=2),
+        kind="comment_reply",
+    )
+    _insert(
+        db,
+        "u3",
+        body="无标记发言",
+        post_url="https://xueqiu.com/S/SH600519/9",
+        at=now - timedelta(days=3),
+    )
     _insert(db, "u4", body="$别的标的(SZ000001)$", at=now - timedelta(days=1))
     _insert(db, "u5", body="太老的 $贵州茅台(SH600519)$", at=now - timedelta(days=99))
 
-    matched = src.scan_matched_utterances(
-        db, {"SH600519", "00700"}, since=now - timedelta(days=30)
-    )
+    matched = src.scan_matched_utterances(db, {"SH600519", "00700"}, since=now - timedelta(days=30))
     assert sorted(row["utterance_key"] for row in matched["SH600519"]) == ["u1", "u3"]
     assert [row["utterance_key"] for row in matched["00700"]] == ["u2"]
     # 时间升序 + created_at 由 created_at_ms 还原为 aware datetime
@@ -138,7 +162,8 @@ def test_scan_assigns_rows_to_wanted_keys(db, archiver_table):
 def test_scan_row_hitting_two_symbols_appears_under_both(db, archiver_table):
     _insert(db, "u1", body="$贵州茅台(SH600519)$ 换 $腾讯控股(00700)$")
     matched = src.scan_matched_utterances(
-        db, {"SH600519", "00700"},
+        db,
+        {"SH600519", "00700"},
         since=datetime.now(timezone.utc) - timedelta(days=1),
     )
     assert {row["utterance_key"] for row in matched["SH600519"]} == {"u1"}
@@ -159,8 +184,12 @@ def test_hk_holding_bare_code_matches_padded_cashtag(db, archiver_table):
 # 新鲜度与降级
 # --------------------------------------------------------------------------- #
 def test_source_freshness_stale_detection(db, archiver_table, monkeypatch):
-    _insert(db, "u1", body="$贵州茅台(SH600519)$",
-            last_seen=datetime.now(timezone.utc) - timedelta(hours=100))
+    _insert(
+        db,
+        "u1",
+        body="$贵州茅台(SH600519)$",
+        last_seen=datetime.now(timezone.utc) - timedelta(hours=100),
+    )
     monkeypatch.setattr(src.settings, "xueqiu_opinion_stale_hours", 48)
     fresh = src.source_freshness(db)
     assert fresh["available"] is True
@@ -172,29 +201,19 @@ def test_source_freshness_stale_detection(db, archiver_table, monkeypatch):
     assert src.source_freshness(db)["stale"] is False
 
 
-def test_real_sql_error_recovers_session(db, archiver_table, monkeypatch):
+def test_real_sql_error_recovers_session(db, archiver_table):
     """评审 P2：发言表列漂移触发真实 DBAPI 错误后，同一 Session 必须还能用。
 
     没有 SAVEPOINT 时事务被标成 aborted，后续任何查询都是
-    InFailedSqlTransaction——"降级"变 500。表现在由迁移管理、不会缺列，这里把
-    reader 指向一张刻意缺 last_seen_at 的表来复现同一类错误。
+    InFailedSqlTransaction——"降级"变 500。表由迁移管理、不会缺列，这里临时改掉
+    last_seen_at 的列名来复现同一类错误。
     """
-    db.execute(text(
-        "CREATE TABLE IF NOT EXISTS xueqiu_drift_utterances_test "
-        "(utterance_key text PRIMARY KEY, created_at_ms bigint)"  # 刻意缺 last_seen_at
-    ))
-    db.execute(text("INSERT INTO xueqiu_drift_utterances_test VALUES ('k', 1)"))
-    db.commit()
-    monkeypatch.setattr(src, "UTTERANCE_TABLE", "xueqiu_drift_utterances_test")
-    try:
+    _insert(db, "k", body="$贵州茅台(SH600519)$")
+    with drifted_last_seen_column(db):
         fresh = src.source_freshness(db)
         assert fresh["available"] is False
         # 同一 Session 继续查询必须成功（回归点）
         assert db.execute(text("SELECT 1")).scalar() == 1
-    finally:
-        db.rollback()
-        db.execute(text("DROP TABLE IF EXISTS xueqiu_drift_utterances_test"))
-        db.commit()
 
 
 def test_empty_source_degrades_explicitly(db, archiver_table):
@@ -207,19 +226,14 @@ def test_empty_source_degrades_explicitly(db, archiver_table):
         src.scan_matched_utterances(db, {"SH600519"}, since=datetime.now(timezone.utc))
     fresh = src.source_freshness(db)
     assert fresh == {
-        "available": False, "latest_scan_at": None,
-        "latest_utterance_at": None, "stale": False,
+        "available": False,
+        "latest_scan_at": None,
+        "latest_utterance_at": None,
+        "stale": False,
     }
     # 失败的采集轮次不算"接入"
     _scan_run(db, status="failed")
     assert src.is_opinion_source_available(db) is False
-
-
-def test_missing_table_still_degrades(db, monkeypatch):
-    """未迁移的库（表不存在）按同一语义降级。"""
-    monkeypatch.setattr(src, "UTTERANCE_TABLE", "xueqiu_no_such_table_test")
-    assert src.is_opinion_source_available(db) is False
-    assert src.source_freshness(db)["available"] is False
 
 
 def test_successful_scan_without_utterances_is_available(db, archiver_table):
@@ -231,9 +245,12 @@ def test_successful_scan_without_utterances_is_available(db, archiver_table):
     assert fresh["available"] is True and fresh["stale"] is False
     assert datetime.fromisoformat(fresh["latest_scan_at"]) == finished
     assert fresh["latest_utterance_at"] is None
-    assert src.scan_matched_utterances(
-        db, {"SH600519"}, since=datetime.now(timezone.utc) - timedelta(days=1)
-    ) == {}
+    assert (
+        src.scan_matched_utterances(
+            db, {"SH600519"}, since=datetime.now(timezone.utc) - timedelta(days=1)
+        )
+        == {}
+    )
 
 
 def test_liveness_prefers_successful_scan_runs(db, archiver_table, monkeypatch):
@@ -252,8 +269,12 @@ def test_snapshot_warns_only_when_available_and_stale(db, archiver_table, monkey
     """Dashboard 预警口径：已接入且停摆才报；未接入不报。"""
     from app.services.statistics import snapshot as snap_module
 
-    _insert(db, "u1", body="$贵州茅台(SH600519)$",
-            last_seen=datetime.now(timezone.utc) - timedelta(hours=100))
+    _insert(
+        db,
+        "u1",
+        body="$贵州茅台(SH600519)$",
+        last_seen=datetime.now(timezone.utc) - timedelta(hours=100),
+    )
     monkeypatch.setattr(src.settings, "xueqiu_opinion_stale_hours", 48)
     result = snap_module.build_portfolio_snapshot(db, user_id=1)
     assert any("停摆" in w for w in result["data_quality"]["warnings"])

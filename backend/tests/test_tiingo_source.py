@@ -17,6 +17,7 @@ from app.database import SessionLocal
 from app.models.security_price import SecurityPrice
 from app.services import market_data_service as mds
 from app.services import stock_price_service as sps
+from app.services import http_source
 from app.services import tiingo_source as ts
 from app.services import xueqiu_source
 from app.services.stock_price_service import price_result
@@ -125,6 +126,7 @@ def test_parse_eod_bars_empty_list_is_empty():
 def test_parse_iex_quote_prefers_tngo_last():
     quote = ts.parse_iex_quote(_fixture("iex_pdd.json"))
     assert quote["price"] == Decimal("120.0")
+    assert quote["prev_close"] == Decimal("121.05")
     assert quote["timestamp"] == datetime(2026, 9, 25, 20, 0, tzinfo=timezone.utc)
     assert quote["as_of"] == date(2026, 9, 25)  # 16:00 ET 收盘，纽约交易日
 
@@ -274,7 +276,9 @@ def test_cooldown_set_while_queued_blocks_the_queued_request(monkeypatch):
     monkeypatch.setattr(settings, "tiingo_min_interval_seconds", 1.0)
     clock = {"now": 1000.0}
     monkeypatch.setattr(ts.time, "monotonic", lambda: clock["now"])
-    ts._last_request_at = clock["now"]  # 上一个请求刚发出 → 本次必须排队等待
+    http_source._last_request_at[ts.THROTTLE_KEY] = clock[
+        "now"
+    ]  # 上一个请求刚发出 → 本次必须排队等待
 
     def sleep_while_other_thread_hits_429(seconds):
         ts._note_rate_limited()
@@ -438,6 +442,8 @@ def chain(monkeypatch):
 
         return fetch
 
+    # 盘外顺序（盘中 Tiingo 提前见 test_quote_auto_refresh）；固定下来免得测试结果随运行时刻变
+    monkeypatch.setattr(sps, "us_session_open", lambda now=None: False)
     monkeypatch.setattr(sps, "fetch_us_stock_price_tushare", make("tushare"))
     monkeypatch.setattr(ts, "fetch_tiingo_stock_price", make("tiingo"))
     monkeypatch.setattr(xueqiu_source, "fetch_xueqiu_stock_price", make("xueqiu"))

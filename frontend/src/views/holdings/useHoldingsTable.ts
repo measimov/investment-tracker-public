@@ -14,10 +14,13 @@ import api from '@/api'
 import { useHoldingsStore, type Holding } from '@/stores/holdings'
 import { useExchangeRates } from '@/composables/useExchangeRates'
 import { useRefreshPrices } from '@/composables/useRefreshPrices'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { profitColor, todayLocalISODate, toNumber } from '@/utils/helpers'
 import type { BrokerAccount } from '@/types'
-import { UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
+import {
+  UNASSIGNED_ACCOUNT,
+  accountLabel as accountLabelOf,
+  type UnassignedAccount
+} from '@/utils/labels'
 import { showApiError } from '@/utils/showApiError'
 import {
   buildMarketSubtotals,
@@ -108,7 +111,7 @@ export function useHoldingsTable({
     loading: false,
     refreshing: false,
     selectedMarket: '',
-    selectedAccount: '' as '' | 'unassigned' | number,
+    selectedAccount: '' as '' | UnassignedAccount | number,
     brokerAccounts: [] as BrokerAccount[],
     currentPrices: {} as Record<string, number | null>,
     // 现价默认只读；同一时刻最多一只标的处于编辑态（键 = symbol:market）
@@ -137,17 +140,15 @@ export function useHoldingsTable({
 
   const visibleHoldings = computed(() => {
     if (state.selectedAccount === '' || state.selectedAccount === undefined) return state.holdings
-    if (state.selectedAccount === 'unassigned') {
+    if (state.selectedAccount === UNASSIGNED_ACCOUNT) {
       return state.holdings.filter((h) => h.broker_account_id === null)
     }
     return state.holdings.filter((h) => h.broker_account_id === state.selectedAccount)
   })
 
-  function accountLabel(accountId: number | null | undefined) {
-    if (accountId === null || accountId === undefined) return UNASSIGNED_ACCOUNT_LABEL
-    const account = state.brokerAccounts.find((item) => item.id === accountId)
-    return account ? account.account_name : `账户#${accountId}`
-  }
+  // 已删除账户显示统一文案（此前显示成「账户#12」）
+  const accountLabel = (accountId: number | null | undefined) =>
+    accountLabelOf(state.brokerAccounts, accountId)
 
   async function loadBrokerAccounts() {
     try {
@@ -366,8 +367,9 @@ export function useHoldingsTable({
     return params
   }
 
-  async function loadHoldings(options: { force?: boolean } = {}) {
-    state.loading = true
+  // silent：自动重读（useAutoReload）用——不转圈、不弹错，失败向上抛由调用方静默
+  async function loadHoldings(options: { force?: boolean; silent?: boolean } = {}) {
+    if (!options.silent) state.loading = true
     try {
       state.holdings = await holdingsStore.fetchHoldings(currentParams(), {
         force: options?.force === true
@@ -382,9 +384,10 @@ export function useHoldingsTable({
         }
       })
     } catch (error) {
+      if (options.silent) throw error
       showApiError(error, '加载持仓数据失败')
     } finally {
-      state.loading = false
+      if (!options.silent) state.loading = false
     }
   }
 
@@ -408,7 +411,7 @@ export function useHoldingsTable({
         state.holdings = await holdingsStore.fetchHoldings(currentParams())
       }
     } catch (error) {
-      ElMessage.error(`保存${row.symbol}价格失败: ${getApiErrorMessage(error)}`)
+      showApiError(error, { prefix: `保存 ${row.symbol} 价格失败` })
     }
   }
 

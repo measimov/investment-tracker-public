@@ -6,7 +6,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import pandas as pd
 import pdfplumber
@@ -23,8 +23,11 @@ from ..models.corporate_action import CorporateAction
 from ..models.transaction import Transaction
 from ..services import broker_import_common
 from ..services.broker_import_common import (
+    archive_and_link,
+    booked_source_rows,
+    fail_broker_import,
+    lock_broker_import,
     RESULT_SAMPLE_LIMIT,
-    archived_row_count,
     base_import_result,
     disambiguated_row_hash,
     iso_date_range,
@@ -41,33 +44,33 @@ from ..services.security_rule_service import (
     get_excluded_symbols,
 )
 from ..services.holding_service import (
-    UNPERSISTED_SORT_ID,
-    load_account_quantity_actions,
+    account_precheck_events,
     recalculate_holdings,
     replay_account_quantities,
 )
-from ..services.portfolio.semantics import QUANTITY_ACTION_TYPES
 from ..services.import_batch_service import (
     complete_import_batch,
-    fail_import_batch,
     set_import_batch_source_stats,
     start_import_batch,
     validate_import_account,
     validate_source_file_account,
 )
 from .broker_import_common import (
-    BookedTradeKey,
-    SUSPECTED_DUPLICATE,
-    UNBOOKED_CUSTODY_OUT,
-    UNBOOKED_OPENING_POSITION,
-    ProspectiveCorporateAction,
-    SuspectedDuplicateResolution,
+    append_note,
     attribute_source,
     book_suspected_source,
+    BookedTradeKey,
     classify_suspected_duplicates,
+    import_note,
     load_held_sources,
     mark_suspected_duplicate,
     mark_unbooked,
+    ProspectiveCorporateAction,
+    SUSPECTED_DUPLICATE,
+    SuspectedDuplicateResolution,
+    UNATTRIBUTED_TAX,
+    UNBOOKED_CUSTODY_OUT,
+    UNBOOKED_OPENING_POSITION,
 )
 
 
@@ -110,7 +113,11 @@ OPENING_POSITION_BUSINESS_NAMES = {"转托转入", "转存管转入"}
 # 场外开基的申购/赎回/转托管确认：份额在场外，不进账本，设计上只归档（预期跳过）
 OFF_EXCHANGE_MARKET_NAME = "场外开基"
 OFF_EXCHANGE_ARCHIVE_BUSINESS_NAMES = {
-    "产品申购确认", "产品赎回确认", "产品转托管确认", "转存管转出", "产品开户确认",
+    "产品申购确认",
+    "产品赎回确认",
+    "产品转托管确认",
+    "转存管转出",
+    "产品开户确认",
 }
 # 场内份额转出（深圳「托管转出」）是真实减仓，本版未建模：归档 + 告警，如实 PARTIAL
 CUSTODY_OUT_BUSINESS_NAMES = {"托管转出"}
@@ -199,7 +206,6 @@ PDF_NUMERIC_COLUMNS = [
 ]
 PDF_AMOUNT_TOLERANCE = Decimal("0.02")
 MANUAL_REVIEW_WARNING_SUFFIX = "manual review required"
-ROW_HASH_NOTE_PATTERN = re.compile(r"row_hash=([0-9a-f]{64})")
 
 
 def lot_share_multiplier(market_text: Any, security_code: Any) -> Decimal:
@@ -452,9 +458,7 @@ def validate_statement_account_masks(
         strip_bom(account.account_number_masked).upper(),
     )
     missing = [
-        mask
-        for mask in masks
-        if not any(token.endswith(mask[4:]) for token in configured_tokens)
+        mask for mask in masks if not any(token.endswith(mask[4:]) for token in configured_tokens)
     ]
     if missing:
         configured = account.account_number_masked or "未设置"
@@ -491,12 +495,6 @@ def normalize_hash_value(value: Any) -> str:
 
 def calculate_row_hash(values: Dict[str, Any]) -> str:
     return broker_import_common.calculate_row_hash(values, HASH_FIELDS, strip=strip_bom)
-
-
-def _normalized_decimal(value: Any) -> Decimal:
-    if value is None:
-        return Decimal("0")
-    return Decimal(value).normalize()
 
 
 def validate_cmb_statement_filename(filename: str) -> None:
@@ -794,13 +792,9 @@ def parse_rows(
                 # 落在合理区间（推导值同时供落库换算费用/审计）。
                 hk_gross = abs(trade_quantity) * trade_price
                 if hk_gross <= 0:
-                    errors.append(
-                        f"row {row_number}: 港股通 trade has invalid quantity or price"
-                    )
+                    errors.append(f"row {row_number}: 港股通 trade has invalid quantity or price")
                     continue
-                settlement_rate = (pdf_trade_amount / hk_gross).quantize(
-                    Decimal("0.00000001")
-                )
+                settlement_rate = (pdf_trade_amount / hk_gross).quantize(Decimal("0.00000001"))
                 if not (
                     HK_CONNECT_SETTLEMENT_RATE_MIN
                     <= settlement_rate
@@ -811,9 +805,10 @@ def parse_rows(
                         f"{settlement_rate} outside plausible range"
                     )
                     continue
-            elif abs(
-                pdf_trade_amount - (booked_quantity * trade_price)
-            ) > gross_rounding_tolerance + PDF_AMOUNT_TOLERANCE:
+            elif (
+                abs(pdf_trade_amount - (booked_quantity * trade_price))
+                > gross_rounding_tolerance + PDF_AMOUNT_TOLERANCE
+            ):
                 errors.append(
                     f"row {row_number}: PDF trade value does not reconcile "
                     "with quantity and displayed average price"
@@ -833,9 +828,7 @@ def parse_rows(
             pdf_trade_amount = strict_pdf_values["PDF成交金额"]
             allotment_fees = stamp_tax + commission + other_fee
             if not security_code:
-                errors.append(
-                    f"row {row_number}: allotment missing security code"
-                )
+                errors.append(f"row {row_number}: allotment missing security code")
                 continue
             if trade_quantity <= 0 or trade_price <= 0:
                 errors.append(
@@ -899,13 +892,9 @@ def parse_rows(
             # 方向由映射的事件类型承担，符号必须一致（防对账单口径漂移静默入错账）
             expect_inflow = cash_event_type in CASH_INFLOW_EVENT_TYPES
             if expect_inflow and amount < 0:
-                errors.append(
-                    f"row {row_number}: {business_name} 应为流入但金额为负"
-                )
+                errors.append(f"row {row_number}: {business_name} 应为流入但金额为负")
             if not expect_inflow and amount > 0:
-                errors.append(
-                    f"row {row_number}: {business_name} 应为流出但金额为正"
-                )
+                errors.append(f"row {row_number}: {business_name} 应为流出但金额为正")
 
         contract_number = strip_bom(row.get("合同编号")) or None
         serial_number = strip_bom(row.get("流水号")) or None
@@ -929,9 +918,7 @@ def parse_rows(
             "shareholder_code": shareholder_code,
         }
 
-        row_hash = disambiguated_row_hash(
-            hash_values, pdf_hash_occurrences, calculate_row_hash
-        )
+        row_hash = disambiguated_row_hash(hash_values, pdf_hash_occurrences, calculate_row_hash)
 
         parsed_rows.append(
             ParsedFlow(
@@ -990,16 +977,8 @@ def parse_rows_with_warnings(
         cash_management_symbols=cash_management_symbols,
         cash_business_map=cash_business_map,
     )
-    warnings = [
-        message
-        for message in messages
-        if message.endswith(MANUAL_REVIEW_WARNING_SUFFIX)
-    ]
-    errors = [
-        message
-        for message in messages
-        if not message.endswith(MANUAL_REVIEW_WARNING_SUFFIX)
-    ]
+    warnings = [message for message in messages if message.endswith(MANUAL_REVIEW_WARNING_SUFFIX)]
+    errors = [message for message in messages if not message.endswith(MANUAL_REVIEW_WARNING_SUFFIX)]
     return parsed_rows, business_counts, total_rows, errors, warnings
 
 
@@ -1031,26 +1010,66 @@ def flow_to_sample(flow: ParsedFlow, duplicate: bool) -> Dict[str, Any]:
     }
 
 
+def get_archived_rows(
+    db: Session,
+    user_id: int,
+    hashes: Iterable[str],
+    broker_account_id: Optional[int] = None,
+) -> Dict[str, Optional[str]]:
+    """同 hash 的已归档来源行 → skip_reason（None = 已入账）。"""
+    hash_list = list(hashes)
+    if not hash_list:
+        return {}
+    query = db.query(BrokerFundFlow.row_hash, BrokerFundFlow.skip_reason).filter(
+        BrokerFundFlow.user_id == user_id,
+        BrokerFundFlow.row_hash.in_(hash_list),
+    )
+    if broker_account_id is not None:
+        query = query.filter(BrokerFundFlow.broker_account_id == broker_account_id)
+    return {row_hash: skip_reason for row_hash, skip_reason in query.all()}
+
+
 def get_existing_hashes(
     db: Session,
     user_id: int,
     hashes: Iterable[str],
     broker_account_id: Optional[int] = None,
 ) -> set[str]:
-    hash_list = list(hashes)
-    if not hash_list:
-        return set()
-    query = db.query(BrokerFundFlow.row_hash).filter(
-        BrokerFundFlow.user_id == user_id,
-        BrokerFundFlow.row_hash.in_(hash_list),
-        # 未归属税行虽已归档，但**不算已入账**：把它当重复行跳过的话，
-        # 补齐股息后重导同一对账单也补不回 tax_withheld（永久失联）。
-        BrokerFundFlow.skip_reason.is_(None),
-    )
-    if broker_account_id is not None:
-        query = query.filter(BrokerFundFlow.broker_account_id == broker_account_id)
-    rows = query.all()
-    return {row[0] for row in rows}
+    """已入账的同 hash 来源行。带 skip_reason 的归档行**不算已入账**：例如未归属税行，
+    当成重复跳过的话，补齐股息后重导同一对账单也补不回 tax_withheld（永久失联）。"""
+    archived = get_archived_rows(db, user_id, hashes, broker_account_id=broker_account_id)
+    return {row_hash for row_hash, reason in archived.items() if reason is None}
+
+
+ARCHIVED_BOOKED = "booked"
+ARCHIVED_DUPLICATE = "duplicate"
+ARCHIVED_REVIVE = "revive"
+
+# 带标记的归档行重导时能否原地转正（其余情况按重复计、原行不动）。此前是循环里四个独立的
+# 前置守卫，每个的注释都在记录「不拦就插第二条同 hash 行、撞唯一约束、整批崩掉」的事故——
+# 新增一种 skip_reason 漏写守卫即线上整批失败（#279 第 5 条）。现在查表，**未登记的标记一律
+# 按重复计**：最坏是一条该转正的行没转正（留在归档里可见），而不是整批导入崩掉。
+ARCHIVED_REVIVE_RULES: Dict[str, Callable[[Any, frozenset], bool]] = {
+    # 未建模的托管转出：归档一次即够，重导按重复计（持仓可能高估的告警照旧）
+    UNBOOKED_CUSTODY_OUT: lambda flow, confirmed: False,
+    # 未归属税行：本批补齐了股息的（有证券代码的股息税）在原行上转正；缺代码的税行进不了
+    # 转正分支，只能按重复计（2026-09-02 重导重叠区间对账单实锤过撞唯一约束）
+    UNATTRIBUTED_TAX: lambda flow, confirmed: flow.is_dividend_tax,
+    # 疑似重复：人工确认后才转正，未确认按重复计（#189 同款）
+    SUSPECTED_DUPLICATE: lambda flow, confirmed: flow.row_hash in confirmed,
+    # 存量归档的转入行：仍是转入行则转正为期初建仓；如今不再是（被排除等）按重复计
+    UNBOOKED_OPENING_POSITION: lambda flow, confirmed: flow.is_opening_position,
+}
+
+
+def archived_disposition(flow, skip_reason: Optional[str], confirmed_row_hashes) -> str:
+    """同账户已有同 hash 归档行时，本批这一行的去向。"""
+    if skip_reason is None:
+        return ARCHIVED_BOOKED
+    rule = ARCHIVED_REVIVE_RULES.get(skip_reason)
+    if rule is not None and rule(flow, frozenset(confirmed_row_hashes)):
+        return ARCHIVED_REVIVE
+    return ARCHIVED_DUPLICATE
 
 
 # ---------------------------------------------------------------------------
@@ -1179,9 +1198,7 @@ def build_import_result(
     trade_rows = [flow for flow in parsed_rows if flow.transaction_type]
     dividend_rows = [flow for flow in parsed_rows if flow.is_cash_dividend]
     tax_rows = [flow for flow in parsed_rows if flow.is_dividend_tax]
-    cash_rows = [
-        flow for flow in parsed_rows if flow.is_cash_interest or flow.is_cash_business
-    ]
+    cash_rows = [flow for flow in parsed_rows if flow.is_cash_interest or flow.is_cash_business]
     eligible_trade_rows = [
         flow
         for flow in trade_rows
@@ -1221,14 +1238,17 @@ def build_import_result(
     categorised_ids = {
         id(flow)
         for group in (
-            trade_rows, dividend_rows, tax_rows, cash_rows,
-            excluded_rows, opening_rows, expected_archive_rows,
+            trade_rows,
+            dividend_rows,
+            tax_rows,
+            cash_rows,
+            excluded_rows,
+            opening_rows,
+            expected_archive_rows,
         )
         for flow in group
     }
-    duplicate_generic_rows = [
-        flow for flow in duplicate_rows if id(flow) not in categorised_ids
-    ]
+    duplicate_generic_rows = [flow for flow in duplicate_rows if id(flow) not in categorised_ids]
     skipped_non_trade_rows = max(
         0,
         total_rows
@@ -1272,9 +1292,7 @@ def build_import_result(
         duplicate_samples=[
             flow_to_sample(flow, True) for flow in duplicate_rows[:RESULT_SAMPLE_LIMIT]
         ],
-        import_samples=[
-            flow_to_sample(flow, False) for flow in import_rows[:RESULT_SAMPLE_LIMIT]
-        ],
+        import_samples=[flow_to_sample(flow, False) for flow in import_rows[:RESULT_SAMPLE_LIMIT]],
         errors=errors,
         warnings=warnings,
         suspected_duplicate_rows=len(held_hashes),
@@ -1513,9 +1531,7 @@ def _diagnostic_business_shapes(records: List[Dict[str, Any]]) -> List[Dict[str,
     return shapes
 
 
-def _diagnostic_symbol_linkage(
-    records: List[Dict[str, Any]], *, secret: str
-) -> Dict[str, Any]:
+def _diagnostic_symbol_linkage(records: List[Dict[str, Any]], *, secret: str) -> Dict[str, Any]:
     """同一标的在哪些业务里出现过，附时序与数量量级的匹配证据。
 
     用来考察"这批份额的场外买入是否也在单据里"。**这是候选证据，不是证明**：
@@ -1615,9 +1631,7 @@ def _diagnostic_symbol_linkage(
     coverage: Dict[str, Dict[str, int]] = {}
     for symbol in symbols:
         for entry in symbol["businesses"]:
-            slot = coverage.setdefault(
-                entry["业务名称"], {"symbols_total": 0, "symbols_shown": 0}
-            )
+            slot = coverage.setdefault(entry["业务名称"], {"symbols_total": 0, "symbols_shown": 0})
             slot["symbols_total"] += 1
             if symbol["symbol_ordinal"] in shown_ordinals:
                 slot["symbols_shown"] += 1
@@ -1723,9 +1737,7 @@ def build_cmb_diagnostics(
             # 文件名与 PDF 元数据只回传结构与分类，绝不回传原文：文件名可能含
             # 真实姓名或账户备注，`/Creator` 常形如「Microsoft Word - 张三.docx」
             # 或带本机用户名。指纹是不可逆摘要，用于同一来源在多份报告间对照。
-            "filename_extension": broker_import_common.safe_extension(
-                filename, allowed=(".pdf",)
-            ),
+            "filename_extension": broker_import_common.safe_extension(filename, allowed=(".pdf",)),
             "filename_digit_shape": broker_import_common.digit_run_shape(filename),
             "filename_fingerprint": broker_import_common.text_fingerprint(filename),
             "page_count": len(page_words),
@@ -1735,9 +1747,7 @@ def build_cmb_diagnostics(
             "pdf_producer_fingerprint": broker_import_common.text_fingerprint(
                 metadata.get("/Producer")
             ),
-            "pdf_creator_class": broker_import_common.classify_generator(
-                metadata.get("/Creator")
-            ),
+            "pdf_creator_class": broker_import_common.classify_generator(metadata.get("/Creator")),
             "pdf_creator_fingerprint": broker_import_common.text_fingerprint(
                 metadata.get("/Creator")
             ),
@@ -1810,6 +1820,7 @@ def apply_exclusions(parsed_rows: List[ParsedFlow], excluded_symbols) -> None:
 
 def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
     broker_import_common.reject_unassigned_legacy_sources(db, user_id, BROKER_NAME)
+
 
 def preview_cmb_fund_flow(
     db: Session,
@@ -2076,7 +2087,9 @@ def prospective_corporate_actions(
     ]
 
 
-def opening_position_warnings(parsed_rows: List[ParsedFlow], duplicate_hashes: set[str]) -> List[str]:
+def opening_position_warnings(
+    parsed_rows: List[ParsedFlow], duplicate_hashes: set[str]
+) -> List[str]:
     """预览与导入共用同一份文案：成本未知的建仓、未建模的托管转出。"""
     warnings: List[str] = []
     for flow in parsed_rows:
@@ -2110,106 +2123,30 @@ def validate_account_positions_before_commit(
 
     extra_transactions：尚未落库的待入账交易（预览通道用）。导入通道在 flush
     之后调用，此时交易已在 DB 查询范围内，故为空；预览不写库，用替身补上。
+    装配与排序走 holding_service.account_precheck_events（#279），这里只提供
+    招商的同日 tie-break：流水号 / 合同号 / 行号（取自对账单原行）。
     """
-    transactions = (
-        db.query(Transaction)
+    sources_by_transaction_id: Dict[int, BrokerFundFlow] = {}
+    for source in (
+        db.query(BrokerFundFlow)
+        .join(Transaction, Transaction.id == BrokerFundFlow.transaction_id)
         .filter(
-            Transaction.user_id == user_id,
+            BrokerFundFlow.user_id == user_id,
             Transaction.broker_account_id == broker_account_id,
         )
-        .all()
-    )
-    transaction_ids = [transaction.id for transaction in transactions if transaction.id]
-    sources_by_transaction_id: Dict[int, BrokerFundFlow] = {}
-    if transaction_ids:
-        sources = (
-            db.query(BrokerFundFlow)
-            .filter(
-                BrokerFundFlow.user_id == user_id,
-                BrokerFundFlow.transaction_id.in_(transaction_ids),
-            )
-            .order_by(BrokerFundFlow.id)
-            .all()
-        )
-        for source in sources:
-            sources_by_transaction_id.setdefault(source.transaction_id, source)
+        .order_by(BrokerFundFlow.id)
+    ):
+        sources_by_transaction_id.setdefault(source.transaction_id, source)
 
-    keys = {(txn.symbol, txn.market) for txn in transactions}
-    keys |= {(txn.symbol, txn.market) for txn in extra_transactions}
-    keys |= {(action.symbol, action.market) for action in extra_corporate_actions}
-    owned_actions = (
-        db.query(CorporateAction)
-        .filter(
-            CorporateAction.user_id == user_id,
-            CorporateAction.broker_account_id == broker_account_id,
-            CorporateAction.action_type.in_(QUANTITY_ACTION_TYPES),
+    def tiebreak(transaction) -> tuple:
+        # 替身自带对账单原行字段；既有交易取它的第一条来源行
+        source = (
+            transaction if transaction.id is None else sources_by_transaction_id.get(transaction.id)
         )
-        .all()
-    )
-    keys |= {(action.symbol, action.market) for action in owned_actions}
-    quantity_actions = load_account_quantity_actions(
-        db, user_id=user_id, broker_account_id=broker_account_id, keys=keys,
-    )
-
-    # 同日次序对齐内核 _TYPE_SORT_ORDER：先买入、再转仓、最后卖出。
-    # 原来是 `1 if BUY else 2`，转仓被并进卖出档，同日「转入后立刻卖出」会误报。
-    type_rank = {"BUY": 1, "TRANSFER_IN": 2, "TRANSFER_OUT": 2}
-
-    events: List[tuple[Any, ...]] = []
-    for action in quantity_actions:
-        events.append(
-            (
-                action.ex_date,
-                0,
-                (0, 0),
-                (0, 0),
-                0,
-                action.id or 0,
-                action,
-            )
-        )
-    # 本批待建的期初建仓替身：同日行动先于交易（rank 0），与落库后的次序一致
-    for prospective in extra_corporate_actions:
-        events.append(
-            (
-                prospective.ex_date,
-                0,
-                (0, 0),
-                (0, 0),
-                0,
-                UNPERSISTED_SORT_ID,
-                prospective,
-            )
-        )
-    for transaction in transactions:
-        source = sources_by_transaction_id.get(transaction.id)
-        events.append(
-            (
-                transaction.transaction_date,
-                type_rank.get(transaction.transaction_type, 3),
-                _source_sequence_value(source.serial_number if source else None),
-                _source_sequence_value(source.contract_number if source else None),
-                source.source_row_number if source and source.source_row_number else 0,
-                transaction.id or 0,
-                transaction,
-            )
-        )
-    # 待入账交易走同一套排序键（流水号/合同号/行号本就来自对账单原行）。
-    # id 位必须是排在持久化 id **之后**的哨兵：招商 PDF 常常没有流水号与合同
-    # 编号，行号又按每份对账单从头计数，跨文件同日同行号的整键碰撞并非不可能；
-    # 一旦碰撞，用 0 会把替身排到既有交易之前，而正式导入拿到真 id 后排在之后
-    # ——同日多笔卖出时预览与导入会指向不同的首笔超卖、报出不同余量。
-    for prospective in extra_transactions:
-        events.append(
-            (
-                prospective.transaction_date,
-                type_rank.get(prospective.transaction_type, 3),
-                _source_sequence_value(prospective.serial_number),
-                _source_sequence_value(prospective.contract_number),
-                prospective.source_row_number or 0,
-                UNPERSISTED_SORT_ID,
-                prospective,
-            )
+        return (
+            _source_sequence_value(getattr(source, "serial_number", None)),
+            _source_sequence_value(getattr(source, "contract_number", None)),
+            getattr(source, "source_row_number", None) or 0,
         )
 
     def _reject(event, available: Decimal, needed: Decimal) -> None:
@@ -2222,12 +2159,15 @@ def validate_account_positions_before_commit(
             "缺少期初持仓或证券转入记录，整批未导入"
         )
 
-    # 数量语义统一走 holding_service（内部经 portfolio/semantics），不再本地手写：
-    # 原实现裸读 shares_received（ratio-only 送股加 0 股）、拆股只认 split_ratio
-    # 且解析失败静默吞掉，且对 TRANSFER_* 会落到 `event.action_type` 分支
-    # ——Transaction 无该列，直接 AttributeError 崩掉整个导入。
     replay_account_quantities(
-        [event[-1] for event in sorted(events, key=lambda item: item[:-1])],
+        account_precheck_events(
+            db,
+            user_id=user_id,
+            broker_account_id=broker_account_id,
+            extra_transactions=extra_transactions,
+            extra_corporate_actions=extra_corporate_actions,
+            tiebreak=tiebreak,
+        ),
         on_oversell=_reject,
     )
 
@@ -2263,6 +2203,9 @@ def import_cmb_fund_flow(
     imported_corporate_actions = 0
     imported_tax_adjustments = 0
     imported_cash_events = 0
+    duplicate_hashes: set[str] = set()
+    # 本批在旧归档行上原地转正的来源行（仍挂在原批次下）：入账来源行数要算上它们
+    revived_source_hashes: set[str] = set()
 
     try:
         parsed_rows, business_counts, total_rows, errors, warnings = parse_rows_with_warnings(
@@ -2289,12 +2232,17 @@ def import_cmb_fund_flow(
             period_start=min(dates) if dates else None,
             period_end=max(dates) if dates else None,
         )
-        existing_hashes = get_existing_hashes(
+        # 串行化同一用户的导入：判重/疑似重复读到的已入账行在提交前不会被并发导入改写
+        lock_broker_import(db, user_id)
+        # 同账户已归档的同 hash 行及其标记（skip_reason 为空 = 已入账）：循环入口按调度表
+        # 决定按重复计还是原地转正，见 archived_disposition
+        archived_rows = get_archived_rows(
             db,
             user_id,
             [flow.row_hash for flow in parsed_rows],
             broker_account_id=broker_account_id,
         )
+        existing_hashes = {h for h, reason in archived_rows.items() if reason is None}
         duplicate_hashes = set(existing_hashes)
         # 上次未归属的税行：本批若补齐了股息就在原行上转正（不建新行）
         unattributed_tax_sources = load_unattributed_tax_sources(
@@ -2326,57 +2274,22 @@ def import_cmb_fund_flow(
             broker_account_id=broker_account_id,
         )
 
-        # 未建模的托管转出（unbooked_custody_out）：归档一次即够，重导按重复计
-        archived_custody_out = set(
-            load_held_sources(
-                db,
-                BrokerFundFlow,
-                user_id=user_id,
-                skip_reason=UNBOOKED_CUSTODY_OUT,
-                unlinked_column=BrokerFundFlow.corporate_action_id,
-                hashes=[flow.row_hash for flow in parsed_rows],
-                broker_account_id=broker_account_id,
-            )
-        )
-
-        imported_cash_events = 0
         affected_symbols: set[tuple[str, str]] = set()
 
         for flow in parsed_rows:
             if flow.row_hash in existing_hashes:
-                continue
-
-            # 上次已归档为未建模的托管转出：按重复计，原行保留（#189 同款守卫，
-            # 放在任何归档路径之前）
-            if flow.row_hash in archived_custody_out:
-                duplicate_hashes.add(flow.row_hash)
-                existing_hashes.add(flow.row_hash)
-                continue
-
-            # 缺证券代码的税行进不了 is_dividend_tax 的转正/复用分支（判定
-            # 要求有代码），而 0011 已把这类历史孤儿回填成
-            # skip_reason=unattributed_tax、get_existing_hashes 又刻意放行
-            # 未归属行——不拦的话通用归档路径会插第二条同 hash 行撞唯一
-            # 约束，**整批导入崩掉**（2026-09-02 重导重叠区间对账单实锤）。
-            # 原行继续保留待人工归属，本批按重复计。
-            if not flow.is_dividend_tax and flow.row_hash in unattributed_tax_sources:
-                duplicate_hashes.add(flow.row_hash)
-                existing_hashes.add(flow.row_hash)
-                continue
-
-            # 上次已归档为疑似重复、本次未确认：按重复计，原行继续保留待确认。
-            # 必须放在任何归档路径之前——get_existing_hashes 刻意放行带 skip_reason
-            # 的行，不拦的话通用归档会插第二条同 hash 行撞唯一约束（#189 同款）
-            if flow.row_hash in suspected_sources and flow.row_hash not in confirmed_row_hashes:
-                duplicate_hashes.add(flow.row_hash)
-                existing_hashes.add(flow.row_hash)
-                continue
-
-            # 存量归档的转入行如今不再是转入行（被排除等）：按重复计，不撞唯一约束
-            if not flow.is_opening_position and flow.row_hash in unbooked_opening_sources:
-                duplicate_hashes.add(flow.row_hash)
-                existing_hashes.add(flow.row_hash)
-                continue
+                continue  # 已入账（库里的，或本批前面已处理的同 hash 行）
+            if flow.row_hash in archived_rows:
+                disposition = archived_disposition(
+                    flow, archived_rows[flow.row_hash], confirmed_row_hashes
+                )
+                if disposition == ARCHIVED_BOOKED:
+                    continue
+                if disposition == ARCHIVED_DUPLICATE:
+                    duplicate_hashes.add(flow.row_hash)
+                    existing_hashes.add(flow.row_hash)
+                    continue
+                # ARCHIVED_REVIVE：交给下面的业务分支在原行上转正
 
             market = infer_market(flow.security_code, flow.currency, flow.shareholder_code)
 
@@ -2388,10 +2301,7 @@ def import_cmb_fund_flow(
                     amount=flow.amount,
                     currency=flow.currency,
                     event_date=flow.trade_date,
-                    notes=(
-                        f"{BROKER_NAME}对账单天添利产品红利; "
-                        f"row={flow.source_row_number}; row_hash={flow.row_hash}"
-                    ),
+                    notes=import_note(BROKER_NAME, "天添利产品红利"),
                 )
                 db.add(cash_event)
                 db.flush()
@@ -2418,10 +2328,7 @@ def import_cmb_fund_flow(
                     amount=abs(flow.amount),
                     currency=flow.currency,
                     event_date=flow.trade_date,
-                    notes=(
-                        f"{BROKER_NAME}对账单{flow.business_name}; "
-                        f"row={flow.source_row_number}; row_hash={flow.row_hash}"
-                    ),
+                    notes=import_note(BROKER_NAME, flow.business_name),
                 )
                 db.add(cash_event)
                 db.flush()
@@ -2454,11 +2361,7 @@ def import_cmb_fund_flow(
                     tax_withheld=Decimal("0"),
                     net_dividend=flow.amount,
                     currency=flow.currency,
-                    notes=(
-                        f"{BROKER_NAME}对账单; 流水号={flow.serial_number or ''}; "
-                        f"合同编号={flow.contract_number or ''}; 业务={flow.business_name}; "
-                        f"row_hash={flow.row_hash}"
-                    ),
+                    notes=import_note(BROKER_NAME, flow.business_name),
                 )
                 db.add(action)
                 db.flush()
@@ -2512,25 +2415,25 @@ def import_cmb_fund_flow(
                     action.net_dividend = max(
                         Decimal("0"), action.total_dividend - action.tax_withheld
                     )
-                action.notes = (
-                    f"{action.notes or ''}; {BROKER_NAME}红利税补缴 "
-                    f"流水号={flow.serial_number or ''}; row_hash={flow.row_hash}"
-                ).strip("; ")
-                preserved = unattributed_tax_sources.pop(flow.row_hash, None)
-                if preserved is not None:
-                    # 上次未归属的那一行就地转正，不插新行
-                    db.add(attribute_tax_source(preserved, action.id))
-                else:
-                    db.add(
-                        create_broker_fund_flow(
-                            user_id=user_id,
-                            broker_account_id=broker_account_id,
-                            filename=filename,
-                            flow=flow,
-                            import_batch_id=batch_id,
-                            corporate_action_id=action.id,
-                        )
-                    )
+                action.notes = append_note(action.notes, f"{BROKER_NAME}红利税补缴")
+                # 上次未归属的那一行就地转正，不插新行
+                archive_and_link(
+                    db,
+                    unattributed_tax_sources,
+                    flow.row_hash,
+                    revive=lambda source, action_id=action.id: attribute_tax_source(
+                        source, action_id
+                    ),
+                    create=lambda action_id=action.id: create_broker_fund_flow(
+                        user_id=user_id,
+                        broker_account_id=broker_account_id,
+                        filename=filename,
+                        flow=flow,
+                        import_batch_id=batch_id,
+                        corporate_action_id=action_id,
+                    ),
+                    revived=revived_source_hashes,
+                )
                 existing_hashes.add(flow.row_hash)
                 imported_tax_adjustments += 1
                 continue
@@ -2555,32 +2458,33 @@ def import_cmb_fund_flow(
                         flow.trade_price * flow.booked_quantity if cost_known else None
                     ),
                     currency=flow.effective_currency,
-                    notes=(
-                        f"{BROKER_NAME}对账单; 业务={flow.business_name}; "
-                        f"{'成本未知' if not cost_known else '成本取对账单价格'}; "
-                        f"row_hash={flow.row_hash}"
+                    notes=import_note(
+                        BROKER_NAME,
+                        flow.business_name,
+                        "成本未知" if not cost_known else "成本取对账单价格",
                     ),
                 )
                 db.add(action)
                 db.flush()
-                preserved = unbooked_opening_sources.pop(flow.row_hash, None)
-                if preserved is not None:
-                    db.add(attribute_source(
-                        preserved,
-                        corporate_action_id=action.id,
+                archive_and_link(
+                    db,
+                    unbooked_opening_sources,
+                    flow.row_hash,
+                    revive=lambda source, action_id=action.id: attribute_source(
+                        source,
+                        corporate_action_id=action_id,
                         note="booked as OPENING_POSITION during re-import",
-                    ))
-                else:
-                    db.add(
-                        create_broker_fund_flow(
-                            user_id=user_id,
-                            broker_account_id=broker_account_id,
-                            filename=filename,
-                            flow=flow,
-                            import_batch_id=batch_id,
-                            corporate_action_id=action.id,
-                        )
-                    )
+                    ),
+                    create=lambda action_id=action.id: create_broker_fund_flow(
+                        user_id=user_id,
+                        broker_account_id=broker_account_id,
+                        filename=filename,
+                        flow=flow,
+                        import_batch_id=batch_id,
+                        corporate_action_id=action_id,
+                    ),
+                    revived=revived_source_hashes,
+                )
                 existing_hashes.add(flow.row_hash)
                 affected_symbols.add((flow.security_code, market))
                 imported_corporate_actions += 1
@@ -2614,12 +2518,14 @@ def import_cmb_fund_flow(
                 ):
                     # 非排除却没走成期初建仓（解析阶段已阻断，理论上到不了）：留可恢复标记
                     mark_unbooked(
-                        archived, UNBOOKED_OPENING_POSITION,
+                        archived,
+                        UNBOOKED_OPENING_POSITION,
                         "preserved without opening position; re-import to book",
                     )
                 elif flow.is_custody_out:
                     mark_unbooked(
-                        archived, UNBOOKED_CUSTODY_OUT,
+                        archived,
+                        UNBOOKED_CUSTODY_OUT,
                         "custody transfer-out not modelled; account position may be overstated",
                     )
                 db.add(archived)
@@ -2648,16 +2554,16 @@ def import_cmb_fund_flow(
                 existing_hashes.add(flow.row_hash)
                 continue
 
-            transaction_notes = (
-                f"{BROKER_NAME}对账单; 流水号={flow.serial_number or ''}; "
-                f"合同编号={flow.contract_number or ''}; 业务={flow.business_name}"
+            # 港股通以 HKD 记账；人民币结算金额与推导汇率写成一句留作审计
+            transaction_notes = import_note(
+                BROKER_NAME,
+                flow.business_name,
+                (
+                    f"{flow.market_text}人民币结算 {abs(flow.amount)}，推导汇率 {flow.settlement_rate}"
+                    if flow.is_hk_connect and flow.settlement_rate
+                    else None
+                ),
             )
-            if flow.is_hk_connect and flow.settlement_rate:
-                # 港股通以 HKD 记账；CNY 结算金额与推导汇率留在 notes 供审计
-                transaction_notes += (
-                    f"; {flow.market_text}; 结算币种=CNY; "
-                    f"结算金额={flow.amount}; 推导结算汇率={flow.settlement_rate}"
-                )
             transaction = Transaction(
                 user_id=user_id,
                 broker_account_id=broker_account_id,
@@ -2676,21 +2582,24 @@ def import_cmb_fund_flow(
             db.add(transaction)
             db.flush()
 
-            preserved = suspected_sources.pop(flow.row_hash, None)
-            if preserved is not None:
-                # 人工确认的疑似行：在原归档行上转正，不插第二条同 hash 行
-                db.add(book_suspected_source(preserved, transaction.id))
-            else:
-                db.add(
-                    create_broker_fund_flow(
-                        user_id=user_id,
-                        broker_account_id=broker_account_id,
-                        filename=filename,
-                        flow=flow,
-                        import_batch_id=batch_id,
-                        transaction_id=transaction.id,
-                    )
-                )
+            # 人工确认的疑似行：在原归档行上转正，不插第二条同 hash 行
+            archive_and_link(
+                db,
+                suspected_sources,
+                flow.row_hash,
+                revive=lambda source, transaction_id=transaction.id: book_suspected_source(
+                    source, transaction_id
+                ),
+                create=lambda transaction_id=transaction.id: create_broker_fund_flow(
+                    user_id=user_id,
+                    broker_account_id=broker_account_id,
+                    filename=filename,
+                    flow=flow,
+                    import_batch_id=batch_id,
+                    transaction_id=transaction_id,
+                ),
+                revived=revived_source_hashes,
+            )
             existing_hashes.add(flow.row_hash)
             affected_symbols.add((flow.security_code, market))
             imported_count += 1
@@ -2706,7 +2615,7 @@ def import_cmb_fund_flow(
         # 持仓重算在同一事务内完成再 commit（与东财同口径）：先 commit 再重算的话，
         # 重算失败会留下"交易已落库、holdings 停在旧值"的半套数据，而批次只标 PARTIAL。
         recalculated_symbols = 0
-        for symbol, market in affected_symbols:
+        for symbol, market in sorted(affected_symbols):  # 时间线锁按键排序取，防死锁
             recalculate_holdings(db, user_id, symbol, market, commit=False)
             recalculated_symbols += 1
 
@@ -2739,12 +2648,7 @@ def import_cmb_fund_flow(
             db,
             batch_id,
             result=result,
-            imported_count=(
-                imported_count
-                + imported_corporate_actions
-                + imported_tax_adjustments
-                + imported_cash_events
-            ),
+            imported_count=booked_source_rows(db, BrokerFundFlow, batch_id, revived_source_hashes),
             archived_count=imported_source_rows,
         )
         result.update(
@@ -2756,23 +2660,14 @@ def import_cmb_fund_flow(
         )
         return result
     except Exception as exc:
-        if records_committed:
-            db.rollback()
-            imported_source_rows = archived_row_count(db, BrokerFundFlow, batch_id)
-        fail_import_batch(
+        fail_broker_import(
             db,
             batch_id,
             exc,
+            model=BrokerFundFlow,
             records_committed=records_committed,
             row_count=total_rows,
-            imported_count=(
-                imported_count
-                + imported_corporate_actions
-                + imported_tax_adjustments
-                + imported_cash_events
-                if records_committed
-                else 0
-            ),
-            archived_count=imported_source_rows if records_committed else 0,
+            duplicate_count=len(duplicate_hashes),
+            revived_hashes=revived_source_hashes,
         )
         raise

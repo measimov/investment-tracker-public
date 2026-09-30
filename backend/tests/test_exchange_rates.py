@@ -2,12 +2,13 @@
 """
 汇率系统功能测试脚本
 """
+
 import sys
 import os
 from datetime import date
 
 # 添加父目录到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.database import SessionLocal
 from app.models.exchange_rate import ExchangeRate
@@ -17,33 +18,36 @@ from decimal import Decimal
 
 def seed_exchange_rates(db):
     db.query(ExchangeRate).delete()
-    db.add_all([
-        ExchangeRate(
-            from_currency="USD",
-            to_currency="CNY",
-            rate=Decimal("7.20"),
-            effective_date=date(2026, 1, 1),
-            source="test",
-            is_active=True,
-        ),
-        ExchangeRate(
-            from_currency="HKD",
-            to_currency="CNY",
-            rate=Decimal("0.92"),
-            effective_date=date(2026, 1, 1),
-            source="test",
-            is_active=True,
-        ),
-        ExchangeRate(
-            from_currency="SGD",
-            to_currency="CNY",
-            rate=Decimal("5.35"),
-            effective_date=date(2026, 1, 1),
-            source="test",
-            is_active=True,
-        ),
-    ])
+    db.add_all(
+        [
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("7.20"),
+                effective_date=date(2026, 1, 1),
+                source="test",
+                is_active=True,
+            ),
+            ExchangeRate(
+                from_currency="HKD",
+                to_currency="CNY",
+                rate=Decimal("0.92"),
+                effective_date=date(2026, 1, 1),
+                source="test",
+                is_active=True,
+            ),
+            ExchangeRate(
+                from_currency="SGD",
+                to_currency="CNY",
+                rate=Decimal("5.35"),
+                effective_date=date(2026, 1, 1),
+                source="test",
+                is_active=True,
+            ),
+        ]
+    )
     db.commit()
+
 
 def test_exchange_rates():
     """测试汇率功能"""
@@ -57,7 +61,13 @@ def test_exchange_rates():
     # 1. 测试获取最新汇率
     print("\n1️⃣  测试获取最新汇率")
     print("-" * 60)
-    rates = exchange_rate_service.get_all_latest_rates(db, "CNY")
+    rates = {
+        "CNY": 1,
+        **{
+            c: d["rate"]
+            for c, d in exchange_rate_service.get_latest_rate_details(db, "CNY").items()
+        },
+    }
     for currency, rate in rates.items():
         print(f"  {currency}: {float(rate):.4f}")
     assert rates["CNY"] == Decimal("1.0")
@@ -82,7 +92,9 @@ def test_exchange_rates():
                 db, Decimal(str(amount)), from_curr, to_curr
             )
             rate = exchange_rate_service.get_latest_rate(db, from_curr, to_curr)
-            print(f"  {from_curr} {amount:,} -> {to_curr} {float(converted):,.2f} @ {float(rate):.4f}")
+            print(
+                f"  {from_curr} {amount:,} -> {to_curr} {float(converted):,.2f} @ {float(rate):.4f}"
+            )
         except Exception as e:
             print(f"  ❌ {from_curr} -> {to_curr}: {e}")
 
@@ -119,5 +131,6 @@ def test_exchange_rates():
     print("=" * 60)
     db.close()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     test_exchange_rates()

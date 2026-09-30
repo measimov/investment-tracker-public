@@ -122,10 +122,14 @@ def parse_channels(value: Optional[str] = None) -> List[Channel]:
             apply_severity(url, "critical")  # 发送时还要再拆一次查询串：现在就验证
             channels.append(Channel(url=url, kind=kind, masked=mask_url(url)))
         except Exception as exc:  # noqa: BLE001 - 坏 URL 只影响它自己
-            channels.append(Channel(
-                url=entry, kind="invalid", masked=mask_url(entry),
-                error=f"URL 格式无效（{type(exc).__name__}）",
-            ))
+            channels.append(
+                Channel(
+                    url=entry,
+                    kind="invalid",
+                    masked=mask_url(entry),
+                    error=f"URL 格式无效（{type(exc).__name__}）",
+                )
+            )
     return channels
 
 
@@ -210,18 +214,32 @@ def send(
         channels = parse_channels(urls)
     except Exception as exc:  # noqa: BLE001 - 兜底：配置读取本身出错也不得抛给调用方
         logger.error("通知渠道解析失败：%s", type(exc).__name__)
-        return {"configured": 0, "sent": 0, "channels": [], "ok": False,
-                "status": STATUS_FAILED, "message": "通知渠道配置无法解析"}
+        return {
+            "configured": 0,
+            "sent": 0,
+            "channels": [],
+            "ok": False,
+            "status": STATUS_FAILED,
+            "message": "通知渠道配置无法解析",
+        }
     base = {"configured": len(channels), "sent": 0, "channels": []}
     if not channels:
-        return {**base, "ok": False, "status": STATUS_UNCONFIGURED,
-                "message": "未配置通知渠道（NOTIFY_URLS 为空），未发送"}
+        return {
+            **base,
+            "ok": False,
+            "status": STATUS_UNCONFIGURED,
+            "message": "未配置通知渠道（NOTIFY_URLS 为空），未发送",
+        }
     try:
         apprise_module = apprise_loader()
     except ImportError:
         logger.error("通知发送失败：未安装 apprise")
-        return {**base, "ok": False, "status": STATUS_FAILED,
-                "message": "未安装 apprise，无法发送通知"}
+        return {
+            **base,
+            "ok": False,
+            "status": STATUS_FAILED,
+            "message": "未安装 apprise，无法发送通知",
+        }
 
     results = []
     for channel in channels:
@@ -236,7 +254,8 @@ def send(
             if not notifier.add(apply_severity(channel.url, severity)):
                 entry["error"] = "URL 无法识别（Apprise 不支持该格式）"
             elif notifier.notify(
-                title=title, body=body or title,
+                title=title,
+                body=body or title,
                 notify_type=_notify_type(apprise_module, severity, kind),
             ):
                 entry["ok"] = True
@@ -255,8 +274,14 @@ def send(
         status, message = STATUS_PARTIAL, f"部分发送成功：{sent}/{len(results)} 个渠道"
     else:
         status, message = STATUS_FAILED, f"发送失败：{len(results)} 个渠道均未成功"
-    return {**base, "sent": sent, "channels": results, "ok": sent > 0,
-            "status": status, "message": message}
+    return {
+        **base,
+        "sent": sent,
+        "channels": results,
+        "ok": sent > 0,
+        "status": status,
+        "message": message,
+    }
 
 
 def send_test() -> Dict[str, Any]:

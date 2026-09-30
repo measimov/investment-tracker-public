@@ -252,8 +252,12 @@ _HOLDERS_RESPONSE = {
         {"name": "2026一季报", "value": 1774886400000},
     ],
     "items": [
-        {"holder_name": "中国贵州茅台酒厂(集团)有限责任公司", "held_num": 681282935,
-         "held_ratio": 54.5, "chg": 0.0},
+        {
+            "holder_name": "中国贵州茅台酒厂(集团)有限责任公司",
+            "held_num": 681282935,
+            "held_ratio": 54.5,
+            "chg": 0.0,
+        },
         {"holder_name": "香港中央结算有限公司", "held_num": 100, "held_ratio": 1.0, "chg": -0.5},
     ],
 }
@@ -345,3 +349,15 @@ def test_missing_library_without_cookie_is_still_the_cookie_message(monkeypatch)
     assert xs.get_client() is None
     with pytest.raises(xs.XueqiuUnavailable, match="Cookie"):
         xs.fetch_income_rows("600519", "A股")
+
+
+def test_cookies_from_json_null_value_is_empty_not_none_string():
+    """与采集器、到期检查同一解析（effective_cookie_values）：null 值是空串，不是 "None"；
+    同名后者覆盖前者。"""
+    raw = '[{"name": "xqat", "value": null}, {"name": "u", "value": "1"}, {"name": "u", "value": "2"}]'
+    assert xs._cookies_from_json(raw) == {"xqat": "", "u": "2"}
+
+
+def test_cookies_from_json_invalid_json_degrades_explicitly():
+    with pytest.raises(xs.XueqiuUnavailable, match="无法解析"):
+        xs._cookies_from_json("{not json")

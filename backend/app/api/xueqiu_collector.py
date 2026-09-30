@@ -77,7 +77,9 @@ class _NoInputEchoRoute(APIRoute):
 def _list_authors(db: Session):
     return (
         db.query(XueqiuCollectorAuthor)
-        .order_by(XueqiuCollectorAuthor.created_at.asc(), XueqiuCollectorAuthor.xueqiu_user_id.asc())
+        .order_by(
+            XueqiuCollectorAuthor.created_at.asc(), XueqiuCollectorAuthor.xueqiu_user_id.asc()
+        )
         .all()
     )
 
@@ -104,9 +106,10 @@ def build_status(db: Session) -> CollectorStatusResponse:
         warn_days=settings.xueqiu_cookie_warn_days,
         critical_days=settings.xueqiu_cookie_critical_days,
     )
-    if not (settings.xueqiu_cookies or "").strip() and not (
-        settings.xueqiu_cookie_file or ""
-    ).strip():
+    if (
+        not (settings.xueqiu_cookies or "").strip()
+        and not (settings.xueqiu_cookie_file or "").strip()
+    ):
         cookie = {**cookie, "message": "未配置雪球 Cookie：采集器与雪球行情均不可用"}
     return CollectorStatusResponse(
         enabled=settings.xueqiu_collector_enabled,
@@ -275,13 +278,13 @@ def request_collector_run(
     if not settings.xueqiu_collector_enabled:
         raise HTTPException(
             status_code=409,
-            detail="采集器未启用（XUEQIU_COLLECTOR_ENABLED=false），请求不会被执行",
+            detail="采集器未启用（需在部署配置中开启），请求不会被执行",
         )
     if target == "symbols":
         if not settings.xueqiu_collector_symbols_enabled:
             raise HTTPException(
                 status_code=409,
-                detail="按标的采集未启用（XUEQIU_COLLECTOR_SYMBOLS_ENABLED=false）",
+                detail="按标的采集未启用（需在部署配置中开启）",
             )
         collector_state.request_symbols_run(db)
     else:

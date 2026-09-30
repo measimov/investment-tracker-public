@@ -10,6 +10,9 @@ from .broker_fund_flow import BrokerFundFlow
 from .ibkr_activity_flow import IbkrActivityFlow
 from .background_job import BackgroundJob
 from .alert_state import AlertState
+from .notification_event import NotificationEvent
+from .scheduled_task_state import ScheduledTaskState
+from .security_announcement import SecurityAnnouncement
 from .auth_session import AuthSession
 from .broker_account import BrokerAccount
 from .import_batch import ImportBatch
@@ -35,12 +38,14 @@ from .xueqiu_collector import (
     XueqiuCollectorCube,
     XueqiuCollectorState,
     XueqiuCubeRebalancing,
-    XueqiuHotPost,
     XueqiuSymbolPost,
 )
 
 __all__ = [
     "AlertState",
+    "NotificationEvent",
+    "ScheduledTaskState",
+    "SecurityAnnouncement",
     "Transaction",
     "Holding",
     "CorporateAction",
@@ -80,6 +85,5 @@ __all__ = [
     "XueqiuCollectorCube",
     "XueqiuCollectorState",
     "XueqiuCubeRebalancing",
-    "XueqiuHotPost",
     "XueqiuSymbolPost",
 ]

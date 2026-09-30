@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '../api'
 import { paramsKey } from '../utils/cacheKey'
+import { dataEpoch, isDataEpochCurrent, onLedgerEvent } from '../utils/ledgerEvents'
 import type { HoldingResponse } from '../types'
 
 // 后端 HoldingResponse schema 为准（PR #172 复审：放宽的手写副本会让必填
@@ -38,6 +39,9 @@ function patchHolding(cache: Record<string, Holding[]>, updated: Holding) {
 export const useHoldingsStore = defineStore('holdings', () => {
   const cache = ref<Record<string, Holding[]>>({})
   const loadingKeys = ref<Record<string, boolean>>({})
+  // 同一标的连续改价：只让**最后一次**请求的响应回填缓存。先发的请求可能后返回，
+  // 按到达顺序回填会把缓存改回旧价，下次读缓存时输入框就退回旧值（PR #216 评审 P2）
+  const priceRequestSeq = new Map<string, number>()
 
   async function fetchHoldings(
     params: Record<string, unknown> = {},
@@ -49,9 +53,11 @@ export const useHoldingsStore = defineStore('holdings', () => {
     }
 
     loadingKeys.value[key] = true
+    const epoch = dataEpoch()
     try {
       const response = await api.getHoldings(params)
-      cache.value[key] = response.data
+      // 请求在途期间发生过账本写入或换了用户：响应可能是旧数据/上一个用户的，不写回缓存
+      if (isDataEpochCurrent(epoch)) cache.value[key] = response.data
       return response.data
     } finally {
       loadingKeys.value[key] = false
@@ -67,9 +73,12 @@ export const useHoldingsStore = defineStore('holdings', () => {
     loadingKeys.value = {}
   }
 
-  // 同一标的连续改价：只让**最后一次**请求的响应回填缓存。先发的请求可能后返回，
-  // 按到达顺序回填会把缓存改回旧价，下次读缓存时输入框就退回旧值（PR #216 评审 P2）
-  const priceRequestSeq = new Map<string, number>()
+  // 账本写入与登出/换用户由 api 拦截器、auth store 统一发信号（#268），不再靠各页面零散失效
+  onLedgerEvent('ledger-mutated', invalidate)
+  onLedgerEvent('session-changed', () => {
+    invalidate()
+    priceRequestSeq.clear()
+  })
 
   async function updateHoldingPrice(
     holdingId: number | string,

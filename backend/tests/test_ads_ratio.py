@@ -26,6 +26,7 @@ from app.models.security_rule import SecurityRule
 from app.models.user import User
 from app.services import ads_ratio_service as ads
 from app.services import report_fetchers
+from app.services import profile_store
 from app.services import security_profile_service as svc
 from tests.helpers import seed_security_rule
 
@@ -104,7 +105,10 @@ def test_body_without_definition_is_none():
         ("American Depositary Shares, each representing one‑tenth of one share", "0.1"),
         ("ADSs, each representing 1/4 of an ordinary share", "0.25"),
         ("American depositary shares, each representing twenty-five ordinary shares", "25"),
-        ("American depositary shares (three ADSs representing two ordinary shares)", "0.6666666667"),
+        (
+            "American depositary shares (three ADSs representing two ordinary shares)",
+            "0.6666666667",
+        ),
         ("American Depositary Shares, each representing twenty Class B shares", "20"),
     ],
 )
@@ -147,7 +151,7 @@ def test_unsupported_ads_quantity_is_none(text):
 
 def test_unsupported_quantity_in_body_definition_is_none():
     text = (
-        "Annual report. Unless otherwise indicated, \"ADSs\" are to one hundred American "
+        'Annual report. Unless otherwise indicated, "ADSs" are to one hundred American '
         "depositary shares representing one ordinary share."
     )
     assert ads.parse_ads_ratio(text) is None
@@ -160,10 +164,16 @@ def test_unsupported_quantity_in_body_definition_is_none():
         ("Section 12(b) 10,000 ADSs represent one ordinary share Section 12(g)", "0.0001"),
         ("Section 12(b) 100 ADSs represent one ordinary share Section 12(g)", "0.01"),
         # 脚注编号被括号隔开，不算未消费的数量前缀
-        ("Section 12(b) (1) American depositary shares, each representing four ordinary shares Section 12(g)", "4"),
+        (
+            "Section 12(b) (1) American depositary shares, each representing four ordinary shares Section 12(g)",
+            "4",
+        ),
         # 「and」前一个词不是数量词：正常识别
-        ("Section 12(b) Class A ordinary shares and American depositary shares, each representing "
-         "eight Class A ordinary shares Section 12(g)", "8"),
+        (
+            "Section 12(b) Class A ordinary shares and American depositary shares, each representing "
+            "eight Class A ordinary shares Section 12(g)",
+            "8",
+        ),
     ],
 )
 def test_multi_digit_quantities_and_non_quantity_prefixes(text, expected):
@@ -172,10 +182,13 @@ def test_multi_digit_quantities_and_non_quantity_prefixes(text, expected):
 
 
 def test_conflicting_cover_is_none_even_with_body_definition():
-    text = _cover(
-        "American depositary shares, each representing four ordinary shares; "
-        "American depositary shares, each representing two ordinary shares"
-    ) + '"ADSs" are to the American depositary shares, each of which represents four shares'
+    text = (
+        _cover(
+            "American depositary shares, each representing four ordinary shares; "
+            "American depositary shares, each representing two ordinary shares"
+        )
+        + '"ADSs" are to the American depositary shares, each of which represents four shares'
+    )
     assert ads.parse_ads_ratio(text) is None
 
 
@@ -200,7 +213,9 @@ def test_parse_html_wrapper():
 def test_resolved_from_precedence_pure():
     parsed = {"ratio": "4", "filing_date": "2026-04-29", "section": "cover"}
     assert ads.resolved_from(None, parsed) == {
-        "ratio": Decimal(4), "source": "20-F", "filing_date": "2026-04-29",
+        "ratio": Decimal(4),
+        "source": "20-F",
+        "filing_date": "2026-04-29",
         "note": "1 ADS = 4 股（20-F 封面 2026-04-29）",
     }
     rule = ads.resolved_from(Decimal("0.5"), parsed)
@@ -220,9 +235,9 @@ def db():
     session = SessionLocal()
 
     def clean():
-        session.query(SecurityProfileData).filter(
-            SecurityProfileData.symbol == SYMBOL
-        ).delete(synchronize_session=False)
+        session.query(SecurityProfileData).filter(SecurityProfileData.symbol == SYMBOL).delete(
+            synchronize_session=False
+        )
         session.query(SecurityPrice).filter(SecurityPrice.symbol == SYMBOL).delete(
             synchronize_session=False
         )
@@ -254,8 +269,11 @@ class _FakeEdgar:
 
     def filing(self):
         return {
-            "form": self.form, "accession": self.accession, "primary_document": "doc.htm",
-            "filing_date": "2026-04-29", "report_date": "2025-12-31",
+            "form": self.form,
+            "accession": self.accession,
+            "primary_document": "doc.htm",
+            "filing_date": "2026-04-29",
+            "report_date": "2025-12-31",
         }
 
     def download(self, cik, accession, document):
@@ -345,10 +363,21 @@ def _user_ids(db):
 
 
 def _store_parsed(db, ratio="4"):
-    svc.upsert_profile_row(db, SYMBOL, "美股", ads.DATASET, ads.PERIOD_KEY, {
-        "status": "ok", "ratio": ratio, "filing_date": "2026-04-29", "section": "cover",
-        "form": "20-F", "parser_version": ads.ADS_PARSER_VERSION,
-    })
+    profile_store.upsert_profile_row(
+        db,
+        SYMBOL,
+        "美股",
+        ads.DATASET,
+        ads.PERIOD_KEY,
+        {
+            "status": "ok",
+            "ratio": ratio,
+            "filing_date": "2026-04-29",
+            "section": "cover",
+            "form": "20-F",
+            "parser_version": ads.ADS_PARSER_VERSION,
+        },
+    )
     db.commit()
 
 
@@ -379,14 +408,30 @@ def test_rule_without_parsed_value(db):
 def _seed_us_20f(db, close="77.57"):
     for year, eps in ((2025, 4.0), (2024, 3.0), (2023, 2.0)):
         row = {
-            "end_date": f"{year}1231", "fp": "FY", "form": "20-F", "currency": "USD",
-            "basic_eps": eps, "n_income_attr_p": eps * 1000.0, "total_cur_assets": 5000.0,
-            "total_cur_liab": 2000.0, "total_hldr_eqy_exc_min_int": 20000.0,
+            "end_date": f"{year}1231",
+            "fp": "FY",
+            "form": "20-F",
+            "currency": "USD",
+            "basic_eps": eps,
+            "n_income_attr_p": eps * 1000.0,
+            "total_cur_assets": 5000.0,
+            "total_cur_liab": 2000.0,
+            "total_hldr_eqy_exc_min_int": 20000.0,
             "n_cashflow_act": 900.0,
         }
-        svc.upsert_profile_row(db, SYMBOL, "美股", "edgar_companyfacts", f"{year}1231|FY", row)
-    db.add(SecurityPrice(symbol=SYMBOL, market="美股", price_date=local_today() - timedelta(days=1),
-                         currency="USD", close_price=Decimal(close), source="test"))
+        profile_store.upsert_profile_row(
+            db, SYMBOL, "美股", "edgar_companyfacts", f"{year}1231|FY", row
+        )
+    db.add(
+        SecurityPrice(
+            symbol=SYMBOL,
+            market="美股",
+            price_date=local_today() - timedelta(days=1),
+            currency="USD",
+            close_price=Decimal(close),
+            source="test",
+        )
+    )
     db.commit()
 
 
@@ -458,20 +503,38 @@ async def test_ads_ratio_rule_api_validation():
             async def post(body):
                 return await client.post("/api/security-rules", headers=auth, json=body)
 
-            ok = await post({"rule_type": "ADS_RATIO", "symbol": "zzads", "market": "美股",
-                             "payload": {"ratio": 0.1}})
+            ok = await post(
+                {
+                    "rule_type": "ADS_RATIO",
+                    "symbol": "zzads",
+                    "market": "美股",
+                    "payload": {"ratio": 0.1},
+                }
+            )
             assert ok.status_code == 201, ok.text
             assert ok.json()["symbol"] == SYMBOL
             assert Decimal(ok.json()["payload"]["ratio"]) == Decimal("0.1")
 
             for body in (
-                {"rule_type": "ADS_RATIO", "symbol": "ZZADS2", "market": "港股",
-                 "payload": {"ratio": 4}},
-                {"rule_type": "ADS_RATIO", "symbol": "ZZADS2", "market": "美股",
-                 "payload": {"ratio": 0}},
+                {
+                    "rule_type": "ADS_RATIO",
+                    "symbol": "ZZADS2",
+                    "market": "港股",
+                    "payload": {"ratio": 4},
+                },
+                {
+                    "rule_type": "ADS_RATIO",
+                    "symbol": "ZZADS2",
+                    "market": "美股",
+                    "payload": {"ratio": 0},
+                },
                 {"rule_type": "ADS_RATIO", "symbol": "ZZADS2", "market": "美股"},
-                {"rule_type": "ADS_RATIO", "symbol": "ZZADS2", "market": "美股",
-                 "payload": {"ratio": 4, "note": "x"}},
+                {
+                    "rule_type": "ADS_RATIO",
+                    "symbol": "ZZADS2",
+                    "market": "美股",
+                    "payload": {"ratio": 4, "note": "x"},
+                },
             ):
                 assert (await post(body)).status_code == 422, body
     finally:

@@ -57,7 +57,7 @@ export function useOpinions() {
     state.loadError = ''
     try {
       const response = await api.listOpinionSummaries()
-      const body = response.data as OpinionSummariesResponse
+      const body = response.data
       state.sourceAvailable = body.source_available
       state.freshness = body.freshness
       state.recentDays = body.recent_days

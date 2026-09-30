@@ -98,6 +98,7 @@ _SPACED_CJK_RE = re.compile(rf"{_CJK_CHAR}(?:[ \u3000]{_CJK_CHAR}){{2,}}")
 def squash_spaced_cjk(text: str) -> str:
     return _SPACED_CJK_RE.sub(lambda m: m.group(0).replace(" ", "").replace("\u3000", ""), text)
 
+
 _NUM = r"\(?-?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\d+(?:\.\d+)?\)?|[–—-]"
 _VALUES = rf"(?:(?:{_NUM})\s+)*(?:{_NUM})"
 _ROW_RE = re.compile(rf"^(?P<label>\S.*?)\s+(?P<values>{_VALUES})\s*$")
@@ -108,8 +109,19 @@ _NOTE_TOKEN_RE = re.compile(
 _NUM_TOKEN_RE = re.compile(rf"^(?:{_NUM})$")
 _YEAR_ARABIC_RE = re.compile(r"(?<!\d)(20\d{2}|19\d{2})(?!\d)")
 _YEAR_CJK_RE = re.compile(r"([一二三四五六七八九零〇]{4})\s*年")
-_CJK_DIGITS = {"零": "0", "〇": "0", "一": "1", "二": "2", "三": "3", "四": "4",
-               "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
+_CJK_DIGITS = {
+    "零": "0",
+    "〇": "0",
+    "一": "1",
+    "二": "2",
+    "三": "3",
+    "四": "4",
+    "五": "5",
+    "六": "6",
+    "七": "7",
+    "八": "8",
+    "九": "9",
+}
 _UNIT_PATTERNS = (
     (re.compile(r"百萬|百万|million", re.I), 1_000_000),
     (re.compile(r"千元|千港元|千美元|thousand|'000|’000", re.I), 1_000),
@@ -120,7 +132,9 @@ _CURRENCY_PATTERNS = (
     (re.compile(r"港幣|港币|港元|HK\$|HKD"), "HKD"),
     (re.compile(r"美元|US\$|USD"), "USD"),
 )
-_INTERIM_COLUMNS_RE = re.compile(r"(三個月|三个月|three months).*(六個月|六个月|six months)", re.I | re.S)
+_INTERIM_COLUMNS_RE = re.compile(
+    r"(三個月|三个月|three months).*(六個月|六个月|six months)", re.I | re.S
+)
 
 MIN_ROWS = 6
 MAX_BLOCK_PAGES = 6
@@ -179,7 +193,8 @@ class ParsedStatement:
     def from_payload(cls, payload: Dict[str, object]) -> "ParsedStatement":
         rows = [
             StatementRow(
-                row_id=str(item["id"]), label=str(item.get("label") or ""),
+                row_id=str(item["id"]),
+                label=str(item.get("label") or ""),
                 note=str(item.get("note") or ""),
                 values=[Decimal(v) if v is not None else None for v in item.get("values") or []],
                 context=[str(c) for c in item.get("context") or []],
@@ -187,8 +202,10 @@ class ParsedStatement:
             for item in payload.get("rows") or []
         ]
         return cls(
-            kind=str(payload["kind"]), page_start=int(payload["page_start"]),
-            page_end=int(payload["page_end"]), title=str(payload.get("title") or ""),
+            kind=str(payload["kind"]),
+            page_start=int(payload["page_start"]),
+            page_end=int(payload["page_end"]),
+            title=str(payload.get("title") or ""),
             header=[str(h) for h in payload.get("header") or []],
             unit_multiplier=int(payload.get("unit_multiplier") or 1),
             currency=payload.get("currency") or None,
@@ -306,7 +323,9 @@ _WRAPPED_TOKEN_RE = re.compile(
 # （03900 2020 年报字间空格压缩后的「基本人民幣1.05元」）在前缀前断开
 _WRAP_SUFFIX_SPACE_RE = re.compile(rf"(?<=[\d)])[ 　]+(?={_WRAP_SUFFIX}(?:[ 　]|$))")
 _WRAP_PREFIX_SPACE_RE = re.compile(rf"(?:^|(?<=[ 　]))({_WRAP_PREFIX})[ 　]+(?=\(?-?\d)")
-_WRAP_PREFIX_GLUED_RE = re.compile(rf"(?<=[^\s(（])(?<!人民幣)(?<!人民币)({_WRAP_PREFIX})(?=\(?-?\d)")
+_WRAP_PREFIX_GLUED_RE = re.compile(
+    rf"(?<=[^\s(（])(?<!人民幣)(?<!人民币)({_WRAP_PREFIX})(?=\(?-?\d)"
+)
 MIN_WRAPPED_TOKENS = 2
 
 
@@ -403,8 +422,11 @@ def parse_row(
     if parsed is None:
         return None
     label, note, tokens = parsed
-    if not note and expected_columns and len(tokens) == expected_columns + 1 and _LEADING_NOTE_RE.match(
-        tokens[0]
+    if (
+        not note
+        and expected_columns
+        and len(tokens) == expected_columns + 1
+        and _LEADING_NOTE_RE.match(tokens[0])
     ):
         # 多出的那个 token 就是附注号：列布局已被完整解释，**不得再粘**——先粘会把两个合法
         # 金额粘成一个、附注号顶成本期金额，两期静默错列（PR #207 评审 P1）
@@ -530,7 +552,9 @@ def _collect_block(stream: Sequence[_Line], start: int, kind: str) -> _Block:
 _SMALL_INT_RE = re.compile(r"^\d{1,2}$")
 
 
-_FOOTER_LABEL_RE = re.compile(r"年度報告|年度报告|年報|年报|中期報告|中期报告|Annual Report|Interim Report", re.I)
+_FOOTER_LABEL_RE = re.compile(
+    r"年度報告|年度报告|年報|年报|中期報告|中期报告|Annual Report|Interim Report", re.I
+)
 
 
 def _is_page_number_row(label: str, note: str, values: List[Optional[Decimal]]) -> bool:
@@ -545,7 +569,9 @@ def _is_page_number_row(label: str, note: str, values: List[Optional[Decimal]]) 
         return False
     small = [v for v in ints if 0 < v < 1000]
     years = [v for v in ints if 1990 <= v <= 2100]
-    return (len(ints) == 1 and len(small) == 1) or (len(ints) == 2 and len(small) == 1 and len(years) == 1)
+    return (len(ints) == 1 and len(small) == 1) or (
+        len(ints) == 2 and len(small) == 1 and len(years) == 1
+    )
 
 
 def _is_year_only_row(values: List[Optional[Decimal]]) -> bool:
@@ -583,7 +609,8 @@ _CURRENCY_ONLY_RE = re.compile(rf"^(?:{_CURRENCY_WORDS})$", re.I)
 # 「人民幣千元」「美元千元」也有「千美元」「百萬美元」（09618 2020 的美元折算列）：币种可前可后
 _MAGNITUDE_WORDS = r"千|百萬|百万|萬|万|million|thousand"
 _UNIT_BEARING_RE = re.compile(
-    rf"^(?:{_CURRENCY_WORDS})?(?:{_UNIT_WORDS})$|^(?:{_MAGNITUDE_WORDS})\s*(?:{_CURRENCY_WORDS})$", re.I
+    rf"^(?:{_CURRENCY_WORDS})?(?:{_UNIT_WORDS})$|^(?:{_MAGNITUDE_WORDS})\s*(?:{_CURRENCY_WORDS})$",
+    re.I,
 )
 
 
@@ -602,7 +629,9 @@ def _unit_token_columns(header: Sequence[str]) -> int:
 
 
 def _expected_columns(
-    header: Sequence[str], years: List[int], counts: Dict[int, int],
+    header: Sequence[str],
+    years: List[int],
+    counts: Dict[int, int],
     first_tokens: Dict[int, List[str]],
 ) -> int:
     """已确认的列数，按可靠性依次：
@@ -680,7 +709,7 @@ def strip_running_title(line: str) -> str:
     found = _RUNNING_TITLE_RE.match(line)
     if not found:
         return line
-    rest = line[found.end():]
+    rest = line[found.end() :]
     parsed = _parse_row_tokens(rest)
     if parsed and parsed[0] and len(parsed[2]) >= 2:
         return rest
@@ -713,14 +742,18 @@ def _parse_block(block: _Block) -> ParsedStatement:
     for offsets in by_page.values():
         page_edges.update(offsets[:2])
         page_edges.update(offsets[-2:])
-    header = texts[:max(HEADER_LINES, first_row)]
+    header = texts[: max(HEADER_LINES, first_row)]
     years = _header_years(header)
     interim_four = bool(_INTERIM_COLUMNS_RE.search(" ".join(header)))
     # 第一遍：解析全部数字行，拿主导列数（附注号粘列的行会多一列，是少数）
     raw_rows: List[Tuple[str, str, List[str], List[str], int]] = []
     context: List[str] = []
-    unit_hints: List[str] = []  # 每股单位提示（「人民幣仙 人民幣仙」「每股盈利（以每股港仙列示）」）
-    eps_kind: Optional[str] = None  # 独占一行的「基本 Basic」「攤薄」：其后的数值行才是那一类每股盈利
+    unit_hints: List[
+        str
+    ] = []  # 每股单位提示（「人民幣仙 人民幣仙」「每股盈利（以每股港仙列示）」）
+    eps_kind: Optional[str] = (
+        None  # 独占一行的「基本 Basic」「攤薄」：其后的数值行才是那一类每股盈利
+    )
     counts: Dict[int, int] = {}
     first_tokens: Dict[int, List[str]] = {}
     for offset, text in enumerate(texts):
@@ -773,7 +806,9 @@ def _parse_block(block: _Block) -> ParsedStatement:
         if offset in page_edges and _is_page_number_row(label, note, values):
             continue
         rows.append(
-            StatementRow(row_id=f"r{len(rows) + 1}", label=label, note=note, values=values, context=ctx)
+            StatementRow(
+                row_id=f"r{len(rows) + 1}", label=label, note=note, values=values, context=ctx
+            )
         )
         final_counts[len(values)] = final_counts.get(len(values), 0) + 1
     column_count = max(final_counts, key=lambda k: (final_counts[k], k)) if final_counts else 0
@@ -849,16 +884,28 @@ def _combine(head: ParsedStatement, tail: ParsedStatement) -> ParsedStatement:
     rows: List[StatementRow] = []
     counts: Dict[int, int] = {}
     for row in list(head.rows) + list(tail.rows):
-        rows.append(StatementRow(
-            row_id=f"r{len(rows) + 1}", label=row.label, note=row.note,
-            values=list(row.values), context=list(row.context),
-        ))
+        rows.append(
+            StatementRow(
+                row_id=f"r{len(rows) + 1}",
+                label=row.label,
+                note=row.note,
+                values=list(row.values),
+                context=list(row.context),
+            )
+        )
         counts[len(row.values)] = counts.get(len(row.values), 0) + 1
     return ParsedStatement(
-        kind=head.kind, page_start=head.page_start, page_end=tail.page_end, title=head.title,
-        header=list(head.header), unit_multiplier=head.unit_multiplier, currency=head.currency,
-        years=list(head.years), column_count=max(counts, key=lambda k: (counts[k], k)),
-        interim_four_columns=head.interim_four_columns, rows=rows,
+        kind=head.kind,
+        page_start=head.page_start,
+        page_end=tail.page_end,
+        title=head.title,
+        header=list(head.header),
+        unit_multiplier=head.unit_multiplier,
+        currency=head.currency,
+        years=list(head.years),
+        column_count=max(counts, key=lambda k: (counts[k], k)),
+        interim_four_columns=head.interim_four_columns,
+        rows=rows,
     )
 
 
@@ -964,8 +1011,10 @@ def _year_columns(parsed: ParsedStatement, *, end_date: str) -> Optional[Tuple[i
     year = int(end_date[:4])
     if year not in parsed.years:
         return None
-    pick = (lambda seq, y: len(seq) - 1 - seq[::-1].index(y)) if parsed.interim_four_columns else (
-        lambda seq, y: seq.index(y)
+    pick = (
+        (lambda seq, y: len(seq) - 1 - seq[::-1].index(y))
+        if parsed.interim_four_columns
+        else (lambda seq, y: seq.index(y))
     )
     current = pick(parsed.years, year)
     prior = pick(parsed.years, year - 1) if (year - 1) in parsed.years else None
@@ -1007,14 +1056,21 @@ def period_columns(
         current, prior = by_year
         duplicated = len(set(parsed.years)) < len(parsed.years)
         if (
-            by_date is None and prior is None and duplicated and report_type == "annual"
+            by_date is None
+            and prior is None
+            and duplicated
+            and report_type == "annual"
             and parsed.column_count >= 2
         ):
             current, prior = 0, 1
     else:
         current, prior = 0, (1 if parsed.column_count >= 2 else None)
-        if report_type == "interim" and parsed.kind != "balance" and parsed.interim_four_columns \
-                and parsed.column_count >= 4:
+        if (
+            report_type == "interim"
+            and parsed.kind != "balance"
+            and parsed.interim_four_columns
+            and parsed.column_count >= 4
+        ):
             current, prior = 2, 3
     if report_type == "interim":
         if parsed.kind == "balance":
@@ -1044,8 +1100,18 @@ _PERIOD_END_RE = re.compile(
     rf"\s*(?:止(?:年度|六個月|六个月))?\s*$)){_DATE_CJK}"
 )
 _MONTHS_EN = {
-    "JANUARY": 1, "FEBRUARY": 2, "MARCH": 3, "APRIL": 4, "MAY": 5, "JUNE": 6, "JULY": 7,
-    "AUGUST": 8, "SEPTEMBER": 9, "OCTOBER": 10, "NOVEMBER": 11, "DECEMBER": 12,
+    "JANUARY": 1,
+    "FEBRUARY": 2,
+    "MARCH": 3,
+    "APRIL": 4,
+    "MAY": 5,
+    "JUNE": 6,
+    "JULY": 7,
+    "AUGUST": 8,
+    "SEPTEMBER": 9,
+    "OCTOBER": 10,
+    "NOVEMBER": 11,
+    "DECEMBER": 12,
 }
 _PERIOD_END_EN_RE = re.compile(
     r"(?:ENDED|AS AT|AS OF)\s+(?P<d>\d{1,2})\s+(?P<mon>[A-Z]+)\s+(?P<y>\d{4})", re.I
@@ -1070,8 +1136,12 @@ def _cjk_int(text: str) -> Optional[int]:
 
 _MONTH_NAMES = "|".join(_MONTHS_EN)
 _FULL_DATE_CJK_RE = re.compile(_DATE_CJK)
-_FULL_DATE_EN_RE = re.compile(rf"(?<!\d)(?P<d>\d{{1,2}})\s+(?P<mon>{_MONTH_NAMES})\s*,?\s*(?P<y>\d{{4}})(?!\d)", re.I)
-_FULL_DATE_EN_US_RE = re.compile(rf"(?P<mon>{_MONTH_NAMES})\s+(?P<d>\d{{1,2}}),?\s+(?P<y>\d{{4}})(?!\d)", re.I)
+_FULL_DATE_EN_RE = re.compile(
+    rf"(?<!\d)(?P<d>\d{{1,2}})\s+(?P<mon>{_MONTH_NAMES})\s*,?\s*(?P<y>\d{{4}})(?!\d)", re.I
+)
+_FULL_DATE_EN_US_RE = re.compile(
+    rf"(?P<mon>{_MONTH_NAMES})\s+(?P<d>\d{{1,2}}),?\s+(?P<y>\d{{4}})(?!\d)", re.I
+)
 # 拆成两行的列日期：年份行「二零一七年 二零一六年」/「於二零一九年 於二零一九年」+ 月日行「六月三十日
 # 十二月三十一日」/「十二月 六月」（01023 只写月份）/「30 June 31 December」
 _CJK_MD = r"[〇零一二三四五六七八九十]{1,3}|\d{1,2}"
@@ -1153,7 +1223,9 @@ def column_dates(parsed: ParsedStatement) -> List[Optional[str]]:
             continue
         month_days = _month_days(parsed.header[j])
         if month_days and len(month_days) == len(years):
-            return [_compose_date(year, month, day) for year, (month, day) in zip(years, month_days)]
+            return [
+                _compose_date(year, month, day) for year, (month, day) in zip(years, month_days)
+            ]
     return []
 
 
@@ -1168,7 +1240,14 @@ def detect_period_end(parsed: ParsedStatement) -> Optional[str]:
         if found:
             groups = found.groupdict()
             year, month, day = (_cjk_int(groups[k]) for k in ("y", "m", "d"))
-            if year and month and day and 1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
+            if (
+                year
+                and month
+                and day
+                and 1990 <= year <= 2100
+                and 1 <= month <= 12
+                and 1 <= day <= 31
+            ):
                 return f"{year}{month:02d}{day:02d}"
         found = _PERIOD_END_EN_RE.search(line)
         if found and found.group("mon").upper() in _MONTHS_EN:
@@ -1205,7 +1284,9 @@ def resolve_value(
     return total * parsed.unit_multiplier if scale else total
 
 
-def statement_rows_for_prompt(parsed: ParsedStatement, *, columns: Sequence[int]) -> List[Dict[str, object]]:
+def statement_rows_for_prompt(
+    parsed: ParsedStatement, *, columns: Sequence[int]
+) -> List[Dict[str, object]]:
     """给 LLM 看的行：id、标签、附注、上下文与所选列的原文数值（字符串，只读）。"""
     out = []
     for row in parsed.rows:
@@ -1213,11 +1294,13 @@ def statement_rows_for_prompt(parsed: ParsedStatement, *, columns: Sequence[int]
         for col in columns:
             value = row.values[col] if col < len(row.values) else None
             values.append(str(value) if value is not None else "—")
-        out.append({
-            "id": row.row_id,
-            "label": row.label or "(无标签)",
-            **({"note": row.note} if row.note else {}),
-            **({"context": row.context} if row.context else {}),
-            "values": values,
-        })
+        out.append(
+            {
+                "id": row.row_id,
+                "label": row.label or "(无标签)",
+                **({"note": row.note} if row.note else {}),
+                **({"context": row.context} if row.context else {}),
+                "values": values,
+            }
+        )
     return out

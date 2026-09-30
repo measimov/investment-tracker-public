@@ -1,11 +1,12 @@
 """分红建议 API：job 触发、列表过滤、接受/忽略/恢复状态机、所有权、事件查询。"""
 
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 import httpx
 import pytest
 
+from app.core.timeutil import local_today
 from app.core.security import get_password_hash
 from app.database import SessionLocal
 from app.main import app
@@ -27,7 +28,7 @@ RESET_MODELS = [
     Transaction,
 ]
 
-TODAY = date.today()
+TODAY = local_today()
 
 
 @pytest.fixture
@@ -40,17 +41,13 @@ def api_users():
         for u in (demo, admin):
             u.hashed_password = get_password_hash("dividend-api-password")
         reset_tables(db, RESET_MODELS)
-        db.query(BackgroundJob).filter(
-            BackgroundJob.job_type == "dividend_sync"
-        ).delete()
+        db.query(BackgroundJob).filter(BackgroundJob.job_type == "dividend_sync").delete()
         db.commit()
         yield {"demo": demo.id, "admin": admin.id}
         for u in (demo, admin):
             u.hashed_password = originals[u.id]
         reset_tables(db, RESET_MODELS)
-        db.query(BackgroundJob).filter(
-            BackgroundJob.job_type == "dividend_sync"
-        ).delete()
+        db.query(BackgroundJob).filter(BackgroundJob.job_type == "dividend_sync").delete()
         db.commit()
     finally:
         db.close()
@@ -105,9 +102,7 @@ async def test_suggestion_lifecycle_and_ownership(api_users):
         # 列表默认 NEW+MATCHED
         listed = await client.get("/api/corporate-actions/suggestions", headers=user_auth)
         assert [row["id"] for row in listed.json()] == [suggestion_id]
-        count = await client.get(
-            "/api/corporate-actions/suggestions/count", headers=user_auth
-        )
+        count = await client.get("/api/corporate-actions/suggestions/count", headers=user_auth)
         assert count.json()["total"] == 1
 
         # 所有权隔离：admin 看不到、动不了
@@ -125,12 +120,12 @@ async def test_suggestion_lifecycle_and_ownership(api_users):
             headers=user_auth,
         )
         assert ignored.json()["status"] == "IGNORED"
-        assert (await client.get(
-            "/api/corporate-actions/suggestions", headers=user_auth
-        )).json() == []
-        assert (await client.get(
-            "/api/corporate-actions/suggestions?status=IGNORED", headers=user_auth
-        )).json()[0]["id"] == suggestion_id
+        assert (
+            await client.get("/api/corporate-actions/suggestions", headers=user_auth)
+        ).json() == []
+        assert (
+            await client.get("/api/corporate-actions/suggestions?status=IGNORED", headers=user_auth)
+        ).json()[0]["id"] == suggestion_id
 
         restored = await client.post(
             f"/api/corporate-actions/suggestions/{suggestion_id}/restore",
@@ -151,10 +146,15 @@ async def test_matched_suggestion_blocked_and_restores_to_matched(api_users):
     db = SessionLocal()
     try:
         recorded = CorporateAction(
-            user_id=api_users["demo"], symbol="600036", market="A股",
-            action_type="CASH_DIVIDEND", ex_date=TODAY - timedelta(days=5),
-            total_dividend=Decimal("1000"), tax_withheld=Decimal("0"),
-            net_dividend=Decimal("1000"), currency="CNY",
+            user_id=api_users["demo"],
+            symbol="600036",
+            market="A股",
+            action_type="CASH_DIVIDEND",
+            ex_date=TODAY - timedelta(days=5),
+            total_dividend=Decimal("1000"),
+            tax_withheld=Decimal("0"),
+            net_dividend=Decimal("1000"),
+            currency="CNY",
         )
         db.add(recorded)
         db.commit()
@@ -163,7 +163,8 @@ async def test_matched_suggestion_blocked_and_restores_to_matched(api_users):
     finally:
         db.close()
     suggestion_id = _seed_suggestion(
-        api_users["demo"], status="MATCHED",
+        api_users["demo"],
+        status="MATCHED",
         matched_corporate_action_id=recorded_id,
     )
 
@@ -209,8 +210,10 @@ async def test_accept_explicit_null_account_clears_attribution(api_users):
     db = SessionLocal()
     try:
         account = BrokerAccount(
-            user_id=api_users["demo"], broker="测试券商",
-            account_name="测试账户", base_currency="CNY",
+            user_id=api_users["demo"],
+            broker="测试券商",
+            account_name="测试账户",
+            base_currency="CNY",
         )
         db.add(account)
         db.commit()
@@ -235,8 +238,10 @@ async def test_accept_explicit_null_account_clears_attribution(api_users):
 
         # 省略键 → 沿用建议原账户（另一除权日避免与 s1 判重命中）
         s2 = _seed_suggestion(
-            api_users["demo"], broker_account_id=account_id,
-            symbol="600519", ex_date=TODAY - timedelta(days=100),
+            api_users["demo"],
+            broker_account_id=account_id,
+            symbol="600519",
+            ex_date=TODAY - timedelta(days=100),
             pay_date=TODAY - timedelta(days=99),
         )
         kept = await client.post(
@@ -324,9 +329,7 @@ async def test_sync_job_endpoints(api_users, monkeypatch):
         # 执行内联跑（空持仓 → 立即成功）
         monkeypatch.setattr(svc_mod.settings, "tushare_token", "")
         monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
-        started = await client.post(
-            "/api/corporate-actions/dividend-sync-jobs", headers=user_auth
-        )
+        started = await client.post("/api/corporate-actions/dividend-sync-jobs", headers=user_auth)
         assert started.status_code == 200
         job = started.json()
         assert job["status"] in ("queued", "running", "succeeded")
@@ -346,24 +349,48 @@ async def test_sync_job_endpoints(api_users, monkeypatch):
 async def test_security_events_filtered_by_holdings(api_users):
     db = SessionLocal()
     try:
-        db.add(Holding(
-            user_id=api_users["demo"], symbol="600036", name="招商银行",
-            market="A股", quantity=Decimal("100"), avg_cost=Decimal("30"),
-            total_cost=Decimal("3000"), currency="CNY",
-        ))
-        db.add_all([
-            SecurityEvent(symbol="600036", market="A股", event_type="EARNINGS_DISCLOSURE",
-                          event_date=TODAY + timedelta(days=10),
-                          source="tushare-disclosure_date", payload={"period": "20260630"}),
-            # 非持仓标的的事件不应返回
-            SecurityEvent(symbol="600519", market="A股", event_type="SHARE_UNLOCK",
-                          event_date=TODAY + timedelta(days=5),
-                          source="tushare-share_float", payload={}),
-            # 超出窗口的事件不返回
-            SecurityEvent(symbol="600036", market="A股", event_type="DIVIDEND_PLAN",
-                          event_date=TODAY + timedelta(days=200),
-                          source="tushare-dividend", payload={}),
-        ])
+        db.add(
+            Holding(
+                user_id=api_users["demo"],
+                symbol="600036",
+                name="招商银行",
+                market="A股",
+                quantity=Decimal("100"),
+                avg_cost=Decimal("30"),
+                total_cost=Decimal("3000"),
+                currency="CNY",
+            )
+        )
+        db.add_all(
+            [
+                SecurityEvent(
+                    symbol="600036",
+                    market="A股",
+                    event_type="EARNINGS_DISCLOSURE",
+                    event_date=TODAY + timedelta(days=10),
+                    source="tushare-disclosure_date",
+                    payload={"period": "20260630"},
+                ),
+                # 非持仓标的的事件不应返回
+                SecurityEvent(
+                    symbol="600519",
+                    market="A股",
+                    event_type="SHARE_UNLOCK",
+                    event_date=TODAY + timedelta(days=5),
+                    source="tushare-share_float",
+                    payload={},
+                ),
+                # 超出窗口的事件不返回
+                SecurityEvent(
+                    symbol="600036",
+                    market="A股",
+                    event_type="DIVIDEND_PLAN",
+                    event_date=TODAY + timedelta(days=200),
+                    source="tushare-dividend",
+                    payload={},
+                ),
+            ]
+        )
         db.commit()
     finally:
         db.close()

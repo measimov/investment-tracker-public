@@ -57,8 +57,11 @@ class Holding(Base):
     __table_args__ = (
         # NULLS NOT DISTINCT：未指定账户桶每个 (user, symbol, market) 也只允许一行。
         UniqueConstraint(
-            'user_id', 'broker_account_id', 'symbol', 'market',
-            name='uix_user_account_symbol_market',
+            "user_id",
+            "broker_account_id",
+            "symbol",
+            "market",
+            name="uix_user_account_symbol_market",
             postgresql_nulls_not_distinct=True,
         ),
     )

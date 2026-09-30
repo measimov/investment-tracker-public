@@ -54,10 +54,12 @@ def _month_end_downsample(curve: List[Dict[str, Any]], cap: int) -> List[Dict[st
         is_last = index == len(curve) - 1
         next_month = curve[index + 1]["date"][:7] if not is_last else None
         if index == 0 or is_last or point["date"][:7] != next_month:
-            points.append({
-                "date": point["date"],
-                "cumulative_return": point.get("cumulative_return_rate"),
-            })
+            points.append(
+                {
+                    "date": point["date"],
+                    "cumulative_return": point.get("cumulative_return_rate"),
+                }
+            )
     if len(points) > cap:
         # 均匀抽稀中段，首末保留
         step = (len(points) - 2) / (cap - 2)
@@ -92,13 +94,15 @@ def _compact(snapshot: Dict, analytics: Dict, monthly: List[Dict], caps: Dict[st
         }
         for h in holdings_detail[: caps["holdings"]]
     ]
-    tail = holdings_detail[caps["holdings"]:]
+    tail = holdings_detail[caps["holdings"] :]
     if tail:
-        holdings.append({
-            "name": f"其他{len(tail)}只合计",
-            "market_value_cny": round(sum(h.get("market_value_cny", 0) for h in tail), 2),
-            "unrealized_pnl_cny": round(sum(h.get("unrealized_pnl_cny", 0) for h in tail), 2),
-        })
+        holdings.append(
+            {
+                "name": f"其他{len(tail)}只合计",
+                "market_value_cny": round(sum(h.get("market_value_cny", 0) for h in tail), 2),
+                "unrealized_pnl_cny": round(sum(h.get("unrealized_pnl_cny", 0) for h in tail), 2),
+            }
+        )
 
     realized = performance.get("realized_pnl", {})
     realized_top = sorted(
@@ -192,9 +196,7 @@ def _compact(snapshot: Dict, analytics: Dict, monthly: List[Dict], caps: Dict[st
                 "return_basis": block.get("return_basis"),
                 "total_return_rate": block.get("total_return_rate"),
                 "comparison": block.get("comparison"),
-                "curve_month_end": _month_end_downsample(
-                    block.get("points", []), caps["curve"]
-                ),
+                "curve_month_end": _month_end_downsample(block.get("points", []), caps["curve"]),
             }
             for block in analytics.get("benchmarks", [])
         ],
@@ -218,7 +220,7 @@ def _compact(snapshot: Dict, analytics: Dict, monthly: List[Dict], caps: Dict[st
             "warnings": (snapshot.get("data_quality") or {}).get("warnings", [])[:20],
         },
         "analytics": analytics_compact,
-        "monthly": monthly[-caps["monthly"]:],
+        "monthly": monthly[-caps["monthly"] :],
     }
 
 
@@ -229,7 +231,9 @@ def serialize_input(payload: Dict[str, Any]) -> str:
 def build_llm_report_input(db: Session, user_id: int) -> Dict[str, Any]:
     snapshot = build_portfolio_snapshot(db, user_id)
     analytics = calculate_performance_analytics(
-        db, user_id, snapshot.get("prices", {}).get("map", {}),
+        db,
+        user_id,
+        snapshot.get("prices", {}).get("map", {}),
         benchmarks=LLM_BENCHMARKS,
     )
     monthly = get_statistics_by_time(db, user_id, "month")

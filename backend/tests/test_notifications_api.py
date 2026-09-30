@@ -34,9 +34,16 @@ class Recorder:
 
     def __call__(self, title, body, *, severity="warning", kind="alert", urls=None):
         self.calls.append({"title": title, "severity": severity, "kind": kind})
-        return {"ok": True, "status": "sent", "message": "已发送到 1 个渠道", "configured": 1,
-                "sent": 1, "channels": [{"kind": "bark", "channel": "barks://api.day.app/Ab***",
-                                         "ok": True, "error": None}]}
+        return {
+            "ok": True,
+            "status": "sent",
+            "message": "已发送到 1 个渠道",
+            "configured": 1,
+            "sent": 1,
+            "channels": [
+                {"kind": "bark", "channel": "barks://api.day.app/Ab***", "ok": True, "error": None}
+            ],
+        }
 
 
 @pytest.fixture
@@ -97,8 +104,12 @@ def test_endpoints_are_admin_only(clients):
 def test_alert_list_shape_and_masked_channels(clients, clean_alerts, recorder, monkeypatch):
     monkeypatch.setattr(ns.settings, "notify_urls", f"https://api.day.app/{KEY}")
     alert_service.evaluate_alerts(
-        clean_alerts, "src",
-        [Alert("x:crit", "critical", "严重告警", "详情", {"n": 1}), Alert("x:info", "info", "提示")],
+        clean_alerts,
+        "src",
+        [
+            Alert("x:crit", "critical", "严重告警", "详情", {"n": 1}),
+            Alert("x:info", "info", "提示"),
+        ],
     )
     alert_service.evaluate_alerts(clean_alerts, "gone", [Alert("x:gone", "warning", "已恢复的")])
     alert_service.evaluate_alerts(clean_alerts, "gone", [])
@@ -110,8 +121,13 @@ def test_alert_list_shape_and_masked_channels(clients, clean_alerts, recorder, m
     assert body["channels"]["configured"] is True and body["channels"]["count"] == 1
     assert body["channels"]["channels"][0]["channel"] == "barks://api.day.app/Ab***"
     assert body["check_interval_minutes"] == 10
-    assert body["counts"] == {"active": 2, "info": 1, "warning": 0, "critical": 1,
-                              "recent_resolved": 1}
+    assert body["counts"] == {
+        "active": 2,
+        "info": 1,
+        "warning": 0,
+        "critical": 1,
+        "recent_resolved": 1,
+    }
     first = body["active"][0]
     assert first["alert_key"] == "x:crit" and first["notify_count"] == 1
     assert first["last_notify"]["status"] == "sent" and first["payload"] == {"n": 1}
@@ -128,9 +144,13 @@ def test_send_test_notification(clients, monkeypatch):
 def test_check_now_runs_checkers(clients, recorder, monkeypatch):
     from app.services import alert_checks
 
-    monkeypatch.setattr(alert_checks, "CHECKERS", [
-        ("demo", "demo_src", lambda _db, _now: [Alert("demo:x", "warning", "演示告警")]),
-    ])
+    monkeypatch.setattr(
+        alert_checks,
+        "CHECKERS",
+        [
+            ("demo", "demo_src", lambda _db, _now: [Alert("demo:x", "warning", "演示告警")]),
+        ],
+    )
     response = clients["admin"].post("/api/notifications/check")
     assert response.status_code == 200
     assert [a["alert_key"] for a in response.json()["active"]] == ["demo:x"]
@@ -175,9 +195,17 @@ def test_malformed_notify_url_does_not_break_page_test_or_checks(clients, monkey
     assert test.status_code == 200 and test.json()["status"] == "partial"
     assert KEY not in test.text
 
-    monkeypatch.setattr(alert_checks, "CHECKERS", [
-        ("demo", "demo_src", lambda _db, _now: [Alert("demo:bad-url", "critical", "坏渠道告警")]),
-    ])
+    monkeypatch.setattr(
+        alert_checks,
+        "CHECKERS",
+        [
+            (
+                "demo",
+                "demo_src",
+                lambda _db, _now: [Alert("demo:bad-url", "critical", "坏渠道告警")],
+            ),
+        ],
+    )
     checked = admin.post("/api/notifications/check")
     assert checked.status_code == 200
     [item] = checked.json()["active"]
@@ -203,7 +231,10 @@ def test_manage_notify_raise_and_resolve(clean_alerts, recorder, capsys):
     assert manage.notify(_notify_args(title="数据库备份失败", message="退出码 2")) == 0
     assert manage.notify(_notify_args(resolve=True)) == 0
     assert "backup: resolve" in capsys.readouterr().out
-    assert [c["title"] for c in recorder.calls] == ["【严重】数据库备份失败", "【已恢复】数据库备份失败"]
+    assert [c["title"] for c in recorder.calls] == [
+        "【严重】数据库备份失败",
+        "【已恢复】数据库备份失败",
+    ]
     clean_alerts.expire_all()
     row = clean_alerts.query(AlertState).filter_by(alert_key="backup").one()
     assert row.status == "resolved" and row.source == "external" and row.message == "退出码 2"

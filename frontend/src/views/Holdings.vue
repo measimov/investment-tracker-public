@@ -62,7 +62,7 @@
               class="market-select"
             >
               <el-option label="全部账户" :value="''" />
-              <el-option label="未指定账户" value="unassigned" />
+              <el-option :label="UNASSIGNED_ACCOUNT_LABEL" :value="UNASSIGNED_ACCOUNT" />
               <el-option
                 v-for="account in table.state.brokerAccounts"
                 :key="account.id"
@@ -228,11 +228,14 @@
 </template>
 
 <script setup lang="ts">
+import type { AnalysisBatchJob, DigestBatchJob } from '@/types'
+import { UNASSIGNED_ACCOUNT, UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
 import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { MagicStick, Notebook, Refresh, Search } from '@element-plus/icons-vue'
 import api from '../api'
 import { useAliveGuard } from '../composables/useAliveGuard'
+import { useAutoReload } from '../composables/useAutoReload'
 import { useExchangeRates } from '../composables/useExchangeRates'
 import { MARKETS } from '../utils/securities'
 import JobProgressCard from '../components/JobProgressCard.vue'
@@ -244,7 +247,6 @@ import { useSecurityBadges } from './holdings/useSecurityBadges'
 import { useTransfer } from './holdings/useTransfer'
 import { useBatchAnalysis } from './holdings/useBatchAnalysis'
 import { useDigestBackfill } from './holdings/useDigestBackfill'
-import type { AnalysisBatchJob, DigestBatchJob } from './holdings/types'
 import type { HoldingFocus, HoldingsViewMode } from './holdings/useHoldingsTable'
 
 // 壳层职责（issue #140）：页头（刷新/批量按钮 + 账户/市场过滤）、两个批量
@@ -271,7 +273,7 @@ const digest = useDigestBackfill({ isUnmounted })
 async function attachToActiveBatchJob() {
   try {
     const response = await api.listActiveAnalysisJobs()
-    const jobs = (response.data || []) as AnalysisBatchJob[]
+    const jobs = response.data || []
     const analysis = jobs.find((job) => job.type === 'security_analysis_batch')
     if (analysis?.id && !isUnmounted()) {
       batch.adopt(analysis)
@@ -367,11 +369,18 @@ watch(
   }
 )
 
+// 报价由后端交易时段每 15 分钟刷新；页面可见时每 5 分钟静默重读持仓（只读库）。
+// 正在改价时跳过，免得重读覆盖输入框
+useAutoReload(() => table.loadHoldings({ force: true, silent: true }), {
+  paused: () => table.state.editingRowKey !== null || table.state.loading
+})
+
 onMounted(async () => {
   await Promise.all([loadExchangeRates(), table.loadHoldings(), table.loadBrokerAccounts()])
   deepLinkReady = true
   if (!isUnmounted()) await applyDeepLink()
   badges.loadEvents()
+  badges.loadAnnouncements()
   badges.loadAnalyses()
   badges.loadOpinions()
   badges.loadIndustries()

@@ -23,7 +23,7 @@ from .background_job_store import (
     job_heartbeat,
     set_job_progress,
 )
-from .job_runtime import run_job_inline
+from .job_runtime import make_batch_progress, run_job_inline
 from .job_worker import register_runner
 from .llm_client import (
     LLMClientError,
@@ -63,9 +63,7 @@ OPINION_MARKETS = ("A股", "B股", "港股", "美股")
 
 # 整批等价的失败：批量调用方遇到即中止（source_unavailable = 表没了，
 # 换标的重试同样失败）
-FATAL_OPINION_ERROR_KINDS = frozenset(
-    {"source_unavailable", "llm_not_configured", "llm_auth"}
-)
+FATAL_OPINION_ERROR_KINDS = frozenset({"source_unavailable", "llm_not_configured", "llm_auth"})
 
 # 输入字符预算：发言均长 80 字，几百条也远小于档案分析；30k 留足余量
 OPINION_CHAR_BUDGET = 30_000
@@ -174,7 +172,9 @@ def build_opinion_input(
         if _payload_chars(payload) > OPINION_CHAR_BUDGET:
             logger.warning(
                 "观点输入 %s/%s 收缩后仍超预算（%d 字符），按现状送出",
-                symbol, market, _payload_chars(payload),
+                symbol,
+                market,
+                _payload_chars(payload),
             )
     return payload
 
@@ -184,9 +184,14 @@ def start_opinion_summary_job(user_id: int, symbol: str, market: str) -> Dict[st
         JOB_TYPE,
         user_id,
         {
-            "symbol": symbol, "market": market, "summary_id": None,
-            "stage": None, "stage_label": "排队中",
-            "total": STAGE_TOTAL, "completed": 0, "progress_percent": 0,
+            "symbol": symbol,
+            "market": market,
+            "summary_id": None,
+            "stage": None,
+            "stage_label": "排队中",
+            "total": STAGE_TOTAL,
+            "completed": 0,
+            "progress_percent": 0,
         },
     )
     if job.get("symbol") != symbol or job.get("market") != market:
@@ -225,8 +230,12 @@ def summarize_one(
 
     def failure(error: str, kind: str) -> Dict[str, Any]:
         return {
-            "symbol": symbol, "market": market, "status": "failed",
-            "summary_id": None, "error": error, "error_kind": kind,
+            "symbol": symbol,
+            "market": market,
+            "status": "failed",
+            "summary_id": None,
+            "error": error,
+            "error_kind": kind,
         }
 
     if market not in OPINION_MARKETS:
@@ -251,8 +260,7 @@ def summarize_one(
         return failure(str(exc), "source_unavailable")
     if not matched:
         return failure(
-            f"近 {lookback_days} 天内关注作者未提及该标的（cashtag/帖子链接口径），"
-            "无内容可摘要",
+            f"近 {lookback_days} 天内关注作者未提及该标的（cashtag/帖子链接口径），无内容可摘要",
             "no_matches",
         )
 
@@ -260,8 +268,11 @@ def summarize_one(
     stage("build_input", completed=1)
     input_payload = build_opinion_input(
         matched,
-        symbol=symbol, market=market, xq_symbol=xq_symbol,
-        recent_days=recent_days, lookback_days=lookback_days,
+        symbol=symbol,
+        market=market,
+        xq_symbol=xq_symbol,
+        recent_days=recent_days,
+        lookback_days=lookback_days,
     )
     stats = input_payload["stats"]
 
@@ -310,16 +321,18 @@ def summarize_one(
         lookback_days=lookback_days,
         utterance_count=stats["utterance_count"],
         recent_utterance_count=stats["recent_count"],
-        latest_utterance_at=(
-            datetime.fromisoformat(latest_raw) if latest_raw else None
-        ),
+        latest_utterance_at=(datetime.fromisoformat(latest_raw) if latest_raw else None),
     )
     db.add(summary_row)
     db.commit()
     db.refresh(summary_row)
     return {
-        "symbol": symbol, "market": market, "status": "succeeded",
-        "summary_id": summary_row.id, "error": None, "error_kind": None,
+        "symbol": symbol,
+        "market": market,
+        "status": "succeeded",
+        "summary_id": summary_row.id,
+        "error": None,
+        "error_kind": None,
         "tags": parsed["tags"],
     }
 
@@ -330,14 +343,15 @@ def execute_opinion_summary_job(claimed: Dict[str, Any]) -> None:
     symbol = claimed["data"]["symbol"]
     market = claimed["data"]["market"]
 
+    progress = make_batch_progress(job_id, JOB_TYPE, attempt)
+
     def report(stage_name: str, extra: Dict[str, Any]) -> None:
-        if set_job_progress(
-            job_id, JOB_TYPE, required_attempt_count=attempt,
+        progress(
             stage=stage_name,
             stage_label=OPINION_STAGE_LABELS.get(stage_name, stage_name),
-            total=STAGE_TOTAL, **extra,
-        ) is None:
-            raise JobOwnershipLostError(job_id)
+            total=STAGE_TOTAL,
+            **extra,
+        )
 
     db = SessionLocal()
     try:
@@ -345,14 +359,22 @@ def execute_opinion_summary_job(claimed: Dict[str, Any]) -> None:
             outcome = summarize_one(db, symbol, market, on_stage=report)
         if outcome["status"] == "failed":
             set_job_progress(
-                job_id, JOB_TYPE, required_attempt_count=attempt,
-                status="failed", error=outcome["error"],
+                job_id,
+                JOB_TYPE,
+                required_attempt_count=attempt,
+                status="failed",
+                error=outcome["error"],
             )
             return
         set_job_progress(
-            job_id, JOB_TYPE, required_attempt_count=attempt,
-            status="succeeded", stage="done", stage_label="已完成",
-            completed=STAGE_TOTAL, total=STAGE_TOTAL,
+            job_id,
+            JOB_TYPE,
+            required_attempt_count=attempt,
+            status="succeeded",
+            stage="done",
+            stage_label="已完成",
+            completed=STAGE_TOTAL,
+            total=STAGE_TOTAL,
             summary_id=outcome["summary_id"],
         )
     except JobOwnershipLostError:
@@ -363,8 +385,11 @@ def execute_opinion_summary_job(claimed: Dict[str, Any]) -> None:
 
 def run_opinion_summary_job(job_id: str) -> None:
     run_job_inline(
-        job_id, JOB_TYPE, execute_opinion_summary_job,
-        label="Opinion summary", logger=logger,
+        job_id,
+        JOB_TYPE,
+        execute_opinion_summary_job,
+        label="Opinion summary",
+        logger=logger,
     )
 
 

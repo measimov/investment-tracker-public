@@ -19,9 +19,8 @@ WAF 冷却：
   items 是本轮**没成功**的项（失败的 + WAF 后没轮到的），距上一轮
   `symbols_retry_minutes` 后只重试这些项；当日尝试 `symbols_max_attempts` 轮（含首轮）
   仍有失败即记当日已跑，剩余失败项明日随整轮再采。停机中断不计次数、不动记录。
-- **市场热帖已下线**（2026-09-28）：与持仓无关、每天多打一类雪球请求，不再采集。
-  下线前写下的待重试记录可能含 `{"type": "hots"}` 项，重试时静默丢弃
-  （`known_work_items`），不会失败也不会被反复重试。
+- 待重试记录里的项在重试前过 `known_work_items`：类型不认识的（含 2026-09-28 下线的
+  热帖项）静默丢弃，不请求、不算失败。
 - **不写 scan_runs**：观点页活性判据只看作者轮次，按标的采集的状态记在
   `xueqiu_collector_state.symbols_*`。
 """
@@ -39,6 +38,7 @@ from sqlalchemy.orm import Session
 from ...config import settings
 from ...core.logging import get_app_logger
 from ...core.timeutil import local_today
+from ..job_runtime import rotate_by_market
 from ...models.user import User
 from ...models.xueqiu_collector import XueqiuCollectorCube
 from . import state as st
@@ -67,7 +67,6 @@ MAX_FAILURES_KEPT = 20
 
 # 一项工作（JSON 可序列化，待重试记录直接存它；只有本仓身份键，没有雪球 symbol）：
 #   {"type": "feed", "symbol", "market", "kind"} / {"type": "cube", "cube_id"}
-# 下线前的待重试记录里还可能有 {"type": "hots", "scope"}（市场热帖，2026-09-28 下线）
 WorkItem = Dict[str, str]
 WORK_ITEM_TYPES = frozenset({"feed", "cube"})
 
@@ -85,24 +84,6 @@ def _opinion_markets() -> tuple:
     from ..opinion_summary_jobs import OPINION_MARKETS
 
     return OPINION_MARKETS
-
-
-def rotate_by_market(pairs: List[tuple], markets: tuple) -> List[tuple]:
-    """按市场轮转排序（A股→B股→港股→美股→A股…），组内按代码；与批量任务同一做法。"""
-    by_market: Dict[str, List[tuple]] = {}
-    for pair in pairs:
-        by_market.setdefault(pair[1], []).append(pair)
-    for items in by_market.values():
-        items.sort(key=lambda item: item[0])
-    order = [market for market in markets if market in by_market]
-    ordered: List[tuple] = []
-    index = 0
-    while any(by_market.get(market) for market in order):
-        bucket = by_market.get(order[index % len(order)])
-        if bucket:
-            ordered.append(bucket.pop(0))
-        index += 1
-    return ordered
 
 
 def compute_symbol_universe(db: Session) -> List[SymbolTarget]:
@@ -136,7 +117,9 @@ def explicit_targets(symbols: List[str], market: str) -> List[SymbolTarget]:
     for raw in symbols:
         symbol = normalize_manual_symbol(raw, market)
         if symbol:
-            targets.append(SymbolTarget(symbol=symbol, market=market, xueqiu=to_xueqiu(symbol, market)))
+            targets.append(
+                SymbolTarget(symbol=symbol, market=market, xueqiu=to_xueqiu(symbol, market))
+            )
     return targets
 
 
@@ -354,12 +337,12 @@ def run_symbols_cycle(
         CYCLE_PARTIAL,
         CYCLE_UNAVAILABLE,
         CYCLE_WAF,
-        _CycleLock,
+        CycleLock,
     )
 
     count = count or settings.xueqiu_collector_symbol_count
     stop_event = stop_event or threading.Event()
-    lock = _CycleLock(db)
+    lock = CycleLock(db)
     if not lock.acquire():
         logger.info("另一轮雪球采集正在运行（advisory lock 被占用），按标的采集稍后再试")
         return SymbolsCycleResult(status=CYCLE_LOCKED, message="另一轮采集正在运行")
@@ -383,9 +366,7 @@ def run_symbols_cycle(
             message = f"采集器不可用：{exc}"
             logger.warning(message)
             # 没发出任何请求：待重试项保持原样（重试轮）或整轮（首轮）
-            message = finish(
-                CYCLE_UNAVAILABLE, message, {"mode": mode}, retry_items
-            )
+            message = finish(CYCLE_UNAVAILABLE, message, {"mode": mode}, retry_items)
             return SymbolsCycleResult(status=CYCLE_UNAVAILABLE, message=message)
 
         if retry_items is not None:
@@ -460,8 +441,12 @@ def run_symbols_cycle(
         message = finish(status, message, stats, remaining, waf_at=waf_at)
         logger.info("雪球按标的采集一轮结束：%s %s", status, message)
         return SymbolsCycleResult(
-            status=status, message=message, stats=stats, failures=failures,
-            request_count=getattr(client, "request_count", 0), remaining=remaining,
+            status=status,
+            message=message,
+            stats=stats,
+            failures=failures,
+            request_count=getattr(client, "request_count", 0),
+            remaining=remaining,
         )
     finally:
         lock.release()
@@ -496,6 +481,9 @@ def maybe_run_symbols_cycle(
         return None
     logger.info("开始一轮雪球按标的采集（%s）", reason)
     return run_symbols_cycle(
-        db, stop_event=stop_event, heartbeat=heartbeat, retry_items=retry_items,
+        db,
+        stop_event=stop_event,
+        heartbeat=heartbeat,
+        retry_items=retry_items,
         client_factory=client_factory,
     )

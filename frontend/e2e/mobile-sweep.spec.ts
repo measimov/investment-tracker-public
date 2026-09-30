@@ -39,12 +39,13 @@ async function seedData(request: APIRequestContext, token: string) {
   })
 
   // 一笔持仓 + 一笔已平仓 + 汇率 + 现金股息，让各页有真实内容可渲染
-  await seedPost('/api/exchange-rates', {
-    from_currency: 'USD',
-    to_currency: 'CNY',
-    rate: 7.2,
-    effective_date: '2026-01-01'
+  // 全局汇率仅管理员可写（#277）
+  const adminToken = await loginThroughApi(request, adminUser)
+  const rate = await request.post('http://127.0.0.1:18000/api/exchange-rates', {
+    headers: { Authorization: `Bearer ${adminToken}` },
+    data: { from_currency: 'USD', to_currency: 'CNY', rate: 7.2, effective_date: '2026-01-01' }
   })
+  expect(rate.ok()).toBeTruthy()
   for (const txn of [
     {
       symbol: '600000',
@@ -253,7 +254,6 @@ test('mobile dialogs are constrained within the viewport', async ({ page, reques
     // 移动卡片里按钮写全称，桌面表格才是'转仓'
     ['/holdings', '转仓到其他账户'],
     ['/statistics', '输入价格'],
-    ['/exchange-rates', '手动添加汇率'],
     ['/corporate-actions', '新增记录'],
     ['/account-data', '新增账户'],
     ['/account-data', '新增事件', '现金事件'],
@@ -280,9 +280,16 @@ test('mobile admin dialogs are constrained within the viewport', async ({ page, 
   const token = await loginThroughApi(request, adminUser)
   await setSession(page, token, true)
 
-  await page.goto('/admin/users')
-  await page.waitForLoadState('networkidle')
-  for (const trigger of ['添加用户', '重置密码']) {
+  // 汇率写入仅管理员（#277），它的对话框也在这里检查
+  for (const [route, trigger] of [
+    ['/admin/users', '添加用户'],
+    ['/admin/users', '重置密码'],
+    ['/exchange-rates', '手动添加汇率']
+  ]) {
+    if (page.url().indexOf(route) === -1) {
+      await page.goto(route)
+      await page.waitForLoadState('networkidle')
+    }
     await page.getByRole('button', { name: trigger, exact: true }).first().click()
     const dialog = page.locator('.el-dialog:visible').first()
     await expect(dialog, trigger).toBeVisible()

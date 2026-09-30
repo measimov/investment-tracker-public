@@ -24,17 +24,17 @@
 """
 
 import re
-import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 
 import requests
 
 from ..config import settings
 from ..core.logging import get_app_logger
+from .http_source import reset_throttle, throttle
+from .market_sessions import market_timezone
 from .stock_price_service import PriceResult, positive_decimal_price, price_result
 
 logger = get_app_logger(__name__)
@@ -51,12 +51,11 @@ RATE_LIMIT_COOLDOWN_SECONDS = 600
 # 更旧的 IEX 报价（冷门标的长期无 IEX 成交）改取最新日线收盘
 IEX_MAX_AGE = timedelta(days=4)
 
-_NY_TZ = ZoneInfo("America/New_York")
+_NY_TZ = market_timezone("美股")
 _TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 _FRACTION_RE = re.compile(r"\.(\d{6})\d+")
 
-_throttle_lock = threading.Lock()
-_last_request_at = 0.0
+THROTTLE_KEY = "tiingo"
 _cooldown_until = 0.0
 
 
@@ -86,10 +85,9 @@ def is_configured() -> bool:
 
 def reset_state() -> None:
     """清空限速时钟与 429 冷却（测试与轮换 Token 后用）。"""
-    global _last_request_at, _cooldown_until
-    with _throttle_lock:
-        _last_request_at = 0.0
-        _cooldown_until = 0.0
+    global _cooldown_until
+    reset_throttle(THROTTLE_KEY)
+    _cooldown_until = 0.0
 
 
 def to_tiingo_ticker(symbol: str) -> str:
@@ -216,7 +214,7 @@ def _parse_timestamp(value: Any) -> Optional[datetime]:
 
 
 def parse_iex_quote(payload: Any) -> Optional[Dict[str, Any]]:
-    """`/iex/{ticker}` 响应 -> {price, timestamp, as_of}；没有可用价格返回 None。
+    """`/iex/{ticker}` 响应 -> {price, timestamp, as_of, prev_close}；没有可用价格返回 None。
 
     价格优先 `tngoLast`（Tiingo 综合 last/mid 算出的最新价，盘后为官方收盘），缺失再用
     IEX 自身的 `last`（配 `lastSaleTimestamp`）。未知 ticker 时 Tiingo 返回空数组。
@@ -239,10 +237,13 @@ def parse_iex_quote(payload: Any) -> Optional[Dict[str, Any]]:
             if price is None or price <= 0:
                 continue
             moment = _parse_timestamp(raw_timestamp)
+            prev_close = _decimal(item.get("prevClose"))
             return {
                 "price": price,
                 "timestamp": moment,
                 "as_of": moment.astimezone(_NY_TZ).date() if moment else None,
+                # 昨收只用于异动提醒；缺失/非正数为 None
+                "prev_close": prev_close if prev_close is not None and prev_close > 0 else None,
             }
     return None
 
@@ -279,15 +280,8 @@ def _throttle() -> None:
     批量刷新多线程时，其他线程在锁外通过了冷却检查、在锁上排队；其中一个请求收到 429
     设置冷却后，只在入口查一次会让已排队的请求逐个照发（PR #246 评审 P2）。
     """
-    global _last_request_at
     interval = max(float(settings.tiingo_min_interval_seconds or 0), 0.0)
-    with _throttle_lock:
-        _check_cooldown()
-        elapsed = time.monotonic() - _last_request_at
-        if elapsed < interval:
-            time.sleep(interval - elapsed)
-            _check_cooldown()
-        _last_request_at = time.monotonic()
+    throttle(THROTTLE_KEY, interval, check=_check_cooldown)
 
 
 def _request_json(path: str, *, ticker: str, params: Optional[Dict[str, str]] = None) -> Any:
@@ -364,7 +358,13 @@ def fetch_tiingo_stock_price(symbol: str, *, now: Optional[datetime] = None) -> 
         if quote is not None and iex_quote_is_fresh(quote, now):
             price = positive_decimal_price(quote["price"])
             logger.info("✓ Tiingo IEX 美股 %s 成功: %s", symbol, price)
-            return price_result(price=price, source=IEX_SOURCE, success=True, as_of=quote["as_of"])
+            return price_result(
+                price=price,
+                source=IEX_SOURCE,
+                success=True,
+                as_of=quote["as_of"],
+                prev_close=quote.get("prev_close"),
+            )
         iex_note = "IEX 无报价" if quote is None else "IEX 报价陈旧"
     except (TiingoAuthError, TiingoRateLimited, TiingoNotConfigured) as exc:
         error_msg = f"Tiingo 行情获取失败: {exc}"

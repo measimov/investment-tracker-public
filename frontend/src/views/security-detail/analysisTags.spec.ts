@@ -4,6 +4,7 @@ import {
   POSITIVE_ANALYSIS_TAGS,
   analysisTagTone,
   analysisTagType,
+  outputAdjustmentText,
   riskAdjustmentText,
   riskLabel,
   riskTagType
@@ -83,5 +84,31 @@ describe('riskAdjustmentText', () => {
     expect(riskAdjustmentText(null)).toBeNull()
     expect(riskAdjustmentText(undefined)).toBeNull()
     expect(riskAdjustmentText({ from: '', to: 'medium' })).toBeNull()
+  })
+})
+
+describe('outputAdjustmentText', () => {
+  it('无记录返回 null', () => {
+    expect(outputAdjustmentText(null)).toBeNull()
+    expect(outputAdjustmentText([])).toBeNull()
+    expect(outputAdjustmentText([{ type: 'extra_sections', sections: ['附录'] }])).toBeNull()
+  })
+  it('合成丢弃/截断/归一/补免责声明', () => {
+    expect(
+      outputAdjustmentText([
+        { type: 'tag_normalized', from: '依赖非经常性损益', to: '依赖非经常损益' },
+        { type: 'tag_dropped', tag: '高质押', reason: 'market_banned' },
+        { type: 'tags_truncated', dropped: ['估值偏高'] },
+        { type: 'disclaimer_appended' }
+      ])
+    ).toBe(
+      '解析时已按规则调整：丢弃不合规标签：高质押；标签超过 4 个，去掉：估值偏高；' +
+        '标签归一：「依赖非经常性损益」→「依赖非经常损益」；补上免责声明'
+    )
+  })
+  it('仅空白差异的归一不提示', () => {
+    expect(
+      outputAdjustmentText([{ type: 'tag_normalized', from: ' 高股息 ', to: '高股息' }])
+    ).toBeNull()
   })
 })

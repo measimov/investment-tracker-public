@@ -4,9 +4,9 @@
  */
 
 import { computed, reactive } from 'vue'
-import { ElMessage } from 'element-plus'
 import api from '@/api'
 import { formatNumber } from '@/utils/helpers'
+import { showApiError } from '@/utils/showApiError'
 import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR, chartTooltipCurrency } from '@/styles/tokens'
 import type { MarketStat } from '@/types'
 import type { ProfitLossItem, SummaryStats, TimeStat } from './types'
@@ -20,45 +20,70 @@ export function useDistributionStats() {
     timeGroupBy: 'month'
   })
 
-  // 统计块加载工厂；silent=true 时失败只记 console（摘要卡片允许静默降级）
-  function makeStatsLoader<T>(
+  // 统计块加载器：fetch 返回错误而不自己弹窗，由调用方决定怎么提示——页面首次加载时四块一起失败
+  // 只提示一次（后端一挂，此前是 4 条消息 + 全局通知，#284）。silent 的块（摘要卡片允许静默降级）
+  // 失败只记 console，不进汇总提示
+  interface StatsBlock {
+    label: string
+    silent: boolean
+    fetch: () => Promise<unknown>
+  }
+
+  function makeStatsBlock<T>(
     assign: (data: T) => void,
     fetcher: () => Promise<{ data: T }>,
-    failureMessage: string,
+    label: string,
     { silent = false }: { silent?: boolean } = {}
-  ) {
-    return async () => {
-      try {
-        const response = await fetcher()
-        assign(response.data)
-      } catch (error) {
-        if (silent) console.error(failureMessage, error)
-        else ElMessage.error(failureMessage)
+  ): StatsBlock {
+    return {
+      label,
+      silent,
+      fetch: async () => {
+        try {
+          assign((await fetcher()).data)
+          return null
+        } catch (error) {
+          if (silent) console.error(`加载${label}失败`, error)
+          return error
+        }
       }
     }
   }
 
-  const loadMarketStats = makeStatsLoader<MarketStat[]>(
+  const marketBlock = makeStatsBlock<MarketStat[]>(
     (data) => (state.marketStats = data),
     () => api.getStatsByMarket(),
-    '加载市场统计失败'
+    '市场统计'
   )
-  const loadTimeStats = makeStatsLoader<TimeStat[]>(
+  const timeBlock = makeStatsBlock<TimeStat[]>(
     (data) => (state.timeStats = data),
     () => api.getStatsByTime(state.timeGroupBy),
-    '加载时间统计失败'
+    '时间统计'
   )
-  const loadProfitLoss = makeStatsLoader<ProfitLossItem[]>(
+  const profitLossBlock = makeStatsBlock<ProfitLossItem[]>(
     (data) => (state.profitLossData = data),
     () => api.getHoldingsCostBreakdown(),
-    '加载持仓成本分布失败'
+    '持仓成本分布'
   )
-  const loadSummaryStats = makeStatsLoader<SummaryStats>(
+  const summaryBlock = makeStatsBlock<SummaryStats>(
     (data) => (state.summaryStats = data),
     () => api.getSummary(),
-    '加载统计摘要失败',
+    '统计摘要',
     { silent: true }
   )
+
+  /** 加载若干统计块，失败的（非 silent）合并成一条提示。 */
+  async function loadBlocks(blocks: StatsBlock[]) {
+    const errors = await Promise.all(blocks.map((block) => block.fetch()))
+    const failed = blocks.filter((block, index) => errors[index] && !block.silent)
+    if (!failed.length) return
+    const firstError = errors[blocks.indexOf(failed[0])]
+    showApiError(firstError, { prefix: `加载${failed.map((block) => block.label).join('、')}失败` })
+  }
+
+  const loadAll = () => loadBlocks([marketBlock, timeBlock, profitLossBlock, summaryBlock])
+  // 切换时间粒度只重载时间统计（模板里 @change 会传入新值，这里不收参数）
+  const loadTimeStats = () => loadBlocks([timeBlock])
 
   const totalInvested = computed(() =>
     state.marketStats.reduce((sum, item) => sum + item.total_cost, 0)
@@ -170,10 +195,8 @@ export function useDistributionStats() {
     totalInvestedCNY,
     marketChartOption,
     timeChartOption,
-    loadMarketStats,
-    loadTimeStats,
-    loadProfitLoss,
-    loadSummaryStats
+    loadAll,
+    loadTimeStats
   })
 }
 

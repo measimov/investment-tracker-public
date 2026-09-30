@@ -89,3 +89,42 @@ export function riskAdjustmentText(
   const base = `模型给出「${riskLabel(adjustment.from)}」，按市场下限上调为「${riskLabel(adjustment.to)}」`
   return adjustment.reason ? `${base}：${adjustment.reason}` : base
 }
+
+/** 后端 `security_analyses.output_adjustments`：解析层对模型输出的调整记录（#287） */
+export interface OutputAdjustment {
+  type: string
+  tag?: string
+  from?: string
+  to?: string
+  reason?: string
+  dropped?: string[]
+  sections?: string[]
+}
+
+/**
+ * 「已调整」提示：标签被归一/丢弃/截断、补了免责声明时，把记录合成一句话；
+ * 仅有额外章节这类不影响内容的记录不提示。无记录（旧分析行）返回 null。
+ */
+export function outputAdjustmentText(
+  adjustments: OutputAdjustment[] | null | undefined
+): string | null {
+  if (!adjustments || adjustments.length === 0) return null
+  const parts: string[] = []
+  const dropped = adjustments
+    .filter((item) => item.type === 'tag_dropped' && item.tag)
+    .map((item) => item.tag as string)
+  const truncated = adjustments.flatMap((item) =>
+    item.type === 'tags_truncated' ? item.dropped || [] : []
+  )
+  const normalized = adjustments
+    .filter(
+      (item) =>
+        item.type === 'tag_normalized' && item.from && item.to && item.from.trim() !== item.to
+    )
+    .map((item) => `「${item.from}」→「${item.to}」`)
+  if (dropped.length) parts.push(`丢弃不合规标签：${dropped.join('、')}`)
+  if (truncated.length) parts.push(`标签超过 4 个，去掉：${truncated.join('、')}`)
+  if (normalized.length) parts.push(`标签归一：${normalized.join('、')}`)
+  if (adjustments.some((item) => item.type === 'disclaimer_appended')) parts.push('补上免责声明')
+  return parts.length ? `解析时已按规则调整：${parts.join('；')}` : null
+}

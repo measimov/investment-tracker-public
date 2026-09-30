@@ -6,7 +6,7 @@
 - 组合调仓 `cubes/rebalancing/history.json`
 
 原实现的市场热帖 `statuses/hots.json` 已于 2026-09-28 下线（与持仓无关，少打一类请求）；
-旧 Markdown 热帖快照仍可经 `archive_import` 导入 `xueqiu_hot_posts`，但不再采集、不再展示。
+热帖快照表 `xueqiu_hot_posts` 已由迁移 0035 删除。
 
 **雪球 symbol 不作身份键落库**：请求参数里的雪球 symbol 由调用方经 `to_xueqiu` 在内存里
 生成；解析结果里的 url 尽量用 `/{uid}/{id}` 形态（公告的 target 是 `/S/{雪球symbol}/{id}`），
@@ -70,8 +70,13 @@ def announcement_url(xueqiu_symbol: str, count: int) -> str:
 
 def discussion_url(xueqiu_symbol: str, count: int) -> str:
     params = {
-        "count": count, "comment": 0, "symbol": xueqiu_symbol, "hl": 0,
-        "source": "all", "sort": "", "page": 1,
+        "count": count,
+        "comment": 0,
+        "symbol": xueqiu_symbol,
+        "hl": 0,
+        "source": "all",
+        "sort": "",
+        "page": 1,
     }
     return f"{SYMBOL_STATUS_API}?{urlencode(params)}"
 
@@ -141,9 +146,7 @@ def validate_feed_payload(payload: Any, endpoint: str) -> List[Dict[str, Any]]:
             )
         items = require_list(payload, key, context=context)
     else:
-        raise CollectorFetchError(
-            f"{context} 响应不是 JSON 对象（{type(payload).__name__}）"
-        )
+        raise CollectorFetchError(f"{context} 响应不是 JSON 对象（{type(payload).__name__}）")
     if any(not isinstance(item, dict) for item in items):
         raise CollectorFetchError(f"{context} 列表里有非对象元素")
     return list(items)
@@ -188,8 +191,10 @@ def extract_links(html: str) -> List[str]:
             href = f"https:{href}"
         if not href.startswith(("http://", "https://")):
             continue
-        if _is_xueqiu_host(href) or "imedao.com" in href or "co-img-link" in (
-            anchor.get("class") or ""
+        if (
+            _is_xueqiu_host(href)
+            or "imedao.com" in href
+            or "co-img-link" in (anchor.get("class") or "")
         ):
             continue
         if href not in links:
@@ -291,8 +296,14 @@ def _number(value: Any) -> Optional[float]:
 
 
 HISTORY_NUMBER_KEYS = (
-    "prev_weight", "target_weight", "prev_weight_adjusted", "weight",
-    "price", "prev_price", "volume", "prev_volume",
+    "prev_weight",
+    "target_weight",
+    "prev_weight_adjusted",
+    "weight",
+    "price",
+    "prev_price",
+    "volume",
+    "prev_volume",
 )
 
 

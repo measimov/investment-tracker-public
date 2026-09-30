@@ -107,3 +107,68 @@ test('navigation highlights pages inside 更多 and nested routes, sets titles, 
   await page.getByRole('button', { name: '返回首页' }).click()
   await expect(page).toHaveURL(/\/$/)
 })
+
+// #268：A 登出、B 在同一页面（不重载）登录后，持仓页不得复用 A 的缓存
+test('switching users without a page reload never shows the previous user holdings', async ({
+  page,
+  request
+}) => {
+  const adminLogin = await loginThroughApi(request, adminUser)
+  expect(adminLogin.ok()).toBeTruthy()
+  const adminHeaders = { Authorization: `Bearer ${(await adminLogin.json()).access_token}` }
+  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  const password = 'switch-e2e-password'
+  const users: Array<{ id: number; username: string }> = []
+  for (const name of ['alice', 'bob']) {
+    const created = await request.post(`${API}/api/users`, {
+      headers: adminHeaders,
+      data: { username: `${name}_${suffix}`, password, is_active: true, is_admin: false }
+    })
+    expect(created.ok()).toBeTruthy()
+    users.push(await created.json())
+  }
+  const [alice, bob] = users
+  const aliceSymbol = `SW${suffix.slice(-6).toUpperCase()}`
+
+  try {
+    const aliceToken = (
+      await (await loginThroughApi(request, { username: alice.username, password })).json()
+    ).access_token
+    const bought = await request.post(`${API}/api/transactions`, {
+      headers: { Authorization: `Bearer ${aliceToken}` },
+      data: {
+        symbol: aliceSymbol,
+        name: 'Alice 专属持仓',
+        market: '美股',
+        transaction_type: 'BUY',
+        quantity: 10,
+        price: 5,
+        fee: 0,
+        transaction_date: '2026-01-05',
+        currency: 'USD'
+      }
+    })
+    expect(bought.ok()).toBeTruthy()
+
+    await loginThroughUi(page, { username: alice.username, password })
+    await page.getByRole('menuitem', { name: '当前持仓' }).first().click()
+    await expect(page.getByText(aliceSymbol).first()).toBeVisible()
+
+    // 登出并在同一个页面里登录 B：Login 走 router.push，不整页刷新，Pinia 状态会留下来
+    await page.locator('.user-dropdown').hover()
+    await page.getByRole('menuitem', { name: '退出登录' }).click()
+    await expect(page).toHaveURL(/\/login/)
+    await page.getByPlaceholder('请输入用户名').fill(bob.username)
+    await page.getByPlaceholder('请输入密码').fill(password)
+    await page.getByRole('button', { name: '登录' }).click()
+    await expect(page).toHaveURL(/\/$/)
+
+    await page.getByRole('menuitem', { name: '当前持仓' }).first().click()
+    await expect(page.getByText('暂无持仓数据').first()).toBeVisible()
+    await expect(page.getByText(aliceSymbol)).toHaveCount(0)
+  } finally {
+    for (const created of users) {
+      await request.delete(`${API}/api/users/${created.id}`, { headers: adminHeaders })
+    }
+  }
+})

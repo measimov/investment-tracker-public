@@ -16,9 +16,8 @@
 模块 globals 解析，monkeypatch 模块属性照旧生效（测试正是这么打桩的）。
 """
 
-from typing import Any, Callable, Dict
-
 from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterable, List, Sequence
 
 from ..database import SessionLocal
 from .background_job_store import (
@@ -77,6 +76,62 @@ def run_job_inline(
 # ---------------------------------------------------------------------------
 
 
+def rotate_by_market(
+    items: Iterable[Any],
+    markets: Sequence[str],
+    *,
+    market_of: Callable[[Any], str] = lambda item: item[1],
+    symbol_of: Callable[[Any], str] = lambda item: item[0],
+) -> List[Any]:
+    """按市场轮转排序（A股→B股→港股→美股→A股…），组内按代码；不在 markets 里的条目丢弃。
+
+    批量任务用轮转而不是按市场分组：同一 Tushare 接口的相邻两次调用被其他市场的标的自然
+    拉开，等于零成本的接口级降频。条目可以是 (symbol, market) 元组或带键的 dict（传访问器）。
+    此前批量分析、批量观点与雪球按标的采集各写一份（#280）。
+    """
+    by_market: Dict[str, List[Any]] = {}
+    for item in items:
+        by_market.setdefault(market_of(item), []).append(item)
+    for bucket in by_market.values():
+        bucket.sort(key=symbol_of)
+    order = [market for market in markets if market in by_market]
+    ordered: List[Any] = []
+    index = 0
+    while any(by_market[market] for market in order):
+        bucket = by_market[order[index % len(order)]]
+        if bucket:
+            ordered.append(bucket.pop(0))
+        index += 1
+    return ordered
+
+
+def initial_batch_data(targets: List[Dict[str, Any]], **extra: Any) -> Dict[str, Any]:
+    """批量 job 的初始 data：固化目标 + 续跑键 + 进度计数 + 取消/中止标志。
+
+    三个批量家族（分析/观点/财报回填）此前各抄一份（#280）；家族特有字段走 extra。
+    """
+    return {
+        # 目标固化：批量要跑几十分钟，期间用户可能导入新交易；不固化会让
+        # 重试/接管时的范围漂移，进度条倒退
+        "targets": targets,
+        # 已完成键：接管/重试时精确续跑，不重复烧 LLM
+        "completed_keys": [],
+        "total": len(targets),
+        "completed": 0,
+        "progress_percent": 0,
+        "success_count": 0,
+        "failed_count": 0,
+        "current_symbol": None,
+        "current_market": None,
+        "results": [],
+        "cancel_requested": False,
+        "cancelled": False,
+        # 不能叫 error：_serialize 展平后会盖掉 BackgroundJob.error 列
+        "abort_reason": None,
+        **extra,
+    }
+
+
 def make_batch_progress(job_id: str, job_type: str, attempt) -> Callable[..., None]:
     """批量循环的进度回写闭包：一旦失权就抛哨兵，让调用方立刻停手。
 
@@ -87,10 +142,7 @@ def make_batch_progress(job_id: str, job_type: str, attempt) -> Callable[..., No
     """
 
     def progress(**updates: Any) -> None:
-        if (
-            set_job_progress(job_id, job_type, required_attempt_count=attempt, **updates)
-            is None
-        ):
+        if set_job_progress(job_id, job_type, required_attempt_count=attempt, **updates) is None:
             raise JobOwnershipLostError(job_id)
 
     return progress

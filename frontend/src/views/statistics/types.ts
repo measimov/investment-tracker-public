@@ -35,10 +35,10 @@ export interface SummaryStats {
 }
 
 export interface CurrentPerformance {
-  unrealized_pnl: number
-  current_holdings_cost: number
+  unrealized_pnl_cny: number
+  current_holdings_cost_cny: number
   unrealized_pnl_rate: number
-  current_market_value: number
+  current_market_value_cny: number
   holdings_detail: Array<Record<string, unknown>>
   missing_rate_currencies?: string[]
   data_quality?: { warnings?: string[]; unpriced_position_count?: number }

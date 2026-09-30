@@ -27,6 +27,22 @@ class LLMClientError(Exception):
         self.finish_reason = finish_reason
 
 
+def llm_error_user_message(exc: "LLMClientError") -> str:
+    """面向用户的稳定中文文案（#277）。异常原文含上游 URL 与响应片段，只进日志、不回显。"""
+    if is_output_truncated(exc):
+        return "模型输出超出长度上限，请缩短问题后重试"
+    status = exc.status_code
+    if status in (401, 403):
+        return "LLM 的 API Key 无效或无权限，请管理员检查 LLM_REPORT_API_KEY"
+    if status == 402:
+        return "LLM 账户余额不足，请管理员充值后重试"
+    if status == 429:
+        return "LLM 请求过于频繁或额度已用尽，请稍后重试"
+    if status is not None and 400 <= status < 500:
+        return f"LLM 拒绝了本次请求（HTTP {status}），请稍后重试或联系管理员"
+    return "LLM 服务暂时不可用或超时，请稍后重试"
+
+
 def is_output_truncated(exc: BaseException) -> bool:
     """输出额度耗尽（finish_reason=length，空或半截输出）：同样的输入重试结果相同，
     调用方一律按确定性失败处理（status_code 为 None，不能落进「5xx/超时→重试」分支）。"""
@@ -97,7 +113,8 @@ def chat_completion(
         # 「不是合法 JSON」（00799 港股分析），Markdown 调用方会把半篇报告当成品落库
         logger.warning(
             "LLM 输出被截断（finish_reason=length，已输出 %s 字符，max_tokens=%s）",
-            len(content), payload["max_tokens"],
+            len(content),
+            payload["max_tokens"],
         )
         raise LLMClientError(
             f"LLM 输出被截断（finish_reason=length，max_tokens={payload['max_tokens']}），"
@@ -107,7 +124,8 @@ def chat_completion(
         )
 
     if not content:
-        # 推理模型（deepseek-flash / 此前的 deepseek-v4-pro）会先产生 reasoning_content；
+        # 推理模型（deepseek-flash 即 V4.1 Flash；deepseek-v4-pro 同理——DeepSeek 已撤回其
+        # 09-14 下线决定，仍在服务）会先产生 reasoning_content；
         # 输出配额被推理耗尽时 content 为空（finish_reason=length）——同样的输入重试结果相同。
         # status_code 为 None：调用方用 `is_output_truncated` 判定 length 并按确定性失败处理。
         raise LLMClientError(

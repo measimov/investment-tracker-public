@@ -26,7 +26,11 @@ def xirr(cash_flows: List[Tuple[date, Decimal]]) -> Optional[Decimal]:
         if amount != 0:
             merged[flow_date] = merged.get(flow_date, Decimal("0")) + amount
     flows = [(flow_date, amount) for flow_date, amount in merged.items() if amount != 0]
-    if not flows or not any(amount < 0 for _, amount in flows) or not any(amount > 0 for _, amount in flows):
+    if (
+        not flows
+        or not any(amount < 0 for _, amount in flows)
+        or not any(amount > 0 for _, amount in flows)
+    ):
         return None
 
     start_date = min(flow_date for flow_date, _ in flows)
@@ -117,8 +121,12 @@ def calculate_trade_skill_metrics(realized: Dict[str, Any]) -> Dict[str, Any]:
     total_loss = sum(losers, Decimal("0"))
     avg_win = total_profit / Decimal(len(winners)) if winners else Decimal("0")
     avg_loss = total_loss / Decimal(len(losers)) if losers else Decimal("0")
-    win_rate = Decimal(len(winners)) / Decimal(len(active_samples)) if active_samples else Decimal("0")
-    loss_rate = Decimal(len(losers)) / Decimal(len(active_samples)) if active_samples else Decimal("0")
+    win_rate = (
+        Decimal(len(winners)) / Decimal(len(active_samples)) if active_samples else Decimal("0")
+    )
+    loss_rate = (
+        Decimal(len(losers)) / Decimal(len(active_samples)) if active_samples else Decimal("0")
+    )
     expectancy = win_rate * avg_win + loss_rate * avg_loss
 
     # profit_factor is None when there are no losing trades; has_losses lets the
@@ -291,8 +299,8 @@ def calculate_risk_metrics(
     # Sharpe uses the dispersion of the *excess* returns so numerator and
     # denominator share one basis. Under a constant risk-free rate this equals the
     # raw-return stddev, but it is stated explicitly for correctness (issue #41).
-    excess_variance = (
-        sum((value - average_excess) ** 2 for value in excess_returns) / Decimal(len(excess_returns) - 1)
+    excess_variance = sum((value - average_excess) ** 2 for value in excess_returns) / Decimal(
+        len(excess_returns) - 1
     )
     excess_volatility = excess_variance.sqrt()
     if excess_volatility > 0:
@@ -302,8 +310,8 @@ def calculate_risk_metrics(
     # that met the target contribute a zero to the sum of squares rather than being
     # dropped from the denominator (issue #41). Dividing by the downside count alone
     # systematically inflated the deviation and understated the ratio.
-    downside_variance = (
-        sum(min(value, Decimal("0")) ** 2 for value in excess_returns) / Decimal(len(excess_returns))
+    downside_variance = sum(min(value, Decimal("0")) ** 2 for value in excess_returns) / Decimal(
+        len(excess_returns)
     )
     downside_deviation = downside_variance.sqrt()
     if downside_deviation > 0:

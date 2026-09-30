@@ -1,5 +1,5 @@
 import { COLOR } from '@/styles/tokens'
-import { formatLocalDate } from './dateRange'
+import { formatLocalDate, parseLocalDate } from './dateRange'
 import { CURRENCIES } from './currency'
 
 /** 空值占位符：全站统一（此前 '-' / '--' / '—' 三种并存，#219） */
@@ -58,8 +58,14 @@ export function todayLocalISODate(): string {
 
 export function formatDate(date: string | number | Date | null | undefined): string {
   if (!date) return EMPTY
+  // 纯日期串 'YYYY-MM-DD' 按本地零点解析：new Date('2026-01-05') 是 UTC 零点，UTC 以西时区会
+  // 显示成前一天（#284）；带时间的串与时间戳照旧交给 Date
+  const value =
+    typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)
+      ? parseLocalDate(date)
+      : new Date(date)
   // 补零格式（2026/01/05）：与 formatDateTime 一致，日期列在 tabular-nums 下可对齐
-  return new Date(date).toLocaleDateString('zh-CN', {
+  return value.toLocaleDateString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'
@@ -117,5 +123,7 @@ export function downloadFile(blob: Blob, filename: string): void {
 
 // 盈亏着色：>=0 绿、<0 红（Statistics 口径）
 export function profitColor(value: number | string | null | undefined): string {
+  // 缺值不着色（此前 Number(null) = 0 被染成盈利绿）
+  if (isMissing(value)) return ''
   return Number(value) >= 0 ? COLOR.success : COLOR.danger
 }

@@ -154,7 +154,10 @@ class ArchiverStore:
         self.db = db
         self.dry_run = dry_run
         self.captured: Dict[str, List[Any]] = {
-            "posts": [], "replies": [], "utterances": [], "scan_states": [],
+            "posts": [],
+            "replies": [],
+            "utterances": [],
+            "scan_states": [],
         }
 
     # ---- posts ----
@@ -259,8 +262,12 @@ class ArchiverStore:
         }
 
     def should_skip_recent_scan(
-        self, target_user_id: str, post_id: str, cooldown_hours: float,
-        *, now: Optional[float] = None,
+        self,
+        target_user_id: str,
+        post_id: str,
+        cooldown_hours: float,
+        *,
+        now: Optional[float] = None,
     ) -> bool:
         if cooldown_hours <= 0:
             return False
@@ -272,7 +279,11 @@ class ArchiverStore:
         return age_seconds < cooldown_hours * 60 * 60
 
     def update_scan_state(
-        self, target_user_id: str, post_id: str, page_count: int, max_page: int,
+        self,
+        target_user_id: str,
+        post_id: str,
+        page_count: int,
+        max_page: int,
         waf: bool = False,
     ) -> None:
         if self.dry_run:

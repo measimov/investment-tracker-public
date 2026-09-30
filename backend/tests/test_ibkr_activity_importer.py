@@ -1,4 +1,3 @@
-import asyncio
 import hashlib
 import io
 from datetime import date
@@ -16,6 +15,7 @@ from app.models.corporate_action import CorporateAction
 from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.import_batch import ImportBatch
+from app.models.security_rule import SecurityRule
 from app.models.transaction import Transaction
 from app.services import ibkr_activity_importer as importer
 from app.services.ibkr_activity_importer import (
@@ -233,21 +233,36 @@ def test_ibkr_statement_skips_representative_option_rows(monkeypatch):
     assert imported_symbols == {"883", "PCT"}
 
 
+# 本用例播种的规则键：RESET_MODELS 不含 SecurityRule，不清理的话同一个库上第二次运行
+# 就会撞 uq_security_rules_key（CI 每次都是新库，所以一直没暴露）
+_PCT_RELISTING_RULE_KEYS = (
+    ("RELISTING", "01263", "港股"),
+    ("NAME_OVERRIDE", "01263", "港股"),
+    ("NAME_OVERRIDE", "PCT", "新加坡股"),
+)
+
+
+def _clear_pct_relisting_rules(db):
+    for rule_type, symbol, market in _PCT_RELISTING_RULE_KEYS:
+        db.query(SecurityRule).filter(
+            SecurityRule.user_id == 1,
+            SecurityRule.rule_type == rule_type,
+            SecurityRule.symbol == symbol,
+            SecurityRule.market == market,
+        ).delete()
+    db.commit()
+
+
 def test_ibkr_import_handles_pc_partner_hk_to_sg_relisting(monkeypatch):
     monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
 
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
+    _clear_pct_relisting_rules(db)
     try:
-        seed_security_rule(
-            db, 1, "RELISTING", "01263", "港股", payload=PCT_RELISTING_PAYLOAD
-        )
-        seed_security_rule(
-            db, 1, "NAME_OVERRIDE", "01263", "港股", payload={"name": "柏能集团"}
-        )
-        seed_security_rule(
-            db, 1, "NAME_OVERRIDE", "PCT", "新加坡股", payload={"name": "柏能集团"}
-        )
+        seed_security_rule(db, 1, "RELISTING", "01263", "港股", payload=PCT_RELISTING_PAYLOAD)
+        seed_security_rule(db, 1, "NAME_OVERRIDE", "01263", "港股", payload={"name": "柏能集团"})
+        seed_security_rule(db, 1, "NAME_OVERRIDE", "PCT", "新加坡股", payload={"name": "柏能集团"})
         account = BrokerAccount(
             user_id=1,
             broker="IBKR",
@@ -268,6 +283,14 @@ def test_ibkr_import_handles_pc_partner_hk_to_sg_relisting(monkeypatch):
             "Transaction History,Data,2025-10-09,U***00001,PC PARTNER GROUP LTD,"
             "买,1263,2000.0,7.09,HKD,-1822.2718000000002,-2.31318,-1826.5645647463002",
         )
+
+        # 预览的账户预检要把转板合成的卖出/买入对也算进去（#279）：
+        # 否则新代码 PCT 的卖出在预览里看不到来源，会误报超卖
+        first_preview = importer.preview_ibkr_activity(
+            db, 1, contents, "ibkr-pct.csv", broker_account_id=account.id
+        )
+        assert first_preview["errors"] == []
+        assert db.query(Transaction).count() == 0
 
         result = import_ibkr_activity(
             db,
@@ -309,14 +332,10 @@ def test_ibkr_import_handles_pc_partner_hk_to_sg_relisting(monkeypatch):
 
         transactions = db.query(Transaction).all()
         assert {txn.broker_account_id for txn in transactions} == {account.id}
-        assert {txn.import_batch_id for txn in transactions} == {
-            result["import_batch_id"]
-        }
+        assert {txn.import_batch_id for txn in transactions} == {result["import_batch_id"]}
         flows = db.query(IbkrActivityFlow).all()
         assert len(flows) == 4
-        assert {flow.import_batch_id for flow in flows} == {
-            result["import_batch_id"]
-        }
+        assert {flow.import_batch_id for flow in flows} == {result["import_batch_id"]}
         assert {flow.broker_account_id for flow in flows} == {account.id}
         batch = db.get(ImportBatch, result["import_batch_id"])
         assert batch.source_sha256 == hashlib.sha256(contents).hexdigest()
@@ -352,6 +371,7 @@ def test_ibkr_import_handles_pc_partner_hk_to_sg_relisting(monkeypatch):
         assert duplicate_batch.skipped_count == 0
         assert db.query(Transaction).count() == 6
     finally:
+        _clear_pct_relisting_rules(db)
         db.close()
 
 
@@ -377,7 +397,7 @@ def test_ibkr_preview_requires_owned_matching_broker_account():
 
         with pytest.raises(ValueError, match="请选择 IBKR 券商账户"):
             importer.preview_ibkr_activity(db, 1, b"unused", "ibkr.csv")
-        with pytest.raises(ValueError, match="belongs to"):
+        with pytest.raises(ValueError, match="所选账户属于"):
             importer.preview_ibkr_activity(
                 db,
                 1,
@@ -385,7 +405,7 @@ def test_ibkr_preview_requires_owned_matching_broker_account():
                 "ibkr.csv",
                 broker_account_id=wrong_broker.id,
             )
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(ValueError, match="券商账户不存在"):
             importer.preview_ibkr_activity(
                 db,
                 1,
@@ -417,14 +437,13 @@ def test_ibkr_preview_api_forwards_broker_account_id(monkeypatch):
 
     monkeypatch.setattr(import_export_api, "preview_ibkr_activity", fake_preview)
     db_marker = object()
-    result = asyncio.run(
-        import_export_api.preview_ibkr_activity_statement(
-            file=UploadFile(filename="ibkr.csv", file=io.BytesIO(b"statement")),
-            broker_account_id=37,
-            confirm_suspected_row_hashes="AB" * 32,
-            current_user=SimpleNamespace(id=1),
-            db=db_marker,
-        )
+    # 导入端点是普通 def（#269：同步解析不得放进 async def 阻塞事件循环）
+    result = import_export_api.preview_ibkr_activity_statement(
+        file=UploadFile(filename="ibkr.csv", file=io.BytesIO(b"statement")),
+        broker_account_id=37,
+        confirm_suspected_row_hashes="AB" * 32,
+        current_user=SimpleNamespace(id=1),
+        db=db_marker,
     )
 
     assert result == {"ok": True}
@@ -558,9 +577,7 @@ def test_ibkr_duplicate_hash_rejects_unsafe_historical_source(
             filename="legacy.csv",
             flow=flow,
             broker_account_id=account.id,
-            transaction_id=(
-                transaction.id if source_state == "conflicting_links" else None
-            ),
+            transaction_id=(transaction.id if source_state == "conflicting_links" else None),
             corporate_action_id=action.id if source_state == "conflicting_links" else None,
         )
         db.add(source)
@@ -880,10 +897,10 @@ def test_ibkr_xlsx_stock_fills_become_trades(monkeypatch):
     assert len(trades) == 2
 
     hk = next(row for row in trades if row.price_currency == "HKD")
-    assert hk.symbol == "01024"          # HKD 数字代码补足 5 位
+    assert hk.symbol == "01024"  # HKD 数字代码补足 5 位
     assert hk.market == "港股"
     assert hk.transaction_type == "BUY"
-    assert hk.fee_in_price_currency == Decimal("18")   # 费用即 Commission（成交币种）
+    assert hk.fee_in_price_currency == Decimal("18")  # 费用即 Commission（成交币种）
 
     sg = next(row for row in trades if row.price_currency == "SGD")
     assert sg.symbol == "PCT"
@@ -1026,9 +1043,7 @@ def test_ibkr_xlsx_reimport_does_not_duplicate_archived_options(monkeypatch):
         # 两次导入后：1 笔交易流水 + 1 条期权归档，均无重复
         assert db.query(IbkrActivityFlow).count() == 2
         assert db.query(Transaction).count() == 1
-        assert (
-            db.query(IbkrActivityFlow).filter_by(skip_reason="option").count() == 1
-        )
+        assert db.query(IbkrActivityFlow).filter_by(skip_reason="option").count() == 1
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -1056,9 +1071,7 @@ def test_ibkr_xlsx_option_archive_blocks_cross_account_dedup(monkeypatch):
     db.refresh(account_a)
     db.refresh(account_b)
     try:
-        contents = ibkr_xlsx(
-            {"Symbol": "FXE", "Type": "OPT", "Ccy": "USD", "Trade ID": "t-opt-x"}
-        )
+        contents = ibkr_xlsx({"Symbol": "FXE", "Type": "OPT", "Ccy": "USD", "Trade ID": "t-opt-x"})
         # 先（比如误选）导入账户 A：期权归档到 A
         importer.import_ibkr_activity(
             db, 1, contents, "trade_history.xlsx", broker_account_id=account_a.id
@@ -1089,12 +1102,7 @@ def test_ibkr_xlsx_option_archive_blocks_cross_account_dedup(monkeypatch):
 
         # 账户 A 的归档原样保留，账户 B 未产生任何来源
         assert db.query(IbkrActivityFlow).filter_by(skip_reason="option").count() == 1
-        assert (
-            db.query(IbkrActivityFlow)
-            .filter_by(broker_account_id=account_b.id)
-            .count()
-            == 0
-        )
+        assert db.query(IbkrActivityFlow).filter_by(broker_account_id=account_b.id).count() == 0
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -1216,7 +1224,8 @@ def test_ibkr_recalculation_failure_rolls_back_the_whole_batch(monkeypatch):
     try:
         account, contents = _import_lone_sell(db, monkeypatch)
 
-        with pytest.raises(ValueError, match="超过可用数量|exceeds available"):
+        # 账户持仓预检（#279）先于合并口径的重算拦下，同样整批回滚
+        with pytest.raises(ValueError, match="IBKR 账户持仓预检失败"):
             import_ibkr_activity(
                 db, 1, contents, "ibkr-lone-sell.csv", broker_account_id=account.id
             )
@@ -1230,10 +1239,302 @@ def test_ibkr_recalculation_failure_rolls_back_the_whole_batch(monkeypatch):
         batch = db.query(ImportBatch).order_by(ImportBatch.id.desc()).first()
         assert batch is not None, "失败也要留审计记录"
         assert batch.status == "FAILED", (
-            f"重算失败应整批回滚为 FAILED，实际 {batch.status}："
-            f"{(batch.error_message or '')[:120]}"
+            f"重算失败应整批回滚为 FAILED，实际 {batch.status}：{(batch.error_message or '')[:120]}"
         )
     finally:
+        db.close()
+
+
+def test_ibkr_preview_reports_account_precheck_failure(monkeypatch):
+    """#279：预览与正式导入同一道账户持仓预检——预览不再显示「可以导入」。"""
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account, contents = _import_lone_sell(db, monkeypatch)
+        result = importer.preview_ibkr_activity(
+            db, 1, contents, "ibkr-lone-sell.csv", broker_account_id=account.id
+        )
+        messages = [e for e in result["errors"] if "IBKR 账户持仓预检失败" in e]
+        assert messages and "AAPL" in messages[0] and "2026-02-10" in messages[0]
+        assert db.query(Transaction).count() == 0  # 预览只读
+    finally:
+        db.close()
+
+
+def test_ibkr_precheck_is_per_account_not_merged(monkeypatch):
+    """另一个账户持有的数量不能拿来放行本账户的卖出（此前合并桶重放会放行并降级）。"""
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        other = BrokerAccount(
+            user_id=1,
+            broker="招商证券",
+            account_name="别的账户",
+            account_number_masked="****9999",
+            base_currency="USD",
+        )
+        account = BrokerAccount(
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 单账户",
+            account_number_masked="****0001",
+            base_currency="USD",
+        )
+        db.add_all([other, account])
+        db.commit()
+        db.add(
+            Transaction(
+                user_id=1,
+                broker_account_id=other.id,
+                symbol="AAPL",
+                market="美股",
+                transaction_type="BUY",
+                quantity=Decimal("100"),
+                price=Decimal("10"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 1, 5),
+                currency="USD",
+            )
+        )
+        db.commit()
+        contents = ibkr_csv(
+            "Transaction History,Data,2026-02-10,U***00001,APPLE INC,卖,AAPL,"
+            "-40.0,15.0,USD,600.0,-1.0,599.0"
+        )
+        with pytest.raises(ValueError, match="IBKR 账户持仓预检失败"):
+            import_ibkr_activity(db, 1, contents, "ibkr.csv", broker_account_id=account.id)
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_ibkr_precheck_names_the_real_cause_for_symbols_outside_the_batch(monkeypatch):
+    """PR #310 评审：预检重放整个账户，本批不涉及的标的超卖也会拦住整批；这时报错不能再说
+    「导入更早的对账单」，要指向库里已有的记录。"""
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = BrokerAccount(
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 存量超卖",
+            account_number_masked="****0001",
+            base_currency="USD",
+        )
+        db.add(account)
+        db.commit()
+        # 存量：MSFT 的买入记在未指定账户，卖出却在 IBKR 账户（绕过写入校验直接落库）
+        db.add_all(
+            [
+                Transaction(
+                    user_id=1,
+                    broker_account_id=None,
+                    symbol="MSFT",
+                    market="美股",
+                    transaction_type="BUY",
+                    quantity=Decimal("10"),
+                    price=Decimal("300"),
+                    fee=Decimal("0"),
+                    transaction_date=date(2025, 6, 2),
+                    currency="USD",
+                ),
+                Transaction(
+                    user_id=1,
+                    broker_account_id=account.id,
+                    symbol="MSFT",
+                    market="美股",
+                    transaction_type="SELL",
+                    quantity=Decimal("10"),
+                    price=Decimal("350"),
+                    fee=Decimal("0"),
+                    transaction_date=date(2025, 9, 1),
+                    currency="USD",
+                ),
+            ]
+        )
+        db.commit()
+        contents = ibkr_csv(
+            "Transaction History,Data,2026-01-05,U***00001,APPLE INC,买,AAPL,"
+            "10.0,10.0,USD,-100.0,-1.0,-101.0"
+        )
+        preview = importer.preview_ibkr_activity(
+            db, 1, contents, "ibkr.csv", broker_account_id=account.id
+        )
+        [message] = [e for e in preview["errors"] if "IBKR 账户持仓预检失败" in e]
+        assert "MSFT" in message and "不在本份对账单里" in message
+        assert "导入更早的对账单" not in message
+    finally:
+        db.rollback()
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_ibkr_precheck_error_carries_the_skipped_relisting_reason(monkeypatch):
+    """PR #296 评审：旧代码按账户重放不成立时不合成转板；新代码的卖出随后被预检拒绝，
+    报错要带上「转板被跳过」的原因，否则只看到「缺买入」而排查方向被带偏。"""
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    _clear_pct_relisting_rules(db)
+    try:
+        seed_security_rule(db, 1, "RELISTING", "01263", "港股", payload=PCT_RELISTING_PAYLOAD)
+        account = BrokerAccount(
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 转板降级",
+            account_number_masked="****0001",
+            base_currency="USD",
+        )
+        db.add(account)
+        db.commit()
+        # 两个桶都持有旧代码，再来一条未指定账户、只填送股数的送股：按账户重放不成立
+        db.add_all(
+            [
+                Transaction(
+                    user_id=1,
+                    broker_account_id=None,
+                    symbol="01263",
+                    market="港股",
+                    transaction_type="BUY",
+                    quantity=Decimal("1000"),
+                    price=Decimal("5"),
+                    fee=Decimal("0"),
+                    transaction_date=date(2025, 10, 9),
+                    currency="HKD",
+                ),
+                Transaction(
+                    user_id=1,
+                    broker_account_id=account.id,
+                    symbol="01263",
+                    market="港股",
+                    transaction_type="BUY",
+                    quantity=Decimal("2000"),
+                    price=Decimal("5"),
+                    fee=Decimal("0"),
+                    transaction_date=date(2025, 10, 9),
+                    currency="HKD",
+                ),
+                CorporateAction(
+                    user_id=1,
+                    broker_account_id=None,
+                    symbol="01263",
+                    market="港股",
+                    action_type="STOCK_DIVIDEND",
+                    ex_date=date(2025, 11, 3),
+                    shares_received=Decimal("100"),
+                    currency="HKD",
+                ),
+            ]
+        )
+        db.commit()
+        contents = ibkr_csv(
+            "Transaction History,Data,2026-05-04,U***00001,PC PARTNER GROUP LTD,"
+            "卖,PCT,-1000.0,1.91,SGD,1495.3963,-1.957325,1493.438975",
+        )
+        preview = importer.preview_ibkr_activity(
+            db, 1, contents, "ibkr-pct.csv", broker_account_id=account.id
+        )
+        [message] = [e for e in preview["errors"] if "IBKR 账户持仓预检失败" in e]
+        assert "PCT" in message and "未自动合成转板交易" in message
+        assert any("未自动合成转板交易" in w for w in preview["warnings"])
+    finally:
+        db.rollback()
+        reset_tables(db, RESET_MODELS)
+        _clear_pct_relisting_rules(db)
+        db.close()
+
+
+def test_ibkr_unsupported_and_invalid_rows_are_archived_and_deduplicated(monkeypatch):
+    """#279 第 2 条：「公司行动」（拆股、分拆）与非法数量/价格的行此前既不归档也不报错，
+    原始流水丢失、事后无法追溯，也没有重导判重锚点。现在带原因归档，重导按重复计。"""
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = BrokerAccount(
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 归档",
+            account_number_masked="****0001",
+            base_currency="USD",
+        )
+        db.add(account)
+        db.commit()
+        contents = ibkr_csv(
+            "Transaction History,Data,2026-01-05,U***00001,APPLE INC,买,AAPL,"
+            "10.0,10.0,USD,-100.0,-1.0,-101.0",
+            "Transaction History,Data,2026-02-02,U***00001,APPLE INC 1 FOR 4 SPLIT,公司行动,AAPL,"
+            "30.0,0,USD,0,0,0",
+            "Transaction History,Data,2026-02-03,U***00001,APPLE INC,买,AAPL,0,10.0,USD,0,0,0",
+        )
+        preview = importer.preview_ibkr_activity(
+            db, 1, contents, "ibkr.csv", broker_account_id=account.id
+        )
+        [warning] = [w for w in preview["warnings"] if "IBKR 公司行动行未自动入账" in w]
+        assert "SPLIT" in warning and "手工补录" in warning
+
+        result = import_ibkr_activity(db, 1, contents, "ibkr.csv", broker_account_id=account.id)
+        reasons = sorted(
+            (flow.activity_type, flow.skip_reason or "", flow.transaction_id is None)
+            for flow in db.query(IbkrActivityFlow).all()
+        )
+        assert reasons == [
+            ("买", "", False),
+            ("买", "invalid", True),
+            ("公司行动", "unsupported", True),
+        ]
+        assert result["skipped_unsupported_rows"] == 1
+        assert any("IBKR 公司行动行未自动入账" in w for w in result["warnings"])
+
+        again = import_ibkr_activity(db, 1, contents, "ibkr.csv", broker_account_id=account.id)
+        assert db.query(IbkrActivityFlow).count() == 3  # 重导不再归档第二份，也不撞唯一约束
+        assert again["imported_transactions"] == 0
+    finally:
+        db.rollback()
+        reset_tables(db, RESET_MODELS)
+        db.close()
+
+
+def test_ibkr_precheck_counts_duplicate_rows_as_part_of_the_statement(monkeypatch):
+    """#312 复审：重导重叠的对账单时，标的的行全按重复处理；「本份对账单里有没有这只」要看全部
+    成交行，不能只看入账行——否则会反过来提示「不在本份对账单里」。"""
+    monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+    db = SessionLocal()
+    reset_tables(db, RESET_MODELS)
+    try:
+        account = BrokerAccount(
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 重叠重导",
+            account_number_masked="****0001",
+            base_currency="USD",
+        )
+        db.add(account)
+        db.commit()
+        # 在 #279 之前导入、当时静默降级的超卖：库里只有这只标的的卖出
+        sell_only = ibkr_csv(
+            "Transaction History,Data,2026-02-10,U***00001,APPLE INC,卖,AAPL,"
+            "-100.0,15.0,USD,1500.0,-1.0,1499.0"
+        )
+        monkeypatch.setattr(
+            importer, "validate_account_positions_before_commit", lambda *a, **k: None
+        )
+        monkeypatch.setattr(importer, "recalculate_holdings", lambda *a, **k: None)
+        import_ibkr_activity(db, 1, sell_only, "old.csv", broker_account_id=account.id)
+        monkeypatch.undo()
+        monkeypatch.setattr(importer, "lookup_tushare_security_name", lambda symbol, market: None)
+
+        preview = importer.preview_ibkr_activity(
+            db, 1, sell_only, "old.csv", broker_account_id=account.id
+        )
+        [message] = [e for e in preview["errors"] if "IBKR 账户持仓预检失败" in e]
+        assert "AAPL" in message and "不在本份对账单里" not in message
+        assert "导入更早的对账单" in message
+    finally:
+        db.rollback()
+        reset_tables(db, RESET_MODELS)
         db.close()
 
 
@@ -1260,9 +1561,7 @@ def test_ibkr_successful_import_keeps_holdings_consistent(monkeypatch):
             "Transaction History,Data,2026-02-10,U***00001,APPLE INC,卖,AAPL,"
             "-40.0,15.0,USD,600.0,-1.0,599.0",
         )
-        result = import_ibkr_activity(
-            db, 1, contents, "ibkr-ok.csv", broker_account_id=account.id
-        )
+        result = import_ibkr_activity(db, 1, contents, "ibkr-ok.csv", broker_account_id=account.id)
 
         assert result["imported_transactions"] == 2
         holding = db.query(Holding).filter_by(user_id=1, symbol="AAPL", market="美股").one()
@@ -1290,14 +1589,18 @@ def test_ibkr_relisting_transfer_is_visible_to_recalculation(monkeypatch):
         # RESET_MODELS 不含 SecurityRule：同文件其它转板用例会留下同键规则，
         # 只清本用例要播的那一条，避免影响它们的前置状态。
         db.query(SecurityRule).filter(
-            SecurityRule.user_id == 1, SecurityRule.rule_type == "RELISTING",
+            SecurityRule.user_id == 1,
+            SecurityRule.rule_type == "RELISTING",
             SecurityRule.symbol == "01263",
         ).delete()
         db.commit()
         seed_security_rule(db, 1, "RELISTING", "01263", "港股", payload=PCT_RELISTING_PAYLOAD)
         account = BrokerAccount(
-            user_id=1, broker="IBKR", account_name="转板账户",
-            account_number_masked="****0001", base_currency="USD",
+            user_id=1,
+            broker="IBKR",
+            account_name="转板账户",
+            account_number_masked="****0001",
+            base_currency="USD",
         )
         db.add(account)
         db.commit()
@@ -1318,14 +1621,14 @@ def test_ibkr_relisting_transfer_is_visible_to_recalculation(monkeypatch):
         assert result["batch_status"] in ("COMPLETED", "PARTIAL")
         new_holding = (
             db.query(Holding)
-            .filter(Holding.user_id == 1, Holding.symbol == "PCT",
-                    Holding.market == "新加坡股")
+            .filter(Holding.user_id == 1, Holding.symbol == "PCT", Holding.market == "新加坡股")
             .one()
         )
         assert new_holding.quantity == Decimal("1000.00000000")
     finally:
         db.query(SecurityRule).filter(
-            SecurityRule.user_id == 1, SecurityRule.rule_type == "RELISTING",
+            SecurityRule.user_id == 1,
+            SecurityRule.rule_type == "RELISTING",
             SecurityRule.symbol == "01263",
         ).delete()
         db.commit()
@@ -1343,8 +1646,11 @@ def test_ibkr_relisting_transfer_is_visible_to_recalculation(monkeypatch):
 
 def _ibkr_account(db, name="IBKR 税行恢复账户"):
     account = BrokerAccount(
-        user_id=1, broker="IBKR", account_name=name,
-        account_number_masked="****0001", base_currency="USD",
+        user_id=1,
+        broker="IBKR",
+        account_name=name,
+        account_number_masked="****0001",
+        base_currency="USD",
     )
     db.add(account)
     db.commit()

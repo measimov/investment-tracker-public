@@ -17,7 +17,6 @@ from app.services import llm_report_scheduler
 from app.services.background_job_store import create_or_get_active_job
 
 
-
 def _cleanup(db):
     db.query(LlmReportMessage).delete()
     db.query(LlmReport).delete()
@@ -106,10 +105,12 @@ def test_client_rejects_truncated_partial_content(monkeypatch):
             200,
             json={
                 "model": "deepseek-flash",
-                "choices": [{
-                    "message": {"content": '{"tags":["估值偏低"],"risk_level":"medium"'},
-                    "finish_reason": "length",
-                }],
+                "choices": [
+                    {
+                        "message": {"content": '{"tags":["估值偏低"],"risk_level":"medium"'},
+                        "finish_reason": "length",
+                    }
+                ],
             },
             request=httpx.Request("POST", url),
         )
@@ -159,11 +160,14 @@ def test_client_rejects_truncated_partial_content(monkeypatch):
 def _run_job(monkeypatch, user_id, completion=None, error=None):
     monkeypatch.setattr(llm_report_jobs, "build_llm_report_input", lambda db, uid: {"meta": {}})
     if error is not None:
+
         def fake_chat(messages, **kwargs):
             raise error
     else:
+
         def fake_chat(messages, **kwargs):
             return completion
+
     monkeypatch.setattr(llm_report_jobs, "chat_completion", fake_chat)
     job = llm_report_jobs.start_llm_report_job(user_id)
     llm_report_jobs.run_llm_report_job(job["id"])
@@ -172,9 +176,13 @@ def _run_job(monkeypatch, user_id, completion=None, error=None):
 
 def test_job_success_creates_report_row(monkeypatch, llm_user):
     job = _run_job(
-        monkeypatch, llm_user,
-        completion={"content": "# 报告", "model": "deepseek-chat",
-                    "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}},
+        monkeypatch,
+        llm_user,
+        completion={
+            "content": "# 报告",
+            "model": "deepseek-chat",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        },
     )
     assert job["status"] == "succeeded"
     assert job["report_id"] is not None
@@ -192,7 +200,8 @@ def test_job_success_creates_report_row(monkeypatch, llm_user):
 
 def test_job_4xx_is_deterministic_failure_without_retry(monkeypatch, llm_user):
     job = _run_job(
-        monkeypatch, llm_user,
+        monkeypatch,
+        llm_user,
         error=llm_client.LLMClientError("bad key", status_code=401),
     )
     assert job["status"] == "failed"
@@ -208,7 +217,8 @@ def test_job_4xx_is_deterministic_failure_without_retry(monkeypatch, llm_user):
 def test_job_truncated_output_is_deterministic_failure(monkeypatch, llm_user):
     """输出被截断（finish_reason=length）：半截报告不落库，也不走 5xx 重试路径。"""
     job = _run_job(
-        monkeypatch, llm_user,
+        monkeypatch,
+        llm_user,
         error=llm_client.LLMClientError("LLM 输出被截断", finish_reason="length"),
     )
     assert job["status"] == "failed"
@@ -224,7 +234,8 @@ def test_job_truncated_output_is_deterministic_failure(monkeypatch, llm_user):
 
 def test_job_5xx_routes_to_retry_path(monkeypatch, llm_user):
     job = _run_job(
-        monkeypatch, llm_user,
+        monkeypatch,
+        llm_user,
         error=llm_client.LLMClientError("upstream down", status_code=503),
     )
     # handle_job_failure：还有剩余尝试次数时回到 queued 等待重试
@@ -274,8 +285,12 @@ async def test_report_crud_ownership_and_chat(monkeypatch, llm_user):
     db = SessionLocal()
     try:
         report = LlmReport(
-            user_id=llm_user, title="投资复盘 2026-07-30", content="# 测试报告",
-            model="deepseek-chat", trigger_source="manual", input_payload={"meta": {}},
+            user_id=llm_user,
+            title="投资复盘 2026-07-30",
+            content="# 测试报告",
+            model="deepseek-chat",
+            trigger_source="manual",
+            input_payload={"meta": {}},
             total_tokens=100,
         )
         db.add(report)
@@ -287,9 +302,13 @@ async def test_report_crud_ownership_and_chat(monkeypatch, llm_user):
 
     monkeypatch.setattr(llm_client.settings, "llm_report_api_key", "sk-test")
     monkeypatch.setattr(
-        api_mod, "chat_completion",
-        lambda messages, **kw: {"content": "回答内容", "model": "deepseek-chat",
-                                "usage": {"total_tokens": 42}},
+        api_mod,
+        "chat_completion",
+        lambda messages, **kw: {
+            "content": "回答内容",
+            "model": "deepseek-chat",
+            "usage": {"total_tokens": 42},
+        },
     )
 
     async with _open_client() as client:
@@ -329,7 +348,8 @@ async def test_report_crud_ownership_and_chat(monkeypatch, llm_user):
 
         # 所有权：admin 拿不到 demo 的报告
         admin_login = await client.post(
-            "/api/auth/token", json={"username": "admin", "password": "wrong"},
+            "/api/auth/token",
+            json={"username": "admin", "password": "wrong"},
         )
         assert admin_login.status_code == 401  # admin 密码未知即不可访问，仅验证隔离前提
 
@@ -358,16 +378,24 @@ async def test_message_cap_returns_409(monkeypatch, llm_user):
     db = SessionLocal()
     try:
         report = LlmReport(
-            user_id=llm_user, title="满额报告", content="x", model="m",
-            trigger_source="manual", input_payload={},
+            user_id=llm_user,
+            title="满额报告",
+            content="x",
+            model="m",
+            trigger_source="manual",
+            input_payload={},
         )
         db.add(report)
         db.flush()
         for i in range(api_mod.MAX_MESSAGES_PER_REPORT):
-            db.add(LlmReportMessage(
-                report_id=report.id, user_id=llm_user,
-                role="user" if i % 2 == 0 else "assistant", content=f"m{i}",
-            ))
+            db.add(
+                LlmReportMessage(
+                    report_id=report.id,
+                    user_id=llm_user,
+                    role="user" if i % 2 == 0 else "assistant",
+                    content=f"m{i}",
+                )
+            )
         db.commit()
         report_id = report.id
     finally:
@@ -391,15 +419,17 @@ async def test_message_cap_returns_409(monkeypatch, llm_user):
 
 def _make_report(db, user_id, created_at):
     report = LlmReport(
-        user_id=user_id, title="t", content="c", model="m",
-        trigger_source="scheduled", input_payload={},
+        user_id=user_id,
+        title="t",
+        content="c",
+        model="m",
+        trigger_source="scheduled",
+        input_payload={},
     )
     db.add(report)
     db.commit()
     # server_default 会覆盖，显式回写创建时间
-    db.query(LlmReport).filter(LlmReport.id == report.id).update(
-        {LlmReport.created_at: created_at}
-    )
+    db.query(LlmReport).filter(LlmReport.id == report.id).update({LlmReport.created_at: created_at})
     db.commit()
 
 
@@ -435,6 +465,35 @@ def test_scheduler_due_matrix(monkeypatch, llm_user):
         db.query(LlmReportSchedule).update({LlmReportSchedule.cadence: "monthly"})
         db.commit()
         assert llm_report_scheduler.enqueue_due_scheduled_reports(now) == 0
+    finally:
+        _cleanup(db)
+        db.close()
+
+
+def test_scheduler_backs_off_after_a_failed_report(monkeypatch, llm_user):
+    """#272：失败不写报告，下一个整点仍「到期」——确定性失败会每小时重烧一份 token。"""
+    import uuid
+
+    monkeypatch.setattr(llm_client.settings, "llm_report_api_key", "sk-test")
+    now = datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc)
+    db = SessionLocal()
+    try:
+        db.add(LlmReportSchedule(user_id=llm_user, cadence="weekly"))
+        db.add(
+            BackgroundJob(
+                id=uuid.uuid4().hex,
+                user_id=llm_user,
+                job_type="llm_report",
+                status="failed",
+                finished_at=now - timedelta(hours=1),
+                error="输出被截断",
+            )
+        )
+        db.commit()
+        assert llm_report_scheduler.enqueue_due_scheduled_reports(now) == 0
+        # 退避期过后照常重试
+        later = now + llm_report_scheduler.FAILURE_BACKOFF
+        assert llm_report_scheduler.enqueue_due_scheduled_reports(later) == 1
     finally:
         _cleanup(db)
         db.close()

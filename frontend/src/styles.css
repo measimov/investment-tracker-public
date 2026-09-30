@@ -440,6 +440,12 @@ body {
   flex-wrap: wrap;
 }
 
+/* 间距由 gap 负责：去掉 Element Plus 的 `.el-button + .el-button { margin-left }`，
+   否则按钮换行/纵向堆叠时后几个按钮左边缩进、与第一个不对齐（#286） */
+.header-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
 /* ── Filter Form ──────────────────────────────────────────────── */
 .filter-form {
   display: flex;

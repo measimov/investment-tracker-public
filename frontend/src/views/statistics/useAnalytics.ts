@@ -10,13 +10,13 @@
 import { computed, reactive, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { presetRangeParams } from '@/utils/dateRange'
 import { EMPTY, formatNumber } from '@/utils/helpers'
 import { pollJobUntilDone, type BackgroundJob } from '@/utils/polling'
 import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR } from '@/styles/tokens'
 import type { HistorySyncJob, PerformanceAnalytics } from './types'
 import { isShortRange, rangeSpanDays, riskFreeText } from './format'
+import { showApiError } from '@/utils/showApiError'
 
 // 基准对比：选择持久化 localStorage；无数据基准降级为标签提示
 const BENCHMARK_STORAGE_KEY = 'statistics.benchmarks'
@@ -93,7 +93,7 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
       state.data = response.data
     } catch (error) {
       if (seq !== requestSeq) return
-      ElMessage.error('加载收益率曲线失败：' + getApiErrorMessage(error))
+      showApiError(error, { prefix: '加载收益率曲线失败' })
     } finally {
       if (seq === requestSeq) {
         state.loading = false
@@ -145,7 +145,7 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
         )
       }
     } catch (error) {
-      ElMessage.error('历史行情同步失败：' + getApiErrorMessage(error))
+      showApiError(error, { prefix: '历史行情同步失败' })
     } finally {
       state.historyRefreshing = false
     }

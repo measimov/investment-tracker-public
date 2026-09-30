@@ -96,6 +96,13 @@ def _performance_warnings(
     union_warning = missing_rate_warning(missing_rates)
     if union_warning:
         warnings.append(union_warning)
+    # 成本未知的期初建仓：期末市值全价计入、投入记 0，年化偏高（PR #301 评审：
+    # methodology_notes 前端不读，只有这里能让它出现在看板上）
+    unknown_cost = (performance.get("account_return") or {}).get("xirr_unknown_cost_count") or 0
+    if unknown_cost:
+        warnings.append(
+            f"年化收益偏高：{unknown_cost} 笔期初建仓成本未知，未计入年化收益的投入，补录成本后才准确。"
+        )
     return warnings, sorted(missing_rates)
 
 

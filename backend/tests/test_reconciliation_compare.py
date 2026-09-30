@@ -41,18 +41,37 @@ RESET_MODELS = (
 )
 
 
-def add_txn(db, *, account_id, txn_type="BUY", quantity="100", price="10",
-            fee="0", txn_date=date(2026, 1, 5), symbol="600000", market="A股",
-            currency="CNY"):
+def add_txn(
+    db,
+    *,
+    account_id,
+    txn_type="BUY",
+    quantity="100",
+    price="10",
+    fee="0",
+    txn_date=date(2026, 1, 5),
+    symbol="600000",
+    market="A股",
+    currency="CNY",
+):
     return add_transaction(
-        db, broker_account_id=account_id, symbol=symbol, name=symbol, market=market,
-        transaction_type=txn_type, quantity=Decimal(quantity), price=Decimal(price),
-        fee=Decimal(fee), transaction_date=txn_date, currency=currency,
+        db,
+        broker_account_id=account_id,
+        symbol=symbol,
+        name=symbol,
+        market=market,
+        transaction_type=txn_type,
+        quantity=Decimal(quantity),
+        price=Decimal(price),
+        fee=Decimal(fee),
+        transaction_date=txn_date,
+        currency=currency,
     )
 
 
-def make_snapshot_via_api(db, account_id, *, snapshot_date=date(2026, 1, 31),
-                          positions=(), cash=None):
+def make_snapshot_via_api(
+    db, account_id, *, snapshot_date=date(2026, 1, 31), positions=(), cash=None
+):
     payload = ReconciliationSnapshotCreate(
         broker_account_id=account_id,
         snapshot_date=snapshot_date,
@@ -68,14 +87,21 @@ def test_matching_snapshot_is_marked_matched():
     try:
         account = make_account(db)
         add_txn(db, account_id=account.id, quantity="100", price="10", fee="5")
-        db.add(CashEvent(
-            user_id=1, broker_account_id=account.id, event_type="DEPOSIT",
-            amount=Decimal("2000"), currency="CNY", event_date=date(2026, 1, 2),
-        ))
+        db.add(
+            CashEvent(
+                user_id=1,
+                broker_account_id=account.id,
+                event_type="DEPOSIT",
+                amount=Decimal("2000"),
+                currency="CNY",
+                event_date=date(2026, 1, 2),
+            )
+        )
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, account.id,
+            db,
+            account.id,
             positions=[{"symbol": "600000", "market": "A股", "quantity": Decimal("100")}],
             # 2000 入金 − (100×10+5) = 995
             cash={"CNY": Decimal("995")},
@@ -100,10 +126,11 @@ def test_mismatches_are_classified_per_item():
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, account.id,
+            db,
+            account.id,
             positions=[
                 {"symbol": "600000", "market": "A股", "quantity": Decimal("120")},  # 数量差
-                {"symbol": "600519", "market": "A股", "quantity": Decimal("10")},   # 系统缺
+                {"symbol": "600519", "market": "A股", "quantity": Decimal("10")},  # 系统缺
                 # 000001 系统有、快照缺
             ],
             cash={"CNY": Decimal("888")},  # 推导为负（无入金），必不匹配
@@ -131,17 +158,25 @@ def test_replay_is_as_of_snapshot_date():
         add_txn(db, account_id=cmb.id, quantity="100", txn_date=date(2026, 1, 5))
         # 快照日之后：又买了 50，并转 30 到 IBKR
         add_txn(db, account_id=cmb.id, quantity="50", txn_date=date(2026, 2, 10))
-        out = add_txn(db, account_id=cmb.id, txn_type="TRANSFER_OUT", quantity="30",
-                      txn_date=date(2026, 2, 15))
-        in_leg = add_txn(db, account_id=ibkr.id, txn_type="TRANSFER_IN", quantity="30",
-                         txn_date=date(2026, 2, 15))
+        out = add_txn(
+            db,
+            account_id=cmb.id,
+            txn_type="TRANSFER_OUT",
+            quantity="30",
+            txn_date=date(2026, 2, 15),
+        )
+        in_leg = add_txn(
+            db,
+            account_id=ibkr.id,
+            txn_type="TRANSFER_IN",
+            quantity="30",
+            txn_date=date(2026, 2, 15),
+        )
         in_leg.linked_transaction_id = out.id
         out.linked_transaction_id = in_leg.id
         db.commit()
 
-        positions, inconsistent = replay_account_positions_asof(
-            db, 1, cmb.id, date(2026, 1, 31)
-        )
+        positions, inconsistent = replay_account_positions_asof(db, 1, cmb.id, date(2026, 1, 31))
         assert inconsistent == []
         assert positions[("600000", "A股")] == Decimal("100")
 
@@ -160,29 +195,70 @@ def test_cash_derivation_covers_events_trades_and_dividends():
     reset_tables(db, RESET_MODELS)
     try:
         account = make_account(db)
-        db.add(CashEvent(
-            user_id=1, broker_account_id=account.id, event_type="DEPOSIT",
-            amount=Decimal("10000"), currency="CNY", event_date=date(2026, 1, 2),
-        ))
-        db.add(CashEvent(
-            user_id=1, broker_account_id=account.id, event_type="FEE",
-            amount=Decimal("15"), currency="CNY", event_date=date(2026, 1, 3),
-        ))
-        add_txn(db, account_id=account.id, quantity="100", price="10", fee="5",
-                txn_date=date(2026, 1, 5))
-        add_txn(db, account_id=account.id, txn_type="SELL", quantity="40", price="12",
-                fee="3", txn_date=date(2026, 1, 10))
-        db.add(CorporateAction(
-            user_id=1, broker_account_id=account.id, symbol="600000", name="600000",
-            market="A股", action_type="CASH_DIVIDEND", ex_date=date(2026, 1, 15),
-            payment_date=date(2026, 1, 20), total_dividend=Decimal("100"),
-            tax_withheld=Decimal("10"), net_dividend=Decimal("90"), currency="CNY",
-        ))
+        db.add(
+            CashEvent(
+                user_id=1,
+                broker_account_id=account.id,
+                event_type="DEPOSIT",
+                amount=Decimal("10000"),
+                currency="CNY",
+                event_date=date(2026, 1, 2),
+            )
+        )
+        db.add(
+            CashEvent(
+                user_id=1,
+                broker_account_id=account.id,
+                event_type="FEE",
+                amount=Decimal("15"),
+                currency="CNY",
+                event_date=date(2026, 1, 3),
+            )
+        )
+        add_txn(
+            db,
+            account_id=account.id,
+            quantity="100",
+            price="10",
+            fee="5",
+            txn_date=date(2026, 1, 5),
+        )
+        add_txn(
+            db,
+            account_id=account.id,
+            txn_type="SELL",
+            quantity="40",
+            price="12",
+            fee="3",
+            txn_date=date(2026, 1, 10),
+        )
+        db.add(
+            CorporateAction(
+                user_id=1,
+                broker_account_id=account.id,
+                symbol="600000",
+                name="600000",
+                market="A股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 1, 15),
+                payment_date=date(2026, 1, 20),
+                total_dividend=Decimal("100"),
+                tax_withheld=Decimal("10"),
+                net_dividend=Decimal("90"),
+                currency="CNY",
+            )
+        )
         # 快照日之后的现金事件不计
-        db.add(CashEvent(
-            user_id=1, broker_account_id=account.id, event_type="WITHDRAWAL",
-            amount=Decimal("5000"), currency="CNY", event_date=date(2026, 2, 5),
-        ))
+        db.add(
+            CashEvent(
+                user_id=1,
+                broker_account_id=account.id,
+                event_type="WITHDRAWAL",
+                amount=Decimal("5000"),
+                currency="CNY",
+                event_date=date(2026, 2, 5),
+            )
+        )
         db.commit()
 
         balances = derive_account_cash_asof(db, 1, account.id, date(2026, 1, 31))
@@ -200,12 +276,12 @@ def test_replay_inconsistent_security_reported_and_mismatched():
         cmb = make_account(db, "CMB")
         add_txn(db, account_id=cmb.id, quantity="100", txn_date=date(2026, 1, 5))
         # NULL 账户超卖 → 该证券按账户重放矛盾
-        add_txn(db, account_id=None, txn_type="SELL", quantity="80",
-                txn_date=date(2026, 1, 10))
+        add_txn(db, account_id=None, txn_type="SELL", quantity="80", txn_date=date(2026, 1, 10))
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, cmb.id,
+            db,
+            cmb.id,
             positions=[{"symbol": "600000", "market": "A股", "quantity": Decimal("100")}],
         )
         assert snapshot.status == "MISMATCHED"
@@ -222,16 +298,23 @@ def test_manual_compare_refreshes_after_ledger_change():
     reset_tables(db, RESET_MODELS)
     try:
         account = make_account(db)
-        db.add(CashEvent(
-            user_id=1, broker_account_id=account.id, event_type="DEPOSIT",
-            amount=Decimal("2000"), currency="CNY", event_date=date(2026, 1, 2),
-        ))
+        db.add(
+            CashEvent(
+                user_id=1,
+                broker_account_id=account.id,
+                event_type="DEPOSIT",
+                amount=Decimal("2000"),
+                currency="CNY",
+                event_date=date(2026, 1, 2),
+            )
+        )
         # 实际买了 100，但只录了 80 —— 快照按真实券商状态录入
         add_txn(db, account_id=account.id, quantity="80")
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, account.id,
+            db,
+            account.id,
             positions=[{"symbol": "600000", "market": "A股", "quantity": Decimal("100")}],
             cash={"CNY": Decimal("1000")},  # 2000 − 100×10
         )
@@ -242,9 +325,7 @@ def test_manual_compare_refreshes_after_ledger_change():
         # 补录漏掉的 20 股（数量与现金同时归位）后手动重比 → MATCHED
         add_txn(db, account_id=account.id, quantity="20", txn_date=date(2026, 1, 6))
         db.commit()
-        refreshed = compare_reconciliation_snapshot(
-            snapshot.id, current_user=get_user(db), db=db
-        )
+        refreshed = compare_reconciliation_snapshot(snapshot.id, current_user=get_user(db), db=db)
         assert refreshed.status == "MATCHED"
         assert refreshed.diff_detail["summary"]["matched"] is True
     finally:
@@ -259,12 +340,15 @@ def test_scoped_snapshot_compares_only_its_market():
     try:
         account = make_account(db)
         add_txn(db, account_id=account.id, symbol="600000", market="A股", quantity="100")
-        add_txn(db, account_id=account.id, symbol="00700", market="港股", quantity="200",
-                currency="HKD")
+        add_txn(
+            db, account_id=account.id, symbol="00700", market="港股", quantity="200", currency="HKD"
+        )
         db.commit()
 
         stock_snapshot = ReconciliationSnapshot(
-            user_id=1, broker_account_id=account.id, snapshot_date=date(2026, 1, 31),
+            user_id=1,
+            broker_account_id=account.id,
+            snapshot_date=date(2026, 1, 31),
             statement_scope="stock",
             positions=[{"symbol": "600000", "market": "A股", "quantity": "100"}],
             cash_balances={"CNY": "12345"},  # 范围内现金，不参与比对
@@ -272,6 +356,7 @@ def test_scoped_snapshot_compares_only_its_market():
         db.add(stock_snapshot)
         db.flush()
         from app.services.reconciliation_service import run_and_store_compare
+
         run_and_store_compare(db, stock_snapshot)
         assert stock_snapshot.status == "MATCHED"
         assert stock_snapshot.diff_detail["summary"]["cash_compared"] is False
@@ -280,7 +365,9 @@ def test_scoped_snapshot_compares_only_its_market():
         assert symbols == ["600000"]
 
         hk_snapshot = ReconciliationSnapshot(
-            user_id=1, broker_account_id=account.id, snapshot_date=date(2026, 1, 31),
+            user_id=1,
+            broker_account_id=account.id,
+            snapshot_date=date(2026, 1, 31),
             statement_scope="hk_connect",
             positions=[{"symbol": "00700", "market": "港股", "quantity": "200"}],
             cash_balances={"HKD": "999"},
@@ -306,7 +393,8 @@ def test_cash_mismatch_blocks_overall_match():
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, account.id,
+            db,
+            account.id,
             positions=[{"symbol": "600000", "market": "A股", "quantity": Decimal("100")}],
             cash={},  # 快照未录现金
         )
@@ -320,7 +408,6 @@ def test_cash_mismatch_blocks_overall_match():
         db.close()
 
 
-
 def test_excluded_securities_are_ignored_on_both_sides():
     """排除清单（如货币基金 511880）：券商快照有、系统无 → 仍 MATCHED，
     且生效的排除项记入 summary.excluded_symbols 供审计。"""
@@ -329,15 +416,26 @@ def test_excluded_securities_are_ignored_on_both_sides():
     try:
         account = make_account(db)
         add_txn(db, account_id=account.id, symbol="600000", quantity="100")
-        db.add(CashEvent(
-            user_id=1, broker_account_id=account.id, event_type="DEPOSIT",
-            amount=Decimal("1000"), currency="CNY", event_date=date(2026, 1, 2),
-        ))
-        db.add(SecurityRule(rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"))
+        db.add(
+            CashEvent(
+                user_id=1,
+                broker_account_id=account.id,
+                event_type="DEPOSIT",
+                amount=Decimal("1000"),
+                currency="CNY",
+                event_date=date(2026, 1, 2),
+            )
+        )
+        db.add(
+            SecurityRule(
+                rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"
+            )
+        )
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, account.id,
+            db,
+            account.id,
             positions=[
                 {"symbol": "600000", "market": "A股", "quantity": Decimal("100")},
                 {"symbol": "511880", "market": "A股", "quantity": Decimal("7000")},
@@ -367,7 +465,8 @@ def test_exclusion_only_matches_exact_symbol_market_key():
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, account.id,
+            db,
+            account.id,
             positions=[{"symbol": "511880", "market": "A股", "quantity": Decimal("7000")}],
         )
         assert snapshot.status == "MISMATCHED"
@@ -387,20 +486,36 @@ def test_excluded_security_replay_inconsistency_does_not_block_matched():
         # 正常标的：账户内自洽
         add_txn(db, account_id=cmb.id, symbol="600000", quantity="100")
         # 排除标的：NULL 账户超卖 → 按账户重放矛盾（AccountReplayError 形态）
-        add_txn(db, account_id=cmb.id, symbol="511880", quantity="100",
-                txn_date=date(2026, 1, 5))
-        add_txn(db, account_id=None, symbol="511880", txn_type="SELL", quantity="80",
-                txn_date=date(2026, 1, 10))
-        db.add(SecurityRule(rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"))
+        add_txn(db, account_id=cmb.id, symbol="511880", quantity="100", txn_date=date(2026, 1, 5))
+        add_txn(
+            db,
+            account_id=None,
+            symbol="511880",
+            txn_type="SELL",
+            quantity="80",
+            txn_date=date(2026, 1, 10),
+        )
+        db.add(
+            SecurityRule(
+                rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"
+            )
+        )
         # 现金闭合（两笔买入共 2000），使整体状态只取决于排除语义是否生效
-        db.add(CashEvent(
-            user_id=1, broker_account_id=cmb.id, event_type="DEPOSIT",
-            amount=Decimal("2000"), currency="CNY", event_date=date(2026, 1, 2),
-        ))
+        db.add(
+            CashEvent(
+                user_id=1,
+                broker_account_id=cmb.id,
+                event_type="DEPOSIT",
+                amount=Decimal("2000"),
+                currency="CNY",
+                event_date=date(2026, 1, 2),
+            )
+        )
         db.commit()
 
         snapshot = make_snapshot_via_api(
-            db, cmb.id,
+            db,
+            cmb.id,
             positions=[{"symbol": "600000", "market": "A股", "quantity": Decimal("100")}],
         )
         assert snapshot.status == "MATCHED"
@@ -428,21 +543,46 @@ def test_settlement_aware_cash_uses_flow_settlement_currency():
     try:
         account = make_account(db, "CMB")
         # 沪港通买入：HKD 记账（qty 1000 × 10 HKD + fee），CNY 实际结算 -9,300.50
-        hk_txn = add_txn(db, account_id=account.id, symbol="00728", market="港股",
-                         quantity="1000", price="10", fee="30",
-                         txn_date=date(2026, 1, 5), currency="HKD")
-        db.add(BrokerFundFlow(
-            user_id=1, broker_account_id=account.id, broker="招商证券",
-            business_name="证券买入", trade_date=date(2026, 1, 5),
-            trade_price=Decimal("10"), trade_quantity=Decimal("1000"),
-            amount=Decimal("-9300.50"), currency="CNY",
-            settlement_rate=Decimal("0.9271"), transaction_id=hk_txn.id,
-            row_hash="s" * 64, created_at=datetime.now(timezone.utc),
-        ))
+        hk_txn = add_txn(
+            db,
+            account_id=account.id,
+            symbol="00728",
+            market="港股",
+            quantity="1000",
+            price="10",
+            fee="30",
+            txn_date=date(2026, 1, 5),
+            currency="HKD",
+        )
+        db.add(
+            BrokerFundFlow(
+                user_id=1,
+                broker_account_id=account.id,
+                broker="招商证券",
+                business_name="证券买入",
+                trade_date=date(2026, 1, 5),
+                trade_price=Decimal("10"),
+                trade_quantity=Decimal("1000"),
+                amount=Decimal("-9300.50"),
+                currency="CNY",
+                settlement_rate=Decimal("0.9271"),
+                transaction_id=hk_txn.id,
+                row_hash="s" * 64,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
         # 普通 A 股买入：无结算流水，按记账口径 qty×price+fee
-        add_txn(db, account_id=account.id, symbol="600000", market="A股",
-                quantity="100", price="10", fee="5",
-                txn_date=date(2026, 1, 6), currency="CNY")
+        add_txn(
+            db,
+            account_id=account.id,
+            symbol="600000",
+            market="A股",
+            quantity="100",
+            price="10",
+            fee="5",
+            txn_date=date(2026, 1, 6),
+            currency="CNY",
+        )
         db.commit()
 
         balances = derive_account_cash_asof(db, 1, account.id, date(2026, 1, 31))
@@ -466,32 +606,64 @@ def test_settlement_cash_eastmoney_uses_gross_minus_detail_fees():
     reset_tables(db, RESET_MODELS)
     try:
         account = make_account(db, "EM")
-        buy = add_txn(db, account_id=account.id, symbol="00700", market="港股",
-                      quantity="100", price="80", fee="20",
-                      txn_date=date(2026, 1, 5), currency="HKD")
-        sell = add_txn(db, account_id=account.id, symbol="00700", market="港股",
-                       quantity="100", price="85", fee="18",
-                       txn_date=date(2026, 1, 20), currency="HKD",
-                       txn_type="SELL")
+        buy = add_txn(
+            db,
+            account_id=account.id,
+            symbol="00700",
+            market="港股",
+            quantity="100",
+            price="80",
+            fee="20",
+            txn_date=date(2026, 1, 5),
+            currency="HKD",
+        )
+        sell = add_txn(
+            db,
+            account_id=account.id,
+            symbol="00700",
+            market="港股",
+            quantity="100",
+            price="85",
+            fee="18",
+            txn_date=date(2026, 1, 20),
+            currency="HKD",
+            txn_type="SELL",
+        )
         common = dict(
-            user_id=1, broker_account_id=account.id, broker="东方财富证券",
-            currency="CNY", settlement_rate=Decimal("0.92"),
+            user_id=1,
+            broker_account_id=account.id,
+            broker="东方财富证券",
+            currency="CNY",
+            settlement_rate=Decimal("0.92"),
             created_at=datetime.now(timezone.utc),
         )
         # BUY：成交额 8000（无符号），费用 22 → CNY 现金 -8022
-        db.add(BrokerFundFlow(
-            business_name="证券买入", trade_date=date(2026, 1, 5),
-            amount=Decimal("8000"), commission=Decimal("15"),
-            stamp_tax=Decimal("5"), handling_fee=Decimal("2"),
-            transaction_id=buy.id, row_hash="e" * 64, **common,
-        ))
+        db.add(
+            BrokerFundFlow(
+                business_name="证券买入",
+                trade_date=date(2026, 1, 5),
+                amount=Decimal("8000"),
+                commission=Decimal("15"),
+                stamp_tax=Decimal("5"),
+                handling_fee=Decimal("2"),
+                transaction_id=buy.id,
+                row_hash="e" * 64,
+                **common,
+            )
+        )
         # SELL：成交额 8500，费用 30 → CNY 现金 +8470
-        db.add(BrokerFundFlow(
-            business_name="证券卖出", trade_date=date(2026, 1, 20),
-            amount=Decimal("8500"), commission=Decimal("20"),
-            stamp_tax=Decimal("10"),
-            transaction_id=sell.id, row_hash="f" * 64, **common,
-        ))
+        db.add(
+            BrokerFundFlow(
+                business_name="证券卖出",
+                trade_date=date(2026, 1, 20),
+                amount=Decimal("8500"),
+                commission=Decimal("20"),
+                stamp_tax=Decimal("10"),
+                transaction_id=sell.id,
+                row_hash="f" * 64,
+                **common,
+            )
+        )
         db.commit()
 
         balances = derive_account_cash_asof(db, 1, account.id, date(2026, 1, 31))
@@ -513,16 +685,32 @@ def test_settlement_cash_unknown_broker_falls_back_to_booking_currency():
     reset_tables(db, RESET_MODELS)
     try:
         account = make_account(db, "OTHER")
-        txn = add_txn(db, account_id=account.id, symbol="00700", market="港股",
-                      quantity="100", price="80", fee="20",
-                      txn_date=date(2026, 1, 5), currency="HKD")
-        db.add(BrokerFundFlow(
-            user_id=1, broker_account_id=account.id, broker="某未来券商",
-            business_name="证券买入", trade_date=date(2026, 1, 5),
-            amount=Decimal("-8022"), currency="CNY",
-            settlement_rate=Decimal("0.92"), transaction_id=txn.id,
-            row_hash="g" * 64, created_at=datetime.now(timezone.utc),
-        ))
+        txn = add_txn(
+            db,
+            account_id=account.id,
+            symbol="00700",
+            market="港股",
+            quantity="100",
+            price="80",
+            fee="20",
+            txn_date=date(2026, 1, 5),
+            currency="HKD",
+        )
+        db.add(
+            BrokerFundFlow(
+                user_id=1,
+                broker_account_id=account.id,
+                broker="某未来券商",
+                business_name="证券买入",
+                trade_date=date(2026, 1, 5),
+                amount=Decimal("-8022"),
+                currency="CNY",
+                settlement_rate=Decimal("0.92"),
+                transaction_id=txn.id,
+                row_hash="g" * 64,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
         db.commit()
 
         balances = derive_account_cash_asof(db, 1, account.id, date(2026, 1, 31))

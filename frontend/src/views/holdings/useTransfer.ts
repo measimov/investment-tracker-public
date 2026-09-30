@@ -4,6 +4,7 @@
  * feature 所有，这里只消费）。
  */
 
+import { UNASSIGNED_ACCOUNT } from '@/utils/labels'
 import { computed, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useTransactionsStore } from '@/stores/transactions'
@@ -59,7 +60,7 @@ export function useTransfer({
       return
     }
     const targetAccountId =
-      form.to_broker_account_id === 'unassigned' ? null : form.to_broker_account_id
+      form.to_broker_account_id === UNASSIGNED_ACCOUNT ? null : form.to_broker_account_id
     if (targetAccountId === form.from_broker_account_id) {
       ElMessage.warning('请选择不同的转入账户')
       return

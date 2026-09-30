@@ -28,23 +28,20 @@ def _validate_broker_account(db: Session, user_id: int, account_id: int) -> None
         BrokerAccount,
         account_id,
         user_id,
-        "Broker account not found",
+        "券商账户不存在",
     )
 
 
 def _json_fields(data: dict) -> dict:
     if "cash_balances" in data and data["cash_balances"] is not None:
         data["cash_balances"] = {
-            currency: str(amount)
-            for currency, amount in data["cash_balances"].items()
+            currency: str(amount) for currency, amount in data["cash_balances"].items()
         }
     if "positions" in data and data["positions"] is not None:
         json_positions = []
         for position in data["positions"]:
             position_data = (
-                position.model_dump()
-                if hasattr(position, "model_dump")
-                else dict(position)
+                position.model_dump() if hasattr(position, "model_dump") else dict(position)
             )
             position_data["quantity"] = str(position_data["quantity"])
             json_positions.append(position_data)
@@ -56,10 +53,7 @@ def _ensure_snapshot_is_mutable(snapshot: ReconciliationSnapshot) -> None:
     if snapshot.import_batch_id is not None:
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Imported reconciliation snapshots cannot be modified or deleted; "
-                "correct the source import instead."
-            ),
+            detail=("导入的对账快照不能修改或删除；请更正来源对账单后重新导入"),
         )
 
 
@@ -96,9 +90,7 @@ def list_reconciliation_snapshots(
         ReconciliationSnapshot.user_id == current_user.id
     )
     if broker_account_id is not None:
-        query = query.filter(
-            ReconciliationSnapshot.broker_account_id == broker_account_id
-        )
+        query = query.filter(ReconciliationSnapshot.broker_account_id == broker_account_id)
     if status:
         query = query.filter(ReconciliationSnapshot.status == status)
     if start_date:
@@ -127,7 +119,7 @@ def get_reconciliation_snapshot(
         ReconciliationSnapshot,
         snapshot_id,
         current_user.id,
-        "Reconciliation snapshot not found",
+        "对账快照不存在",
     )
 
 
@@ -143,7 +135,7 @@ def update_reconciliation_snapshot(
         ReconciliationSnapshot,
         snapshot_id,
         current_user.id,
-        "Reconciliation snapshot not found",
+        "对账快照不存在",
     )
     _ensure_snapshot_is_mutable(db_snapshot)
     update_data = snapshot_update.model_dump(exclude_unset=True)
@@ -171,7 +163,7 @@ def compare_reconciliation_snapshot(
         ReconciliationSnapshot,
         snapshot_id,
         current_user.id,
-        "Reconciliation snapshot not found",
+        "对账快照不存在",
     )
     return run_and_store_compare(db, db_snapshot)
 
@@ -187,7 +179,7 @@ def delete_reconciliation_snapshot(
         ReconciliationSnapshot,
         snapshot_id,
         current_user.id,
-        "Reconciliation snapshot not found",
+        "对账快照不存在",
     )
     _ensure_snapshot_is_mutable(db_snapshot)
     db.delete(db_snapshot)

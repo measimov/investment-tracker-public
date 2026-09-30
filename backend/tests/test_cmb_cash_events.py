@@ -46,8 +46,13 @@ _TEST_BUSINESS_MAP = {
 
 def _cash_flow(row_number, row_hash, business_name, amount, currency="CNY"):
     flow = parsed_flow(
-        row_number=row_number, row_hash=row_hash, business_name=business_name,
-        trade_date=date(2026, 3, 2), quantity="0", price="0", amount=amount,
+        row_number=row_number,
+        row_hash=row_hash,
+        business_name=business_name,
+        trade_date=date(2026, 3, 2),
+        quantity="0",
+        price="0",
+        amount=amount,
     )
     flow.security_code = ""
     flow.currency = currency
@@ -57,8 +62,12 @@ def _cash_flow(row_number, row_hash, business_name, amount, currency="CNY"):
 
 def _make_account(db):
     return make_shared_account(
-        db, "招商证券", account_name="招商测试账户",
-        base_currency="CNY", account_number_masked="****A123", commit=True,
+        db,
+        "招商证券",
+        account_name="招商测试账户",
+        base_currency="CNY",
+        account_number_masked="****A123",
+        commit=True,
     )
 
 
@@ -75,7 +84,8 @@ def test_import_books_cash_business_rows(monkeypatch):
             _cash_flow(5, "d" * 64, "拆出质押购回", "100005.5"),
         ]
         monkeypatch.setattr(
-            importer, "parse_rows",
+            importer,
+            "parse_rows",
             lambda contents, filename, **kwargs: (flows, {"银行转存": 1}, 4, []),
         )
         result = import_cmb_fund_flow(db, 1, b"%PDF", "cmb.pdf", broker_account_id=account.id)
@@ -103,20 +113,35 @@ def test_sign_mismatch_row_is_never_booked(monkeypatch):
 
     from tests.test_cmb_fund_flow_importer import pdf_dataframe_row
 
-    dataframe = pd.DataFrame([
-        pdf_dataframe_row(
-            证券代码="", 证券名称="", 业务名称="银行转存",
-            成交价格="0.00", 成交数量="0.00", PDF成交金额="0.00",
-            发生金额="-100.00",  # 转存应为流入，却为负
-            佣金="0.00", 其他费用="0.00", 股东代码="8888A123",
-        ),
-        pdf_dataframe_row(
-            证券代码="", 证券名称="", 业务名称="银行转存",
-            成交价格="0.00", 成交数量="0.00", PDF成交金额="0.00",
-            发生金额="200.00", 流水号="OK1",
-            佣金="0.00", 其他费用="0.00", 股东代码="8888A123",
-        ),
-    ])
+    dataframe = pd.DataFrame(
+        [
+            pdf_dataframe_row(
+                证券代码="",
+                证券名称="",
+                业务名称="银行转存",
+                成交价格="0.00",
+                成交数量="0.00",
+                PDF成交金额="0.00",
+                发生金额="-100.00",  # 转存应为流入，却为负
+                佣金="0.00",
+                其他费用="0.00",
+                股东代码="8888A123",
+            ),
+            pdf_dataframe_row(
+                证券代码="",
+                证券名称="",
+                业务名称="银行转存",
+                成交价格="0.00",
+                成交数量="0.00",
+                PDF成交金额="0.00",
+                发生金额="200.00",
+                流水号="OK1",
+                佣金="0.00",
+                其他费用="0.00",
+                股东代码="8888A123",
+            ),
+        ]
+    )
     monkeypatch.setattr(importer, "read_cmb_fund_flow", lambda contents, filename: dataframe)
 
     # parse 阶段：产出阻断错误
@@ -139,8 +164,7 @@ def test_sign_mismatch_row_is_never_booked(monkeypatch):
         seed_security_rule(
             db, 1, "CMB_CASH_BUSINESS", "银行转存", payload={"event_type": "DEPOSIT"}
         )
-        result = import_cmb_fund_flow(db, 1, b"%PDF", "statement.pdf",
-                                      broker_account_id=account.id)
+        result = import_cmb_fund_flow(db, 1, b"%PDF", "statement.pdf", broker_account_id=account.id)
         assert result["imported_cash_events"] == 1
         events = db.query(CashEvent).all()
         assert len(events) == 1
@@ -152,4 +176,3 @@ def test_sign_mismatch_row_is_never_booked(monkeypatch):
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
-

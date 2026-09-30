@@ -1,7 +1,7 @@
 """admin 持仓端点的响应契约（issue #137 子项 4）。
 
-- 不存在的 user_id 是 404，不是空列表（后者与"该用户没有持仓"混为一谈，
-  与 GET /api/users/{user_id} 的行为也不一致）——修复前本用例红。
+- 不存在的 user_id 是 404，不是空列表（后者与"该用户没有持仓"混为一谈）
+  ——修复前本用例红。
 - username 只属于 admin 视图（AdminHoldingResponse）；普通持仓响应不再携带
   恒为 null 的 username 字段。
 """

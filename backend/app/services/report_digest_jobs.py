@@ -54,9 +54,12 @@ def execute_report_backfill_job(claimed: Dict[str, Any]) -> None:
 
         if market not in REPORT_MARKETS:
             update_job(
-                job_id, JOB_TYPE, status="failed",
+                job_id,
+                JOB_TYPE,
+                status="failed",
                 error=f"{market} 暂不支持财报摘要（支持：{'/'.join(REPORT_MARKETS)}）",
-                required_status="running", required_attempt_count=attempt,
+                required_status="running",
+                required_attempt_count=attempt,
             )
             return
         # 单次最多 4 份年报（PDF 下载 + 解析 + LLM），远超 5 分钟租约：
@@ -74,22 +77,32 @@ def execute_report_backfill_job(claimed: Dict[str, Any]) -> None:
             # 已生成的结果照常保留在 data.result 里
             message = str(fatal.get("message") or fatal.get("kind"))
             update_job(
-                job_id, JOB_TYPE, status="failed", error=message[:300],
+                job_id,
+                JOB_TYPE,
+                status="failed",
+                error=message[:300],
                 data_updates={"result": result},
-                required_status="running", required_attempt_count=attempt,
+                required_status="running",
+                required_attempt_count=attempt,
             )
             return
         update_job(
-            job_id, JOB_TYPE, status="succeeded",
+            job_id,
+            JOB_TYPE,
+            status="succeeded",
             data_updates={"result": result},
-            required_status="running", required_attempt_count=attempt,
+            required_status="running",
+            required_attempt_count=attempt,
         )
     finally:
         db.close()
 
 
 def run_report_backfill_job(job_id: str) -> None:
-    run_job_inline(job_id, JOB_TYPE, execute_report_backfill_job, label="Report backfill", logger=logger)
+    run_job_inline(
+        job_id, JOB_TYPE, execute_report_backfill_job, label="Report backfill", logger=logger
+    )
+
 
 def get_report_backfill_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

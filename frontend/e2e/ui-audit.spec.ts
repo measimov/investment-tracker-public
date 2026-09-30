@@ -108,14 +108,18 @@ async function ensureSeeded(request: APIRequestContext): Promise<string> {
   })
   expect(created.ok()).toBeTruthy()
   const token = await login(request, { username: AUDIT_USERNAME, password: AUDIT_PASSWORD })
-  await seed(request, token)
+  await seed(request, token, adminToken)
   return token
 }
 
-async function seed(request: APIRequestContext, token: string) {
+async function seed(request: APIRequestContext, token: string, adminToken: string) {
   const headers = { Authorization: `Bearer ${token}` }
-  const post = async (path: string, data: Record<string, unknown>) => {
-    const response = await request.post(`http://127.0.0.1:18000${path}`, { headers, data })
+  const post = async (path: string, data: Record<string, unknown>, asAdmin = false) => {
+    const response = await request.post(`http://127.0.0.1:18000${path}`, {
+      // 全局汇率仅管理员可写（#277）
+      headers: asAdmin ? { Authorization: `Bearer ${adminToken}` } : headers,
+      data
+    })
     // 幂等重跑：唯一键冲突可容忍
     expect([200, 201, 409]).toContain(response.status())
     return response
@@ -126,12 +130,11 @@ async function seed(request: APIRequestContext, token: string) {
     ['HKD', 0.92],
     ['SGD', 5.3]
   ] as const) {
-    await post('/api/exchange-rates', {
-      from_currency: from,
-      to_currency: 'CNY',
-      rate,
-      effective_date: '2026-01-01'
-    })
+    await post(
+      '/api/exchange-rates',
+      { from_currency: from, to_currency: 'CNY', rate, effective_date: '2026-01-01' },
+      true
+    )
   }
 
   const txns: Array<Record<string, unknown>> = [
@@ -378,6 +381,16 @@ test('capture admin screenshots', async ({ page, request }) => {
       await page.waitForTimeout(500)
       await page.screenshot({ path: `${OUT}/${name}-${wname}.png`, fullPage: true })
     }
+    // 汇率写入仅管理员（#277）：添加汇率对话框只在管理员会话里拍
+    await page.goto('/exchange-rates')
+    await page.waitForLoadState('networkidle')
+    await page
+      .getByRole('button', { name: /手动添加|添加汇率/ })
+      .first()
+      .click()
+    await page.waitForTimeout(400)
+    await page.screenshot({ path: `${OUT}/dlg-exchange-rate-${wname}.png`, fullPage: false })
+    await page.keyboard.press('Escape')
   }
 })
 
@@ -408,15 +421,6 @@ test('capture dialog screenshots', async ({ page, request }) => {
       open: async (p) =>
         p
           .getByRole('button', { name: /输入价格|手动价格/ })
-          .first()
-          .click()
-    },
-    {
-      name: 'dlg-exchange-rate',
-      route: '/exchange-rates',
-      open: async (p) =>
-        p
-          .getByRole('button', { name: /手动添加|添加汇率/ })
           .first()
           .click()
     },

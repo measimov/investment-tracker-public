@@ -122,7 +122,7 @@ DEFAULT_SYMBOLS_RUN_AFTER = dt_time(7, 30)
 
 
 def parse_run_after(value: Optional[str]) -> dt_time:
-    """"HH:MM" → time；格式不对退回 07:30（并告警），不让一个配置笔误停掉每日采集。"""
+    """ "HH:MM" → time；格式不对退回 07:30（并告警），不让一个配置笔误停掉每日采集。"""
     text_value = (value or "").strip()
     try:
         hour, minute = text_value.split(":")
@@ -147,9 +147,7 @@ def symbols_request_pending(state: XueqiuCollectorState) -> bool:
     return started is None or state.symbols_run_requested_at > started
 
 
-def todays_symbols_pending(
-    state: XueqiuCollectorState, today: date
-) -> Optional[Dict[str, Any]]:
+def todays_symbols_pending(state: XueqiuCollectorState, today: date) -> Optional[Dict[str, Any]]:
     """当天的待重试记录；别的业务日留下的一律视为无（新的一天从整轮开始）。"""
     pending = state.symbols_pending
     if isinstance(pending, dict) and pending.get("date") == today.isoformat():
@@ -308,7 +306,7 @@ def mark_author(db: Session, result: AuthorResult) -> None:
     author.last_message = (
         result.error
         or f"候选帖 {result.candidate_count}，命中回复 {result.reply_count}，"
-           f"主页发言 {result.utterance_count}"
+        f"主页发言 {result.utterance_count}"
     )[:500]
     db.commit()
 
@@ -329,7 +327,9 @@ def heartbeat_path() -> Path:
     return Path(settings.xueqiu_collector_heartbeat_file)
 
 
-def heartbeat_age_seconds(path: Optional[Path] = None, *, now: Optional[float] = None) -> Optional[float]:
+def heartbeat_age_seconds(
+    path: Optional[Path] = None, *, now: Optional[float] = None
+) -> Optional[float]:
     target = path or heartbeat_path()
     try:
         mtime = target.stat().st_mtime
@@ -342,8 +342,14 @@ class Heartbeat:
     """每次请求/轮询点调用 `beat()`：文件每次 touch，状态行最多每 db_interval 秒写一次
     （独立短连接，不掺进采集会话的事务）。`enabled=False`（dry-run）时什么都不写。"""
 
-    def __init__(self, engine: Optional[Engine], *, path: Optional[Path] = None,
-                 db_interval: float = 60.0, enabled: bool = True) -> None:
+    def __init__(
+        self,
+        engine: Optional[Engine],
+        *,
+        path: Optional[Path] = None,
+        db_interval: float = 60.0,
+        enabled: bool = True,
+    ) -> None:
         self.engine = engine
         self.path = path or heartbeat_path()
         self.db_interval = db_interval

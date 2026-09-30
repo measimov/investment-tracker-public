@@ -45,19 +45,33 @@ RESET_MODELS = (
 
 
 def _rate(db, currency, rate):
-    db.add(ExchangeRate(
-        from_currency=currency, to_currency="CNY", rate=Decimal(rate),
-        effective_date=date(2020, 1, 1), is_active=True,
-    ))
+    db.add(
+        ExchangeRate(
+            from_currency=currency,
+            to_currency="CNY",
+            rate=Decimal(rate),
+            effective_date=date(2020, 1, 1),
+            is_active=True,
+        )
+    )
 
 
 def _buy(db, account_id, symbol, market, quantity, price, currency, name=None):
-    db.add(Transaction(
-        user_id=1, broker_account_id=account_id, symbol=symbol, name=name or symbol,
-        market=market, transaction_type="BUY", quantity=Decimal(quantity),
-        price=Decimal(price), fee=Decimal("0"),
-        transaction_date=date(2026, 1, 5), currency=currency,
-    ))
+    db.add(
+        Transaction(
+            user_id=1,
+            broker_account_id=account_id,
+            symbol=symbol,
+            name=name or symbol,
+            market=market,
+            transaction_type="BUY",
+            quantity=Decimal(quantity),
+            price=Decimal(price),
+            fee=Decimal("0"),
+            transaction_date=date(2026, 1, 5),
+            currency=currency,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +129,9 @@ def test_cost_breakdown_merges_accounts_and_sorts_by_cny_cost():
 
         # 排行的 CNY 成本与概览同口径：有汇率的行加总 == summary 的 CNY 总成本
         summary = get_summary_statistics(db, 1)
-        priced_total = sum(row["total_cost_cny"] for row in rows if row["total_cost_cny"] is not None)
+        priced_total = sum(
+            row["total_cost_cny"] for row in rows if row["total_cost_cny"] is not None
+        )
         assert round(priced_total, 2) == summary["total_invested_cny"]
         assert summary["missing_rate_currencies"] == ["THB"]
     finally:
@@ -145,13 +161,15 @@ def test_win_rate_is_none_without_samples_and_unchanged_with_samples():
     assert flat["sample_count"] == 0
     assert flat["win_rate"] is None
 
-    mixed = calculate_trade_skill_metrics({
-        "closed_trades": [
-            {"realized_pnl_cny": 30, "matched_cost_cny": 100},
-            {"realized_pnl_cny": -10, "matched_cost_cny": 100},
-            {"realized_pnl_cny": 20, "matched_cost_cny": 100},
-        ]
-    })
+    mixed = calculate_trade_skill_metrics(
+        {
+            "closed_trades": [
+                {"realized_pnl_cny": 30, "matched_cost_cny": 100},
+                {"realized_pnl_cny": -10, "matched_cost_cny": 100},
+                {"realized_pnl_cny": 20, "matched_cost_cny": 100},
+            ]
+        }
+    )
     assert mixed["sample_count"] == 3
     assert round(mixed["win_rate"], 6) == round(200 / 3, 6)
     assert mixed["payoff_ratio"] == 2.5
@@ -179,18 +197,37 @@ def test_snapshot_aggregates_realized_and_dividend_missing_rates():
         _buy(db, account.id, "600000", "A股", "100", "10", "CNY")
         # 已清仓的 THB 标的：已实现盈亏缺汇率
         _buy(db, account.id, "PTT", "泰股", "100", "10", "THB")
-        db.add(Transaction(
-            user_id=1, broker_account_id=account.id, symbol="PTT", name="PTT", market="泰股",
-            transaction_type="SELL", quantity=Decimal("100"), price=Decimal("12"),
-            fee=Decimal("0"), transaction_date=date(2026, 1, 8), currency="THB",
-        ))
+        db.add(
+            Transaction(
+                user_id=1,
+                broker_account_id=account.id,
+                symbol="PTT",
+                name="PTT",
+                market="泰股",
+                transaction_type="SELL",
+                quantity=Decimal("100"),
+                price=Decimal("12"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 1, 8),
+                currency="THB",
+            )
+        )
         # SGD 股息：股息汇总缺汇率
-        db.add(CorporateAction(
-            user_id=1, symbol="D05", name="DBS", market="新加坡股", action_type="CASH_DIVIDEND",
-            ex_date=date(2026, 1, 9), payment_date=date(2026, 1, 9),
-            total_dividend=Decimal("50"), tax_withheld=Decimal("0"),
-            net_dividend=Decimal("50"), currency="SGD",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=1,
+                symbol="D05",
+                name="DBS",
+                market="新加坡股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 1, 9),
+                payment_date=date(2026, 1, 9),
+                total_dividend=Decimal("50"),
+                tax_withheld=Decimal("0"),
+                net_dividend=Decimal("50"),
+                currency="SGD",
+            )
+        )
         db.commit()
         recalculate_holdings(db, 1, "600000", "A股")
         recalculate_holdings(db, 1, "PTT", "泰股")
@@ -209,11 +246,13 @@ def test_snapshot_aggregates_realized_and_dividend_missing_rates():
         # 数值不受影响：与直接计算的业绩摘要一致
         prices = snapshot["prices"]["map"]
         direct = calculate_performance_summary(db, 1, prices)
-        assert snapshot["performance"]["realized_pnl"]["realized_pnl_cny"] == (
-            direct["realized_pnl"]["realized_pnl_cny"]
+        assert (
+            snapshot["performance"]["realized_pnl"]["realized_pnl_cny"]
+            == (direct["realized_pnl"]["realized_pnl_cny"])
         )
-        assert snapshot["performance"]["account_return"]["total_return_cny"] == (
-            direct["account_return"]["total_return_cny"]
+        assert (
+            snapshot["performance"]["account_return"]["total_return_cny"]
+            == (direct["account_return"]["total_return_cny"])
         )
     finally:
         reset_tables(db, RESET_MODELS)

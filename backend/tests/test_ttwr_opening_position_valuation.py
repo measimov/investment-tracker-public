@@ -20,16 +20,27 @@ RATES = ExchangeRateLookup([])
 
 def _buy(symbol, market, quantity, price, on, txn_id=1, txn_type="BUY"):
     return SimpleNamespace(
-        id=txn_id, symbol=symbol, market=market, transaction_type=txn_type,
-        quantity=Decimal(quantity), price=Decimal(price), fee=Decimal("0"),
-        currency="CNY", transaction_date=on,
+        id=txn_id,
+        symbol=symbol,
+        market=market,
+        transaction_type=txn_type,
+        quantity=Decimal(quantity),
+        price=Decimal(price),
+        fee=Decimal("0"),
+        currency="CNY",
+        transaction_date=on,
     )
 
 
 def _opening(symbol, market, quantity, on, **cost):
     return SimpleNamespace(
-        action_type="OPENING_POSITION", symbol=symbol, market=market, ex_date=on,
-        payment_date=None, currency="CNY", adjusted_quantity=Decimal(quantity),
+        action_type="OPENING_POSITION",
+        symbol=symbol,
+        market=market,
+        ex_date=on,
+        payment_date=None,
+        currency="CNY",
+        adjusted_quantity=Decimal(quantity),
         adjusted_cost_per_share=cost.get("cost_per_share"),
         cost_basis_adjustment=cost.get("total_cost"),
         broker_account_id=1,
@@ -38,8 +49,16 @@ def _opening(symbol, market, quantity, on, **cost):
 
 def _curve(transactions, actions, price_maps, current_prices, *, start, end, today):
     return build_return_curve(
-        transactions, actions, price_maps, {A: "CNY", B: "CNY"}, current_prices,
-        start, end, rate_lookup=RATES, fallback_currency=lambda market: "CNY", today=today,
+        transactions,
+        actions,
+        price_maps,
+        {A: "CNY", B: "CNY"},
+        current_prices,
+        start,
+        end,
+        rate_lookup=RATES,
+        fallback_currency=lambda market: "CNY",
+        today=today,
     )
 
 
@@ -50,7 +69,9 @@ def test_unknown_cost_inflow_uses_the_same_snapshot_price_as_market_value():
         [_opening(*B, "100", D2)],
         {A: {D1: Decimal("10"), D2: Decimal("10")}},
         {"161226:A股": 10.0},
-        start=D1, end=D2, today=D2,
+        start=D1,
+        end=D2,
+        today=D2,
     )
     last = curve[-1]
     assert last["cash_in_cny"] == pytest.approx(1000.0)
@@ -69,7 +90,9 @@ def test_unpriceable_inflow_is_settled_on_the_first_priced_day_not_as_return():
         [_opening(*B, "100", D2)],
         {A: {D1: Decimal("10"), D2: Decimal("10"), D3: Decimal("10")}, B: {D3: Decimal("8")}},
         {},
-        start=D1, end=D3, today=date(2026, 3, 10),
+        start=D1,
+        end=D3,
+        today=date(2026, 3, 10),
     )
     by_date = {point["date"]: point for point in curve}
     arrival, priced = by_date[D2.isoformat()], by_date[D3.isoformat()]
@@ -90,9 +113,13 @@ def test_never_priced_inflow_stays_out_of_both_inflow_and_market_value():
         [_opening(*B, "100", D2)],
         {A: {D1: Decimal("10"), D2: Decimal("10")}},
         {},
-        start=D1, end=D2, today=date(2026, 3, 10),
+        start=D1,
+        end=D2,
+        today=date(2026, 3, 10),
     )
-    assert curve[-1]["cash_in_cny"] == 0.0 and curve[-1]["market_value_cny"] == pytest.approx(1000.0)
+    assert curve[-1]["cash_in_cny"] == 0.0 and curve[-1]["market_value_cny"] == pytest.approx(
+        1000.0
+    )
     assert curve[-1]["cumulative_return_rate"] == pytest.approx(0.0)
     (event,) = quality["estimated_inflow_events"]
     assert event["valued"] is False and event["valued_on"] is None
@@ -104,7 +131,9 @@ def test_known_cost_inflow_is_booked_at_cost_regardless_of_price():
         [_opening(*B, "100", D2, cost_per_share=Decimal("6"))],
         {A: {D1: Decimal("10"), D2: Decimal("10")}},
         {"161226:A股": 10.0},
-        start=D1, end=D2, today=D2,
+        start=D1,
+        end=D2,
+        today=D2,
     )
     last = curve[-1]
     assert last["cash_in_cny"] == pytest.approx(600.0)
@@ -124,7 +153,9 @@ def test_unknown_cost_lot_cleared_before_the_window_is_not_settled_as_inflow():
         [_opening(*B, "100", D1)],
         {A: {D1: Decimal("10"), D2: Decimal("10"), D3: Decimal("10")}},
         {},
-        start=D3, end=D3, today=date(2026, 3, 10),
+        start=D3,
+        end=D3,
+        today=date(2026, 3, 10),
     )
     (point,) = curve
     assert point["cash_in_cny"] == 0.0 and point["market_value_cny"] == pytest.approx(1000.0)
@@ -140,14 +171,20 @@ def test_partially_sold_unknown_cost_lot_is_in_opening_market_value_via_sale_pri
         [_opening(*B, "100", D1)],
         {A: {D1: Decimal("10"), D2: Decimal("10"), D3: Decimal("10")}, B: {D3: Decimal("10")}},
         {},
-        start=D3, end=D3, today=date(2026, 3, 10),
+        start=D3,
+        end=D3,
+        today=date(2026, 3, 10),
     )
     (point,) = curve
     assert quality["opening_market_value_cny"] == pytest.approx(1600.0)
     assert point["cash_in_cny"] == 0.0 and point["market_value_cny"] == pytest.approx(1600.0)
     assert point["daily_return_rate"] == pytest.approx(0.0)
     (event,) = quality["estimated_inflow_events"]
-    assert event["valued"] is True and event["valuation_price"] == 10.0 and event["valued_on"] == D3.isoformat()
+    assert (
+        event["valued"] is True
+        and event["valuation_price"] == 10.0
+        and event["valued_on"] == D3.isoformat()
+    )
 
 
 def test_unknown_cost_lot_still_held_and_unpriced_at_start_is_settled_when_priced():
@@ -157,7 +194,9 @@ def test_unknown_cost_lot_still_held_and_unpriced_at_start_is_settled_when_price
         [_opening(*B, "100", D2)],
         {A: {D1: Decimal("10"), D3: Decimal("10"), D4: Decimal("10")}, B: {D4: Decimal("8")}},
         {},
-        start=D3, end=D4, today=date(2026, 3, 10),
+        start=D3,
+        end=D4,
+        today=date(2026, 3, 10),
     )
     by_date = {point["date"]: point for point in curve}
     assert quality["opening_unpriced_positions"] == [{"symbol": "161226", "market": "A股"}]
@@ -175,7 +214,9 @@ def test_unknown_cost_lot_priced_by_history_before_start_is_not_deferred():
         [_opening(*B, "100", D1)],
         {A: {D1: Decimal("10"), D3: Decimal("10")}, B: {D2: Decimal("8"), D3: Decimal("8")}},
         {},
-        start=D3, end=D3, today=date(2026, 3, 10),
+        start=D3,
+        end=D3,
+        today=date(2026, 3, 10),
     )
     (point,) = curve
     assert quality["opening_market_value_cny"] == pytest.approx(1800.0)
@@ -185,15 +226,27 @@ def test_unknown_cost_lot_priced_by_history_before_start_is_not_deferred():
 
 def _split(symbol, market, ratio, on):
     return SimpleNamespace(
-        action_type="STOCK_SPLIT", symbol=symbol, market=market, ex_date=on, payment_date=None,
-        currency="CNY", split_ratio=ratio, new_shares=None,
+        action_type="STOCK_SPLIT",
+        symbol=symbol,
+        market=market,
+        ex_date=on,
+        payment_date=None,
+        currency="CNY",
+        split_ratio=ratio,
+        new_shares=None,
     )
 
 
 def _bonus(symbol, market, ratio, on):
     return SimpleNamespace(
-        action_type="BONUS_ISSUE", symbol=symbol, market=market, ex_date=on, payment_date=None,
-        currency="CNY", distribution_ratio=ratio, shares_received=None,
+        action_type="BONUS_ISSUE",
+        symbol=symbol,
+        market=market,
+        ex_date=on,
+        payment_date=None,
+        currency="CNY",
+        distribution_ratio=ratio,
+        shares_received=None,
     )
 
 
@@ -203,9 +256,14 @@ def test_deferred_quantity_follows_a_split_inside_the_window():
     curve, _, quality = _curve(
         [_buy(*A, "100", "10", D1)],
         [_opening(*B, "100", D2), _split(*B, "1:2", D3)],
-        {A: {D1: Decimal("10"), D2: Decimal("10"), D3: Decimal("10"), D4: Decimal("10")}, B: {D4: Decimal("5")}},
+        {
+            A: {D1: Decimal("10"), D2: Decimal("10"), D3: Decimal("10"), D4: Decimal("10")},
+            B: {D4: Decimal("5")},
+        },
         {},
-        start=D1, end=D4, today=date(2026, 3, 10),
+        start=D1,
+        end=D4,
+        today=date(2026, 3, 10),
     )
     priced = {point["date"]: point for point in curve}[D4.isoformat()]
     assert priced["cash_in_cny"] == pytest.approx(1000.0)
@@ -224,7 +282,9 @@ def test_deferred_quantity_follows_split_and_bonus_before_the_window():
         [_opening(*B, "100", D0), _split(*B, "1:2", D1), _bonus(*B, "10:1", D2)],
         {A: {D0: Decimal("10"), D3: Decimal("10"), D4: Decimal("10")}, B: {D4: Decimal("5")}},
         {},
-        start=D3, end=D4, today=date(2026, 3, 10),
+        start=D3,
+        end=D4,
+        today=date(2026, 3, 10),
     )
     assert quality["opening_unpriced_positions"] == [{"symbol": "161226", "market": "A股"}]
     priced = {point["date"]: point for point in curve}[D4.isoformat()]
@@ -242,7 +302,9 @@ def test_deferred_quantity_after_split_is_still_capped_by_remaining_position():
         [_opening(*B, "100", D0), _split(*B, "1:2", D1)],
         {A: {D0: Decimal("10"), D3: Decimal("10")}, B: {D3: Decimal("5")}},
         {},
-        start=D3, end=D3, today=date(2026, 3, 10),
+        start=D3,
+        end=D3,
+        today=date(2026, 3, 10),
     )
     (point,) = curve
     assert quality["opening_market_value_cny"] == pytest.approx(1800.0)  # 1000 + 160×5

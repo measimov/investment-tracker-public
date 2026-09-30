@@ -66,7 +66,7 @@ def to_cny_or_track_missing(
     走的是 `except ValueError: total += amount`——把 USD/HKD 原值直接混进
     CNY 总额，无 warning 无标记。系统对 stale price、oversell、缺行情都有
     可见的数据质量信号，唯独缺汇率会静默污染最核心的 CNY 汇总；而
-    refresh_rates_if_stale 保证 USD/HKD/SGD 常在，兜底几乎只在新币种/新库时
+    汇率周期刷新（periodic_refresh_rates）保证 USD/HKD/SGD 常在，兜底几乎只在新币种/新库时
     触发——正是最不该静默出错的时刻。
 
     统一到股息汇总早已采用的正确口径：剔除 + 记录，由调用方汇报给前端。

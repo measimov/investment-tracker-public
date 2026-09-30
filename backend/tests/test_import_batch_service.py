@@ -85,9 +85,7 @@ def test_identical_source_file_cannot_be_booked_into_two_accounts():
         assert same_account_batch.status == "PENDING"
     finally:
         db.rollback()
-        db.query(ImportBatch).filter(ImportBatch.broker == tag).delete(
-            synchronize_session=False
-        )
+        db.query(ImportBatch).filter(ImportBatch.broker == tag).delete(synchronize_session=False)
         db.query(BrokerAccount).filter(BrokerAccount.broker == tag).delete(
             synchronize_session=False
         )
@@ -162,9 +160,7 @@ def test_import_batch_separates_source_archival_from_canonical_booking():
         assert "not booked to a canonical event" in completed.error_message
     finally:
         db.rollback()
-        db.query(ImportBatch).filter(ImportBatch.broker == tag).delete(
-            synchronize_session=False
-        )
+        db.query(ImportBatch).filter(ImportBatch.broker == tag).delete(synchronize_session=False)
         db.query(BrokerAccount).filter(BrokerAccount.broker == tag).delete(
             synchronize_session=False
         )

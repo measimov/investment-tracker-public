@@ -52,20 +52,31 @@ _CN_SECTION_TITLES: Dict[str, List[List[str]]] = {
     "business": [
         ["公司业务概要", "公司業務概要"],
         [
-            "业务概要", "業務概要", "业务回顾", "業務回顧", "主营业务", "主營業務",
+            "业务概要",
+            "業務概要",
+            "业务回顾",
+            "業務回顧",
+            "主营业务",
+            "主營業務",
             # 港股二次上市的中概股年报是 20-F 的中文翻译版（实测京东 09618）：
             # 业务章节叫「有關本公司的資料」（Item 4 的直译）
-            "有關本公司的資料", "有關公司的資料",
+            "有關本公司的資料",
+            "有關公司的資料",
         ],
         # 港股多数无独立"业务概要"节，业务与战略写在主席报告（致股东信）里
         ["主席報告", "主席报告"],
     ],
     "mdna": [
         [
-            "管理层讨论与分析", "管理層討論及分析", "管理層討論與分析", "管理层讨论及分析",
+            "管理层讨论与分析",
+            "管理層討論及分析",
+            "管理層討論與分析",
+            "管理层讨论及分析",
             # 20-F 翻译版的 MD&A（Item 5 的直译，"與/及""前景/展望"均有变体）
-            "營運與財務回顧及前景", "營運及財務回顧及前景",
-            "經營及財務回顧及展望", "經營及財務回顧與展望",
+            "營運與財務回顧及前景",
+            "營運及財務回顧及前景",
+            "經營及財務回顧及展望",
+            "經營及財務回顧與展望",
         ],
         ["经营情况讨论与分析", "經營情況討論與分析", "管理层讨论", "管理層討論"],
         ["董事会报告", "董事會報告"],
@@ -92,29 +103,75 @@ _CN_PROFILE_TITLES: List[List[str]] = [
 _SECTION_SIGNALS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "business": {
         "positive": (
-            "主营业务", "主營業務", "经营模式", "經營模式", "行业情况", "行業情況",
-            "核心竞争力", "核心競爭力", "业务回顾", "業務回顧", "产品", "產品",
-            "商业模式", "商業模式", "行业格局", "行業格局",
+            "主营业务",
+            "主營業務",
+            "经营模式",
+            "經營模式",
+            "行业情况",
+            "行業情況",
+            "核心竞争力",
+            "核心競爭力",
+            "业务回顾",
+            "業務回顧",
+            "产品",
+            "產品",
+            "商业模式",
+            "商業模式",
+            "行业格局",
+            "行業格局",
         ),
         "negative": (
-            "注册地址", "註冊地址", "办公地址", "辦公地址", "股票简称", "股票簡稱",
-            "信息披露媒体", "資訊披露", "联系人和联系方式", "聯繫人",
-            "会计师事务所办公地址", "公司网址", "電子信箱",
+            "注册地址",
+            "註冊地址",
+            "办公地址",
+            "辦公地址",
+            "股票简称",
+            "股票簡稱",
+            "信息披露媒体",
+            "資訊披露",
+            "联系人和联系方式",
+            "聯繫人",
+            "会计师事务所办公地址",
+            "公司网址",
+            "電子信箱",
         ),
     },
     "mdna": {
         "positive": (
-            "营业收入", "營業收入", "毛利率", "主营业务分析", "主營業務分析",
-            "主营构成", "主營構成", "前五名客户", "前五大客戶", "经营情况",
-            "經營情況", "同比", "报告期内", "報告期內", "收益", "分部",
+            "营业收入",
+            "營業收入",
+            "毛利率",
+            "主营业务分析",
+            "主營業務分析",
+            "主营构成",
+            "主營構成",
+            "前五名客户",
+            "前五大客戶",
+            "经营情况",
+            "經營情況",
+            "同比",
+            "报告期内",
+            "報告期內",
+            "收益",
+            "分部",
         ),
         "negative": ("本节所述内容详见", "本節所述內容詳見"),
     },
     "company_profile": {"positive": ("股票简称", "股票簡稱", "注册地址"), "negative": ()},
     "risk_factors": {
         "positive": (
-            "风险", "風險", "不确定", "不確定", "可能导致", "可能導致",
-            "监管", "監管", "竞争", "競爭", "汇率", "匯率",
+            "风险",
+            "風險",
+            "不确定",
+            "不確定",
+            "可能导致",
+            "可能導致",
+            "监管",
+            "監管",
+            "竞争",
+            "競爭",
+            "汇率",
+            "匯率",
         ),
         "negative": ("风险管理架构", "風險管理架構", "内部监控", "內部監控"),
     },
@@ -126,22 +183,39 @@ _SECTION_SIGNALS: Dict[str, Dict[str, Tuple[str, ...]]] = {
 _SECTION_SIGNALS_EN: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "business": {
         "positive": (
-            "our business", "segment", "products", "customers", "competition",
-            "operations", "revenue", "market",
+            "our business",
+            "segment",
+            "products",
+            "customers",
+            "competition",
+            "operations",
+            "revenue",
+            "market",
         ),
         "negative": ("table of contents", "incorporated by reference"),
     },
     "mdna": {
         "positive": (
-            "results of operations", "compared to", "revenue", "gross margin",
-            "operating expenses", "cash flow", "liquidity", "fiscal",
+            "results of operations",
+            "compared to",
+            "revenue",
+            "gross margin",
+            "operating expenses",
+            "cash flow",
+            "liquidity",
+            "fiscal",
         ),
         "negative": ("incorporated by reference",),
     },
     "risk_factors": {
         "positive": (
-            "we may", "could adversely", "risks relating", "our business",
-            "regulatory", "competition", "uncertain",
+            "we may",
+            "could adversely",
+            "risks relating",
+            "our business",
+            "regulatory",
+            "competition",
+            "uncertain",
         ),
         "negative": ("table of contents",),
     },
@@ -172,9 +246,7 @@ def score_section(name: str, text: str) -> Tuple[float, List[str]]:
     回退链的推进判据。`boilerplate_profile` 标记专门锁住"业务概要抽成公司
     登记信息页"这个缺陷：正向命中率极低且负向特征密集时判定抽错了。
     """
-    variants = [
-        table[name] for table in (_SECTION_SIGNALS, _SECTION_SIGNALS_EN) if name in table
-    ]
+    variants = [table[name] for table in (_SECTION_SIGNALS, _SECTION_SIGNALS_EN) if name in table]
     if not variants or not text:
         return 1.0, []
     # 中英各评一次取高者：中文报告几乎不命中英文词，反之亦然
@@ -182,9 +254,7 @@ def score_section(name: str, text: str) -> Tuple[float, List[str]]:
     return max(scored, key=lambda item: item[0])
 
 
-def _score_with(
-    signals: Dict[str, Tuple[str, ...]], text: str
-) -> Tuple[float, List[str]]:
+def _score_with(signals: Dict[str, Tuple[str, ...]], text: str) -> Tuple[float, List[str]]:
     sample = text[:20_000].lower()  # 只看头部：章节主题在开头就该显现
     positive = sum(1 for word in signals["positive"] if word.lower() in sample)
     negative = sum(1 for word in signals["negative"] if word.lower() in sample)
@@ -245,21 +315,51 @@ def _find_section_by_headers(text: str, title_tiers: List[List[str]]) -> Optiona
 # 页眉公司名污染（实测招行：`18 第三章 管理层讨论与分析`）。
 _BOUNDARY_TITLES: Tuple[str, ...] = (
     # A股
-    "公司简介和主要财务指标", "公司业务概要", "管理层讨论与分析", "经营情况讨论与分析",
-    "重要事项", "股份变动及股东情况", "优先股相关情况", "董事、监事、高级管理人员",
-    "公司治理", "环境和社会责任", "财务报告", "备查文件目录", "董事会报告", "监事会报告",
+    "公司简介和主要财务指标",
+    "公司业务概要",
+    "管理层讨论与分析",
+    "经营情况讨论与分析",
+    "重要事项",
+    "股份变动及股东情况",
+    "优先股相关情况",
+    "董事、监事、高级管理人员",
+    "公司治理",
+    "环境和社会责任",
+    "财务报告",
+    "备查文件目录",
+    "董事会报告",
+    "监事会报告",
     # 港股（繁体）
-    "公司資料", "財務概要", "主席報告", "管理層討論及分析", "管理層討論與分析",
+    "公司資料",
+    "財務概要",
+    "主席報告",
+    "管理層討論及分析",
+    "管理層討論與分析",
     # 港股二次上市（20-F 中文翻译版）的顶层章节。**标题必须取自真实固件的
     # 独立行**（_heading_occurrences 是整行精确匹配）：此前按 20-F 英文目录
     # 猜成「董事及高級管理人員」「主要股東」，一个都没命中，MD&A 越过下一章
     # 一路吃到「財務資料」，把治理/薪酬/持股 20k 字符当成 MD&A 缓存
-    "有關本公司的資料", "營運與財務回顧及前景", "風險因素概要",
-    "董事、高級管理人員和員工", "主要股東及關聯交易", "財務資料",
-    "業務回顧及展望", "業務回顧", "董事及高級管理層", "董事會報告", "企業管治報告",
-    "環境、社會及管治報告", "獨立核數師報告", "綜合收益表", "綜合全面收益表",
-    "綜合財務狀況表", "綜合權益變動表", "綜合現金流量表", "綜合財務報表附註",
-    "五年財務概要", "釋義",
+    "有關本公司的資料",
+    "營運與財務回顧及前景",
+    "風險因素概要",
+    "董事、高級管理人員和員工",
+    "主要股東及關聯交易",
+    "財務資料",
+    "業務回顧及展望",
+    "業務回顧",
+    "董事及高級管理層",
+    "董事會報告",
+    "企業管治報告",
+    "環境、社會及管治報告",
+    "獨立核數師報告",
+    "綜合收益表",
+    "綜合全面收益表",
+    "綜合財務狀況表",
+    "綜合權益變動表",
+    "綜合現金流量表",
+    "綜合財務報表附註",
+    "五年財務概要",
+    "釋義",
 )
 _BOUNDARY_TITLE_SET = frozenset(_BOUNDARY_TITLES)
 
@@ -343,7 +443,7 @@ def _find_section_by_bare_heading(
         # `主席報告` 章内），此时重复的页眉写的是章节名而非它自己
         skip = _running_header_titles(occurrences, start, toc_end)
         section_end = len(line_normalized)
-        for next_start, _, next_title in occurrences[index + 1:]:
+        for next_start, _, next_title in occurrences[index + 1 :]:
             if next_title not in skip:
                 section_end = next_start
                 break
@@ -390,7 +490,7 @@ def _find_section_by_subsection_heading(
                     continue
                 end = min(end, next_start)
                 break
-            body = line_normalized[match.start():end]
+            body = line_normalized[match.start() : end]
             if len(body.strip()) >= 200:
                 return body
     return None
@@ -420,7 +520,7 @@ def _find_section_by_toc(text: str, titles: List[str]) -> Optional[str]:
     for position, (page_no, title_text) in enumerate(entries):
         if any(title in title_text for title in titles):
             start_page = page_no
-            for next_page, _ in entries[position + 1:]:
+            for next_page, _ in entries[position + 1 :]:
                 if next_page > page_no:
                     end_page = next_page
                     break
@@ -492,10 +592,10 @@ def _find_section_by_keyword(text: str, keywords: List[str]) -> Optional[str]:
         for start, _, title in occurrences:
             if start <= position or title in skip:
                 continue  # 未到起点，或本章页眉的重复出现
-            return text[position:min(start, position + KEYWORD_WINDOW_CHARS)]
+            return text[position : min(start, position + KEYWORD_WINDOW_CHARS)]
         # 保底窗口仍限长：这是"不知道章节边界在哪"的情况，取无限长
         # 只会把后续所有章节都吞进来
-        return text[position:position + KEYWORD_WINDOW_CHARS]
+        return text[position : position + KEYWORD_WINDOW_CHARS]
     return None
 
 
@@ -557,22 +657,26 @@ def _extract_one(
     body_start = _body_start_offset(line_normalized)
     if name == "risk_factors":
         # 只认独占一行的小节标题，**不设关键词盲窗兜底**：抽不到就是没披露
-        attempts = [(
-            "subsection_heading",
-            lambda: _find_section_by_subsection_heading(
-                line_normalized, _flatten(title_tiers), body_start=body_start
-            ),
-        )]
+        attempts = [
+            (
+                "subsection_heading",
+                lambda: _find_section_by_subsection_heading(
+                    line_normalized, _flatten(title_tiers), body_start=body_start
+                ),
+            )
+        ]
     else:
         attempts = [
             ("section_title", lambda: _find_section_by_headers(line_normalized, title_tiers)),
-            ("bare_heading", lambda: _find_section_by_bare_heading(
-                line_normalized, _flatten(title_tiers), body_start=body_start
-            )),
+            (
+                "bare_heading",
+                lambda: _find_section_by_bare_heading(
+                    line_normalized, _flatten(title_tiers), body_start=body_start
+                ),
+            ),
             ("toc_pages", lambda: _find_section_by_toc(text, _flatten(title_tiers))),
             # 关键词窗口依赖原文 \x0c 跳过目录页
-            ("keyword_window",
-             lambda: _find_section_by_keyword(text, _flatten(title_tiers))),
+            ("keyword_window", lambda: _find_section_by_keyword(text, _flatten(title_tiers))),
         ]
     # 风险章节没有"低置信也先用着"这一说：它只有一条定位路径，达不到阈值
     # 就是没定位到。返回低置信结果的话 _ensure_section 照样落库并送去摘要。
@@ -585,8 +689,11 @@ def _extract_one(
         body, truncated = _truncate(extracted)
         confidence, flags = score_section(name, body)
         result = SectionResult(
-            text=body, locator=locator, truncated=truncated,
-            confidence=confidence, quality_flags=tuple(flags),
+            text=body,
+            locator=locator,
+            truncated=truncated,
+            confidence=confidence,
+            quality_flags=tuple(flags),
         )
         if confidence >= SECTION_MIN_CONFIDENCE:
             return result
@@ -596,7 +703,9 @@ def _extract_one(
     if fallback is not None and allow_low_confidence:
         # 三级全部低置信：如实返回并标记，由调用方决定是否使用
         return SectionResult(
-            text=fallback.text, locator=fallback.locator, truncated=fallback.truncated,
+            text=fallback.text,
+            locator=fallback.locator,
+            truncated=fallback.truncated,
             confidence=fallback.confidence,
             quality_flags=tuple([*fallback.quality_flags, "low_confidence"]),
         )
@@ -615,14 +724,10 @@ def extract_cn_sections(text: str) -> Dict[str, Optional[SectionResult]]:
     line_normalized = text.replace("\x0c", "\n")
     results: Dict[str, Optional[SectionResult]] = {}
     for section_name, title_tiers in _CN_SECTION_TITLES.items():
-        results[section_name] = _extract_one(
-            section_name, line_normalized, text, title_tiers
-        )
+        results[section_name] = _extract_one(section_name, line_normalized, text, title_tiers)
     # 公司登记信息页：只在业务概要缺失时才有价值，且标签必须如实
     if results.get("business") is None:
-        profile = _extract_one(
-            "company_profile", line_normalized, text, _CN_PROFILE_TITLES
-        )
+        profile = _extract_one("company_profile", line_normalized, text, _CN_PROFILE_TITLES)
         if profile is not None:
             results["company_profile"] = profile
     if bilingual:
@@ -641,9 +746,7 @@ def pages_to_text(page_texts: List[str]) -> str:
 # 美股 10-K（HTML → 文本 → Item 定位）
 # ---------------------------------------------------------------------------
 
-_HTML_BLOCK_TAGS_RE = re.compile(
-    r"</?(?:p|div|tr|table|br|h[1-6]|li)[^>]*>", re.IGNORECASE
-)
+_HTML_BLOCK_TAGS_RE = re.compile(r"</?(?:p|div|tr|table|br|h[1-6]|li)[^>]*>", re.IGNORECASE)
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 # 整块剔除（**连同内容**）：这些块里的文本不是正文，只剥标签会让它们的
 # 文本节点混进来。iXBRL filing 的 <ix:header> 尤其毒——实测 PDD 20-F 剥完
@@ -654,10 +757,18 @@ _HTML_DROP_BLOCKS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _HTML_ENTITY = {
-    "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
-    "&#160;": " ", "&#8217;": "'", "&#8220;": '"', "&#8221;": '"',
-    "&#8211;": "-", "&#8212;": "-",
+    "&nbsp;": " ",
+    "&amp;": "&",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&#160;": " ",
+    "&#8217;": "'",
+    "&#8220;": '"',
+    "&#8221;": '"',
+    "&#8211;": "-",
+    "&#8212;": "-",
 }
+
 
 # 目标 Item：起始标题 → 正文标题关键词 → 终止标题候选。
 # 20-F（外国私人发行人，中概股几乎全是它）与 10-K 的 Item 编号完全不同：
@@ -682,31 +793,37 @@ _RISK_FACTORS = r"\s*".join((_spaced("risk"), _spaced("factors")))
 _US_FORM_ITEMS: Dict[str, Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]] = {
     "10-K": {
         "business": (
-            rf"^[ \t]*{_ITEM}\s*1\s*[\.:—-]", ("business",),
+            rf"^[ \t]*{_ITEM}\s*1\s*[\.:—-]",
+            ("business",),
             (rf"^[ \t]*{_ITEM}\s*1a\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*2\s*[\.:—-]"),
         ),
         "risk_factors": (
-            rf"^[ \t]*{_ITEM}\s*1a\s*[\.:—-]", ("risk factors",),
+            rf"^[ \t]*{_ITEM}\s*1a\s*[\.:—-]",
+            ("risk factors",),
             (rf"^[ \t]*{_ITEM}\s*1b\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*2\s*[\.:—-]"),
         ),
         "mdna": (
-            rf"^[ \t]*{_ITEM}\s*7\s*[\.:—-]", ("management's discussion", "management s discussion"),
+            rf"^[ \t]*{_ITEM}\s*7\s*[\.:—-]",
+            ("management's discussion", "management s discussion"),
             (rf"^[ \t]*{_ITEM}\s*7a\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*8\s*[\.:—-]"),
         ),
     },
     "20-F": {
         "business": (
-            rf"^[ \t]*{_ITEM}\s*4\s*[\.:—-]", ("information on the company",),
+            rf"^[ \t]*{_ITEM}\s*4\s*[\.:—-]",
+            ("information on the company",),
             (rf"^[ \t]*{_ITEM}\s*4a\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*5\s*[\.:—-]"),
         ),
         # 风险因素在 Item 3.D 之下；先认 "D. Risk Factors" 小节标题，
         # 认不到才退回整个 Item 3（含选录财务数据，噪声但不致命）
         "risk_factors": (
-            rf"^[ \t]*[a-e]\s*[\.:]\s*{_RISK_FACTORS}", ("risk factors",),
+            rf"^[ \t]*[a-e]\s*[\.:]\s*{_RISK_FACTORS}",
+            ("risk factors",),
             (rf"^[ \t]*{_ITEM}\s*4\s*[\.:—-]",),
         ),
         "mdna": (
-            rf"^[ \t]*{_ITEM}\s*5\s*[\.:—-]", ("operating and financial review",),
+            rf"^[ \t]*{_ITEM}\s*5\s*[\.:—-]",
+            ("operating and financial review",),
             (rf"^[ \t]*{_ITEM}\s*6\s*[\.:—-]",),
         ),
     },
@@ -715,7 +832,6 @@ _US_FORM_ITEMS: Dict[str, Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]
 _US_FORM_ALIASES = {"20-F/A": "20-F", "10-K/A": "10-K", "10-K405": "10-K"}
 
 US_ITEM_MIN_CHARS = 500
-
 
 
 def html_to_text(html: str) -> str:
@@ -738,18 +854,16 @@ def _us_item_candidates(
     for start_match in re.finditer(start_pattern, lower, re.MULTILINE):
         end, bounded = len(text), False
         for end_pattern in end_patterns:
-            end_match = re.search(end_pattern, lower[start_match.end():], re.MULTILINE)
+            end_match = re.search(end_pattern, lower[start_match.end() :], re.MULTILINE)
             if end_match:
                 end = min(end, start_match.end() + end_match.start())
                 bounded = True
                 break
-        candidates.append((text[start_match.start():end], bounded))
+        candidates.append((text[start_match.start() : end], bounded))
     return candidates
 
 
-def extract_us_items(
-    html: str, *, form_type: str = "10-K"
-) -> Dict[str, Optional[SectionResult]]:
+def extract_us_items(html: str, *, form_type: str = "10-K") -> Dict[str, Optional[SectionResult]]:
     """10-K/20-F 抽取 business / risk_factors / mdna。
 
     Item 标题在目录与正文各出现一次。**不能简单取最长者**——终止标题因排版
@@ -766,9 +880,7 @@ def extract_us_items(
     for name, (start_pattern, title_hints, end_patterns) in specs.items():
         candidates = [
             (body, bounded)
-            for body, bounded in _us_item_candidates(
-                text, lower, start_pattern, end_patterns
-            )
+            for body, bounded in _us_item_candidates(text, lower, start_pattern, end_patterns)
             if len(body.strip()) >= US_ITEM_MIN_CHARS
         ]
         bounded_only = [body for body, bounded in candidates if bounded]
@@ -781,18 +893,18 @@ def extract_us_items(
         # 标题文字同样可能被 iXBRL 拆开（`OPERATING AND FINAN CIAL`），
         # 用空格容忍模式匹配而不是子串比对
         patterns = [_spaced_phrase(hint) for hint in title_hints]
-        titled = [
-            body for body in pool
-            if any(pattern.search(body[:300]) for pattern in patterns)
-        ]
+        titled = [body for body in pool if any(pattern.search(body[:300]) for pattern in patterns)]
         body = max(titled or pool, key=len)
         body, truncated = _truncate(body)
         confidence, flags = score_section(name, body)
         if not bounded_only:
             flags = [*flags, "unbounded_item"]
         results[name] = SectionResult(
-            text=body, locator="item_heading", truncated=truncated,
-            confidence=confidence, quality_flags=tuple(flags),
+            text=body,
+            locator="item_heading",
+            truncated=truncated,
+            confidence=confidence,
+            quality_flags=tuple(flags),
         )
     return results
 
@@ -807,14 +919,34 @@ _CN_SUBSECTION_RE = re.compile(
 
 # 小节权重：0 = 对 digest 九字段零贡献，可整节丢弃
 _SUBSECTION_WEIGHTS: Tuple[Tuple[str, int], ...] = (
-    ("主营业务分析", 3), ("主營業務分析", 3), ("主营构成", 3), ("主營構成", 3),
-    ("经营情况讨论与分析", 3), ("經營情況討論與分析", 3), ("市場回顧", 3),
-    ("公司未来发展的展望", 3), ("未來展望", 3), ("展望", 3),
-    ("风险因素", 3), ("風險因素", 3), ("可能面对的风险", 3), ("主要風險", 3),
-    ("核心竞争力", 2), ("核心競爭力", 2), ("行业格局和趋势", 2), ("行業格局", 2),
-    ("业务回顾", 2), ("業務回顧", 2), ("财务回顾", 2), ("財務回顧", 2),
-    ("资产及负债状况", 1), ("投资状况", 1), ("非标准审计意见", 1),
-    ("募集资金", 0), ("主要控股参股公司", 0), ("主要子公司", 0),
+    ("主营业务分析", 3),
+    ("主營業務分析", 3),
+    ("主营构成", 3),
+    ("主營構成", 3),
+    ("经营情况讨论与分析", 3),
+    ("經營情況討論與分析", 3),
+    ("市場回顧", 3),
+    ("公司未来发展的展望", 3),
+    ("未來展望", 3),
+    ("展望", 3),
+    ("风险因素", 3),
+    ("風險因素", 3),
+    ("可能面对的风险", 3),
+    ("主要風險", 3),
+    ("核心竞争力", 2),
+    ("核心競爭力", 2),
+    ("行业格局和趋势", 2),
+    ("行業格局", 2),
+    ("业务回顾", 2),
+    ("業務回顧", 2),
+    ("财务回顾", 2),
+    ("財務回顧", 2),
+    ("资产及负债状况", 1),
+    ("投资状况", 1),
+    ("非标准审计意见", 1),
+    ("募集资金", 0),
+    ("主要控股参股公司", 0),
+    ("主要子公司", 0),
 )
 
 OMISSION_TEMPLATE = "……[已省略小节：{names}]……"
@@ -848,7 +980,10 @@ def _subsection_weight(title: str) -> int:
 
 # 章节间的预算权重：digest 九个字段里六个来自 mdna
 SECTION_BUDGET_WEIGHTS: Dict[str, int] = {
-    "mdna": 3, "business": 2, "risk_factors": 2, "company_profile": 1,
+    "mdna": 3,
+    "business": 2,
+    "risk_factors": 2,
+    "company_profile": 1,
 }
 SECTION_MIN_BUDGET = 1_200
 
@@ -885,9 +1020,7 @@ def share_budget(sizes: Dict[str, int], total: int) -> Dict[str, int]:
                 satisfied.add(name)
         if not satisfied:
             for name in pending:
-                quota[name] += int(
-                    snapshot * SECTION_BUDGET_WEIGHTS.get(name, 1) / weight_sum
-                )
+                quota[name] += int(snapshot * SECTION_BUDGET_WEIGHTS.get(name, 1) / weight_sum)
             break
         pending = [name for name in pending if name not in satisfied]
     return quota
@@ -934,9 +1067,7 @@ def _allocate_quota(candidates: List[dict], total: int) -> Dict[int, int]:
                 satisfied.add(candidate["order"])
         if not satisfied:  # 谁都装不满：按权重切分，注水结束
             for candidate in pending:
-                quota[candidate["order"]] += int(
-                    snapshot * candidate["weight"] / weight_sum
-                )
+                quota[candidate["order"]] += int(snapshot * candidate["weight"] / weight_sum)
             break
         pending = [c for c in pending if c["order"] not in satisfied]
     return quota
@@ -957,7 +1088,7 @@ def _fit_block(body: str, limit: int, title: str, *, keep_head: bool) -> str:
     if not keep_head:
         return marker + body[-room:]
     head = int(room * 0.6)
-    return body[:head] + marker + body[-(room - head):]
+    return body[:head] + marker + body[-(room - head) :]
 
 
 def budget_section(text: str, *, budget: int) -> Tuple[str, BudgetMeta]:
@@ -982,10 +1113,14 @@ def budget_section(text: str, *, budget: int) -> Tuple[str, BudgetMeta]:
             start = match.start()
             end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
             title = match.group("title").strip()
-            blocks.append({
-                "order": index, "title": title, "body": text[start:end],
-                "weight": _subsection_weight(title),
-            })
+            blocks.append(
+                {
+                    "order": index,
+                    "title": title,
+                    "body": text[start:end],
+                    "weight": _subsection_weight(title),
+                }
+            )
         preamble = text[: matches[0].start()]
         reserve = _marker_reserve(blocks)
         # 末块单独留额度：只按权重装箱时，一个超预算的高权重块会把余量吃光，
@@ -993,9 +1128,7 @@ def budget_section(text: str, *, budget: int) -> Tuple[str, BudgetMeta]:
         tail_block = blocks[-1]
         tail_floor = min(
             len(tail_block["body"]),
-            max(budget // _TAIL_FLOOR_RATIO, _TAIL_FLOOR_MIN)
-            if tail_block["weight"] > 0
-            else 400,
+            max(budget // _TAIL_FLOOR_RATIO, _TAIL_FLOOR_MIN) if tail_block["weight"] > 0 else 400,
         )
         remaining = budget - len(preamble) - reserve - tail_floor
         if remaining >= _MIN_BLOCK_SLICE:
@@ -1009,9 +1142,10 @@ def budget_section(text: str, *, budget: int) -> Tuple[str, BudgetMeta]:
             # 整节消失——所以先给每个可切片块留住最小份额，再谈余量怎么分
             sliceable = [b for b in ordinary if b["weight"] >= _SLICEABLE_WEIGHT]
             modest = [b for b in ordinary if 0 < b["weight"] < _SLICEABLE_WEIGHT]
-            while sliceable and sum(
-                min(len(b["body"]), _MIN_BLOCK_SLICE) for b in sliceable
-            ) > remaining:
+            while (
+                sliceable
+                and sum(min(len(b["body"]), _MIN_BLOCK_SLICE) for b in sliceable) > remaining
+            ):
                 dropped.append(sliceable.pop())  # 预算连保底都不够，按优先级末位淘汰
             floors = sum(min(len(b["body"]), _MIN_BLOCK_SLICE) for b in sliceable)
             # 普通块只能整取，用保底之外的余量竞争（整节留下优于切片）
@@ -1030,16 +1164,14 @@ def budget_section(text: str, *, budget: int) -> Tuple[str, BudgetMeta]:
                 chosen[block["order"]] = kept
                 if len(kept) < len(block["body"]):
                     sliced.append(block["title"])
-            remaining = floors + pool - sum(
-                len(chosen[b["order"]]) for b in sliceable
-            )
+            remaining = floors + pool - sum(len(chosen[b["order"]]) for b in sliceable)
             # 末块：有价值时吃掉预留额度 + 前面没用完的余量；零权重（子公司名录
             # 之类）只保住真尾那一小段，余量宁可不用也不喂垃圾进 LLM
-            tail_limit = (
-                remaining + tail_floor if tail_block["weight"] > 0 else tail_floor
-            )
+            tail_limit = remaining + tail_floor if tail_block["weight"] > 0 else tail_floor
             tail_kept = _fit_block(
-                tail_block["body"], tail_limit, tail_block["title"],
+                tail_block["body"],
+                tail_limit,
+                tail_block["title"],
                 keep_head=tail_block["weight"] > 0,
             )
             if len(tail_kept) < len(tail_block["body"]):
@@ -1053,8 +1185,12 @@ def budget_section(text: str, *, budget: int) -> Tuple[str, BudgetMeta]:
             parts.extend(chosen[order] for order in sorted(chosen))
             body = "".join(parts)
             return body, BudgetMeta(
-                original, len(body), "structured", original - len(body),
-                tuple(b["title"] for b in dropped), tuple(sliced),
+                original,
+                len(body),
+                "structured",
+                original - len(body),
+                tuple(b["title"] for b in dropped),
+                tuple(sliced),
             )
 
     # 退化：头 + **真尾**（标记同样先占额度，总长不得超预算）
@@ -1064,5 +1200,5 @@ def budget_section(text: str, *, budget: int) -> Tuple[str, BudgetMeta]:
         return body, BudgetMeta(original, len(body), "head_tail", original - len(body))
     room = budget - len(marker)
     head = int(room * 0.8)
-    body = text[:head] + marker + text[-(room - head):]
+    body = text[:head] + marker + text[-(room - head) :]
     return body, BudgetMeta(original, len(body), "head_tail", original - len(body))

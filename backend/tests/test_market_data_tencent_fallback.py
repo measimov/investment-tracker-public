@@ -37,9 +37,7 @@ def _tencent_payload(code, candles):
 
 def test_fallback_stores_rows_when_tushare_returns_empty(monkeypatch):
     """Tushare 空返回（覆盖空洞）时走腾讯兜底，不复权日线入库 source=tencent-kline。"""
-    monkeypatch.setattr(
-        mds, "_tushare_history_query", lambda *a, **k: pd.DataFrame()
-    )
+    monkeypatch.setattr(mds, "_tushare_history_query", lambda *a, **k: pd.DataFrame())
     candles = [
         ["2025-11-03", "1.08", "1.094", "1.10", "1.07", "20248"],
         ["2025-11-04", "1.09", "1.101", "1.11", "1.08", "18000"],
@@ -73,7 +71,7 @@ def test_fallback_stores_rows_when_tushare_returns_empty(monkeypatch):
         )
         assert [row.price_date for row in stored] == [date(2025, 11, 3), date(2025, 11, 4)]
         assert stored[0].close_price == Decimal("1.094")
-        assert stored[0].currency == "CNY"
+        assert stored[0].currency == "USD"  # 沪 B 以美元计价（#276：此前一律写成 CNY）
         assert stored[0].adj_close_price is None  # 不复权源不产复权价
     finally:
         db.query(SecurityPrice).filter_by(symbol="900926", market="B股").delete()
@@ -83,9 +81,7 @@ def test_fallback_stores_rows_when_tushare_returns_empty(monkeypatch):
 
 def test_double_empty_short_range_is_success(monkeypatch):
     """短区间（≤7 天）双空 = 假日无交易日，按既有外部源约定算成功。"""
-    monkeypatch.setattr(
-        mds, "_tushare_history_query", lambda *a, **k: pd.DataFrame()
-    )
+    monkeypatch.setattr(mds, "_tushare_history_query", lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(
         mds.requests,
         "get",
@@ -110,9 +106,7 @@ def test_double_empty_short_range_is_success(monkeypatch):
 def test_double_empty_long_range_is_uncovered_failure(monkeypatch):
     """长区间双空必须判失败（uncovered）：否则增量同步会把数据源缺口
     静默计成已覆盖——正是"同步 255 ok 却一只没补"的根因形态。"""
-    monkeypatch.setattr(
-        mds, "_tushare_history_query", lambda *a, **k: pd.DataFrame()
-    )
+    monkeypatch.setattr(mds, "_tushare_history_query", lambda *a, **k: pd.DataFrame())
     monkeypatch.setattr(
         mds.requests,
         "get",
@@ -152,7 +146,7 @@ def test_backward_pagination_fetches_beyond_single_page(monkeypatch):
         _, _, req_start, req_end, _, _ = params["param"].split(",")
         s, e = date.fromisoformat(req_start), date.fromisoformat(req_end)
         in_range = [c for c in candles if s <= date.fromisoformat(c[0]) <= e]
-        page = in_range[-mds.TENCENT_KLINE_MAX_CANDLES:]  # 最近 N 根 —— 真实截断方向
+        page = in_range[-mds.TENCENT_KLINE_MAX_CANDLES :]  # 最近 N 根 —— 真实截断方向
         return _FakeResponse(_tencent_payload("sh900926", page))
 
     monkeypatch.setattr(mds.requests, "get", fake_get)
@@ -197,17 +191,20 @@ def test_fallback_kicks_in_when_tushare_raises(monkeypatch):
         db.close()
 
 
-
 def test_us_history_falls_back_to_tencent_when_tushare_has_no_permission(monkeypatch):
     """Tushare us_daily_adj 无权限（当前积分档）→ 探测腾讯美股代码（.OQ 命中）→ 不复权日线入库。
     此前美股没有任何兜底源，历史同步必失败并让整次任务按「配额受限」中止。"""
+
     def _no_permission(*a, **k):
         raise RuntimeError("抱歉，您没有接口(us_daily_adj)访问权限")
 
     monkeypatch.setattr(mds, "_tushare_history_query", _no_permission)
     monkeypatch.setattr(mds, "_tencent_us_code_cache", {})
     requested = []
-    candles = [["2026-09-24", "77.0", "78.1", "79.0", "76.5", "100"], ["2026-09-25", "78.2", "77.57", "79.1", "77.0", "90"]]
+    candles = [
+        ["2026-09-24", "77.0", "78.1", "79.0", "76.5", "100"],
+        ["2026-09-25", "78.2", "77.57", "79.1", "77.0", "90"],
+    ]
 
     def fake_get(url, params=None, **kwargs):
         code = params["param"].split(",")[0]
@@ -222,11 +219,20 @@ def test_us_history_falls_back_to_tencent_when_tushare_has_no_permission(monkeyp
         db.query(SecurityPrice).filter_by(symbol="PDD", market="美股").delete()
         db.commit()
         result = mds.fetch_and_store_security_price_history(
-            db, symbol="PDD", market="美股", start_date=date(2026, 9, 20), end_date=date(2026, 9, 26),
+            db,
+            symbol="PDD",
+            market="美股",
+            start_date=date(2026, 9, 20),
+            end_date=date(2026, 9, 26),
         )
         assert result["success"] is True and result["rows"] == 2
         assert result["source"] == "tencent-kline"
-        stored = db.query(SecurityPrice).filter_by(symbol="PDD", market="美股").order_by(SecurityPrice.price_date).all()
+        stored = (
+            db.query(SecurityPrice)
+            .filter_by(symbol="PDD", market="美股")
+            .order_by(SecurityPrice.price_date)
+            .all()
+        )
         assert stored[-1].close_price == Decimal("77.57") and stored[-1].currency == "USD"
         assert requested[0] == "usPDD.OQ"  # 先探测交易所后缀
     finally:

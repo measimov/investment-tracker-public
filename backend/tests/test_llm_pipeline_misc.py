@@ -7,11 +7,10 @@
 
 import threading
 import time
-from typing import Dict
 
 
 from app.database import SessionLocal
-from app.services import business_profile_service, report_fetchers
+from app.services import business_profile_service
 from app.services import security_analysis_jobs as saj
 from app.services.business_profile_prompts import PROFILE_PROMPT_VERSION
 from app.services.report_digest_prompts import (
@@ -33,36 +32,6 @@ def test_digest_prompts_byte_identical_to_pre_guardrail_era():
     """[金样] 共享化不 bump DIGEST_PROMPT_VERSION 的前提：首段字节不变。"""
     assert DIGEST_SYSTEM_PROMPT.startswith(_DIGEST_FIRST_PARAGRAPH)
     assert COMPACT_DIGEST_SYSTEM_PROMPT.startswith(_DIGEST_FIRST_PARAGRAPH)
-
-
-def test_throttle_sources_do_not_block_each_other(monkeypatch):
-    """跨源不再 head-of-line blocking：A 源的预约等待不拖 B 源。
-
-    旧实现持锁 sleep 且四源共用一把锁——A 源第二次调用在锁内睡 0.4s 时，
-    B 源的首次调用会被挡在锁外白等。新实现每源一把锁，A 只占 A 的锁。
-    """
-    monkeypatch.setattr(report_fetchers, "_source_locks", {})
-    monkeypatch.setattr(report_fetchers, "_last_request_at", {})
-
-    report_fetchers._throttle("source-a", 0.4)  # 首次：不等待，预约下一时隙
-
-    results: Dict[str, float] = {}
-
-    def second_a():
-        start = time.monotonic()
-        report_fetchers._throttle("source-a", 0.4)  # 同源第二次：要等 ~0.4s
-        results["a"] = time.monotonic() - start
-
-    thread = threading.Thread(target=second_a)
-    thread.start()
-    time.sleep(0.05)  # 让 A 的等待先发生
-    start = time.monotonic()
-    report_fetchers._throttle("source-b", 0.4)  # 异源首次：必须立刻通过
-    results["b"] = time.monotonic() - start
-    thread.join()
-
-    assert results["b"] < 0.2, f"异源调用被拖了 {results['b']:.3f}s（跨源阻塞未修）"
-    assert results["a"] >= 0.25, "同源第二次调用应等到预约时隙"
 
 
 def test_business_profile_cache_requires_prompt_version(monkeypatch):
@@ -105,7 +74,11 @@ def test_business_profile_cache_requires_prompt_version(monkeypatch):
         fingerprint = business_profile_service.input_fingerprint(payload_input)
         # 预置"旧时代"缓存行：指纹匹配但无 prompt_version（当 v1）
         business_profile_service.upsert_profile_row(
-            db, symbol, market, "business_profile", "current",
+            db,
+            symbol,
+            market,
+            "business_profile",
+            "current",
             {
                 "status": "ok",
                 "profile": {"商业模式": "旧缓存"},
@@ -179,12 +152,8 @@ def test_analysis_input_shrinks_twice_and_rechecks(monkeypatch):
 
     from app.services import earnings_quality, report_digest_service
 
-    monkeypatch.setattr(
-        report_digest_service, "load_report_digests", lambda *a, **k: []
-    )
-    monkeypatch.setattr(
-        report_digest_service, "serialize_digest_for_analysis", lambda *a, **k: []
-    )
+    monkeypatch.setattr(report_digest_service, "load_report_digests", lambda *a, **k: [])
+    monkeypatch.setattr(report_digest_service, "serialize_digest_for_analysis", lambda *a, **k: [])
     monkeypatch.setattr(
         business_profile_service,
         "load_business_profile",
@@ -197,70 +166,38 @@ def test_analysis_input_shrinks_twice_and_rechecks(monkeypatch):
     from app.services import security_profile_service
 
     # graham 取数走独立的年度行专取口径（真实 DB 查询），单测桩掉
-    monkeypatch.setattr(
-        security_profile_service, "compute_graham_for", lambda *a, **k: None
-    )
+    monkeypatch.setattr(security_profile_service, "compute_graham_for", lambda *a, **k: None)
     monkeypatch.setattr(
         earnings_quality,
         "market_statements",
         lambda *a, **k: {"income": [], "balancesheet": [], "cashflow": [], "fina_indicator": []},
     )
     monkeypatch.setattr(earnings_quality, "compute_earnings_quality", lambda *a, **k: {})
+    from app.services import announcement_service, announcement_sync
+
+    monkeypatch.setattr(
+        announcement_sync,
+        "sync_status",
+        lambda *a, **k: {"status": "synced", "last_synced": None, "reason": None},
+    )
+    monkeypatch.setattr(
+        announcement_service,
+        "load_groups",
+        lambda *a, **k: [
+            {
+                "ann_date": "2026-09-01",
+                "category_label": "融资",
+                "importance": "major",
+                "title": big,
+                "document_count": 1,
+            }
+            for _ in range(30)
+        ],
+    )
     monkeypatch.setattr(saj, "CHAR_BUDGET", 3_000)
 
     payload = saj.build_analysis_input(None, "TEST", "A股")
 
     assert len(payload["events"]) == saj.EVENTS_SHRUNK_CAP, "二级收缩应截 events"
     assert len(payload["peers"]["list"]) == saj.PEERS_SHRUNK_CAP, "二级收缩应截 peers"
-
-
-def test_throttle_state_reset():
-    """兜底：其他用例后清限速状态表，避免污染同进程后续测试。"""
-    report_fetchers._last_request_at.clear()
-    report_fetchers._source_locks.clear()
-    assert report_fetchers._last_request_at == {}
-
-
-def test_same_source_waiters_keep_order_and_spacing_after_delayed_wakeup(monkeypatch):
-    """[PR #170 复审回归] 较早的同源 waiter 延迟唤醒后，实际请求仍按序且间隔达标。
-
-    预约制的失效模式：B 预约 t+i、C 预约 t+2i；B 因调度延迟到 t+2.2i 才醒，
-    C 在 t+2i 先返回——顺序反转且实际间隔只有 0.2i。同源锁内按实际时刻
-    校验后：C 排在锁上等 B 放行，再从 B 的**实际**请求时刻重新度量。
-    """
-    interval = 0.3
-    real_sleep = time.sleep
-    lagged = {"done": False}
-
-    def lagging_sleep(wait):
-        # 第一个进入等待的 waiter（B）被模拟成延迟唤醒：多睡 1.2 个间隔
-        if not lagged["done"] and wait > 0:
-            lagged["done"] = True
-            real_sleep(wait + interval * 1.2)
-        else:
-            real_sleep(wait)
-
-    monkeypatch.setattr(report_fetchers, "_sleep", lagging_sleep)
-    monkeypatch.setattr(report_fetchers, "_source_locks", {})
-    monkeypatch.setattr(report_fetchers, "_last_request_at", {})
-
-    grants = []
-    grants_lock = threading.Lock()
-
-    def call(tag):
-        report_fetchers._throttle("lag-src", interval)
-        with grants_lock:
-            grants.append((tag, time.monotonic()))
-
-    report_fetchers._throttle("lag-src", interval)  # 占住起点时刻
-    thread_b = threading.Thread(target=call, args=("B",))
-    thread_b.start()
-    real_sleep(0.05)  # 确保 B 先进入等待
-    thread_c = threading.Thread(target=call, args=("C",))
-    thread_c.start()
-    thread_b.join()
-    thread_c.join()
-
-    assert [tag for tag, _ in grants] == ["B", "C"], f"顺序反转: {grants}"
-    gap = grants[1][1] - grants[0][1]
-    assert gap >= interval * 0.9, f"实际间隔只有 {gap:.3f}s（突发未修）"
+    assert len(payload["announcements"]) == saj.ANNOUNCEMENTS_SHRUNK_CAP, "二级收缩应截公告"

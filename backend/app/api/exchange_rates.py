@@ -1,15 +1,18 @@
 """
 汇率管理API
 
-汇率是全局数据（不分用户），但它是所有用户金额折算的唯一数据源：登录即可读写，
-匿名一律拒绝。口径与 security_profiles 一致（全局表、逐端点挂依赖）。
+汇率是全局数据（不分用户），是所有用户金额折算的唯一数据源：登录即可读，**写入仅管理员**
+（#277：此前任何家庭成员误操作都会改掉所有人的人民币折算），与目录同步、采集器管理同口径。
+来源由服务端决定：手工录入/改过数值的行一律 manual；删除改为停用（保留审计，停用的手工行
+不再挡住官方中间价）。
 """
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
-from datetime import date, timedelta
+from datetime import timedelta
 
-from ..core.deps import get_current_active_user
+from ..core.deps import get_current_active_user, get_current_admin_user
 from ..core.logging import get_app_logger
 from ..core.timeutil import local_today
 from ..database import get_db
@@ -37,7 +40,7 @@ def get_latest_rates(
     rates = {"CNY": 1.0, **{k: float(v["rate"]) for k, v in details.items()}}
 
     newest = max(details.values(), key=lambda item: item["effective_date"], default=None)
-    effective_date = newest["effective_date"] if newest else date.today()
+    effective_date = newest["effective_date"] if newest else local_today()
     source = newest["source"] if newest else "system"
 
     return {
@@ -49,27 +52,27 @@ def get_latest_rates(
     }
 
 
-@router.get("/", response_model=List[schemas.ExchangeRate])
+@router.get("", response_model=List[schemas.ExchangeRate])
 def list_exchange_rates(
     from_currency: str = None,
     to_currency: str = None,
-    skip: int = 0,
-    limit: int = 100,
+    include_inactive: bool = False,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """获取汇率列表"""
+    """获取汇率列表（默认只列启用的行；include_inactive=true 连已停用的一起看）"""
     query = db.query(ExchangeRate)
+    if not include_inactive:
+        query = query.filter(ExchangeRate.is_active.is_(True))
 
     if from_currency:
         query = query.filter(ExchangeRate.from_currency == from_currency)
     if to_currency:
         query = query.filter(ExchangeRate.to_currency == to_currency)
 
-    query = query.order_by(
-        ExchangeRate.effective_date.desc(),
-        ExchangeRate.from_currency
-    )
+    query = query.order_by(ExchangeRate.effective_date.desc(), ExchangeRate.from_currency)
 
     rates = query.offset(skip).limit(limit).all()
     return rates
@@ -91,43 +94,20 @@ def list_source_checks(
     )
 
 
-@router.get("/{from_currency}/{to_currency}", response_model=schemas.ExchangeRate)
-def get_exchange_rate(
-    from_currency: str,
-    to_currency: str,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    """获取特定货币对的最新汇率"""
-    rate = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency == from_currency,
-        ExchangeRate.to_currency == to_currency,
-        ExchangeRate.is_active.is_(True),
-    ).order_by(ExchangeRate.effective_date.desc()).first()
-
-    if not rate:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Exchange rate not found for {from_currency}/{to_currency}"
-        )
-
-    return rate
-
-
-@router.post("/", response_model=schemas.ExchangeRate)
+@router.post("", response_model=schemas.ExchangeRate)
 def create_or_update_exchange_rate(
     rate_data: schemas.ExchangeRateCreate,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db),
 ):
-    """创建或更新汇率"""
+    """手工创建或覆盖某日汇率（仅管理员；来源固定为 manual，同日行被重新启用）"""
     rate = exchange_rate_service.update_or_create_rate(
         db,
         from_currency=rate_data.from_currency,
         to_currency=rate_data.to_currency,
         rate=rate_data.rate,
         effective_date=rate_data.effective_date,
-        source=rate_data.source or "manual"
+        source="manual",
     )
     return rate
 
@@ -136,21 +116,19 @@ def create_or_update_exchange_rate(
 def update_exchange_rate(
     rate_id: int,
     rate_update: schemas.ExchangeRateUpdate,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db),
 ):
-    """更新汇率"""
+    """修正汇率数值（仅管理员）：改过数值的行记为 manual——此前保留「官方中间价」标签，
+    下一次自动刷新会静默覆盖用户的修正，页面上还显示成官方来源"""
     rate = db.query(ExchangeRate).filter(ExchangeRate.id == rate_id).first()
 
     if not rate:
-        raise HTTPException(status_code=404, detail="Exchange rate not found")
+        raise HTTPException(status_code=404, detail="汇率记录不存在")
 
-    if rate_update.rate is not None:
-        rate.rate = rate_update.rate
-    if rate_update.is_active is not None:
-        rate.is_active = rate_update.is_active
-    if rate_update.source is not None:
-        rate.source = rate_update.source
+    rate.rate = rate_update.rate
+    rate.source = "manual"
+    rate.is_active = True
 
     db.commit()
     exchange_rate_service.invalidate_rate_cache(db)
@@ -158,66 +136,36 @@ def update_exchange_rate(
     return rate
 
 
-@router.delete("/{rate_id}")
+@router.delete("/{rate_id}", status_code=204)
 def delete_exchange_rate(
     rate_id: int,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db),
 ):
-    """删除汇率"""
+    """停用汇率（仅管理员）：保留行作审计，折算不再使用它；同日重新录入即恢复启用。
+    此前是硬删，官方中间价行被删掉不留任何痕迹。
+
+    只有手工行能停用：官方中间价与第三方报价行会被下一次刷新原样重建并重新启用，停用对它们
+    兑现不了「折算不再使用」（PR #300 评审）。要改用别的数值，编辑它（改过数值的行记为手工，
+    刷新不再覆盖）。"""
     rate = db.query(ExchangeRate).filter(ExchangeRate.id == rate_id).first()
 
     if not rate:
-        raise HTTPException(status_code=404, detail="Exchange rate not found")
+        raise HTTPException(status_code=404, detail="汇率记录不存在")
+    if (rate.source or "manual") != "manual":
+        raise HTTPException(
+            status_code=409,
+            detail="自动来源的汇率会在下次刷新时重建，不能停用；要改用其他数值请编辑（改为手工值后刷新不会覆盖）",
+        )
 
-    db.delete(rate)
+    rate.is_active = False
     db.commit()
     exchange_rate_service.invalidate_rate_cache(db)
-    return {"message": "Exchange rate deleted successfully"}
-
-
-@router.post("/convert", response_model=schemas.CurrencyConvertResponse)
-def convert_currency(
-    request: schemas.CurrencyConvertRequest,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-):
-    """转换货币"""
-    try:
-        converted_amount = exchange_rate_service.convert_amount(
-            db,
-            amount=request.amount,
-            from_currency=request.from_currency,
-            to_currency=request.to_currency
-        )
-
-        rate = exchange_rate_service.get_latest_rate(
-            db,
-            request.from_currency,
-            request.to_currency
-        )
-
-        rate_info = exchange_rate_service.get_rate_info(
-            db,
-            request.from_currency,
-            request.to_currency
-        )
-
-        return {
-            "amount": request.amount,
-            "from_currency": request.from_currency,
-            "converted_amount": converted_amount,
-            "to_currency": request.to_currency,
-            "rate": rate,
-            "effective_date": rate_info['effective_date'] if rate_info else date.today()
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/refresh-from-api")
 def refresh_rates_from_api(
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_admin_user),
     db: Session = Depends(get_db),
 ):
     """从API刷新汇率"""
@@ -233,7 +181,7 @@ def refresh_rates_from_api(
         raise HTTPException(status_code=502, detail="汇率数据源未返回任何汇率")
 
     return {
-        "message": "Rates updated successfully",
+        "message": "汇率已刷新",
         "updated_rates": {k: float(v) for k, v in updated_rates.items()},
-        "count": len(updated_rates)
+        "count": len(updated_rates),
     }

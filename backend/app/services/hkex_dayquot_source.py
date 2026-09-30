@@ -28,13 +28,10 @@ from __future__ import annotations
 
 import html
 import re
-import threading
-import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Set
-from zoneinfo import ZoneInfo
 
 import requests
 from sqlalchemy import func
@@ -48,7 +45,9 @@ from ..models.hkex_dayquot_report import HkexDayquotReport
 from ..models.holding import Holding
 from ..models.security_price import SecurityPrice
 from ..models.watchlist_item import WatchlistItem
+from .http_source import throttle
 from .job_worker import PeriodicOutcome, periodic_outcome_task
+from .market_sessions import market_timezone
 from .stock_price_service import to_tushare_hk_code
 
 logger = get_app_logger(__name__)
@@ -58,7 +57,7 @@ SOURCE = "hkex-dayquot"
 DAYQUOT_URL = "https://www.hkex.com.hk/eng/stat/smstat/dayquot/d{yymmdd}e.htm"
 PERIODIC_INTERVAL_SECONDS = 6 * 3600
 
-_HKT = ZoneInfo("Asia/Hong_Kong")
+_HKT = market_timezone("港股")
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -71,12 +70,24 @@ _MIN_INTERVAL_SECONDS = 2.0
 _TAG_RE = re.compile(r"<[^>]+>")
 _DATE_RE = re.compile(r"DATE:\s*(\d{1,2}) ([A-Z]{3}) (\d{4})")
 _MONTHS = {
-    "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
-    "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+    "JAN": 1,
+    "FEB": 2,
+    "MAR": 3,
+    "APR": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUL": 7,
+    "AUG": 8,
+    "SEP": 9,
+    "OCT": 10,
+    "NOV": 11,
+    "DEC": 12,
 }
 # 行 1：[*|#] 代码 名称 币种 前收 卖盘 最高 成交股数；行 2：收盘 买盘 最低 成交额。
 # 名称可含空格/&/#（窝轮名如 "HS#HSI RC2810F"），靠行尾恰好四个值锚定。
-_ROW1_RE = re.compile(r"^([*#])?\s*(\d{1,5})\s+(.*?)\s+([A-Z]{3})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
+_ROW1_RE = re.compile(
+    r"^([*#])?\s*(\d{1,5})\s+(.*?)\s+([A-Z]{3})\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$"
+)
 _ROW2_RE = re.compile(r"^\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
 _SUSPENDED_RE = re.compile(r"^([*#])?\s*(\d{1,5})\s+(.*?)\s+([A-Z]{3})\s+TRADING SUSPENDED\s*$")
 # 栏目边界按锚点 <a name="quotations"> / <a name="sales_all"> 定位：目录
@@ -182,10 +193,20 @@ def parse_dayquot(text: str, *, expected_date: Optional[date] = None) -> Dict[in
         if suspended:
             marker, code, name, currency = suspended.groups()
             rows[int(code)] = DayquotRow(
-                code=int(code), name=name.strip(), currency=currency,
-                prev_close=None, close=None, high=None, low=None, ask=None, bid=None,
-                shares_traded=None, turnover=None, suspended=True,
-                most_active=marker == "*", halt_from_today=marker == "#",
+                code=int(code),
+                name=name.strip(),
+                currency=currency,
+                prev_close=None,
+                close=None,
+                high=None,
+                low=None,
+                ask=None,
+                bid=None,
+                shares_traded=None,
+                turnover=None,
+                suspended=True,
+                most_active=marker == "*",
+                halt_from_today=marker == "#",
             )
             continue
         first = _ROW1_RE.match(line)
@@ -201,29 +222,27 @@ def parse_dayquot(text: str, *, expected_date: Optional[date] = None) -> Dict[in
         marker, code, name, currency, prev_close, ask, high, shares = first.groups()
         close, bid, low, turnover = second.groups()
         rows[int(code)] = DayquotRow(
-            code=int(code), name=name.strip(), currency=currency,
-            prev_close=_decimal(prev_close), close=_decimal(close),
-            high=_decimal(high), low=_decimal(low),
-            ask=_decimal(ask), bid=_decimal(bid),
-            shares_traded=_int(shares), turnover=_int(turnover),
-            most_active=marker == "*", halt_from_today=marker == "#",
+            code=int(code),
+            name=name.strip(),
+            currency=currency,
+            prev_close=_decimal(prev_close),
+            close=_decimal(close),
+            high=_decimal(high),
+            low=_decimal(low),
+            ask=_decimal(ask),
+            bid=_decimal(bid),
+            shares_traded=_int(shares),
+            turnover=_int(turnover),
+            most_active=marker == "*",
+            halt_from_today=marker == "#",
         )
     if not rows:
         raise DayquotFormatError("QUOTATIONS 栏目未解析出任何行")
     return rows
 
 
-_throttle_lock = threading.Lock()
-_last_fetch_at = 0.0
-
-
 def _throttle() -> None:
-    global _last_fetch_at
-    with _throttle_lock:
-        elapsed = time.monotonic() - _last_fetch_at
-        if elapsed < _MIN_INTERVAL_SECONDS:
-            time.sleep(_MIN_INTERVAL_SECONDS - elapsed)
-        _last_fetch_at = time.monotonic()
+    throttle("hkex-dayquot", _MIN_INTERVAL_SECONDS)
 
 
 def fetch_dayquot_text(report_date: date) -> Optional[str]:
@@ -246,9 +265,7 @@ def hk_universe_symbols(db: Session) -> Set[str]:
         .filter(Holding.market == HK_MARKET, Holding.quantity > 0)
         .distinct()
     )
-    watchlist = (
-        db.query(WatchlistItem.symbol).filter(WatchlistItem.market == HK_MARKET).distinct()
-    )
+    watchlist = db.query(WatchlistItem.symbol).filter(WatchlistItem.market == HK_MARKET).distinct()
     symbols = {row[0] for row in holdings} | {row[0] for row in watchlist}
     return {str(symbol).strip() for symbol in symbols if str(symbol).strip().isdigit()}
 
@@ -359,7 +376,10 @@ def store_dayquot_closes(
             "suspended": suspended,
             "unpriced": unpriced,
             "conflicts": [
-                {key: str(value) if isinstance(value, Decimal) else value for key, value in c.items()}
+                {
+                    key: str(value) if isinstance(value, Decimal) else value
+                    for key, value in c.items()
+                }
                 for c in conflicts
             ],
         },
@@ -462,7 +482,23 @@ def sync_recent_dayquots(
             latest_quotes = quotes  # 窗口自新向旧遍历：第一份处理成功的就是最新报表
     if latest_quotes is not None:
         _apply_catalog_metadata(db, latest_quotes)
+    if result["processed"]:
+        result["quotes_caught_up"] = _catch_up_quotes(db, symbols)
     return result
+
+
+def _catch_up_quotes(db: Session, symbols: Set[str]) -> int:
+    """官方收盘入库后把港股持仓/自选现价追平（#267）；尽力而为，失败只记日志。"""
+    from .stock_price_service import apply_latest_closes
+
+    try:
+        updated = apply_latest_closes(db, [(symbol, "港股") for symbol in symbols])
+        db.commit()
+        return updated
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("港股持仓现价追平日报收盘失败")
+        return 0
 
 
 def _apply_catalog_metadata(db: Session, quotes: Dict[int, DayquotRow]) -> None:
@@ -495,13 +531,20 @@ def periodic_refresh_hk_dayquot() -> PeriodicOutcome:
     for item in result["processed"]:
         logger.info(
             "港交所日报 %s: 入库 %s 只，报表缺席 %s，停牌 %s，无收盘 %s",
-            item["report_date"], item["stored"], item["missing"], item["suspended"], item["unpriced"],
+            item["report_date"],
+            item["stored"],
+            item["missing"],
+            item["suspended"],
+            item["unpriced"],
         )
         for conflict in item["conflicts"]:
             logger.warning(
                 "港交所日报 %s 与库内 %s 收盘价不一致: %s 库内 %s → 官方 %s（已按官方覆盖）",
-                item["report_date"], conflict["existing_source"], conflict["symbol"],
-                conflict["existing_close"], conflict["official_close"],
+                item["report_date"],
+                conflict["existing_source"],
+                conflict["symbol"],
+                conflict["existing_close"],
+                conflict["official_close"],
             )
     processed = len(result["processed"])
     if result["errors"]:

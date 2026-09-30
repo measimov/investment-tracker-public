@@ -17,3 +17,15 @@ export const CURRENCIES: CurrencyOption[] = [
   { code: 'GBP', name: '英镑', symbol: '£' },
   { code: 'JPY', name: '日元', symbol: 'JP¥' }
 ]
+
+/**
+ * 账本（交易/公司行动/现金事件/账户/规则/对账快照）可选的币种——`CURRENCIES` 里实际记账的
+ * 那几种。此前三处各写一份（#284）；要加币种在这里加。
+ */
+export const LEDGER_CURRENCIES = ['CNY', 'HKD', 'USD', 'SGD'] as const
+
+/** 下拉选项：`CNY (人民币)` */
+export const LEDGER_CURRENCY_OPTIONS = LEDGER_CURRENCIES.map((code) => ({
+  value: code,
+  label: `${code} (${CURRENCIES.find((item) => item.code === code)?.name ?? code})`
+}))

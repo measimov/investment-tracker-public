@@ -32,8 +32,10 @@ from ..models.xueqiu_collector import (
     XueqiuCollectorState,
 )
 from . import alert_service
+from .job_labels import job_type_label, periodic_task_label, scheduler_group_label
 from .alert_service import Alert, utcnow
 from .job_worker import PeriodicOutcome, periodic_outcome_task
+from .xueqiu_collector.state import LIVE_RUN_STATUSES, RUN_ERROR, RUN_FAILED
 
 logger = get_app_logger(__name__)
 
@@ -44,18 +46,22 @@ SOURCE_COOKIE = "xueqiu_cookie"
 SOURCE_FX = "fx"
 SOURCE_PERIODIC = "periodic_tasks"
 SOURCE_JOBS = "background_jobs"
+SOURCE_SCHEDULER = "scheduler"
 SOURCE_CHECKERS = "alert_checks"
 
 # 同一作者连续多少次采集失败（error/failed）才告警：单次失败多是临时网络问题
 AUTHOR_FAILURE_STREAK = 3
-AUTHOR_FAILURE_STATUSES = frozenset({"error", "failed"})
+AUTHOR_FAILURE_STATUSES = frozenset({RUN_ERROR, RUN_FAILED})
 # 只有这几种状态参与「连续失败」的判定：waf / interrupted 不是作者本身的问题
-AUTHOR_STREAK_STATUSES = frozenset({"ok", "partial", "error", "failed"})
+AUTHOR_STREAK_STATUSES = LIVE_RUN_STATUSES | AUTHOR_FAILURE_STATUSES
 # 周期任务连续抛异常多少次告警
 PERIODIC_FAILURE_THRESHOLD = 3
 # 后台任务失败的观察窗口，以及升级成 warning 的失败次数
 JOB_FAILURE_WINDOW = timedelta(hours=24)
 JOB_FAILURE_WARNING_COUNT = 3
+# 调度线程多久没写心跳算停摆：单个任务合法地能跑十几分钟（港交所日报下载、行业同步），
+# 心跳在每个任务开跑前也写一次，所以超过它说明卡在某个任务里或线程已死
+SCHEDULER_STALL_AFTER = timedelta(minutes=60)
 
 # Web 进程启动时刻：采集器相关检查的宽限起点（见模块 docstring）
 PROCESS_STARTED_AT = utcnow()
@@ -117,31 +123,39 @@ def check_xueqiu_collector(
     limit = timedelta(minutes=settings.xueqiu_collector_health_max_age_minutes)
     reference = _latest([heartbeat_at, grace_since])
     if now - reference > limit:
-        alerts.append(Alert(
-            "xueqiu:heartbeat", "warning", "雪球采集器进程无心跳",
-            f"最近一次心跳：{_fmt(heartbeat_at) if heartbeat_at else '从未'}（超过 "
-            f"{settings.xueqiu_collector_health_max_age_minutes} 分钟）。采集器容器可能已退出，"
-            "请检查 `docker compose ps xueqiu-collector` 与 xueqiu-collector.log。",
-            {"heartbeat_at": heartbeat_at.isoformat() if heartbeat_at else None},
-        ))
+        alerts.append(
+            Alert(
+                "xueqiu:heartbeat",
+                "warning",
+                "雪球采集器进程无心跳",
+                f"最近一次心跳：{_fmt(heartbeat_at) if heartbeat_at else '从未'}（超过 "
+                f"{settings.xueqiu_collector_health_max_age_minutes} 分钟）。采集器容器可能已退出，"
+                "请检查 `docker compose ps xueqiu-collector` 与 xueqiu-collector.log。",
+                {"heartbeat_at": heartbeat_at.isoformat() if heartbeat_at else None},
+            )
+        )
 
     # 2) 长时间没有一次成功的作者采集
     streaks = _author_streaks(db)
     last_live = (
         db.query(func.max(XueqiuArchiverScanRun.finished_at))
-        .filter(XueqiuArchiverScanRun.status.in_(("ok", "partial")))
+        .filter(XueqiuArchiverScanRun.status.in_(LIVE_RUN_STATUSES))
         .scalar()
     )
     stale_hours = settings.notify_collector_stale_hours
     if streaks and now - _latest([last_live, grace_since]) > timedelta(hours=stale_hours):
-        alerts.append(Alert(
-            "xueqiu:collector_stale", "warning", "雪球采集长时间没有成功",
-            f"超过 {stale_hours:g} 小时没有一次成功的作者采集（最近一次成功："
-            f"{_fmt(last_live) if last_live else '从未'}）。上一轮："
-            f"{(state.last_cycle_status if state else '') or '—'} "
-            f"{(state.last_cycle_message if state else '')[:200]}",
-            {"last_live_at": last_live.isoformat() if last_live else None},
-        ))
+        alerts.append(
+            Alert(
+                "xueqiu:collector_stale",
+                "warning",
+                "雪球采集长时间没有成功",
+                f"超过 {stale_hours:g} 小时没有一次成功的作者采集（最近一次成功："
+                f"{_fmt(last_live) if last_live else '从未'}）。上一轮："
+                f"{(state.last_cycle_status if state else '') or '—'} "
+                f"{(state.last_cycle_message if state else '')[:200]}",
+                {"last_live_at": last_live.isoformat() if last_live else None},
+            )
+        )
 
     # 3) 同一作者连续失败；全部作者最近一次都失败 → 疑似 Cookie 失效
     latest_statuses = []
@@ -152,34 +166,41 @@ def check_xueqiu_collector(
             run.status in AUTHOR_FAILURE_STATUSES for run in runs
         ):
             name = author.display_name or author.xueqiu_user_id
-            alerts.append(Alert(
-                f"xueqiu:author_errors:{author.xueqiu_user_id}", "warning",
-                f"雪球作者 {name} 连续 {AUTHOR_FAILURE_STREAK} 次采集失败",
-                f"最近一次（{_fmt(runs[0].finished_at)}）：{(runs[0].error_message or '')[:300]}",
-                {"author_id": author.xueqiu_user_id, "run_ids": [run.run_id for run in runs]},
-            ))
+            alerts.append(
+                Alert(
+                    f"xueqiu:author_errors:{author.xueqiu_user_id}",
+                    "warning",
+                    f"雪球作者 {name} 连续 {AUTHOR_FAILURE_STREAK} 次采集失败",
+                    f"最近一次（{_fmt(runs[0].finished_at)}）：{(runs[0].error_message or '')[:300]}",
+                    {"author_id": author.xueqiu_user_id, "run_ids": [run.run_id for run in runs]},
+                )
+            )
     if len(latest_statuses) >= 2 and all(
         status in AUTHOR_FAILURE_STATUSES for status in latest_statuses
     ):
-        alerts.append(Alert(
-            "xueqiu:all_authors_failing", "critical", "雪球采集全部失败（疑似 Cookie 失效）",
-            f"{len(latest_statuses)} 位启用作者最近一次采集全部失败：时间线首页拿不到合法响应，"
-            "最常见的原因是登录态被服务端注销。请重新导出 Cookie。",
-        ))
+        alerts.append(
+            Alert(
+                "xueqiu:all_authors_failing",
+                "critical",
+                "雪球采集全部失败（疑似 Cookie 失效）",
+                f"{len(latest_statuses)} 位启用作者最近一次采集全部失败：时间线首页拿不到合法响应，"
+                "最常见的原因是登录态被服务端注销。请重新导出 Cookie。",
+            )
+        )
 
     # 4) WAF：命中后直到出现一次成功的采集（作者或按标的）才算恢复
     if state is not None and state.last_waf_at is not None:
         recovered_by_authors = (
             db.query(XueqiuArchiverScanRun.run_id)
             .filter(
-                XueqiuArchiverScanRun.status.in_(("ok", "partial")),
+                XueqiuArchiverScanRun.status.in_(LIVE_RUN_STATUSES),
                 XueqiuArchiverScanRun.started_at > state.last_waf_at,
             )
             .first()
             is not None
         )
         recovered_by_symbols = (
-            state.symbols_last_status in ("ok", "partial")
+            state.symbols_last_status in LIVE_RUN_STATUSES
             and state.symbols_last_started_at is not None
             and state.symbols_last_started_at > state.last_waf_at
         )
@@ -187,13 +208,17 @@ def check_xueqiu_collector(
             cooldown_until = state.last_waf_at + timedelta(
                 seconds=settings.xueqiu_collector_waf_cooldown_seconds
             )
-            alerts.append(Alert(
-                "xueqiu:waf", "critical", "雪球采集命中 WAF 挑战页",
-                f"{_fmt(state.last_waf_at)} 命中阿里云 WAF，本轮已中止，冷却至 "
-                f"{_fmt(cooldown_until)}。持续命中请降低采集频率或更换 Cookie；"
-                "之后任一轮采集成功即自动恢复。",
-                {"last_waf_at": state.last_waf_at.isoformat()},
-            ))
+            alerts.append(
+                Alert(
+                    "xueqiu:waf",
+                    "critical",
+                    "雪球采集命中 WAF 挑战页",
+                    f"{_fmt(state.last_waf_at)} 命中阿里云 WAF，本轮已中止，冷却至 "
+                    f"{_fmt(cooldown_until)}。持续命中请降低采集频率或更换 Cookie；"
+                    "之后任一轮采集成功即自动恢复。",
+                    {"last_waf_at": state.last_waf_at.isoformat()},
+                )
+            )
 
     # 5) 每日按标的采集
     if settings.xueqiu_collector_symbols_enabled and state is not None:
@@ -202,17 +227,25 @@ def check_xueqiu_collector(
         pending = state.symbols_pending if isinstance(state.symbols_pending, dict) else None
         todays_pending = pending if pending and pending.get("date") == today.isoformat() else None
         if state.symbols_last_business_date == today and status not in ("ok", "running", ""):
-            alerts.append(Alert(
-                "xueqiu:symbols", "warning", "今日雪球按标的采集未完成（重试已用尽）",
-                (state.symbols_last_message or status)[:1000],
-                {"status": status, "business_date": today.isoformat()},
-            ))
+            alerts.append(
+                Alert(
+                    "xueqiu:symbols",
+                    "warning",
+                    "今日雪球按标的采集未完成（重试已用尽）",
+                    (state.symbols_last_message or status)[:1000],
+                    {"status": status, "business_date": today.isoformat()},
+                )
+            )
         elif todays_pending is not None and status in ("failed", "unavailable", "waf", "partial"):
-            alerts.append(Alert(
-                "xueqiu:symbols", "info", "雪球按标的采集失败，等待自动重试",
-                f"第 {todays_pending.get('attempts')} 轮：{(state.symbols_last_message or status)[:800]}",
-                {"status": status, "attempts": todays_pending.get("attempts")},
-            ))
+            alerts.append(
+                Alert(
+                    "xueqiu:symbols",
+                    "info",
+                    "雪球按标的采集失败，等待自动重试",
+                    f"第 {todays_pending.get('attempts')} 轮：{(state.symbols_last_message or status)[:800]}",
+                    {"status": status, "attempts": todays_pending.get("attempts")},
+                )
+            )
     return alerts
 
 
@@ -234,16 +267,24 @@ def check_xueqiu_cookie(db: Session, now: datetime) -> List[Alert]:
             values = cookie_health.effective_cookie_values(json.loads(raw))
             missing = cookie_health.missing_primary_credentials(values)
             if missing:
-                alerts.append(Alert(
-                    "xueqiu:cookie", "critical", "雪球 Cookie 不可用",
-                    f"XUEQIU_COOKIES 缺少登录凭证或值为空：{', '.join(missing)}"
-                    "（请重新导出完整 Cookie）",
-                ))
+                alerts.append(
+                    Alert(
+                        "xueqiu:cookie",
+                        "critical",
+                        "雪球 Cookie 不可用",
+                        f"XUEQIU_COOKIES 缺少登录凭证或值为空：{', '.join(missing)}"
+                        "（请重新导出完整 Cookie）",
+                    )
+                )
         except (ValueError, AttributeError, TypeError) as exc:
-            alerts.append(Alert(
-                "xueqiu:cookie", "critical", "雪球 Cookie 不可用",
-                f"XUEQIU_COOKIES 无法解析：{type(exc).__name__}",
-            ))
+            alerts.append(
+                Alert(
+                    "xueqiu:cookie",
+                    "critical",
+                    "雪球 Cookie 不可用",
+                    f"XUEQIU_COOKIES 无法解析：{type(exc).__name__}",
+                )
+            )
     else:
         result = cookie_health.check_expiry(
             cookie_file,
@@ -254,21 +295,32 @@ def check_xueqiu_cookie(db: Session, now: datetime) -> List[Alert]:
         level = result.get("level")
         if level in ("warning", "critical"):
             days_left = result.get("days_left")
-            title = "雪球 Cookie 即将过期" if days_left is not None and days_left > 0 else (
-                "雪球 Cookie 已过期" if days_left is not None else "雪球 Cookie 不可用"
+            title = (
+                "雪球 Cookie 即将过期"
+                if days_left is not None and days_left > 0
+                else ("雪球 Cookie 已过期" if days_left is not None else "雪球 Cookie 不可用")
             )
-            alerts.append(Alert(
-                "xueqiu:cookie", level, title, result.get("message", ""),
-                {"days_left": days_left, "cookie": result.get("cookie")},
-            ))
+            alerts.append(
+                Alert(
+                    "xueqiu:cookie",
+                    level,
+                    title,
+                    result.get("message", ""),
+                    {"days_left": days_left, "cookie": result.get("cookie")},
+                )
+            )
     # 采集器自己的判定：上一轮因 Cookie 读不出/缺失而整轮不可用
     if settings.xueqiu_collector_enabled:
         state = _collector_state(db)
         if state is not None and state.last_cycle_status == "unavailable":
-            alerts.append(Alert(
-                "xueqiu:collector_unavailable", "critical", "雪球采集器不可用",
-                (state.last_cycle_message or "")[:1000],
-            ))
+            alerts.append(
+                Alert(
+                    "xueqiu:collector_unavailable",
+                    "critical",
+                    "雪球采集器不可用",
+                    (state.last_cycle_message or "")[:1000],
+                )
+            )
     return alerts
 
 
@@ -281,8 +333,11 @@ def check_fx(db: Session, now: datetime) -> List[Alert]:
     warnings = fx_source_warnings(db)
     if not warnings:
         return []
-    return [Alert("fx:sources", "warning", "汇率数据源异常", "\n".join(warnings),
-                  {"warnings": warnings})]
+    return [
+        Alert(
+            "fx:sources", "warning", "汇率数据源异常", "\n".join(warnings), {"warnings": warnings}
+        )
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -302,11 +357,15 @@ def check_periodic_tasks(db: Session, now: datetime) -> List[Alert]:
     for name, info in sorted(failures.items()):
         count = int(info.get("consecutive_failures") or 0)
         if count >= PERIODIC_FAILURE_THRESHOLD:
-            alerts.append(Alert(
-                f"periodic:{name}", "warning", f"周期任务 {name} 连续失败 {count} 次",
-                f"最近一次：{info.get('last_error') or '—'}",
-                dict(info),
-            ))
+            alerts.append(
+                Alert(
+                    f"periodic:{name}",
+                    "warning",
+                    f"周期任务「{periodic_task_label(name)}」连续失败 {count} 次",
+                    f"最近一次：{info.get('last_error') or '—'}",
+                    dict(info),
+                )
+            )
     reported = {alert.key for alert in alerts}
     for row in db.query(AlertState).filter(
         AlertState.source == SOURCE_PERIODIC, AlertState.status == "active"
@@ -315,8 +374,9 @@ def check_periodic_tasks(db: Session, now: datetime) -> List[Alert]:
         # 重启后还没跑到，或又失败了但还没到阈值：都不能算恢复
         if row.alert_key in reported or name in succeeded:
             continue
-        alerts.append(Alert(row.alert_key, row.severity, row.title, row.message,
-                            dict(row.payload or {})))
+        alerts.append(
+            Alert(row.alert_key, row.severity, row.title, row.message, dict(row.payload or {}))
+        )
     return alerts
 
 
@@ -324,49 +384,127 @@ def check_periodic_tasks(db: Session, now: datetime) -> List[Alert]:
 # 后台任务失败
 # --------------------------------------------------------------------------- #
 def check_background_jobs(db: Session, now: datetime) -> List[Alert]:
-    """近 24h 有 failed 且之后没有同类型的 succeeded → 按类型一条告警。
+    """近 24h 有 failed（或非用户取消的 interrupted）且之后没有同类型的 succeeded →
+    按类型一条告警。
 
     无状态判定：之后成功一次或失败滑出 24h 窗口即自动恢复。单次失败只记 info
     （用户触发的任务常因数据本身失败，不值得推送），窗口内达到 3 次升为 warning。
+    被中断的任务（执行进程失联、排队过久）同样是没做完，但用户主动终止（cancelled=True）
+    不算——此前只看 failed，排队中被中断的每周刷新两边都看不到（#272）。
     """
     since = now - JOB_FAILURE_WINDOW
-    failed = (
-        db.query(
-            BackgroundJob.job_type,
-            func.count(BackgroundJob.id),
-            func.max(BackgroundJob.finished_at),
+    rows = (
+        db.query(BackgroundJob)
+        .filter(
+            BackgroundJob.status.in_(("failed", "interrupted")),
+            BackgroundJob.finished_at >= since,
         )
-        .filter(BackgroundJob.status == "failed", BackgroundJob.finished_at >= since)
-        .group_by(BackgroundJob.job_type)
+        .order_by(BackgroundJob.finished_at.desc())
         .all()
     )
-    if not failed:
-        return []
-    succeeded = dict(
-        db.query(BackgroundJob.job_type, func.max(BackgroundJob.finished_at))
-        .filter(BackgroundJob.status == "succeeded", BackgroundJob.finished_at >= since)
-        .group_by(BackgroundJob.job_type)
-        .all()
-    )
-    alerts = []
-    for job_type, count, last_failed_at in failed:
-        last_success = succeeded.get(job_type)
-        if last_success is not None and last_success > last_failed_at:
+    unfinished: Dict[Tuple[str, int], List[BackgroundJob]] = {}
+    for job in rows:
+        data = job.data or {}
+        # 用户终止：已落 cancelled，或只来得及写 cancel_requested 就被中断
+        if job.status == "interrupted" and (data.get("cancelled") or data.get("cancel_requested")):
             continue
-        latest = (
-            db.query(BackgroundJob)
-            .filter(BackgroundJob.job_type == job_type, BackgroundJob.status == "failed")
-            .order_by(BackgroundJob.finished_at.desc())
-            .first()
+        unfinished.setdefault((job.job_type, job.user_id), []).append(job)
+    if not unfinished:
+        return []
+    # 「之后成功一次即恢复」按 (job_type, user_id) 判断：此前按类型聚合，另一个用户的同类
+    # 任务成功一次，就把这个用户的失败判成「已恢复」（#273）
+    succeeded = {
+        (job_type, user_id): finished_at
+        for job_type, user_id, finished_at in (
+            db.query(
+                BackgroundJob.job_type,
+                BackgroundJob.user_id,
+                func.max(BackgroundJob.finished_at),
+            )
+            .filter(BackgroundJob.status == "succeeded", BackgroundJob.finished_at >= since)
+            .group_by(BackgroundJob.job_type, BackgroundJob.user_id)
+            .all()
         )
+    }
+    by_type: Dict[str, List[BackgroundJob]] = {}
+    for (job_type, user_id), jobs in unfinished.items():
+        last_success = succeeded.get((job_type, user_id))
+        if last_success is not None and last_success > jobs[0].finished_at:
+            continue
+        by_type.setdefault(job_type, []).extend(jobs)
+    alerts = []
+    for job_type, jobs in by_type.items():
+        jobs.sort(key=lambda job: job.finished_at, reverse=True)
+        latest = jobs[0]
+        last_failed_at = latest.finished_at
+        count = len(jobs)
         severity = "warning" if count >= JOB_FAILURE_WARNING_COUNT else "info"
-        alerts.append(Alert(
-            f"job_failed:{job_type}", severity, f"后台任务 {job_type} 失败",
-            f"近 24 小时失败 {count} 次，最近一次 {_fmt(last_failed_at)}："
-            f"{((latest.error if latest else '') or '—')[:300]}",
-            {"count": int(count), "last_failed_at": last_failed_at.isoformat(),
-             "job_id": latest.id if latest else None},
-        ))
+        alerts.append(
+            Alert(
+                f"job_failed:{job_type}",
+                severity,
+                f"后台任务「{job_type_label(job_type)}」失败",
+                f"近 24 小时失败或中断 {count} 次，最近一次 {_fmt(last_failed_at)}："
+                f"{(latest.error or '—')[:300]}",
+                {
+                    "count": count,
+                    "last_failed_at": last_failed_at.isoformat(),
+                    "job_id": latest.id,
+                    "user_ids": sorted({job.user_id for job in jobs}),
+                },
+            )
+        )
+    return alerts
+
+
+# --------------------------------------------------------------------------- #
+# 周期调度线程停摆（#273）
+# --------------------------------------------------------------------------- #
+def check_scheduler_heartbeats(db: Session, now: datetime) -> List[Alert]:
+    """每个调度分组的心跳（scheduled_task_state 的 scheduler:<group>）超过
+    SCHEDULER_STALL_AFTER 没更新即告警，带上卡住时正在跑的任务名。
+
+    此前调度线程卡在某个外呼里没有任何出口能发现：周期任务失败计数只统计「跑完后失败」。
+    本检查自己跑在独占的告警分组线程上，其他分组卡住时仍能报出来。刚启动、还没写过心跳的
+    分组以进程启动时刻为起点给宽限；总开关关闭时不检查。"""
+    from ..config import settings
+    from ..models.scheduled_task_state import ScheduledTaskState
+    from .job_worker import periodic_task_groups, scheduler_heartbeat_name
+
+    if not settings.periodic_tasks_enabled or not settings.background_worker_enabled:
+        return []
+    groups = periodic_task_groups()
+    alerts = []
+    for group in groups:
+        state = db.get(ScheduledTaskState, scheduler_heartbeat_name(group))
+        last = state.last_run_at if state is not None else None
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=PROCESS_STARTED_AT.tzinfo)
+        reference = max(value for value in (last, PROCESS_STARTED_AT) if value is not None)
+        if now - reference < SCHEDULER_STALL_AFTER:
+            continue
+        detail = dict(state.detail or {}) if state is not None else {}
+        current = detail.get("current_task")
+        current_label = periodic_task_label(current) if current else None
+        message = f"最近一次心跳 {_fmt(last)}；" + (
+            f"卡在任务「{current_label}」（开始于 {detail.get('current_task_started_at') or '—'}）"
+            if current
+            else "当时没有任务在跑，调度线程可能已退出"
+        )
+        alerts.append(
+            Alert(
+                f"scheduler:{group}",
+                "warning",
+                f"周期任务调度停摆（{scheduler_group_label(group)}）"
+                f"超过 {int(SCHEDULER_STALL_AFTER.total_seconds() // 60)} 分钟",
+                message,
+                {
+                    "group": group,
+                    "last_heartbeat": last.isoformat() if last else None,
+                    "current_task": current,
+                },
+            )
+        )
     return alerts
 
 
@@ -376,6 +514,7 @@ CHECKERS: List[Tuple[str, str, Checker]] = [
     ("fx", SOURCE_FX, check_fx),
     ("periodic_tasks", SOURCE_PERIODIC, check_periodic_tasks),
     ("background_jobs", SOURCE_JOBS, check_background_jobs),
+    ("scheduler", SOURCE_SCHEDULER, check_scheduler_heartbeats),
 ]
 
 
@@ -399,10 +538,14 @@ def run_checks(
             db.rollback()
             logger.exception("告警检查器 %s 失败", name)
             summary["checker_errors"].append(name)
-            checker_failures.append(Alert(
-                f"checker:{name}", "warning", f"告警检查器 {name} 运行失败",
-                f"{type(exc).__name__}: {str(exc)[:300]}",
-            ))
+            checker_failures.append(
+                Alert(
+                    f"checker:{name}",
+                    "warning",
+                    f"告警检查器 {name} 运行失败",
+                    f"{type(exc).__name__}: {str(exc)[:300]}",
+                )
+            )
     summary["outcomes"] += alert_service.evaluate_alerts(
         db, SOURCE_CHECKERS, checker_failures, now=now, sender=sender
     )
@@ -435,7 +578,9 @@ def run_alert_checks() -> Optional[Dict[str, Any]]:
         summary = run_checks(db)
     finally:
         db.close()
-    changed = [item for item in summary["outcomes"] if item["action"] != alert_service.ACTION_UPDATE]
+    changed = [
+        item for item in summary["outcomes"] if item["action"] != alert_service.ACTION_UPDATE
+    ]
     if changed or summary["checker_errors"]:
         logger.info("告警检查：%s；检查器失败 %s", changed, summary["checker_errors"])
     return summary

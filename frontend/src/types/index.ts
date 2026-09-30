@@ -36,7 +36,6 @@ export type CollectorStatus = components['schemas']['CollectorStatusResponse']
 export type CollectorAuthor = components['schemas']['CollectorAuthorResponse']
 export type CollectorAuthorCreate = components['schemas']['CollectorAuthorCreate']
 export type CollectorAuthorUpdate = components['schemas']['CollectorAuthorUpdate']
-export type CollectorScanRun = components['schemas']['CollectorScanRunResponse']
 export type CollectorCookieStatus = components['schemas']['CollectorCookieStatus']
 export type CollectorCube = components['schemas']['CollectorCubeResponse']
 export type CollectorCubeCreate = components['schemas']['CollectorCubeCreate']
@@ -54,15 +53,19 @@ export type AlertList = components['schemas']['AlertListResponse']
 export type AlertItem = components['schemas']['AlertItem']
 export type NotifyChannelSummary = components['schemas']['NotifyChannelSummary']
 export type NotifyResult = components['schemas']['NotifyResult']
+export type NotificationEventList = components['schemas']['NotificationEventListResponse']
+// 官方公告（#306）：同日同类文件合并的组
+export type AnnouncementGroup = components['schemas']['AnnouncementGroup']
+export type SecurityAnnouncements = components['schemas']['SecurityAnnouncementsResponse']
+export type RecentAnnouncements = components['schemas']['RecentAnnouncementsResponse']
+export type NotificationEventItem = components['schemas']['NotificationEventItem']
 export type BrokerImportResult = components['schemas']['BrokerImportResult']
 export type SuspectedDuplicateSample = components['schemas']['SuspectedDuplicateSample']
-export type BrokerImportSample = components['schemas']['BrokerImportSample']
 export type ExchangeRate = components['schemas']['ExchangeRate']
 export type ExchangeRateCheck = components['schemas']['ExchangeRateCheck']
 export type ExchangeRateLatest = components['schemas']['ExchangeRateLatest']
 export type User = components['schemas']['User']
 export type LoginResponse = components['schemas']['LoginResponse']
-export type ExcludedSecurity = components['schemas']['ExcludedSecurityResponse']
 export type LlmReportAskResponse = components['schemas']['LlmReportAskResponse']
 export type LlmReportListItem = components['schemas']['LlmReportListItem']
 export type LlmReportDetail = components['schemas']['LlmReportDetail']
@@ -71,7 +74,6 @@ export type LlmReportSchedule = components['schemas']['LlmReportScheduleResponse
 export type SecuritySearchItem = components['schemas']['SecuritySearchItem']
 export type SecuritySearchResponse = components['schemas']['SecuritySearchResponse']
 export type SecurityResolveResponse = components['schemas']['SecurityResolveResponse']
-export type CatalogHealth = components['schemas']['CatalogHealth']
 export type SecurityIndustryItem = components['schemas']['SecurityIndustryItem']
 
 // ---------------------------------------------------------------------------
@@ -173,13 +175,21 @@ export interface PeriodPnlSummary {
   label: string
   start_date: string
   end_date: string
-  /** exact 可靠；estimated 期初基准陈旧（含此前累积涨跌）；unavailable 期初有持仓完全无价，不给数 */
+  /** exact 可靠；estimated 期初基准陈旧（含此前累积涨跌）或期末估值价早于期初基准；
+   *  unavailable 期初有持仓完全无价，不给数 */
   status: 'exact' | 'estimated' | 'unavailable'
   /** unavailable 时为 null */
   pnl_cny: number | null
   /** 区间时间加权收益率（%）；区间内无有效估值点或 unavailable 时为 null */
   return_rate: number | null
   stale_opening_basis: PeriodPnlBasis[]
+  /** 期末估值价（持仓现价）的行情日期早于期初基准：期末按旧价计（#267） */
+  stale_closing_prices?: Array<{
+    symbol: string
+    market: string
+    price_date: string
+    basis_date: string
+  }>
   opening_unpriced_positions: Array<{ symbol: string; market: string }>
   opening_market_value_cny: number
   closing_market_value_cny: number
@@ -199,3 +209,176 @@ export interface PeriodPnlResponse {
   periods: Record<PeriodPnlKey, PeriodPnlSummary>
   data_quality: { warnings: string[]; [key: string]: unknown }
 }
+
+// ---------------------------------------------------------------------------- 研究端点与后台任务
+// 这些端点后端是 Dict[str, Any]（无 OpenAPI schema）：形状手写在这里，api 层据此给响应挂泛型
+// （#284：此前定义在各 view 目录，api 层拿不到，于是 view 里 `response.data as X` 强转）。
+// 批量 job 字段全部可选 + index signature：进度是渐进回写的，任何字段都可能暂缺。
+
+export interface OpinionBatchJob {
+  id?: string
+  type?: string
+  status?: string
+  total?: number
+  completed?: number
+  progress_percent?: number | string | null
+  success_count?: number
+  failed_count?: number
+  skipped_count?: number
+  current_symbol?: string | null
+  current_market?: string | null
+  current_stage?: string | null
+  results?: Array<{
+    symbol: string
+    market: string
+    status: string
+    tags?: string[]
+    error?: string | null
+    reason?: string | null
+  }>
+  abort_reason?: string | null
+  cancelled?: boolean
+  started_at?: string | null
+  [key: string]: unknown
+}
+
+export interface AnalysisSummaryRow {
+  symbol: string
+  market: string
+  tags: string[]
+  risk_level: string
+  summary: string
+  /** 分析生成时刻（带时区 ISO） */
+  created_at?: string | null
+  /** 最新一次财报摘要生成/报表抽取时刻（与详情页同一判定）；晚于 created_at = 可能过期 */
+  latest_data_at?: string | null
+}
+
+export interface BatchResultRow {
+  symbol: string
+  market: string
+  status: string
+  error?: string | null
+  reason?: string | null
+}
+
+export interface AnalysisBatchJob {
+  id?: string
+  status?: string
+  total?: number
+  completed?: number
+  progress_percent?: number | string | null
+  success_count?: number
+  failed_count?: number
+  skipped_count?: number
+  current_symbol?: string | null
+  current_market?: string | null
+  current_stage?: string | null
+  results?: BatchResultRow[]
+  abort_reason?: string | null
+  cancelled?: boolean
+  started_at?: string | null
+  [key: string]: unknown
+}
+
+export interface DigestBatchJob {
+  id: string
+  type?: string
+  status: string
+  total?: number
+  completed?: number
+  progress_percent?: number
+  success_count?: number
+  failed_count?: number
+  digests_generated?: number
+  digests_blocked?: number
+  symbols_with_remaining?: number
+  // 港股顺带的三张报表抽取（其他市场不计）
+  statements_generated?: number
+  statements_blocked?: number
+  statements_suspect?: number
+  current_symbol?: string | null
+  current_market?: string | null
+  cancelled?: boolean
+  abort_reason?: string | null
+  started_at?: string | null
+  [key: string]: unknown
+}
+
+export interface OpinionSummaryDetail {
+  id: number
+  symbol: string
+  market: string
+  name: string | null
+  tags: string[]
+  summary: string
+  author_stances: OpinionAuthorStance[]
+  content: string
+  model: string
+  total_tokens: number | null
+  utterance_count: number
+  recent_utterance_count: number
+  recent_days: number
+  lookback_days: number
+  latest_utterance_at: string | null
+  created_at: string
+  previous: { tags: string[]; summary: string; created_at: string | null } | null
+}
+
+export interface AnalysisJob {
+  id?: string
+  status?: string
+  stage?: string | null
+  stage_label?: string | null
+  completed?: number
+  total?: number
+  progress_percent?: number | string | null
+  error?: string | null
+  [key: string]: unknown
+}
+
+export interface OpinionJob {
+  id: string
+  status: string
+  stage?: string | null
+  stage_label?: string | null
+  completed?: number
+  total?: number
+  error?: string | null
+  summary_id?: number | null
+  [key: string]: unknown
+}
+
+/** /securities/active-analysis-jobs 的一行：分析家族任意一种任务（按 type 区分），可直接交给
+ *  AnalysisBatchJob / DigestBatchJob / OpinionBatchJob 的消费方——其余字段都是可选的。 */
+export interface ActiveAnalysisJob {
+  id: string
+  type: string
+  status: string
+  [key: string]: unknown
+}
+
+/** 入队接口的返回：任务一定带 id（进度形状里 id 可选，是因为状态对象也用于本地占位） */
+export type StartedJob<T> = T & { id: string }
+
+// 写接口的请求体（#284：api 层写方法此前一律 Record<string, unknown>）
+export type BrokerAccountCreate = components['schemas']['BrokerAccountCreate']
+export type BrokerAccountUpdate = components['schemas']['BrokerAccountUpdate']
+export type CashEventCreate = components['schemas']['CashEventCreate']
+export type CashEventUpdate = components['schemas']['CashEventUpdate']
+export type CorporateActionCreate = components['schemas']['CorporateActionCreate']
+export type CorporateActionUpdate = components['schemas']['CorporateActionUpdate']
+export type ExchangeRateCreate = components['schemas']['ExchangeRateCreate']
+export type ExchangeRateUpdate = components['schemas']['ExchangeRateUpdate']
+export type OpeningPositionCostUpdate = components['schemas']['OpeningPositionCostUpdate']
+export type ReconciliationSnapshotCreate = components['schemas']['ReconciliationSnapshotCreate']
+export type ReconciliationSnapshotUpdate = components['schemas']['ReconciliationSnapshotUpdate']
+export type SecurityRuleCreate = components['schemas']['SecurityRuleCreate']
+export type SuggestionAccept = components['schemas']['SuggestionAccept']
+export type TransactionCreate = components['schemas']['TransactionCreate']
+export type TransactionUpdate = components['schemas']['TransactionUpdate']
+export type TransferCreate = components['schemas']['TransferCreate']
+export type UserCreate = components['schemas']['UserCreate']
+export type UserUpdate = components['schemas']['UserUpdate']
+export type WatchlistItemCreate = components['schemas']['WatchlistItemCreate']
+export type WatchlistItemUpdate = components['schemas']['WatchlistItemUpdate']

@@ -1,18 +1,15 @@
 <script setup lang="ts">
+import type { BrokerAccountCreate } from '@/types'
+import { EMPTY } from '@/utils/helpers'
+import { LEDGER_CURRENCIES } from '@/utils/currency'
+import { accountShortName, maskAccountNumber } from '@/utils/labels'
+import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { reactive, ref } from 'vue'
 import { type FormInstance } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
 import { useMediaQuery } from '@/composables/useMediaQuery'
-import {
-  type AccountRow,
-  type DialogState,
-  accountName,
-  brokerOptions,
-  currencyOptions,
-  makeRemover,
-  makeSaver
-} from './shared'
+import { type AccountRow, type DialogState, brokerOptions, makeSaver } from './shared'
 
 const props = defineProps<{
   accounts: AccountRow[]
@@ -41,8 +38,8 @@ const accountRules = {
 
 function resetAccountForm(row: Partial<AccountRow> = {}) {
   Object.assign(accountForm, {
-    account_name: row.account_name || row.name || '',
-    broker: row.broker || row.broker_name || '',
+    account_name: row.account_name || '',
+    broker: row.broker || '',
     account_number_masked: row.account_number_masked || '',
     base_currency: row.base_currency || 'CNY',
     is_active: row.is_active !== false,
@@ -59,17 +56,19 @@ function openAccountDialog(row?: AccountRow) {
 const saveAccount = makeSaver({
   formRef: accountFormRef,
   dialog: accountDialog,
-  buildPayload: () => ({ ...accountForm }),
+  // 表单校验（accountRules）保证必填项：这里是「已校验表单 → 请求体」的唯一断言点
+  buildPayload: () => ({ ...accountForm }) as BrokerAccountCreate,
   update: (id, payload) => api.updateBrokerAccount(id, payload),
   create: (payload) => api.createBrokerAccount(payload),
   messages: { updated: '账户已更新', created: '账户已新增', failure: '账户保存失败' },
   reload: () => props.reload()
 })
 
-const removeAccount = makeRemover<AccountRow>({
+const removeAccount = makeConfirmedAction<AccountRow>({
   title: '删除账户',
+  confirmText: '删除',
   message: (row) =>
-    `仅空账户可以删除。若“${accountName(row)}”已有交易或审计记录，请编辑账户并将其停用。`,
+    `仅空账户可以删除。若“${accountShortName(row)}”已有交易或审计记录，请编辑账户并将其停用。`,
   request: (row) => api.deleteBrokerAccount(row.id),
   successMessage: '账户已删除',
   failureMessage: '账户删除失败',
@@ -97,13 +96,13 @@ const removeAccount = makeRemover<AccountRow>({
         <el-table-column label="账户" min-width="200">
           <template #default="{ row }">
             <div class="primary-cell">
-              <strong>{{ accountName(row) }}</strong>
-              <span>{{ row.account_number_masked || '未填写尾号' }}</span>
+              <strong>{{ accountShortName(row) }}</strong>
+              <span>{{ maskAccountNumber(row.account_number_masked) || '未填写尾号' }}</span>
             </div>
           </template>
         </el-table-column>
         <el-table-column prop="broker" label="券商" min-width="140">
-          <template #default="{ row }">{{ row.broker || row.broker_name || '-' }}</template>
+          <template #default="{ row }">{{ row.broker || EMPTY }}</template>
         </el-table-column>
         <el-table-column prop="base_currency" label="基础币种" width="105" />
         <el-table-column prop="is_active" label="状态" width="90">
@@ -117,7 +116,21 @@ const removeAccount = makeRemover<AccountRow>({
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" text @click="openAccountDialog(row)">编辑</el-button>
-            <el-button type="danger" text @click="removeAccount(row)">删除空账户</el-button>
+            <el-tooltip
+              :disabled="!row.has_records"
+              content="已有交易或导入记录的账户不能删除，可编辑后停用"
+              placement="top"
+            >
+              <span>
+                <el-button
+                  type="danger"
+                  text
+                  :disabled="row.has_records"
+                  @click="removeAccount(row)"
+                  >删除空账户</el-button
+                >
+              </span>
+            </el-tooltip>
           </template>
         </el-table-column>
       </el-table>
@@ -130,9 +143,9 @@ const removeAccount = makeRemover<AccountRow>({
       <article v-for="row in accounts" :key="row.id" class="mobile-card" data-testid="account-card">
         <div class="mobile-card-head">
           <div class="mobile-card-title">
-            <span class="mobile-card-symbol">{{ accountName(row) }}</span>
+            <span class="mobile-card-symbol">{{ accountShortName(row) }}</span>
             <span class="mobile-card-name">
-              {{ row.account_number_masked || '未填写尾号' }}
+              {{ maskAccountNumber(row.account_number_masked) || '未填写尾号' }}
             </span>
           </div>
           <div class="mobile-card-tags">
@@ -143,7 +156,7 @@ const removeAccount = makeRemover<AccountRow>({
         </div>
 
         <div class="mobile-card-meta">
-          <span>{{ row.broker || row.broker_name || '未填写券商' }}</span>
+          <span>{{ row.broker || '未填写券商' }}</span>
           <span>{{ row.base_currency }}</span>
           <span v-if="row.notes">{{ row.notes }}</span>
         </div>
@@ -152,7 +165,13 @@ const removeAccount = makeRemover<AccountRow>({
           <el-button type="primary" size="small" text @click="openAccountDialog(row)">
             编辑
           </el-button>
-          <el-button type="danger" size="small" text @click="removeAccount(row)">
+          <el-button
+            v-if="!row.has_records"
+            type="danger"
+            size="small"
+            text
+            @click="removeAccount(row)"
+          >
             删除空账户
           </el-button>
         </div>
@@ -199,7 +218,7 @@ const removeAccount = makeRemover<AccountRow>({
         <el-form-item label="基础币种" prop="base_currency">
           <el-select v-model="accountForm.base_currency">
             <el-option
-              v-for="currency in currencyOptions"
+              v-for="currency in LEDGER_CURRENCIES"
               :key="currency"
               :label="currency"
               :value="currency"

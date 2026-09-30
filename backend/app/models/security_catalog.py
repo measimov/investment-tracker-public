@@ -31,7 +31,9 @@ class SecurityCatalogEntry(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     symbol = Column(
-        String(20), nullable=False, comment="账本口径代码：大写，港股 5 位（同 normalize_manual_symbol）"
+        String(20),
+        nullable=False,
+        comment="账本口径代码：大写，港股 5 位（同 normalize_manual_symbol）",
     )
     market = Column(String(20), nullable=False, comment="市场：A股/B股/港股/美股")
     name = Column(String(200), nullable=True, comment="简体中文名")

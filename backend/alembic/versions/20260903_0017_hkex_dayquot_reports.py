@@ -27,14 +27,20 @@ def upgrade() -> None:
         "hkex_dayquot_reports",
         sa.Column("report_date", sa.Date(), nullable=False, comment="报表日期（交易日）"),
         sa.Column(
-            "processed_at", sa.DateTime(timezone=True), server_default=sa.text("now()"),
+            "processed_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
             nullable=False,
         ),
         sa.Column("universe_size", sa.Integer(), nullable=False, comment="处理时的跟踪标的数"),
         sa.Column("parsed_count", sa.Integer(), nullable=False, comment="报表解析出的证券行数"),
-        sa.Column("stored_count", sa.Integer(), nullable=False, comment="写入 security_prices 的行数"),
         sa.Column(
-            "detail", postgresql.JSONB(astext_type=sa.Text()), nullable=False,
+            "stored_count", sa.Integer(), nullable=False, comment="写入 security_prices 的行数"
+        ),
+        sa.Column(
+            "detail",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
             comment="missing / suspended / unpriced / conflicts 明细",
         ),
         sa.PrimaryKeyConstraint("report_date"),

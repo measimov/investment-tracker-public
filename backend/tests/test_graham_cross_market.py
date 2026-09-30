@@ -18,9 +18,10 @@ from app.core.timeutil import local_today
 from app.database import SessionLocal
 from app.models.security_price import SecurityPrice
 from app.models.security_profile import SecurityProfileData
+from app.services import edgar_facts, profile_store
 from app.services import security_profile_service as svc
+from app.services.edgar_facts import EDGAR_PIVOT_VERSION
 from app.services.earnings_quality import (
-    EDGAR_PIVOT_VERSION,
     market_statements,
     pivot_rows_to_statements,
 )
@@ -33,6 +34,7 @@ from app.services.report_statement_prompts import (
     STATEMENT_PROMPT_VERSION,
 )
 from app.services.report_statements import STATEMENT_EXTRACTOR_VERSION
+from tests.analysis_fixtures import FULL_REPORT_JSON
 
 FIXTURES = Path(__file__).parent / "fixtures" / "graham"
 Rate = namedtuple("Rate", "from_currency to_currency rate effective_date")
@@ -55,8 +57,14 @@ def _current(row, kinds=("income", "balance", "cashflow")):
 
 
 def _price(close, currency="HKD", *, day="2026-09-25", stale=False, age=2):
-    return {"close": close, "currency": currency, "date": day, "stale": stale,
-            "age_days": age, "source": "hkex-dayquot"}
+    return {
+        "close": close,
+        "currency": currency,
+        "date": day,
+        "stale": stale,
+        "age_days": age,
+        "source": "hkex-dayquot",
+    }
 
 
 def _hk_fixture(symbol):
@@ -70,9 +78,14 @@ def _hk_screen(symbol, close, **valuation):
     annual, interim = _hk_fixture(symbol)
     statements = market_statements("港股", {"report_statements": annual, "yahoo_fundamentals": []})
     return compute_graham_screen(
-        "港股", statements,
-        valuation={"price": _price(close), "fx_rates": {"CNY": CNY_HKD},
-                   "interim_rows": interim, **valuation},
+        "港股",
+        statements,
+        valuation={
+            "price": _price(close),
+            "fx_rates": {"CNY": CNY_HKD},
+            "interim_rows": interim,
+            **valuation,
+        },
     )
 
 
@@ -87,15 +100,21 @@ def test_a_share_verdicts_unchanged_against_pre_change_golden():
     for case in golden["cases"]:
         inputs = case["inputs"]
         result = compute_graham_screen(
-            "A股", market_statements("A股", inputs["statement_datasets"]),
-            daily_basic_rows=inputs["daily_basic_rows"], dividend_rows=inputs["dividend_rows"],
+            "A股",
+            market_statements("A股", inputs["statement_datasets"]),
+            daily_basic_rows=inputs["daily_basic_rows"],
+            dividend_rows=inputs["dividend_rows"],
         )
         assert result["as_of_year"] == case["expected"]["as_of_year"]
         assert result["fragility"] == case["expected"]["fragility"]
         for expected in case["expected"]["criteria"]:
             actual = _by(result, expected["criterion"])
-            assert (actual["verdict"], actual["value"]) == (expected["verdict"], expected["value"]), (
-                case["symbol"], expected["criterion"],
+            assert (actual["verdict"], actual["value"]) == (
+                expected["verdict"],
+                expected["value"],
+            ), (
+                case["symbol"],
+                expected["criterion"],
             )
             if actual["reason"] != expected["reason"]:
                 changed_reasons.append((case["symbol"], expected["criterion"]))
@@ -112,8 +131,10 @@ def test_a_share_supplement_static_and_three_year_average():
     case = next(c for c in golden["cases"] if c["symbol"] == "000333")
     inputs = case["inputs"]
     result = compute_graham_screen(
-        "A股", market_statements("A股", inputs["statement_datasets"]),
-        daily_basic_rows=inputs["daily_basic_rows"], dividend_rows=inputs["dividend_rows"],
+        "A股",
+        market_statements("A股", inputs["statement_datasets"]),
+        daily_basic_rows=inputs["daily_basic_rows"],
+        dividend_rows=inputs["dividend_rows"],
     )
     close = inputs["daily_basic_rows"][0]["close"]
     eps = {r["end_date"][:4]: r["basic_eps"] for r in inputs["statement_datasets"]["income"]}
@@ -135,7 +156,9 @@ def test_hk_ttm_rolls_latest_interim_and_converts_currency():
     assert pe["value"] == pytest.approx(436.6 / (ttm_cny * CNY_HKD), abs=1e-4)
     assert pe["verdict"] == ("pass" if 436.6 / (ttm_cny * CNY_HKD) <= 15 else "fail")
     assert [c["period"] for c in pe["basis"]["components"]] == [
-        "20251231|FY", "20260630|H1", "20250630|H1",
+        "20251231|FY",
+        "20260630|H1",
+        "20250630|H1",
     ]
     assert [c["sign"] for c in pe["basis"]["components"]] == ["+", "+", "-"]
     assert "TTM = 20251231 年报 + 20260630 中报 − 上年同期中报" in pe["reason"]
@@ -176,7 +199,8 @@ def test_hk_no_newer_interim_uses_annual():
     statements = market_statements("港股", {"report_statements": annual})
     older = [r for r in interim if r["end_date"] < "20251231"]
     result = compute_graham_screen(
-        "港股", statements,
+        "港股",
+        statements,
         valuation={"price": _price(436.6), "fx_rates": {"CNY": CNY_HKD}, "interim_rows": older},
     )
     pe = _by(result, "pe")
@@ -189,8 +213,13 @@ def test_hk_missing_prior_interim_does_not_roll():
     statements = market_statements("港股", {"report_statements": annual})
     latest_only = [r for r in interim if r["end_date"] == "20260630"]
     result = compute_graham_screen(
-        "港股", statements,
-        valuation={"price": _price(436.6), "fx_rates": {"CNY": CNY_HKD}, "interim_rows": latest_only},
+        "港股",
+        statements,
+        valuation={
+            "price": _price(436.6),
+            "fx_rates": {"CNY": CNY_HKD},
+            "interim_rows": latest_only,
+        },
     )
     assert "缺上年同期中报" in _by(result, "pe")["basis"]["label"]
 
@@ -206,7 +235,9 @@ def test_hk_missing_fx_rate_is_indeterminate():
 def test_no_price_is_indeterminate():
     annual, _ = _hk_fixture("00700")
     result = compute_graham_screen(
-        "港股", market_statements("港股", {"report_statements": annual}), valuation={"price": None},
+        "港股",
+        market_statements("港股", {"report_statements": annual}),
+        valuation={"price": None},
     )
     for key in ("pe", "pb_or_product"):
         item = _by(result, key)
@@ -217,9 +248,13 @@ def test_no_price_is_indeterminate():
 def test_stale_price_still_computes_but_is_labelled():
     annual, interim = _hk_fixture("00700")
     result = compute_graham_screen(
-        "港股", market_statements("港股", {"report_statements": annual}),
-        valuation={"price": _price(436.6, stale=True, age=19), "fx_rates": {"CNY": CNY_HKD},
-                   "interim_rows": interim},
+        "港股",
+        market_statements("港股", {"report_statements": annual}),
+        valuation={
+            "price": _price(436.6, stale=True, age=19),
+            "fx_rates": {"CNY": CNY_HKD},
+            "interim_rows": interim,
+        },
     )
     pe = _by(result, "pe")
     assert pe["verdict"] in ("pass", "fail")
@@ -229,11 +264,20 @@ def test_stale_price_still_computes_but_is_labelled():
 
 def test_negative_ttm_eps_fails_as_loss():
     rows = [
-        _current({"end_date": "20251231", "fp": "FY", "currency": "HKD", "basic_eps": -0.5,
-                  "n_income_attr_p": -50.0, "total_hldr_eqy_exc_min_int": 1000.0}),
+        _current(
+            {
+                "end_date": "20251231",
+                "fp": "FY",
+                "currency": "HKD",
+                "basic_eps": -0.5,
+                "n_income_attr_p": -50.0,
+                "total_hldr_eqy_exc_min_int": 1000.0,
+            }
+        ),
     ]
     result = compute_graham_screen(
-        "港股", market_statements("港股", {"report_statements": rows}),
+        "港股",
+        market_statements("港股", {"report_statements": rows}),
         valuation={"price": _price(5.0), "fx_rates": {}, "interim_rows": []},
     )
     pe = _by(result, "pe")
@@ -246,11 +290,19 @@ def test_latest_annual_without_eps_is_indeterminate_not_stale_year():
     """最新年报缺 EPS 时不拿更早年份顶替（那不是 TTM）。"""
     rows = [
         _current({"end_date": "20251231", "fp": "FY", "currency": "HKD", "n_income_attr_p": -10.0}),
-        _current({"end_date": "20241231", "fp": "FY", "currency": "HKD", "basic_eps": 0.3,
-                  "n_income_attr_p": 30.0}),
+        _current(
+            {
+                "end_date": "20241231",
+                "fp": "FY",
+                "currency": "HKD",
+                "basic_eps": 0.3,
+                "n_income_attr_p": 30.0,
+            }
+        ),
     ]
     result = compute_graham_screen(
-        "港股", market_statements("港股", {"report_statements": rows}),
+        "港股",
+        market_statements("港股", {"report_statements": rows}),
         valuation={"price": _price(5.0), "fx_rates": {}, "interim_rows": []},
     )
     pe = _by(result, "pe")
@@ -259,10 +311,12 @@ def test_latest_annual_without_eps_is_indeterminate_not_stale_year():
 
 
 def test_resolve_fx_rates_crosses_via_cny():
-    lookup = ExchangeRateLookup([
-        Rate("HKD", "CNY", Decimal("0.92"), date(2026, 9, 1)),
-        Rate("USD", "CNY", Decimal("7.10"), date(2026, 9, 1)),
-    ])
+    lookup = ExchangeRateLookup(
+        [
+            Rate("HKD", "CNY", Decimal("0.92"), date(2026, 9, 1)),
+            Rate("USD", "CNY", Decimal("7.10"), date(2026, 9, 1)),
+        ]
+    )
     rates = resolve_fx_rates({"CNY", "USD", "HKD", None, "EUR"}, "HKD", date(2026, 9, 25), lookup)
     assert rates["HKD"] == 1.0
     assert rates["CNY"] == pytest.approx(1 / 0.92)
@@ -276,19 +330,39 @@ def test_resolve_fx_rates_crosses_via_cny():
 def _us_rows(*, form="10-K", quarters=True, version=EDGAR_PIVOT_VERSION):
     annual = []
     for year, eps in ((2025, 4.0), (2024, 3.0), (2023, 2.0)):
-        annual.append({
-            "end_date": f"{year}0927", "fp": "FY", "form": form, "currency": "USD",
-            "basic_eps": eps, "n_income_attr_p": eps * 1000.0, "total_cur_assets": 5000.0,
-            "total_cur_liab": 2000.0, "total_hldr_eqy_exc_min_int": 20000.0 + year,
-            "n_cashflow_act": 900.0, "edgar_chain_version": version,
-        })
+        annual.append(
+            {
+                "end_date": f"{year}0927",
+                "fp": "FY",
+                "form": form,
+                "currency": "USD",
+                "basic_eps": eps,
+                "n_income_attr_p": eps * 1000.0,
+                "total_cur_assets": 5000.0,
+                "total_cur_liab": 2000.0,
+                "total_hldr_eqy_exc_min_int": 20000.0 + year,
+                "n_cashflow_act": 900.0,
+                "edgar_chain_version": version,
+            }
+        )
     interim = []
     if quarters:
         interim = [
-            {"end_date": "20251227", "fp": "Q1", "currency": "USD", "basic_eps": 1.5,
-             "n_income_attr_p": 1500.0, "total_hldr_eqy_exc_min_int": 26000.0},
-            {"end_date": "20241228", "fp": "Q1", "currency": "USD", "basic_eps": 1.0,
-             "n_income_attr_p": 1000.0},
+            {
+                "end_date": "20251227",
+                "fp": "Q1",
+                "currency": "USD",
+                "basic_eps": 1.5,
+                "n_income_attr_p": 1500.0,
+                "total_hldr_eqy_exc_min_int": 26000.0,
+            },
+            {
+                "end_date": "20241228",
+                "fp": "Q1",
+                "currency": "USD",
+                "basic_eps": 1.0,
+                "n_income_attr_p": 1000.0,
+            },
             # 只有时点科目的比较列行（不参与 TTM）
             {"end_date": "20260101", "fp": "Q1", "currency": "USD", "total_cur_assets": 1.0},
         ]
@@ -298,9 +372,14 @@ def _us_rows(*, form="10-K", quarters=True, version=EDGAR_PIVOT_VERSION):
 def test_us_ttm_from_quarters_and_mrq_equity():
     annual, interim = _us_rows()
     result = compute_graham_screen(
-        "美股", pivot_rows_to_statements(annual),
-        valuation={"price": _price(60.0, "USD"), "fx_rates": {"USD": 1.0}, "interim_rows": interim,
-                   "annual_form": "10-K"},
+        "美股",
+        pivot_rows_to_statements(annual),
+        valuation={
+            "price": _price(60.0, "USD"),
+            "fx_rates": {"USD": 1.0},
+            "interim_rows": interim,
+            "annual_form": "10-K",
+        },
     )
     pe = _by(result, "pe")
     assert pe["basis"]["eps_ttm"] == pytest.approx(4.0 + 1.5 - 1.0)
@@ -315,9 +394,16 @@ def test_us_20f_annual_with_ads_ratio():
     """20-F 发行人（拼多多）：无季报 → 最新年报；EDGAR 每股按普通股，价格按 ADS（1:4）。"""
     annual, _ = _us_rows(form="20-F", quarters=False)
     result = compute_graham_screen(
-        "美股", pivot_rows_to_statements(annual),
-        valuation={"price": _price(77.57, "USD"), "fx_rates": {"USD": 1.0}, "interim_rows": [],
-                   "annual_form": "20-F", "share_ratio": 4, "share_ratio_note": "1 ADS = 4 股"},
+        "美股",
+        pivot_rows_to_statements(annual),
+        valuation={
+            "price": _price(77.57, "USD"),
+            "fx_rates": {"USD": 1.0},
+            "interim_rows": [],
+            "annual_form": "20-F",
+            "share_ratio": 4,
+            "share_ratio_note": "1 ADS = 4 股",
+        },
     )
     pe = _by(result, "pe")
     assert pe["basis"]["label"] == "20250927 年报（20-F 发行人不披露季报）"
@@ -331,9 +417,14 @@ def test_us_20f_annual_with_ads_ratio():
 def test_us_20f_without_registered_ads_ratio_is_indeterminate():
     annual, _ = _us_rows(form="20-F", quarters=False)
     result = compute_graham_screen(
-        "美股", pivot_rows_to_statements(annual),
-        valuation={"price": _price(10.0, "USD"), "fx_rates": {"USD": 1.0},
-                   "share_ratio_missing": True, "annual_form": "20-F"},
+        "美股",
+        pivot_rows_to_statements(annual),
+        valuation={
+            "price": _price(10.0, "USD"),
+            "fx_rates": {"USD": 1.0},
+            "share_ratio_missing": True,
+            "annual_form": "20-F",
+        },
     )
     for key in ("pe", "pb_or_product"):
         assert _by(result, key)["verdict"] == "indeterminate"
@@ -347,8 +438,13 @@ def _hk_div_rows(amounts, *, cashflow=True):
     """amounts: {year: 已付股息 | None(现金流量表在而未列)}；cashflow=False 表示没有现金流量表。"""
     rows = []
     for year, amount in amounts.items():
-        row = {"end_date": f"{year}1231", "fp": "FY", "currency": "HKD",
-               "n_income_attr_p": 100.0, "basic_eps": 1.0}
+        row = {
+            "end_date": f"{year}1231",
+            "fp": "FY",
+            "currency": "HKD",
+            "n_income_attr_p": 100.0,
+            "basic_eps": 1.0,
+        }
         if cashflow:
             row["n_cashflow_act"] = 120.0
         if amount is not None:
@@ -395,8 +491,16 @@ def test_hk_dividend_interrupted_is_fail():
 
 def test_hk_dividend_unknown_for_yahoo_only_rows():
     """雅虎行不带某序列不能推断公司没付：无任何可知年份 → indeterminate。"""
-    yahoo = [{"end_date": f"{y}1231", "fp": "FY", "currency": "HKD", "n_income_attr_p": 1.0,
-              "n_cashflow_act": 2.0} for y in range(2022, 2026)]
+    yahoo = [
+        {
+            "end_date": f"{y}1231",
+            "fp": "FY",
+            "currency": "HKD",
+            "n_income_attr_p": 1.0,
+            "n_cashflow_act": 2.0,
+        }
+        for y in range(2022, 2026)
+    ]
     statements = market_statements("港股", {"yahoo_fundamentals": yahoo})
     item = _by(compute_graham_screen("港股", statements), "dividend_record")
     assert item["verdict"] == "indeterminate"
@@ -407,13 +511,17 @@ def test_us_dividend_absent_concept_is_zero_only_for_current_chain():
     annual, _ = _us_rows(quarters=False)
     statements = pivot_rows_to_statements(annual)  # 无 dividend_absent_means_zero → 不可知
     assert all(row["div_paid_status"] is None for row in statements["cashflow"])
-    item = _by(compute_graham_screen("美股", market_statements("美股", {"edgar_companyfacts": annual})),
-               "dividend_record")
+    item = _by(
+        compute_graham_screen("美股", market_statements("美股", {"edgar_companyfacts": annual})),
+        "dividend_record",
+    )
     assert item["verdict"] == "fail"
     assert "现金流量表均未列已付股东股息" in item["reason"]
     old, _ = _us_rows(quarters=False, version=None)
-    item = _by(compute_graham_screen("美股", market_statements("美股", {"edgar_companyfacts": old})),
-               "dividend_record")
+    item = _by(
+        compute_graham_screen("美股", market_statements("美股", {"edgar_companyfacts": old})),
+        "dividend_record",
+    )
     assert item["verdict"] == "indeterminate"
     assert "待重新同步 EDGAR" in item["reason"]
 
@@ -422,8 +530,14 @@ def test_us_dividend_absent_concept_is_zero_only_for_current_chain():
 
 
 def _hk_balance(**fields):
-    base = {"end_date": "20251231", "fp": "FY", "currency": "HKD", "n_income_attr_p": 100.0,
-            "total_cur_assets": 40000.0, "total_cur_liab": 15000.0}
+    base = {
+        "end_date": "20251231",
+        "fp": "FY",
+        "currency": "HKD",
+        "n_income_attr_p": 100.0,
+        "total_cur_assets": 40000.0,
+        "total_cur_liab": 15000.0,
+    }
     base.update(fields)
     return market_statements("港股", {"report_statements": [_current(base)]})
 
@@ -442,7 +556,8 @@ def test_hk_lt_borr_decides_long_term_debt():
 
 def test_hk_negative_net_current_assets_fails_without_attribution():
     result = compute_graham_screen(
-        "港股", _hk_balance(total_cur_assets=10000.0, total_cur_liab=15000.0, total_debt=5000.0),
+        "港股",
+        _hk_balance(total_cur_assets=10000.0, total_cur_liab=15000.0, total_debt=5000.0),
     )
     item = _by(result, "lt_debt_vs_net_current_assets")
     assert item["verdict"] == "fail"
@@ -451,7 +566,8 @@ def test_hk_negative_net_current_assets_fails_without_attribution():
 
 def test_hk_fragility_net_debt_uses_borrowings_when_no_total():
     result = compute_graham_screen(
-        "港股", _hk_balance(lt_borr=8000.0, st_borr=2000.0, money_cap=4000.0, total_assets=90000.0),
+        "港股",
+        _hk_balance(lt_borr=8000.0, st_borr=2000.0, money_cap=4000.0, total_assets=90000.0),
     )
     assert result["fragility"]["net_debt_basis"] == "流动+非流动借款"
     assert result["fragility"]["net_debt_to_assets"] == round((10000.0 - 4000.0) / 90000.0, 4)
@@ -460,23 +576,30 @@ def test_hk_fragility_net_debt_uses_borrowings_when_no_total():
 def test_us_lt_debt_absent_now_but_reported_before_is_zero():
     annual, _ = _us_rows(quarters=False)
     annual[1]["lt_debt"] = 700.0  # 2024 年报过长期债务，2025 未报
-    item = _by(compute_graham_screen("美股", pivot_rows_to_statements(annual)),
-               "lt_debt_vs_net_current_assets")
+    item = _by(
+        compute_graham_screen("美股", pivot_rows_to_statements(annual)),
+        "lt_debt_vs_net_current_assets",
+    )
     assert item["verdict"] == "pass"
     assert "往年报过" in item["reason"]
     # 旧概念链抓的行：缺概念不代表没有债务
     old, _ = _us_rows(quarters=False, version=None)
     old[1]["lt_debt"] = 700.0
-    item = _by(compute_graham_screen("美股", pivot_rows_to_statements(old)),
-               "lt_debt_vs_net_current_assets")
+    item = _by(
+        compute_graham_screen("美股", pivot_rows_to_statements(old)),
+        "lt_debt_vs_net_current_assets",
+    )
     assert item["verdict"] == "indeterminate"
 
 
 def test_edgar_chain_covers_convertible_debt_and_dividends():
-    chains = svc.EDGAR_CONCEPT_CHAINS
+    chains = edgar_facts.EDGAR_CONCEPT_CHAINS
     assert chains["lt_debt"][:2] == ("LongTermDebtNoncurrent", "LongTermDebt")
-    for concept in ("ConvertibleDebtNoncurrent", "ConvertibleNotesPayableNoncurrent",
-                    "LongTermDebtAndCapitalLeaseObligations"):
+    for concept in (
+        "ConvertibleDebtNoncurrent",
+        "ConvertibleNotesPayableNoncurrent",
+        "LongTermDebtAndCapitalLeaseObligations",
+    ):
         assert concept in chains["lt_debt"]
     assert chains["div_paid_owners"][0] == "PaymentsOfDividends"
 
@@ -492,8 +615,18 @@ def test_statement_prompt_fields_for_graham():
 
 
 def test_short_history_message_depends_on_confirmation():
-    rows = [_current({"end_date": f"{y}1231", "fp": "FY", "currency": "HKD",
-                      "n_income_attr_p": 10.0, "basic_eps": 0.1}) for y in range(2019, 2026)]
+    rows = [
+        _current(
+            {
+                "end_date": f"{y}1231",
+                "fp": "FY",
+                "currency": "HKD",
+                "n_income_attr_p": 10.0,
+                "basic_eps": 0.1,
+            }
+        )
+        for y in range(2019, 2026)
+    ]
     statements = market_statements("港股", {"report_statements": rows})
     confirmed = compute_graham_screen("港股", statements, history_confirmed=True)
     assert _by(confirmed, "earnings_stability")["reason"].startswith(
@@ -532,15 +665,33 @@ def db():
 def test_compute_graham_for_hk_loads_price_interim_and_fx(db, monkeypatch):
     annual, interim = _hk_fixture("00700")
     for row in annual + interim:
-        svc.upsert_profile_row(db, "09999", "港股", "report_statements",
-                               f"{row['end_date']}|{row['fp']}", row)
-    db.add(SecurityPrice(symbol="09999", market="港股", price_date=local_today() - timedelta(days=20),
-                         currency="HKD", close_price=Decimal("400"), source="test"))
-    db.add(SecurityPrice(symbol="09999", market="港股", price_date=local_today() - timedelta(days=9),
-                         currency="HKD", close_price=Decimal("436.6"), source="hkex-dayquot"))
+        profile_store.upsert_profile_row(
+            db, "09999", "港股", "report_statements", f"{row['end_date']}|{row['fp']}", row
+        )
+    db.add(
+        SecurityPrice(
+            symbol="09999",
+            market="港股",
+            price_date=local_today() - timedelta(days=20),
+            currency="HKD",
+            close_price=Decimal("400"),
+            source="test",
+        )
+    )
+    db.add(
+        SecurityPrice(
+            symbol="09999",
+            market="港股",
+            price_date=local_today() - timedelta(days=9),
+            currency="HKD",
+            close_price=Decimal("436.6"),
+            source="hkex-dayquot",
+        )
+    )
     db.commit()
-    lookup = ExchangeRateLookup([Rate("HKD", "CNY", Decimal("1") / Decimal(str(CNY_HKD)),
-                                      date(2026, 1, 1))])
+    lookup = ExchangeRateLookup(
+        [Rate("HKD", "CNY", Decimal("1") / Decimal(str(CNY_HKD)), date(2026, 1, 1))]
+    )
     monkeypatch.setattr(svc, "_rate_lookup_for", lambda _db, _markets: lookup)
 
     result = svc.compute_graham_for(db, "09999", "港股")
@@ -553,21 +704,27 @@ def test_compute_graham_for_hk_loads_price_interim_and_fx(db, monkeypatch):
     # 批量摘要与单标的同口径
     summary = svc.graham_summaries_for(db, [("09999", "港股")])[("09999", "港股")]
     assert summary == {
-        "passed": result["passed"], "failed": result["failed"],
-        "indeterminate": result["indeterminate"], "total": 7, "as_of_year": "2025",
+        "passed": result["passed"],
+        "failed": result["failed"],
+        "indeterminate": result["indeterminate"],
+        "total": 7,
+        "as_of_year": "2025",
     }
 
 
 def test_load_graham_inputs_includes_us_quarters(db):
     annual, interim = _us_rows()
     for row in annual + interim:
-        svc.upsert_profile_row(db, "ZZTEST", "美股", "edgar_companyfacts",
-                               f"{row['end_date']}|{row['fp']}", row)
+        profile_store.upsert_profile_row(
+            db, "ZZTEST", "美股", "edgar_companyfacts", f"{row['end_date']}|{row['fp']}", row
+        )
     db.commit()
     inputs = svc.load_graham_inputs(db, "ZZTEST", "美股")
     assert [r["fp"] for r in inputs["statement_datasets"]["edgar_companyfacts"]] == ["FY"] * 3
     assert sorted(r["end_date"] for r in inputs["interim_rows"]) == [
-        "20241228", "20251227", "20260101",
+        "20241228",
+        "20251227",
+        "20260101",
     ]
     # 无行情价：估值不可判定而不是报错
     result = svc.compute_graham_for(db, "ZZTEST", "美股")
@@ -579,26 +736,52 @@ def test_load_graham_inputs_includes_us_quarters(db):
 
 def _us_quarter_rows(quarters):
     """FY 2025-09-27 EPS=4；quarters: [(期末, EPS)]，同时给出上年同期单季。"""
-    annual = [{
-        "end_date": "20250927", "fp": "FY", "form": "10-K", "currency": "USD", "basic_eps": 4.0,
-        "n_income_attr_p": 4000.0, "total_hldr_eqy_exc_min_int": 30000.0,
-    }]
+    annual = [
+        {
+            "end_date": "20250927",
+            "fp": "FY",
+            "form": "10-K",
+            "currency": "USD",
+            "basic_eps": 4.0,
+            "n_income_attr_p": 4000.0,
+            "total_hldr_eqy_exc_min_int": 30000.0,
+        }
+    ]
     interim = []
     for end, eps in quarters:
         prior = f"{int(end[:4]) - 1}{end[4:]}"
-        interim.append({"end_date": end, "fp": "Q", "currency": "USD", "basic_eps": eps,
-                        "n_income_attr_p": eps * 1000.0})
-        interim.append({"end_date": prior, "fp": "Q", "currency": "USD", "basic_eps": eps / 2,
-                        "n_income_attr_p": eps * 500.0})
+        interim.append(
+            {
+                "end_date": end,
+                "fp": "Q",
+                "currency": "USD",
+                "basic_eps": eps,
+                "n_income_attr_p": eps * 1000.0,
+            }
+        )
+        interim.append(
+            {
+                "end_date": prior,
+                "fp": "Q",
+                "currency": "USD",
+                "basic_eps": eps / 2,
+                "n_income_attr_p": eps * 500.0,
+            }
+        )
     return annual, interim
 
 
 def _us_ttm(quarters):
     annual, interim = _us_quarter_rows(quarters)
     result = compute_graham_screen(
-        "美股", pivot_rows_to_statements(annual),
-        valuation={"price": _price(70.0, "USD"), "fx_rates": {"USD": 1.0}, "interim_rows": interim,
-                   "annual_form": "10-K"},
+        "美股",
+        pivot_rows_to_statements(annual),
+        valuation={
+            "price": _price(70.0, "USD"),
+            "fx_rates": {"USD": 1.0},
+            "interim_rows": interim,
+            "annual_form": "10-K",
+        },
     )
     return _by(result, "pe")
 
@@ -630,9 +813,12 @@ def test_us_ttm_contiguous_52_53_week_quarters_roll():
 def test_hk_interim_path_requires_adjacent_half_year():
     """港股只滚最新一期中报（6 个月累计值，不存在缺季问题）；中报与年报不衔接时不滚动。"""
     annual, interim = _hk_fixture("00700")
-    statements = market_statements("港股", {"report_statements": [r for r in annual if r["end_date"] < "20251231"]})
+    statements = market_statements(
+        "港股", {"report_statements": [r for r in annual if r["end_date"] < "20251231"]}
+    )
     result = compute_graham_screen(
-        "港股", statements,
+        "港股",
+        statements,
         valuation={"price": _price(436.6), "fx_rates": {"CNY": CNY_HKD}, "interim_rows": interim},
     )
     pe = _by(result, "pe")
@@ -671,15 +857,30 @@ def test_hk_dividend_window_known_zero_is_interruption():
 # 「安全边际充足」接真实计算输出（不是手写 screen）
 
 
-MARGIN = '{"tags":["安全边际充足"],"risk_level":"medium","summary":"s","report_markdown":"r"}'
+MARGIN = (
+    '{"tags":["安全边际充足"],"risk_level":"medium","summary":"s","report_markdown":"'
+    + FULL_REPORT_JSON
+    + '"}'
+)
 
 
 def _a_share_statements_all_pass():
-    income = [{"end_date": f"{y}1231", "n_income_attr_p": 100.0, "basic_eps": 1.0 + (y - 2016) * 0.1}
-              for y in range(2016, 2026)]
-    balance = [{"end_date": f"{y}1231", "total_cur_assets": 50000.0, "total_cur_liab": 20000.0,
-                "lt_borr": 1000.0, "total_assets": 100000.0, "total_liab": 30000.0,
-                "money_cap": 20000.0} for y in range(2016, 2026)]
+    income = [
+        {"end_date": f"{y}1231", "n_income_attr_p": 100.0, "basic_eps": 1.0 + (y - 2016) * 0.1}
+        for y in range(2016, 2026)
+    ]
+    balance = [
+        {
+            "end_date": f"{y}1231",
+            "total_cur_assets": 50000.0,
+            "total_cur_liab": 20000.0,
+            "lt_borr": 1000.0,
+            "total_assets": 100000.0,
+            "total_liab": 30000.0,
+            "money_cap": 20000.0,
+        }
+        for y in range(2016, 2026)
+    ]
     return {"income": income, "balancesheet": balance, "cashflow": [], "fina_indicator": []}
 
 
@@ -692,34 +893,56 @@ def test_margin_of_safety_a_share_snapshot_from_real_output():
     )
 
     pe, pb = _daily_basic_valuation(
-        "A股", {"pe_ttm": 10.0, "pb": 1.0, "trade_date": "20260925"}, [],
+        "A股",
+        {"pe_ttm": 10.0, "pb": 1.0, "trade_date": "20260925"},
+        [],
     )
-    screen = {"status": "ok", "criteria": [
-        pe, pb,
-        {"criterion": "current_ratio", "verdict": "pass"},
-        {"criterion": "lt_debt_vs_net_current_assets", "verdict": "pass"},
-    ]}
+    screen = {
+        "status": "ok",
+        "criteria": [
+            pe,
+            pb,
+            {"criterion": "current_ratio", "verdict": "pass"},
+            {"criterion": "lt_debt_vs_net_current_assets", "verdict": "pass"},
+        ],
+    }
     assert pe["basis"]["valuation_method"] == "snapshot"
     assert margin_of_safety_allowed(screen, "A股")
     # 完整计算链：compute_graham_screen（快照带收盘价）→ 解析层标签校验
     result = compute_graham_screen(
-        "A股", _a_share_statements_all_pass(),
+        "A股",
+        _a_share_statements_all_pass(),
         daily_basic_rows=[{"trade_date": "20260925", "close": 12.0, "pe_ttm": 10.0, "pb": 1.0}],
     )
     assert _by(result, "pe")["basis"]["price"] == 12.0
-    assert all(_by(result, key)["verdict"] == "pass" for key in
-               ("pe", "pb_or_product", "current_ratio", "lt_debt_vs_net_current_assets"))
-    assert parse_analysis_output(MARGIN, market="A股", graham_screen=result)["tags"] == ["安全边际充足"]
+    assert all(
+        _by(result, key)["verdict"] == "pass"
+        for key in ("pe", "pb_or_product", "current_ratio", "lt_debt_vs_net_current_assets")
+    )
+    assert parse_analysis_output(MARGIN, market="A股", graham_screen=result)["tags"] == [
+        "安全边际充足"
+    ]
 
 
 def _hk_all_pass_screen(**price_kwargs):
-    rows = [_current({
-        "end_date": "20251231", "fp": "FY", "currency": "HKD", "basic_eps": 1.0,
-        "n_income_attr_p": 100.0, "total_hldr_eqy_exc_min_int": 1000.0,
-        "total_cur_assets": 40000.0, "total_cur_liab": 15000.0, "lt_borr": 1000.0,
-    })]
+    rows = [
+        _current(
+            {
+                "end_date": "20251231",
+                "fp": "FY",
+                "currency": "HKD",
+                "basic_eps": 1.0,
+                "n_income_attr_p": 100.0,
+                "total_hldr_eqy_exc_min_int": 1000.0,
+                "total_cur_assets": 40000.0,
+                "total_cur_liab": 15000.0,
+                "lt_borr": 1000.0,
+            }
+        )
+    ]
     return compute_graham_screen(
-        "港股", market_statements("港股", {"report_statements": rows}),
+        "港股",
+        market_statements("港股", {"report_statements": rows}),
         valuation={"price": _price(9.0, **price_kwargs), "fx_rates": {}, "interim_rows": []},
     )
 
@@ -747,11 +970,18 @@ def test_margin_of_safety_us_rejects_unrolled_ttm_from_real_output():
     annual, interim = _us_quarter_rows([("20260328", 2.0)])  # 缺首季 → 退回年报并 note
     annual[0].update({"total_cur_assets": 50000.0, "total_cur_liab": 20000.0, "lt_debt": 100.0})
     result = compute_graham_screen(
-        "美股", pivot_rows_to_statements(annual),
-        valuation={"price": _price(30.0, "USD", day="2026-06-30"), "fx_rates": {"USD": 1.0},
-                   "interim_rows": interim, "annual_form": "10-K"},
+        "美股",
+        pivot_rows_to_statements(annual),
+        valuation={
+            "price": _price(30.0, "USD", day="2026-06-30"),
+            "fx_rates": {"USD": 1.0},
+            "interim_rows": interim,
+            "annual_form": "10-K",
+        },
     )
-    assert all(_by(result, key)["verdict"] == "pass" for key in
-               ("pe", "pb_or_product", "current_ratio", "lt_debt_vs_net_current_assets"))
+    assert all(
+        _by(result, key)["verdict"] == "pass"
+        for key in ("pe", "pb_or_product", "current_ratio", "lt_debt_vs_net_current_assets")
+    )
     with pytest.raises(ValueError, match="安全边际充足"):
         parse_analysis_output(MARGIN, market="美股", graham_screen=result)

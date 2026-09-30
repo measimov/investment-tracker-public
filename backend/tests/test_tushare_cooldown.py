@@ -16,6 +16,7 @@ from app.services import security_profile_service as svc
 from app.services import stock_price_service as prices
 
 from .helpers import reset_tables
+from .analysis_fixtures import FULL_REPORT_JSON
 
 
 @pytest.fixture(autouse=True)
@@ -47,9 +48,7 @@ def db():
 def test_classify_rate_before_fatal():
     """顺序敏感：致命串"抱歉，您"是频率消息的前缀，必须先判频率——
     判反了会把可恢复的接口限流当成 token 失效而中止整批。"""
-    assert prices.classify_tushare_error(
-        "抱歉，您每分钟最多访问该接口500次"
-    ) == "rate"
+    assert prices.classify_tushare_error("抱歉，您每分钟最多访问该接口500次") == "rate"
     assert prices.classify_tushare_error("抱歉，您没有该接口权限") == "fatal"
     assert prices.classify_tushare_error("积分不足") == "fatal"
     assert prices.classify_tushare_error("每小时最多访问该接口") == "rate"
@@ -179,7 +178,8 @@ def test_sync_waits_inline_for_short_cooldown(db, monkeypatch):
 
     called: list = []
     monkeypatch.setattr(
-        svc, "fetch_dataset_rows",
+        svc,
+        "fetch_dataset_rows",
         lambda dataset, symbol, market: called.append(dataset) or [{"end_date": "20251231"}],
     )
     result = svc.sync_symbol_profile(db, "600036", "A股")
@@ -195,18 +195,21 @@ def test_degraded_datasets_reach_the_llm_input(db, monkeypatch):
     from app.services.security_analysis_prompts import build_system_prompt
 
     monkeypatch.setattr(
-        svc, "fetch_dataset_rows",
+        svc,
+        "fetch_dataset_rows",
         lambda dataset, symbol, market: [{"end_date": "20251231"}],
     )
     prices.note_tushare_rate_error("pledge_stat")
     monkeypatch.setattr(
-        jobs, "chat_completion",
+        jobs,
+        "chat_completion",
         lambda messages, **kw: {
             "content": (
                 '{"tags":["数据不足"],"risk_level":"medium","summary":"s",'
-                '"report_markdown":"r"}'
+                '"report_markdown":"' + FULL_REPORT_JSON + '"}'
             ),
-            "model": "m", "usage": {},
+            "model": "m",
+            "usage": {},
         },
     )
     monkeypatch.setattr(jobs, "resolve_public_security_name", lambda s, m: None)

@@ -6,7 +6,6 @@ from .corporate_action import (
     CorporateActionUpdate,
     CorporateActionResponse,
     CashDividendCreate,
-    StockDividendCreate
 )
 from .broker_account import (
     BrokerAccountCreate,
@@ -30,7 +29,6 @@ __all__ = [
     "CorporateActionUpdate",
     "CorporateActionResponse",
     "CashDividendCreate",
-    "StockDividendCreate",
     "BrokerAccountCreate",
     "BrokerAccountUpdate",
     "BrokerAccountResponse",

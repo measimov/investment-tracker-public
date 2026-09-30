@@ -1,6 +1,6 @@
 """按标的监控（公告/讨论、组合调仓）：解析、幂等 upsert、标的范围、每日一轮编排、
-调度判据与 API。市场热帖的采集与展示已于 2026-09-28 下线：这里只守住「不再请求、
-不再展示、旧待重试项静默丢弃」，以及旧 Markdown 热帖快照导入仍写 `xueqiu_hot_posts`。
+调度判据与 API。市场热帖的采集与展示已于 2026-09-28 下线、表已删除（迁移 0035）：
+这里只守住「不再请求、不再展示、旧待重试项静默丢弃、旧 Markdown 热帖快照不导入」。
 
 fixture 取自原 monitor_symbols 对真实响应的 Markdown 导出（ids/时间/正文/计数为真实值），
 结构按 PR-1 真实 status 对象对齐——见各 JSON 的 `_note`。HTTP 全部打桩、限速用空节流。
@@ -28,7 +28,6 @@ from app.models.watchlist_item import WatchlistItem
 from app.models.xueqiu_collector import (
     XueqiuCollectorCube,
     XueqiuCubeRebalancing,
-    XueqiuHotPost,
     XueqiuSymbolPost,
 )
 from app.services.xueqiu_collector import client as client_mod
@@ -50,20 +49,20 @@ WAF_HTML = (FIXTURES / "waf_challenge.html").read_text("utf-8")
 
 # 雪球 symbol 形态：A/B 股交易所前缀 + 6 位、HK 前缀——一个都不许出现在身份键列里
 XUEQIU_SYMBOL_RE = re.compile(r"^(SH|SZ|BJ)\d{6}$|^HK\d+$")
-FEED_TABLES = (
-    "xueqiu_symbol_posts, xueqiu_hot_posts, xueqiu_cube_rebalancing, xueqiu_collector_cubes"
-)
+FEED_TABLES = "xueqiu_symbol_posts, xueqiu_cube_rebalancing, xueqiu_collector_cubes"
 
 
 def _reset(db):
     db.execute(text(f"TRUNCATE {FEED_TABLES} RESTART IDENTITY"))
     db.execute(text("TRUNCATE xueqiu_archiver_scan_runs RESTART IDENTITY"))
-    db.execute(text(
-        "UPDATE xueqiu_collector_state SET symbols_run_requested_at=NULL, "
-        "symbols_last_started_at=NULL, symbols_last_finished_at=NULL, symbols_last_status='', "
-        "symbols_last_message='', symbols_last_business_date=NULL, symbols_last_stats='{}', "
-        "symbols_pending=NULL, last_waf_at=NULL, run_requested_at=NULL WHERE id=1"
-    ))
+    db.execute(
+        text(
+            "UPDATE xueqiu_collector_state SET symbols_run_requested_at=NULL, "
+            "symbols_last_started_at=NULL, symbols_last_finished_at=NULL, symbols_last_status='', "
+            "symbols_last_message='', symbols_last_business_date=NULL, symbols_last_stats='{}', "
+            "symbols_pending=NULL, last_waf_at=NULL, run_requested_at=NULL WHERE id=1"
+        )
+    )
     db.commit()
     reset_tables(db, [SecurityRule, WatchlistItem, Holding])
 
@@ -83,11 +82,18 @@ def db(monkeypatch):
 
 
 def _hold(db, symbol, market, user_id=1, quantity="100"):
-    db.add(Holding(
-        user_id=user_id, symbol=symbol, name=symbol, market=market,
-        quantity=Decimal(quantity), avg_cost=Decimal("10"), total_cost=Decimal("1000"),
-        currency="CNY",
-    ))
+    db.add(
+        Holding(
+            user_id=user_id,
+            symbol=symbol,
+            name=symbol,
+            market=market,
+            quantity=Decimal(quantity),
+            avg_cost=Decimal("10"),
+            total_cost=Decimal("1000"),
+            currency="CNY",
+        )
+    )
     db.commit()
 
 
@@ -126,24 +132,36 @@ def test_validate_accepts_known_structures_including_empty():
     assert fp.validate_feed_payload({"list": [], "maxPage": 0}, fp.ENDPOINT_REBALANCING) == []
 
 
-@pytest.mark.parametrize("payload, endpoint, reason", [
-    # 评审复现：错误对象不能被当成成功空列表
-    ({"error_code": "AUTH_FAILED", "error_description": "unauthorized"},
-     "announcement", "AUTH_FAILED"),
-    ({"error_code": 400016, "error_description": "遇到错误，请刷新页面或者重新登录帐号后再试"},
-     "discussion", "400016"),
-    ({"error_description": "登录后查看"}, "announcement", "登录后查看"),
-    ({"success": False, "message": "cookie expired"}, "rebalancing", "success=false"),
-    (None, "announcement", "JSON null"),
-    ({"data": {"items": []}}, "discussion", "缺少列表字段"),
-    ({}, "discussion", "缺少列表字段"),
-    ({"list": None}, "announcement", "缺少 list 数组"),
-    ({"statuses": []}, "rebalancing", "缺少列表字段"),  # 调仓只认 list
-    ([], "discussion", "顶层是数组"),  # 唯一允许顶层数组的热帖端点已下线
-    ([{"id": 1}], "rebalancing", "顶层是数组"),
-    ({"list": [{"id": 1}, "junk"]}, "announcement", "非对象元素"),
-    ("oops", "discussion", "不是 JSON 对象"),
-])
+@pytest.mark.parametrize(
+    "payload, endpoint, reason",
+    [
+        # 评审复现：错误对象不能被当成成功空列表
+        (
+            {"error_code": "AUTH_FAILED", "error_description": "unauthorized"},
+            "announcement",
+            "AUTH_FAILED",
+        ),
+        (
+            {
+                "error_code": 400016,
+                "error_description": "遇到错误，请刷新页面或者重新登录帐号后再试",
+            },
+            "discussion",
+            "400016",
+        ),
+        ({"error_description": "登录后查看"}, "announcement", "登录后查看"),
+        ({"success": False, "message": "cookie expired"}, "rebalancing", "success=false"),
+        (None, "announcement", "JSON null"),
+        ({"data": {"items": []}}, "discussion", "缺少列表字段"),
+        ({}, "discussion", "缺少列表字段"),
+        ({"list": None}, "announcement", "缺少 list 数组"),
+        ({"statuses": []}, "rebalancing", "缺少列表字段"),  # 调仓只认 list
+        ([], "discussion", "顶层是数组"),  # 唯一允许顶层数组的热帖端点已下线
+        ([{"id": 1}], "rebalancing", "顶层是数组"),
+        ({"list": [{"id": 1}, "junk"]}, "announcement", "非对象元素"),
+        ("oops", "discussion", "不是 JSON 对象"),
+    ],
+)
 def test_validate_rejects_error_objects_and_unknown_structures(payload, endpoint, reason):
     with pytest.raises(CollectorFetchError, match=reason):
         fp.validate_feed_payload(payload, endpoint)
@@ -151,9 +169,9 @@ def test_validate_rejects_error_objects_and_unknown_structures(payload, endpoint
     if isinstance(payload, list):
         return
     with pytest.raises(CollectorFetchError):
-        fp.parse_statuses(payload, endpoint) if endpoint != "rebalancing" else fp.parse_rebalancings(
-            payload
-        )
+        fp.parse_statuses(
+            payload, endpoint
+        ) if endpoint != "rebalancing" else fp.parse_rebalancings(payload)
 
 
 def test_parse_announcements_keeps_offsite_attachment_link():
@@ -206,18 +224,21 @@ def test_parse_statuses_accepts_prevalidated_item_list():
     assert posts[0].payload["hot"] is False and posts[0].payload["fav_count"] == 58
 
 
-@pytest.mark.parametrize("xueqiu, expected", [
-    ("SH600519", ("600519", "A股")),
-    ("SZ000858", ("000858", "A股")),
-    ("BJ920001", ("920001", "A股")),
-    ("SH900901", ("900901", "B股")),
-    ("SZ200596", ("200596", "B股")),
-    ("00700", ("00700", "港股")),
-    ("PDD", ("PDD", "美股")),
-    ("BRK.B", ("BRK.B", "美股")),
-    ("", None),
-    ("600519", None),
-])
+@pytest.mark.parametrize(
+    "xueqiu, expected",
+    [
+        ("SH600519", ("600519", "A股")),
+        ("SZ000858", ("000858", "A股")),
+        ("BJ920001", ("920001", "A股")),
+        ("SH900901", ("900901", "B股")),
+        ("SZ200596", ("200596", "B股")),
+        ("00700", ("00700", "港股")),
+        ("PDD", ("PDD", "美股")),
+        ("BRK.B", ("BRK.B", "美股")),
+        ("", None),
+        ("600519", None),
+    ],
+)
 def test_from_xueqiu(xueqiu, expected):
     assert fp.from_xueqiu(xueqiu) == expected
 
@@ -227,8 +248,12 @@ def test_parse_rebalancing_replaces_xueqiu_symbols():
     assert len(records) == 3
     history = records[0].payload["histories"][0]
     assert history == {
-        "stock_name": "中国平安", "symbol": "601318", "market": "A股",
-        "prev_weight": 13.01, "target_weight": 14.65, "prev_weight_adjusted": 13.01,
+        "stock_name": "中国平安",
+        "symbol": "601318",
+        "market": "A股",
+        "prev_weight": 13.01,
+        "target_weight": 14.65,
+        "prev_weight_adjusted": 13.01,
         "weight": 13.01,
     }
     assert "SH601318" not in json.dumps(records[0].payload, ensure_ascii=False)
@@ -242,9 +267,7 @@ def test_symbol_post_upsert_is_idempotent(db):
     posts = fp.parse_statuses(DISCUSSIONS)
     assert feed_store.upsert_symbol_posts(db, "600519", "A股", "discussion", posts) == (4, 0)
     db.commit()
-    first_seen = {
-        row.post_id: row.first_seen_at for row in db.query(XueqiuSymbolPost).all()
-    }
+    first_seen = {row.post_id: row.first_seen_at for row in db.query(XueqiuSymbolPost).all()}
     assert feed_store.upsert_symbol_posts(db, "600519", "A股", "discussion", posts) == (0, 4)
     db.commit()
     rows = db.query(XueqiuSymbolPost).all()
@@ -252,8 +275,13 @@ def test_symbol_post_upsert_is_idempotent(db):
     assert {row.post_id: row.first_seen_at for row in rows} == first_seen
 
     # 空正文不抹掉旧内容；互动计数跟着最新值走
-    blank = [fp.FeedPost(post_id=posts[0].post_id, created_at_ms=posts[0].created_at_ms,
-                         payload={"reply_count": 9})]
+    blank = [
+        fp.FeedPost(
+            post_id=posts[0].post_id,
+            created_at_ms=posts[0].created_at_ms,
+            payload={"reply_count": 9},
+        )
+    ]
     feed_store.upsert_symbol_posts(db, "600519", "A股", "discussion", blank)
     db.commit()
     db.expire_all()
@@ -268,30 +296,10 @@ def test_same_post_under_two_symbols_is_kept_for_both(db):
     feed_store.upsert_symbol_posts(db, "600519", "A股", "discussion", [post])
     feed_store.upsert_symbol_posts(db, "000858", "A股", "discussion", [post])
     db.commit()
-    owners = {(r.symbol, r.market) for r in db.query(XueqiuSymbolPost).filter_by(post_id=post.post_id)}
+    owners = {
+        (r.symbol, r.market) for r in db.query(XueqiuSymbolPost).filter_by(post_id=post.post_id)
+    }
     assert owners == {("600519", "A股"), ("000858", "A股")}
-
-
-def test_hot_posts_upsert_refreshes_rank_and_snapshot(db):
-    """热帖表只剩旧 Markdown 导入在写（采集与展示已下线），upsert 语义保持不变。"""
-    posts = fp.parse_statuses(HOTS)
-    first = datetime(2026, 9, 26, 23, 30, tzinfo=timezone.utc)
-    feed_store.upsert_hot_posts(db, "day", posts, first)
-    db.commit()
-    second = first + timedelta(days=1)
-    reordered = [posts[2], posts[0]]
-    assert feed_store.upsert_hot_posts(db, "day", reordered, second) == (0, 2)
-    db.commit()
-    assert db.query(XueqiuHotPost).count() == 4
-    latest = (
-        db.query(XueqiuHotPost)
-        .filter_by(scope="day", snapshot_at=second)
-        .order_by(XueqiuHotPost.rank)
-        .all()
-    )
-    assert [(row.rank, row.post_id) for row in latest] == [
-        (1, posts[2].post_id), (2, posts[0].post_id),
-    ]
 
 
 def test_rebalancing_upsert_is_idempotent(db):
@@ -316,16 +324,27 @@ def test_universe_unions_users_and_applies_rules(db):
     _watch(db, "600519", "A股", user_id=2)  # 与 user1 持仓重复
     _hold(db, "000001", "A股", user_id=2)  # user1 排除但 user2 仍持有 → 照采
     db.add(SecurityRule(user_id=1, rule_type="EXCLUDE", symbol="000001", market="A股", payload={}))
-    db.add(SecurityRule(
-        user_id=1, rule_type="CASH_MANAGEMENT", symbol="511990", market="A股", payload={},
-    ))
+    db.add(
+        SecurityRule(
+            user_id=1,
+            rule_type="CASH_MANAGEMENT",
+            symbol="511990",
+            market="A股",
+            payload={},
+        )
+    )
     db.commit()
 
     targets = symbols.compute_symbol_universe(db)
     pairs = [(t.symbol, t.market) for t in targets]
-    assert sorted(pairs) == sorted([
-        ("600519", "A股"), ("000001", "A股"), ("00700", "港股"), ("900901", "B股"),
-    ])
+    assert sorted(pairs) == sorted(
+        [
+            ("600519", "A股"),
+            ("000001", "A股"),
+            ("00700", "港股"),
+            ("900901", "B股"),
+        ]
+    )
     assert pairs[:3] == [("000001", "A股"), ("900901", "B股"), ("00700", "港股")]  # 市场轮转
     mapping = {(t.symbol, t.market): t.xueqiu for t in targets}
     assert mapping[("600519", "A股")] == "SH600519"
@@ -437,22 +456,26 @@ def test_cycle_writes_our_keys_only_and_is_idempotent(db):
     assert "hots" not in result.stats and "热帖" not in result.message
     assert len(site.calls) == 2 * 2 + 1  # 两只 × 两类 + 组合
     assert not any("hots" in url for url in site.calls)
-    assert db.query(XueqiuHotPost).count() == 0
 
     symbols_in_db = {
-        row[0] for row in db.execute(text(
-            "SELECT symbol FROM xueqiu_symbol_posts UNION SELECT market FROM xueqiu_symbol_posts"
-        ))
+        row[0]
+        for row in db.execute(
+            text(
+                "SELECT symbol FROM xueqiu_symbol_posts UNION SELECT market FROM xueqiu_symbol_posts"
+            )
+        )
     }
     assert symbols_in_db == {"600519", "A股"}
     for (value,) in db.execute(text("SELECT symbol FROM xueqiu_symbol_posts")):
         assert not XUEQIU_SYMBOL_RE.match(value)
     payloads = " ".join(
         json.dumps(row[0], ensure_ascii=False)
-        for row in db.execute(text(
-            "SELECT payload FROM xueqiu_symbol_posts UNION ALL "
-            "SELECT payload FROM xueqiu_cube_rebalancing"
-        ))
+        for row in db.execute(
+            text(
+                "SELECT payload FROM xueqiu_symbol_posts UNION ALL "
+                "SELECT payload FROM xueqiu_cube_rebalancing"
+            )
+        )
     )
     assert not re.search(r"\b(SH|SZ)\d{6}\b", payloads)
 
@@ -461,7 +484,8 @@ def test_cycle_writes_our_keys_only_and_is_idempotent(db):
     # 有失败：业务日不记已跑，只把失败项留作当天待重试
     assert state.symbols_last_business_date is None
     assert state.symbols_pending == {
-        "date": "2026-09-27", "attempts": 1,
+        "date": "2026-09-27",
+        "attempts": 1,
         "items": [{"type": "feed", "symbol": "000858", "market": "A股", "kind": "discussion"}],
     }
     assert "分钟后重试未成功的 1 项" in state.symbols_last_message
@@ -478,7 +502,6 @@ def test_cycle_writes_our_keys_only_and_is_idempotent(db):
     assert again.stats["announcement"]["new"] == 0 and again.stats["discussion"]["new"] == 0
     assert again.stats["rebalancing_new"] == 0
     assert db.query(XueqiuSymbolPost).count() == 7
-    assert db.query(XueqiuHotPost).count() == 0
     state = st.get_state(db)
     assert state.symbols_last_business_date == date(2026, 9, 27)
     assert state.symbols_pending is None
@@ -488,15 +511,20 @@ def _seed_one(db):
     _hold(db, "600519", "A股")
 
 
-@pytest.mark.parametrize("response, reason", [
-    # 评审复现：HTTP 200 的错误对象此前被当成成功空列表、当天标为已跑
-    (FakeResponse({"error_code": "AUTH_FAILED", "error_description": "unauthorized"}),
-     "AUTH_FAILED"),
-    (FakeResponse({"success": False, "message": "cookie expired"}), "success=false"),
-    (FakeResponse({"data": {"whatever": []}}), "缺少列表字段"),
-    (FakeResponse("null"), "JSON null"),
-    (FakeResponse("<html><body>登录</body></html>", content_type="text/html"), "不是 JSON"),
-])
+@pytest.mark.parametrize(
+    "response, reason",
+    [
+        # 评审复现：HTTP 200 的错误对象此前被当成成功空列表、当天标为已跑
+        (
+            FakeResponse({"error_code": "AUTH_FAILED", "error_description": "unauthorized"}),
+            "AUTH_FAILED",
+        ),
+        (FakeResponse({"success": False, "message": "cookie expired"}), "success=false"),
+        (FakeResponse({"data": {"whatever": []}}), "缺少列表字段"),
+        (FakeResponse("null"), "JSON null"),
+        (FakeResponse("<html><body>登录</body></html>", content_type="text/html"), "不是 JSON"),
+    ],
+)
 def test_error_or_unknown_response_is_a_failure_not_empty(db, response, reason):
     _seed_one(db)
     site = FakeSite(overrides=[("stock_timeline.json", response)])
@@ -530,10 +558,12 @@ def test_all_items_failing_is_failed_and_retried(db):
 
 def test_legit_empty_lists_are_success(db):
     _seed_one(db)
-    site = FakeSite(overrides=[
-        ("stock_timeline.json", FakeResponse({"count": 0, "list": []})),
-        ("symbol/search/status", FakeResponse({"count": 0, "statuses": []})),
-    ])
+    site = FakeSite(
+        overrides=[
+            ("stock_timeline.json", FakeResponse({"count": 0, "list": []})),
+            ("symbol/search/status", FakeResponse({"count": 0, "statuses": []})),
+        ]
+    )
     result = symbols.run_symbols_cycle(
         db, client_factory=_factory(site), business_date=date(2026, 9, 27)
     )
@@ -554,13 +584,18 @@ def test_retry_runs_only_failed_items_after_interval(db, monkeypatch):
     assert symbols.maybe_run_symbols_cycle(db, client_factory=_factory(FakeSite())) is None
     state = st.get_state(db)
     assert st.symbols_cycle_due(
-        state, st.utcnow(), run_after=st.parse_run_after("00:00"), waf_cooldown_seconds=1800,
+        state,
+        st.utcnow(),
+        run_after=st.parse_run_after("00:00"),
+        waf_cooldown_seconds=1800,
         retry_minutes=60,
     ) == (False, "retry_wait")
 
-    db.execute(text(
-        "UPDATE xueqiu_collector_state SET symbols_last_finished_at = now() - interval '2 hours'"
-    ))
+    db.execute(
+        text(
+            "UPDATE xueqiu_collector_state SET symbols_last_finished_at = now() - interval '2 hours'"
+        )
+    )
     db.commit()
     site = FakeSite(wuliangye_ok=True)
     retry = symbols.maybe_run_symbols_cycle(db, client_factory=_factory(site))
@@ -580,9 +615,15 @@ def _store_todays_pending(db, items, attempts=1):
             "UPDATE xueqiu_collector_state SET symbols_pending = CAST(:p AS jsonb), "
             "symbols_last_finished_at = now() - interval '2 hours' WHERE id=1"
         ),
-        {"p": json.dumps({
-            "date": symbols.local_today().isoformat(), "attempts": attempts, "items": items,
-        })},
+        {
+            "p": json.dumps(
+                {
+                    "date": symbols.local_today().isoformat(),
+                    "attempts": attempts,
+                    "items": items,
+                }
+            )
+        },
     )
     db.commit()
 
@@ -592,10 +633,13 @@ def test_retry_drops_legacy_hots_items_silently(db, monkeypatch):
     不写回待重试记录，其余项照常重试。"""
     monkeypatch.setattr(symbols.settings, "xueqiu_collector_symbols_run_after", "00:00")
     _seed_universe(db)
-    _store_todays_pending(db, [
-        {"type": "feed", "symbol": "000858", "market": "A股", "kind": "discussion"},
-        {"type": "hots", "scope": "day"},
-    ])
+    _store_todays_pending(
+        db,
+        [
+            {"type": "feed", "symbol": "000858", "market": "A股", "kind": "discussion"},
+            {"type": "hots", "scope": "day"},
+        ],
+    )
     site = FakeSite(wuliangye_ok=True)
     retry = symbols.maybe_run_symbols_cycle(db, client_factory=_factory(site))
     assert retry is not None and retry.status == runner.CYCLE_OK
@@ -604,7 +648,6 @@ def test_retry_drops_legacy_hots_items_silently(db, monkeypatch):
     state = st.get_state(db)
     assert state.symbols_pending is None
     assert state.symbols_last_business_date == symbols.local_today()
-    assert db.query(XueqiuHotPost).count() == 0
 
 
 def test_retry_with_only_legacy_hots_items_completes_the_day(db, monkeypatch):
@@ -637,7 +680,9 @@ def test_attempts_exhausted_marks_the_day(db, monkeypatch):
     assert first.status == runner.CYCLE_PARTIAL
     pending = st.get_state(db).symbols_pending
     second = symbols.run_symbols_cycle(
-        db, client_factory=_factory(FakeSite()), business_date=day,
+        db,
+        client_factory=_factory(FakeSite()),
+        business_date=day,
         retry_items=pending["items"],
     )
     assert second.status == runner.CYCLE_FAILED  # 五粮液讨论仍 500
@@ -655,8 +700,11 @@ def test_interrupt_keeps_pending_untouched(db):
     stop = threading.Event()
     stop.set()
     result = symbols.run_symbols_cycle(
-        db, client_factory=_factory(FakeSite()), business_date=day,
-        retry_items=before["items"], stop_event=stop,
+        db,
+        client_factory=_factory(FakeSite()),
+        business_date=day,
+        retry_items=before["items"],
+        stop_event=stop,
     )
     assert result.status == runner.CYCLE_INTERRUPTED
     state = st.get_state(db)
@@ -678,9 +726,7 @@ def test_waf_aborts_cycle_and_sets_shared_cooldown(db):
     assert len(site.calls) == 4
     state = st.get_state(db)
     assert state.last_waf_at is not None  # 作者轮次同样进入冷却
-    due, reason = st.cycle_due(
-        state, st.utcnow(), interval_minutes=60, waf_cooldown_seconds=1800
-    )
+    due, reason = st.cycle_due(state, st.utcnow(), interval_minutes=60, waf_cooldown_seconds=1800)
     assert (due, reason) == (False, "waf_cooldown")
     assert db.query(XueqiuSymbolPost).count() == 3  # 已完成的公告保留
 
@@ -697,7 +743,7 @@ def test_cycle_without_cookie_degrades_explicitly(db, monkeypatch):
 
 
 def test_cycle_respects_shared_advisory_lock(db):
-    lock = runner._CycleLock(db)
+    lock = runner.CycleLock(db)
     assert lock.acquire()
     try:
         result = symbols.run_symbols_cycle(db, client_factory=_factory(FakeSite()))
@@ -719,8 +765,11 @@ def test_stop_signal_interrupts_without_marking_the_day(db):
 def test_explicit_targets_do_not_mark_the_day(db):
     site = FakeSite()
     result = symbols.run_symbols_cycle(
-        db, targets=symbols.explicit_targets(["600519"], "A股"), include_market_wide=False,
-        record_daily=False, client_factory=_factory(site),
+        db,
+        targets=symbols.explicit_targets(["600519"], "A股"),
+        include_market_wide=False,
+        record_daily=False,
+        client_factory=_factory(site),
     )
     assert result.status == runner.CYCLE_OK and len(site.calls) == 2
     assert st.get_state(db).symbols_last_business_date is None
@@ -745,8 +794,10 @@ SHANGHAI = timezone(timedelta(hours=8))
 
 def _due(state, local_dt):
     return st.symbols_cycle_due(
-        state, local_dt.astimezone(timezone.utc),
-        run_after=st.parse_run_after("07:30"), waf_cooldown_seconds=1800,
+        state,
+        local_dt.astimezone(timezone.utc),
+        run_after=st.parse_run_after("07:30"),
+        waf_cooldown_seconds=1800,
     )
 
 
@@ -756,11 +807,13 @@ def test_symbols_cycle_due_schedule():
     assert _due(_State(), morning) == (False, "before_window")
     assert _due(_State(), after) == (True, "scheduled")
     assert _due(_State(symbols_last_business_date=date(2026, 9, 27)), after) == (
-        False, "done_today",
+        False,
+        "done_today",
     )
     # 业务日按东八区算：UTC 已是 9/26 23:31，本地是 9/27 07:31
     assert _due(_State(symbols_last_business_date=date(2026, 9, 26)), after) == (
-        True, "scheduled",
+        True,
+        "scheduled",
     )
     requested = _State(
         symbols_run_requested_at=after.astimezone(timezone.utc),
@@ -844,9 +897,9 @@ def test_symbol_feed_endpoint_and_hots_endpoint_removed(clients, db):
     feed_store.upsert_symbol_posts(
         db, "00700", "港股", "announcement", fp.parse_statuses(ANNOUNCEMENTS)
     )
-    feed_store.upsert_symbol_posts(db, "00700", "港股", "discussion", fp.parse_statuses(DISCUSSIONS))
-    # 存量热帖行保留在库里，但不再有读取入口
-    feed_store.upsert_hot_posts(db, "day", fp.parse_statuses(HOTS), st.utcnow())
+    feed_store.upsert_symbol_posts(
+        db, "00700", "港股", "discussion", fp.parse_statuses(DISCUSSIONS)
+    )
     db.commit()
     user = clients["demo"]
 
@@ -870,17 +923,24 @@ def test_symbol_feed_endpoint_and_hots_endpoint_removed(clients, db):
     assert bad_market.status_code == 422
 
     assert user.get("/api/xueqiu-collector/hots", params={"limit": 3}).status_code == 404
-    assert db.query(XueqiuHotPost).count() == 4
 
 
 def test_status_exposes_retry_pending(clients, db):
     today = symbols.local_today().isoformat()
     db.execute(
         text("UPDATE xueqiu_collector_state SET symbols_pending = CAST(:p AS jsonb) WHERE id=1"),
-        {"p": json.dumps({"date": today, "attempts": 1, "items": [
-            {"type": "feed", "symbol": "600519", "market": "A股", "kind": "discussion"},
-            {"type": "hots"},  # 下线前留下的热帖项：与重试执行同口径，不计入
-        ]})},
+        {
+            "p": json.dumps(
+                {
+                    "date": today,
+                    "attempts": 1,
+                    "items": [
+                        {"type": "feed", "symbol": "600519", "market": "A股", "kind": "discussion"},
+                        {"type": "hots"},  # 下线前留下的热帖项：与重试执行同口径，不计入
+                    ],
+                }
+            )
+        },
     )
     db.commit()
     body = clients["demo"].get("/api/xueqiu-collector/status").json()["symbols"]
@@ -959,9 +1019,15 @@ HOTS_MD = """# 市场热帖快照（day）
 
 
 def _write_exports(tmp_path):
-    (tmp_path / "stock-announcement-SH600519-20260927-073001.md").write_text(ANNOUNCEMENT_MD, "utf-8")
-    (tmp_path / "stock-discussion-SH600519-20260926-073019.md").write_text(DISCUSSION_MD_OLD, "utf-8")
-    (tmp_path / "stock-discussion-SH600519-20260927-073019.md").write_text(DISCUSSION_MD_NEW, "utf-8")
+    (tmp_path / "stock-announcement-SH600519-20260927-073001.md").write_text(
+        ANNOUNCEMENT_MD, "utf-8"
+    )
+    (tmp_path / "stock-discussion-SH600519-20260926-073019.md").write_text(
+        DISCUSSION_MD_OLD, "utf-8"
+    )
+    (tmp_path / "stock-discussion-SH600519-20260927-073019.md").write_text(
+        DISCUSSION_MD_NEW, "utf-8"
+    )
     (tmp_path / "market-hots-day-20260927-073047.md").write_text(HOTS_MD, "utf-8")
     # 组合调仓没有调仓 ID：不导入
     (tmp_path / "cube-rebalancing-ZH000001-20260901-160350.md").write_text("# 组合调仓", "utf-8")
@@ -983,12 +1049,14 @@ def test_archive_markdown_parsing(tmp_path):
     )
     ann, _ = ai.parse_markdown(ANNOUNCEMENT_MD)
     assert ann[0].author_id == "" and ann[0].url == "https://xueqiu.com/S/SH600519/405111930"
-    hots, _ = ai.parse_markdown(HOTS_MD)
-    assert hots[0].text == "第一条\n多行正文" and hots[0].payload["fav_count"] == 58
-
     classified = ai.classify_file(tmp_path / "stock-discussion-SZ200596-20260927-073019.md")
-    assert (classified.symbol, classified.market, classified.kind) == ("200596", "B股", "discussion")
+    assert (classified.symbol, classified.market, classified.kind) == (
+        "200596",
+        "B股",
+        "discussion",
+    )
     assert ai.classify_file(tmp_path / "cube-rebalancing-ZH000001-20260901-160350.md") is None
+    assert ai.classify_file(tmp_path / "market-hots-day-20260927-073047.md") is None
 
 
 def test_archive_import_is_idempotent_and_insert_only(db, tmp_path):
@@ -1001,11 +1069,13 @@ def test_archive_import_is_idempotent_and_insert_only(db, tmp_path):
     db.commit()
 
     dry = ai.import_archive_exports(db, tmp_path, dry_run=True)
-    assert dry.files == 4 and dry.inserted == {}
+    assert dry.files == 3 and dry.inserted == {}
+    # 热帖已下线、表已删除：旧快照文件不导入，如实列进 skipped_files
+    assert dry.skipped_files == ["market-hots-day-20260927-073047.md"]
     assert db.query(XueqiuSymbolPost).count() == 1
 
     stats = ai.import_archive_exports(db, tmp_path)
-    assert stats.inserted == {"announcement": 2, "discussion": 1, "hots:day": 2}
+    assert stats.inserted == {"announcement": 2, "discussion": 1}
     assert stats.symbols == {("600519", "A股")}
     rows = {(r.kind, r.post_id): r for r in db.query(XueqiuSymbolPost).all()}
     assert len(rows) == 4
@@ -1013,16 +1083,10 @@ def test_archive_import_is_idempotent_and_insert_only(db, tmp_path):
     assert "archive_import" not in rows[("discussion", "410650580")].payload
     for (value,) in db.execute(text("SELECT DISTINCT symbol FROM xueqiu_symbol_posts")):
         assert value == "600519" and not XUEQIU_SYMBOL_RE.match(value)
-    # 旧热帖快照照常导入（表保留，只是不再展示）
-    hot_rows = db.query(XueqiuHotPost).filter_by(scope="day").order_by(XueqiuHotPost.rank).all()
-    assert [row.rank for row in hot_rows] == [1, 2]
-    assert {row.snapshot_at for row in hot_rows} == {
-        datetime(2026, 9, 27, 7, 30, 47, tzinfo=SHANGHAI)
-    }
 
     again = ai.import_archive_exports(db, tmp_path)
-    assert again.inserted == {"announcement": 0, "discussion": 0, "hots:day": 0}
-    assert db.query(XueqiuSymbolPost).count() == 4 and db.query(XueqiuHotPost).count() == 2
+    assert again.inserted == {"announcement": 0, "discussion": 0}
+    assert db.query(XueqiuSymbolPost).count() == 4
 
 
 def test_archive_import_keeps_newest_snapshot_counts(db, tmp_path):

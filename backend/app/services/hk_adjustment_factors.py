@@ -100,8 +100,9 @@ def compute_backward_adj_factors(
             dividend_amount_in(component, price_currency, ex_date, rate_fn)
             for component in by_ex_date[ex_date]
         ]
-        event.update({"prev_date": prev_date, "prev_close": prev_close,
-                      "price_currency": price_currency})
+        event.update(
+            {"prev_date": prev_date, "prev_close": prev_close, "price_currency": price_currency}
+        )
         if any(amount is None for amount in amounts):
             event.update(status="unresolved", reason="missing_fx_rate")
             ratios[ex_date] = None
@@ -190,7 +191,9 @@ def recompute_hk_adj_factors(
         # 有公告认不出：少算或多算一笔派息都会让该日之前的全部因子失真，保持现值不动
         logger.warning(
             "港股复权因子 %s：%d 笔股息的最新公告无法解析、%d 份公告无法归属，本次不重算",
-            symbol, len(resolution.blocked), len(resolution.unscoped),
+            symbol,
+            len(resolution.blocked),
+            len(resolution.unscoped),
         )
         return {"symbol": symbol, "rows": 0, "updated": 0, "events": [], "skipped": "blocked"}
     dividends = dividends_from_entries(entries)
@@ -223,7 +226,8 @@ def recompute_hk_adj_factors(
     if unresolved:
         logger.warning(
             "港股复权因子 %s：%d 个除净日无法确定（%s），其后因子置空",
-            symbol, len(unresolved),
+            symbol,
+            len(unresolved),
             ", ".join(f"{e['ex_date']}:{e.get('reason')}" for e in unresolved),
         )
     return {

@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from .read_models import read_model
 
 
 CashEventType = Literal[
@@ -40,13 +41,13 @@ class CashEventUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-class CashEventResponse(CashEventBase):
+class CashEventResponse(read_model(CashEventBase)):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     broker_account_id: Optional[int]
     created_at: datetime
     updated_at: datetime
-    # 由券商流水导入/回填生成（被 BrokerFundFlow 链接）：API 层不可改删，
-    # 前端据此显示只读标记
-    imported: bool = False
+    # 导入产物（被券商来源流水链接）：API 层不可改删，前端据此隐藏编辑/删除。
+    # 与交易、公司行动同名同判据（api/_ownership.annotate_read_only，#283）
+    read_only: bool = False

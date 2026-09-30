@@ -136,21 +136,31 @@ def upgrade() -> None:
         "xueqiu_collector_authors",
         sa.Column("xueqiu_user_id", sa.Text(), nullable=False, comment="雪球用户数字 ID"),
         sa.Column(
-            "display_name", sa.Text(), server_default=sa.text("''"), nullable=False,
+            "display_name",
+            sa.Text(),
+            server_default=sa.text("''"),
+            nullable=False,
             comment="展示名",
         ),
         sa.Column("enabled", sa.Boolean(), server_default=sa.text("true"), nullable=False),
         sa.Column("note", sa.Text(), server_default=sa.text("''"), nullable=False),
         sa.Column(
-            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(),
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
             nullable=False,
         ),
         sa.Column(
-            "last_run_at", sa.DateTime(timezone=True), nullable=True,
+            "last_run_at",
+            sa.DateTime(timezone=True),
+            nullable=True,
             comment="最近一次采集结束时间",
         ),
         sa.Column(
-            "last_status", sa.Text(), server_default=sa.text("''"), nullable=False,
+            "last_status",
+            sa.Text(),
+            server_default=sa.text("''"),
+            nullable=False,
             comment="ok / failed / waf / interrupted",
         ),
         sa.Column("last_message", sa.Text(), server_default=sa.text("''"), nullable=False),
@@ -166,12 +176,8 @@ def upgrade() -> None:
         sa.Column("run_requested_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_cycle_started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_cycle_finished_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "last_cycle_status", sa.Text(), server_default=sa.text("''"), nullable=False
-        ),
-        sa.Column(
-            "last_cycle_message", sa.Text(), server_default=sa.text("''"), nullable=False
-        ),
+        sa.Column("last_cycle_status", sa.Text(), server_default=sa.text("''"), nullable=False),
+        sa.Column("last_cycle_message", sa.Text(), server_default=sa.text("''"), nullable=False),
         sa.Column("last_waf_at", sa.DateTime(timezone=True), nullable=True),
         sa.CheckConstraint("id = 1", name="ck_xueqiu_collector_state_singleton"),
         sa.PrimaryKeyConstraint("id"),

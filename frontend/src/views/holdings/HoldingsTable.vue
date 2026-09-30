@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ArrowRight, EditPen } from '@element-plus/icons-vue'
+import { ArrowRight } from '@element-plus/icons-vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import {
   formatNumber,
@@ -16,7 +16,10 @@ import type { Holding } from '@/stores/holdings'
 import type { HoldingRow, HoldingsTableFeature } from './useHoldingsTable'
 import type { SecurityBadgesFeature } from './useSecurityBadges'
 import type { SortOrder } from './display'
-import { displayAnalysisTag, industryTooltip } from './display'
+import { industryTooltip } from './display'
+import AnalysisBadges from './AnalysisBadges.vue'
+import PriceEditor from './PriceEditor.vue'
+import PriceFlags from './PriceFlags.vue'
 
 const props = defineProps<{ table: HoldingsTableFeature; badges: SecurityBadgesFeature }>()
 
@@ -24,15 +27,6 @@ defineEmits<{ transfer: [row: Holding] }>()
 
 const isMobileView = useMediaQuery('(max-width: 640px)')
 const router = useRouter()
-
-// 进入编辑态即聚焦并全选：点一下就能直接输入新价
-const vFocus = {
-  mounted(el: HTMLElement) {
-    const input = el.querySelector('input')
-    input?.focus()
-    input?.select()
-  }
-}
 
 function openSecurityDetail(row: { symbol: string; market: string }) {
   router.push(`/securities/${encodeURIComponent(row.market)}/${encodeURIComponent(row.symbol)}`)
@@ -71,19 +65,9 @@ function onSortChange({ prop, order }: { prop: string | null; order: SortOrder }
   props.table.setSort({ prop, order })
 }
 
-// 回车 = 失焦提交：el-input-number 在原生 change（失焦前触发）时才回写 v-model，
-// 直接在 keydown 里读草稿会拿到旧值
-function submitPriceOnEnter(event: KeyboardEvent) {
-  ;(event.target as HTMLElement | null)?.blur?.()
-}
-
 function accountSummary(row: HoldingRow): string {
   if (row.accounts.length <= 1) return props.table.accountLabel(row.accounts[0]?.broker_account_id)
   return `${row.accounts.length} 个账户`
-}
-
-function riskText(level: string) {
-  return `${props.badges.riskLabels[level] || level}风险`
 }
 </script>
 
@@ -143,6 +127,12 @@ function riskText(level: string) {
             >
               {{ row.name || row.symbol }}
             </el-link>
+          </div>
+          <!-- 徽标单独一行、可换行：与名称同行时列宽 200px 会把名称挤成一字一行、徽标被截断 -->
+          <div
+            v-if="badges.upcomingEvent(row) || badges.announcementBadge(row)"
+            class="cell-badges"
+          >
             <el-tooltip
               v-if="badges.upcomingEvent(row)"
               :content="badges.eventTooltip(row)"
@@ -156,6 +146,22 @@ function riskText(level: string) {
                 data-testid="security-event-badge"
               >
                 {{ badges.upcomingEvent(row)!.label }}·{{ badges.upcomingEvent(row)!.daysText }}
+              </el-tag>
+            </el-tooltip>
+            <el-tooltip v-if="badges.announcementBadge(row)" placement="top">
+              <template #content>
+                <div v-for="line in badges.announcementBadge(row)!.lines" :key="line">
+                  {{ line }}
+                </div>
+              </template>
+              <el-tag
+                type="danger"
+                size="small"
+                effect="plain"
+                class="event-badge"
+                data-testid="announcement-badge"
+              >
+                {{ badges.announcementBadge(row)!.text }}
               </el-tag>
             </el-tooltip>
           </div>
@@ -207,55 +213,9 @@ function riskText(level: string) {
 
       <el-table-column label="现价" width="160" align="right">
         <template #default="{ row }">
-          <!-- 默认只读；点数值或铅笔进入编辑，回车/失焦保存、Esc 取消。
-               保存作用于该标的全部账户，所以不做常驻输入框（易误改） -->
-          <div
-            v-if="table.isEditingPrice(row)"
-            class="price-editor"
-            @keydown.enter.prevent="submitPriceOnEnter"
-            @keydown.esc.prevent="table.cancelPriceEdit()"
-          >
-            <el-input-number
-              v-model="table.state.priceDraft"
-              v-focus
-              :min="0"
-              size="small"
-              :controls="false"
-              data-testid="price-input"
-              @blur="table.commitPriceEdit(row)"
-            />
-          </div>
-          <div v-else class="price-line">
-            <el-tag
-              v-if="table.priceInfoOf(row)?.manual"
-              type="info"
-              size="small"
-              effect="plain"
-              class="price-flag"
-              data-testid="price-manual-tag"
-            >
-              手工
-            </el-tag>
-            <el-tag
-              v-if="table.priceInfoOf(row)?.stale"
-              type="warning"
-              size="small"
-              effect="plain"
-              class="price-flag"
-              data-testid="price-stale-tag"
-            >
-              陈价
-            </el-tag>
-            <button
-              type="button"
-              class="price-display"
-              :aria-label="`编辑 ${row.name || row.symbol} 的现价`"
-              data-testid="price-display"
-              @click="table.startPriceEdit(row)"
-            >
-              <span class="cell-main num">{{ formatPrice(table.priceOf(row)) }}</span>
-              <el-icon class="price-edit-icon"><EditPen /></el-icon>
-            </button>
+          <div class="price-line">
+            <PriceFlags v-if="!table.isEditingPrice(row)" :info="table.priceInfoOf(row)" />
+            <PriceEditor :table="table" :row="row" />
           </div>
           <el-tooltip :disabled="!table.priceInfoOf(row)" placement="top">
             <template #content>
@@ -307,7 +267,7 @@ function riskText(level: string) {
         <template #header>
           <el-tooltip
             placement="top"
-            content="按折人民币金额排序（缺汇率的行沉底）。成本与市值均按今日汇率折人民币，不含汇兑损益"
+            content="按折人民币金额排序（缺汇率的行沉底）。按摊薄平均成本计算（仪表盘按 FIFO 批次成本，部分卖出过的证券两者会有差异）；成本与市值均按今日汇率折人民币，不含汇兑损益"
           >
             <span class="header-help">浮动盈亏</span>
           </el-tooltip>
@@ -337,24 +297,14 @@ function riskText(level: string) {
                 <div v-if="badges.analysisFor(row)!.created_at" class="ai-tooltip-date">
                   分析于 {{ formatDate(badges.analysisFor(row)!.created_at) }}
                 </div>
+                <div v-if="badges.analysisOutdated(row)" class="ai-tooltip-date">
+                  之后有新的财报摘要/报表（{{
+                    formatDate(badges.analysisFor(row)!.latest_data_at)
+                  }}），可重新分析
+                </div>
               </template>
               <span class="ai-tags" data-testid="ai-tags">
-                <!-- 风险用 success/warning/danger，观点标签用中性 info：两者不再同为橙色 -->
-                <el-tag
-                  :type="badges.riskTagType(badges.analysisFor(row)!.risk_level)"
-                  size="small"
-                  effect="light"
-                >
-                  {{ riskText(badges.analysisFor(row)!.risk_level) }}
-                </el-tag>
-                <el-tag
-                  v-if="displayAnalysisTag(badges.analysisFor(row)!.tags)"
-                  size="small"
-                  effect="plain"
-                  type="info"
-                >
-                  {{ displayAnalysisTag(badges.analysisFor(row)!.tags) }}
-                </el-tag>
+                <AnalysisBadges :badges="badges" :row="row" with-tag />
               </span>
             </el-tooltip>
           </template>
@@ -433,16 +383,16 @@ function riskText(level: string) {
           <el-tag v-if="badges.upcomingEvent(row)" type="warning" size="small" effect="plain">
             {{ badges.upcomingEvent(row)!.label }}·{{ badges.upcomingEvent(row)!.daysText }}
           </el-tag>
-          <template v-if="badges.analysisFor(row)">
-            <el-tag
-              :type="badges.riskTagType(badges.analysisFor(row)!.risk_level)"
-              size="small"
-              effect="light"
-              data-testid="ai-tags"
-            >
-              {{ riskText(badges.analysisFor(row)!.risk_level) }}
-            </el-tag>
-          </template>
+          <el-tag
+            v-if="badges.announcementBadge(row)"
+            type="danger"
+            size="small"
+            effect="plain"
+            data-testid="holding-card-announcement"
+          >
+            {{ badges.announcementBadge(row)!.text }}
+          </el-tag>
+          <AnalysisBadges :badges="badges" :row="row" risk-test-id="ai-tags" />
         </div>
       </div>
 
@@ -495,40 +445,10 @@ function riskText(level: string) {
 
       <div class="mobile-price-row">
         <span>现价 {{ row.currency }}</span>
-        <div
-          v-if="table.isEditingPrice(row)"
-          class="price-editor"
-          @keydown.enter.prevent="submitPriceOnEnter"
-          @keydown.esc.prevent="table.cancelPriceEdit()"
-        >
-          <el-input-number
-            v-model="table.state.priceDraft"
-            v-focus
-            :min="0"
-            size="small"
-            :controls="false"
-            data-testid="price-input"
-            @blur="table.commitPriceEdit(row)"
-          />
-        </div>
-        <div v-else class="mobile-price-value">
-          <button
-            type="button"
-            class="price-display"
-            :aria-label="`编辑 ${row.name || row.symbol} 的现价`"
-            data-testid="price-display"
-            @click="table.startPriceEdit(row)"
-          >
-            <span class="num">{{ formatPrice(table.priceOf(row)) }}</span>
-            <el-icon class="price-edit-icon"><EditPen /></el-icon>
-          </button>
-          <span class="mobile-price-date">
-            <el-tag v-if="table.priceInfoOf(row)?.manual" type="info" size="small" effect="plain">
-              手工
-            </el-tag>
-            <el-tag v-if="table.priceInfoOf(row)?.stale" type="warning" size="small" effect="plain">
-              陈价
-            </el-tag>
+        <div class="mobile-price-value">
+          <PriceEditor :table="table" :row="row" />
+          <span v-if="!table.isEditingPrice(row)" class="mobile-price-date">
+            <PriceFlags :info="table.priceInfoOf(row)" />
             {{ table.priceInfoOf(row)?.label }}
           </span>
         </div>
@@ -564,6 +484,13 @@ function riskText(level: string) {
   align-items: center;
   gap: 6px;
   line-height: 1.35;
+}
+
+.cell-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
 }
 
 .cell-main {
@@ -675,34 +602,6 @@ function riskText(level: string) {
   gap: 4px;
 }
 
-.price-display {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-}
-
-.price-edit-icon {
-  font-size: 13px;
-  color: var(--app-text-soft);
-  opacity: 0.55;
-}
-
-.price-display:hover .price-edit-icon,
-.price-display:focus-visible .price-edit-icon {
-  opacity: 1;
-  color: var(--app-primary);
-}
-
-.price-flag {
-  flex-shrink: 0;
-}
-
 .ai-tags :deep(.el-tag) {
   white-space: nowrap;
 }
@@ -741,6 +640,10 @@ function riskText(level: string) {
     flex-wrap: wrap;
     align-items: center;
     gap: 4px 10px;
+  }
+
+  .mobile-price-value > .price-editor {
+    flex: 1;
   }
 
   .mobile-price-value .price-display {

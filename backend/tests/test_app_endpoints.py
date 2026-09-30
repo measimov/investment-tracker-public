@@ -5,7 +5,6 @@ from app.config import settings
 from app.main import app
 
 
-
 @pytest.mark.anyio
 async def test_root_exposes_version_and_build_metadata():
     transport = httpx.ASGITransport(app=app)

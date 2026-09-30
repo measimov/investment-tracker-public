@@ -25,6 +25,7 @@ from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.import_batch import ImportBatch
 from app.models.llm_report import LlmReport, LlmReportMessage, LlmReportSchedule
+from app.models.notification_event import NotificationEvent
 from app.models.reconciliation_snapshot import ReconciliationSnapshot
 from app.models.transaction import Transaction
 from app.models.user import User
@@ -47,6 +48,7 @@ USER_SCOPED_TABLES = [
     "llm_report_messages",
     "llm_report_schedules",
     "llm_reports",
+    "notification_events",
     "reconciliation_snapshots",
     "transactions",
     "watchlist_items",
@@ -107,101 +109,108 @@ def doomed_user():
     db.add(report)
     db.flush()
 
-    db.add_all([
-        Holding(
-            user_id=uid,
-            broker_account_id=account.id,
-            symbol="AAPL",
-            market="美股",
-            quantity=Decimal("10"),
-            avg_cost=Decimal("100.1"),
-            total_cost=Decimal("1001"),
-            currency="USD",
-        ),
-        CorporateAction(
-            user_id=uid,
-            broker_account_id=account.id,
-            symbol="AAPL",
-            market="美股",
-            action_type="CASH_DIVIDEND",
-            ex_date=date(2026, 2, 1),
-            currency="USD",
-        ),
-        SecurityRule(
-            rule_type="EXCLUDE",
-            user_id=uid,
-            symbol="511880",
-            market="A股",
-        ),
-        CorporateActionSuggestion(
-            user_id=uid,
-            symbol="600036",
-            market="A股",
-            action_type="CASH_DIVIDEND",
-            ex_date=date(2026, 3, 1),
-        ),
-        WatchlistItem(
-            user_id=uid,
-            symbol="600WATCH",
-            market="A股",
-            note="级联删除固件",
-        ),
-        LlmReportSchedule(user_id=uid, cadence="weekly"),
-        LlmReportMessage(report_id=report.id, user_id=uid, role="user", content="q"),
-        BrokerFundFlow(
-            user_id=uid,
-            broker_account_id=account.id,
-            transaction_id=txn.id,
-            broker="TEST",
-            business_name="证券买入",
-            trade_date=date(2026, 1, 5),
-            trade_price=Decimal("100"),
-            trade_quantity=Decimal("10"),
-            amount=Decimal("-1001"),
-            currency="USD",
-            row_hash="cascade-probe-flow",
-            created_at=datetime.now(timezone.utc),
-        ),
-        IbkrActivityFlow(
-            user_id=uid,
-            broker_account_id=account.id,
-            transaction_id=txn.id,
-            broker="IBKR",
-            activity_type="TRADE",
-            base_currency="USD",
-            source_row_number=1,
-            trade_date=date(2026, 1, 5),
-            row_hash="cascade-probe-ibkr",
-        ),
-        CashEvent(
-            user_id=uid,
-            broker_account_id=account.id,
-            event_type="DEPOSIT",
-            amount=Decimal("5000"),
-            event_date=date(2026, 1, 2),
-            currency="USD",
-        ),
-        ReconciliationSnapshot(
-            user_id=uid,
-            broker_account_id=account.id,
-            import_batch_id=batch.id,
-            snapshot_date=date(2026, 1, 31),
-            cash_balances={"USD": "3999"},
-            positions=[{"symbol": "AAPL", "market": "美股", "quantity": "10"}],
-        ),
-        BackgroundJob(
-            id="cascade-probe-job",
-            user_id=uid,
-            job_type="price_refresh",
-            status="succeeded",
-            data={},
-        ),
-        AuthSession(
-            id="cascade-probe-session",
-            user_id=uid,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        ),
-    ])
+    db.add_all(
+        [
+            Holding(
+                user_id=uid,
+                broker_account_id=account.id,
+                symbol="AAPL",
+                market="美股",
+                quantity=Decimal("10"),
+                avg_cost=Decimal("100.1"),
+                total_cost=Decimal("1001"),
+                currency="USD",
+            ),
+            CorporateAction(
+                user_id=uid,
+                broker_account_id=account.id,
+                symbol="AAPL",
+                market="美股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 2, 1),
+                currency="USD",
+            ),
+            SecurityRule(
+                rule_type="EXCLUDE",
+                user_id=uid,
+                symbol="511880",
+                market="A股",
+            ),
+            CorporateActionSuggestion(
+                user_id=uid,
+                symbol="600036",
+                market="A股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 3, 1),
+            ),
+            WatchlistItem(
+                user_id=uid,
+                symbol="600WATCH",
+                market="A股",
+                note="级联删除固件",
+            ),
+            LlmReportSchedule(user_id=uid, cadence="weekly"),
+            NotificationEvent(
+                event_key=f"cascade-test:{uid}",
+                kind="dividend_suggestion",
+                user_id=uid,
+            ),
+            LlmReportMessage(report_id=report.id, user_id=uid, role="user", content="q"),
+            BrokerFundFlow(
+                user_id=uid,
+                broker_account_id=account.id,
+                transaction_id=txn.id,
+                broker="TEST",
+                business_name="证券买入",
+                trade_date=date(2026, 1, 5),
+                trade_price=Decimal("100"),
+                trade_quantity=Decimal("10"),
+                amount=Decimal("-1001"),
+                currency="USD",
+                row_hash="cascade-probe-flow",
+                created_at=datetime.now(timezone.utc),
+            ),
+            IbkrActivityFlow(
+                user_id=uid,
+                broker_account_id=account.id,
+                transaction_id=txn.id,
+                broker="IBKR",
+                activity_type="TRADE",
+                base_currency="USD",
+                source_row_number=1,
+                trade_date=date(2026, 1, 5),
+                row_hash="cascade-probe-ibkr",
+            ),
+            CashEvent(
+                user_id=uid,
+                broker_account_id=account.id,
+                event_type="DEPOSIT",
+                amount=Decimal("5000"),
+                event_date=date(2026, 1, 2),
+                currency="USD",
+            ),
+            ReconciliationSnapshot(
+                user_id=uid,
+                broker_account_id=account.id,
+                import_batch_id=batch.id,
+                snapshot_date=date(2026, 1, 31),
+                cash_balances={"USD": "3999"},
+                positions=[{"symbol": "AAPL", "market": "美股", "quantity": "10"}],
+            ),
+            BackgroundJob(
+                id="cascade-probe-job",
+                user_id=uid,
+                job_type="price_refresh",
+                status="succeeded",
+                data={},
+            ),
+            AuthSession(
+                id="cascade-probe-session",
+                user_id=uid,
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            ),
+        ]
+    )
     db.commit()
     db.close()
 

@@ -6,11 +6,12 @@
  * 三种语义同款：离开页面任务继续 / 停止查看只停轮询 / 终止真正中止。
  */
 
+import type { OpinionBatchJob } from '@/types'
 import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { useBatchJobProgress } from '@/composables/useBatchJobProgress'
-import type { OpinionBatchJob, OpinionBatchTarget } from './types'
+import type { OpinionBatchTarget } from './types'
 import { showApiError } from '@/utils/showApiError'
 
 export const OPINION_BATCH_POLL_INTERVAL_MS = 3000
@@ -93,9 +94,7 @@ export function useOpinionBatch({
   async function adoptActiveJob() {
     try {
       const response = await api.listActiveAnalysisJobs()
-      const active = (response.data as OpinionBatchJob[]).find(
-        (item) => item.type === 'opinion_summary_batch'
-      )
+      const active = response.data.find((item) => item.type === 'opinion_summary_batch')
       if (active?.id && !isUnmounted()) {
         adopt(active)
         await watchJob(active.id)
@@ -129,7 +128,7 @@ export function useOpinionBatch({
       }
       const response = await api.startOpinionBatchJob(force ? { force: true } : undefined)
       if (isUnmounted()) return
-      adopt(response.data as OpinionBatchJob)
+      adopt(response.data)
       starting.value = false
       await watchJob(response.data.id)
     } catch (error) {

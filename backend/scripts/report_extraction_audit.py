@@ -38,27 +38,30 @@ def _audit_fixtures() -> int:
             meta_path = FIXTURE_DIR / f"{name}.meta.json"
             form_type = "10-K"
             if meta_path.exists():
-                form_type = json.loads(meta_path.read_text(encoding="utf-8")).get(
-                    "report_type"
-                ) or "10-K"
+                form_type = (
+                    json.loads(meta_path.read_text(encoding="utf-8")).get("report_type") or "10-K"
+                )
             extracted = extract_us_items(text, form_type=form_type)
         else:
             extracted = extract_cn_sections(text)
         for section, result in extracted.items():
-            rows.append({
-                "source": name,
-                "section": section,
-                "locator": result.locator if result else "missing",
-                "confidence": round(result.confidence, 2) if result else 0.0,
-                "chars": result.chars if result else 0,
-                "flags": list(result.quality_flags) if result else ["missing"],
-            })
+            rows.append(
+                {
+                    "source": name,
+                    "section": section,
+                    "locator": result.locator if result else "missing",
+                    "confidence": round(result.confidence, 2) if result else 0.0,
+                    "chars": result.chars if result else 0,
+                    "flags": list(result.quality_flags) if result else ["missing"],
+                }
+            )
     return _report(rows)
 
 
 def _audit_live(symbol_filter: str | None) -> int:
     from app.database import SessionLocal
     from app.models.security_profile import SecurityProfileData
+    from app.services.payload_versions import stored_version
     from app.services.report_sections import score_section
 
     db = SessionLocal()
@@ -72,14 +75,16 @@ def _audit_live(symbol_filter: str | None) -> int:
         for row in query.all():
             payload = row.payload or {}
             if payload.get("extract_status") != "ok":
-                rows.append({
-                    "source": f"{row.symbol}/{row.period_key}",
-                    "section": "-",
-                    "locator": "failed",
-                    "confidence": 0.0,
-                    "chars": 0,
-                    "flags": [str(payload.get("error"))[:60] or "failed"],
-                })
+                rows.append(
+                    {
+                        "source": f"{row.symbol}/{row.period_key}",
+                        "section": "-",
+                        "locator": "failed",
+                        "confidence": 0.0,
+                        "chars": 0,
+                        "flags": [str(payload.get("error"))[:60] or "failed"],
+                    }
+                )
                 continue
             meta = payload.get("section_meta") or {}
             sections = payload.get("sections") or {}
@@ -89,16 +94,18 @@ def _audit_live(symbol_filter: str | None) -> int:
                 # 没有 confidence/flags 字段，只看元数据的话这批抽错的节选会以
                 # "无标记"的姿态通过审计——正是它们当初骗过金样测试的方式
                 confidence, flags = score_section(section, body)
-                rows.append({
-                    "source": f"{row.symbol}/{row.period_key}",
-                    "section": section,
-                    "locator": info.get("locator") or "unknown",
-                    "confidence": round(confidence, 2),
-                    "chars": info.get("chars") or len(body),
-                    "flags": flags,
-                    "extractor_version": payload.get("extractor_version") or 1,
-                    "head": body[:80].replace("\n", " "),
-                })
+                rows.append(
+                    {
+                        "source": f"{row.symbol}/{row.period_key}",
+                        "section": section,
+                        "locator": info.get("locator") or "unknown",
+                        "confidence": round(confidence, 2),
+                        "chars": info.get("chars") or len(body),
+                        "flags": flags,
+                        "extractor_version": stored_version(payload, "extractor_version"),
+                        "head": body[:80].replace("\n", " "),
+                    }
+                )
         return _report(rows, live=True)
     finally:
         db.close()
@@ -125,10 +132,9 @@ def _report(rows: list[dict], *, live: bool = False) -> int:
     # 把 missing 混进低置信里会让门禁读数虚高、失去意义
     missing = [r for r in rows if r["locator"] == "missing"]
     low = [
-        r for r in rows
-        if r["locator"] != "missing"
-        and r.get("confidence") is not None
-        and r["confidence"] < 0.35
+        r
+        for r in rows
+        if r["locator"] != "missing" and r.get("confidence") is not None and r["confidence"] < 0.35
     ]
     print(
         f"\nboilerplate_profile: {len(boilerplate)}    "

@@ -1,44 +1,9 @@
 /**
- * 公司行动页两个 tab 共用的小件（issue #140）：行动类型文案/tag 映射与
- * 券商账户标签。类型映射同时服务记录表、移动卡片与分红建议表。
+ * 公司行动页两个 tab 共用的小件（issue #140）。账户显示名统一在 utils/labels（#284）。
+ * 行动类型文案/tag 直接用 `utils/labels` 的 actionTypeLabel / actionTypeTag。
  */
 
-import type { BrokerAccount } from '@/types'
-
-import {
-  ACTION_TYPE_LABELS,
-  ACTION_TYPE_TAGS,
-  DELETED_ACCOUNT_LABEL,
-  UNASSIGNED_ACCOUNT_LABEL,
-  type TagKind
-} from '@/utils/labels'
-
-export const actionTypeNames = ACTION_TYPE_LABELS
-export type ElTagType = TagKind
-export const actionTypeTags = ACTION_TYPE_TAGS
-
-export function getActionTypeName(type: string) {
-  return actionTypeNames[type] || type
-}
-
-export function getActionTypeTag(type: string): ElTagType | undefined {
-  // 兜底 undefined = el-tag 默认样式（与此前 '' 的呈现一致，且类型合法）
-  return actionTypeTags[type]
-}
-
-export function brokerAccountLabel(account: BrokerAccount) {
-  const suffix = account.account_number_masked ? ` · ${account.account_number_masked}` : ''
-  return `${account.account_name}${suffix}`
-}
-
-export function brokerAccountLabelById(
-  accounts: BrokerAccount[],
-  accountId: number | null | undefined
-) {
-  if (!accountId) return UNASSIGNED_ACCOUNT_LABEL
-  const account = accounts.find((item) => item.id === accountId)
-  return account ? brokerAccountLabel(account) : DELETED_ACCOUNT_LABEL
-}
+import type { CorporateActionCreate } from '@/types'
 
 /** 期初建仓的成本状态：两个成本字段都空 = 成本未知（派生状态，与后端一致） */
 export function openingPositionCostKnown(row: {
@@ -220,4 +185,171 @@ function currencyOptionsNote(options: HkCurrencyOptions | null | undefined): str
   })
   if (!items.length) return null
   return `可选币种：${items.join('；')}${deadlineText(options?.election_deadline)}`
+}
+
+// ---------------------------------------------------------------------------- 新增/编辑表单
+// 行 ↔ 表单 ↔ 请求体的映射是纯函数（#284：此前内联在 RecordsTab 的 handleEdit/handleSubmit 里，
+// 税率 ×100、编辑时税额原样提交这类语义没有测试）。
+
+export interface CorporateActionForm {
+  id?: number
+  broker_account_id: number | null
+  symbol: string
+  name: string
+  market: string
+  action_type: string
+  ex_date: string
+  dividend_per_share: number | null
+  total_dividend: number | null
+  /** 实际预扣税额（统计与对账只读税额）；税率只是辅助，可按「总额×税率」填入税额 */
+  tax_withheld: number | null
+  /** 界面上的税率百分数（10 = 10%），提交时换成小数 */
+  tax_rate_percent: number | null
+  shares_received: number | null
+  distribution_ratio: string
+  subscription_price: number | null
+  subscription_quantity: number | null
+  split_ratio: string
+  /** 期初建仓（#174）：数量必填，两个成本可选，都空 = 成本未知 */
+  opening_quantity: number | null
+  opening_cost_per_share: number | null
+  opening_total_cost: number | null
+  currency: string
+  notes: string
+}
+
+/** 换类型时清空的类型专属字段 */
+export const TYPE_SPECIFIC_FIELDS_EMPTY = {
+  dividend_per_share: null,
+  total_dividend: null,
+  tax_withheld: null,
+  tax_rate_percent: null,
+  shares_received: null,
+  distribution_ratio: '',
+  subscription_price: null,
+  subscription_quantity: null,
+  split_ratio: '',
+  opening_quantity: null,
+  opening_cost_per_share: null,
+  opening_total_cost: null
+} satisfies Partial<CorporateActionForm>
+
+export function emptyActionForm(): CorporateActionForm {
+  return {
+    broker_account_id: null,
+    symbol: '',
+    name: '',
+    market: '',
+    action_type: '',
+    ex_date: '',
+    ...TYPE_SPECIFIC_FIELDS_EMPTY,
+    currency: 'CNY',
+    notes: ''
+  }
+}
+
+type Numeric = number | string | null | undefined
+const numberOrNull = (value: Numeric) => (value ? Number(value) : null)
+
+/** 编辑回填：Decimal 串转数字；税率小数 → 百分数（保留两位），税率为 null 不回填
+ *  （此前回填 10%，保存会悄悄写入 0.1）。 */
+export function formFromAction(row: {
+  id: number
+  broker_account_id?: number | null
+  symbol: string
+  name?: string | null
+  market: string
+  action_type: string
+  ex_date: string
+  dividend_per_share?: Numeric
+  total_dividend?: Numeric
+  tax_withheld?: Numeric
+  tax_rate?: Numeric
+  shares_received?: Numeric
+  distribution_ratio?: string | null
+  subscription_price?: Numeric
+  subscription_quantity?: Numeric
+  split_ratio?: string | null
+  adjusted_quantity?: Numeric
+  adjusted_cost_per_share?: Numeric
+  cost_basis_adjustment?: Numeric
+  currency?: string | null
+  notes?: string | null
+}): CorporateActionForm {
+  return {
+    id: row.id,
+    broker_account_id: row.broker_account_id || null,
+    symbol: row.symbol,
+    name: row.name || '',
+    market: row.market,
+    action_type: row.action_type,
+    ex_date: row.ex_date,
+    dividend_per_share: numberOrNull(row.dividend_per_share),
+    total_dividend: numberOrNull(row.total_dividend),
+    tax_withheld:
+      row.tax_withheld !== null && row.tax_withheld !== undefined ? Number(row.tax_withheld) : null,
+    tax_rate_percent:
+      row.tax_rate !== null && row.tax_rate !== undefined
+        ? Math.round(Number(row.tax_rate) * 10000) / 100
+        : null,
+    shares_received: numberOrNull(row.shares_received),
+    distribution_ratio: row.distribution_ratio || '',
+    subscription_price: numberOrNull(row.subscription_price),
+    subscription_quantity: numberOrNull(row.subscription_quantity),
+    split_ratio: row.split_ratio || '',
+    opening_quantity: numberOrNull(row.adjusted_quantity),
+    opening_cost_per_share: numberOrNull(row.adjusted_cost_per_share),
+    opening_total_cost: numberOrNull(row.cost_basis_adjustment),
+    currency: row.currency || 'CNY',
+    notes: row.notes || ''
+  }
+}
+
+/** 表单 → 请求体：通用字段 + 该类型自己的字段。 */
+export function payloadFromForm(
+  form: CorporateActionForm,
+  { isEdit }: { isEdit: boolean }
+): CorporateActionCreate {
+  const payload: Record<string, unknown> = {
+    broker_account_id: form.broker_account_id || null,
+    symbol: form.symbol,
+    name: form.name,
+    market: form.market,
+    action_type: form.action_type,
+    ex_date: form.ex_date,
+    currency: form.currency,
+    notes: form.notes
+  }
+  switch (form.action_type) {
+    case 'CASH_DIVIDEND':
+      payload.dividend_per_share = form.dividend_per_share
+      payload.total_dividend = form.total_dividend
+      // 新建时空税额提交为 0（后端只按税额计税）；编辑时原样提交——空税额回写成 0 在语义上
+      // 等价，但保持原字段不变更稳妥（PR #228 评审 P2：别让非金额编辑碰金额字段）
+      payload.tax_withheld = isEdit ? form.tax_withheld : (form.tax_withheld ?? 0)
+      payload.tax_rate =
+        form.tax_rate_percent === null ? null : Math.round(form.tax_rate_percent * 100) / 10000
+      break
+    case 'STOCK_DIVIDEND':
+    case 'BONUS_ISSUE':
+      payload.shares_received = form.shares_received
+      payload.distribution_ratio = form.distribution_ratio
+      break
+    case 'RIGHTS_ISSUE':
+      payload.subscription_price = form.subscription_price
+      payload.subscription_quantity = form.subscription_quantity
+      payload.distribution_ratio = form.distribution_ratio
+      break
+    case 'STOCK_SPLIT':
+    case 'REVERSE_SPLIT':
+      payload.split_ratio = form.split_ratio
+      break
+    case 'OPENING_POSITION':
+      payload.adjusted_quantity = form.opening_quantity
+      payload.adjusted_cost_per_share = form.opening_cost_per_share
+      payload.cost_basis_adjustment = form.opening_total_cost
+      break
+  }
+  // 表单校验（按类型动态必填）保证 action_type 等必填项：已校验表单 → 请求体的唯一断言点
+  return payload as CorporateActionCreate
 }

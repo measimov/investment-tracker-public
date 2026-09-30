@@ -6,8 +6,8 @@
 `cookie_health`（Cookie 到期判据 + Uptime Kuma 推送）。
 
 按标的监控（收纳自 monitor_symbols，改为落库）：`feed_parsing`（请求构造与解析，纯函数）/
-`feed_store`（公告·讨论 / 组合调仓的幂等 upsert 与读取；热帖表只剩旧 Markdown 导入写入）/
-`symbols`（标的范围与每日一轮）。市场热帖的采集与展示已于 2026-09-28 下线。
+`feed_store`（公告·讨论 / 组合调仓的幂等 upsert 与读取）/
+`symbols`（标的范围与每日一轮）。市场热帖已于 2026-09-28 下线，表已由迁移 0035 删除。
 
 运行在独立进程（`manage.py xueqiu-collector`，compose 服务 xueqiu-collector），
 不占 Web 进程的 worker 车道。

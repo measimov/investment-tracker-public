@@ -40,12 +40,11 @@ def create_security_rule(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    # CMB 业务名保留原样（中文），证券代码统一大写
-    symbol = payload.symbol if payload.rule_type == "CMB_CASH_BUSINESS" else payload.symbol.upper()
+    # 证券代码已在 schema 里按 normalize_manual_symbol 归一；CMB 业务名保留原样（中文）
     row = SecurityRule(
         user_id=current_user.id,
         rule_type=payload.rule_type,
-        symbol=symbol,
+        symbol=payload.symbol,
         market=payload.market,
         payload=payload.payload,
         note=(payload.note or "").strip() or None,
@@ -71,7 +70,7 @@ def delete_security_rule(
         SecurityRule,
         record_id,
         current_user.id,
-        "Security rule not found",
+        "规则不存在",
     )
     db.delete(row)
     db.commit()

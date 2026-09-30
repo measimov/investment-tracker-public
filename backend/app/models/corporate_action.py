@@ -18,6 +18,7 @@ class CorporateAction(Base):
     - SPIN_OFF: 拆分
     - MERGER: 合并
     """
+
     __tablename__ = "corporate_actions"
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)

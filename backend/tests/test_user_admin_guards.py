@@ -38,9 +38,7 @@ def admin_client_state():
         yield admin_id
     finally:
         db.rollback()
-        db.query(User).filter(User.username.like("guard-tmp-%")).delete(
-            synchronize_session=False
-        )
+        db.query(User).filter(User.username.like("guard-tmp-%")).delete(synchronize_session=False)
         db.query(User).filter(User.username == "admin").update(
             {"hashed_password": original, "is_admin": True, "is_active": True},
             synchronize_session=False,
@@ -71,13 +69,13 @@ async def test_admin_cannot_strip_or_deactivate_their_own_admin_rights(admin_cli
         demote = await client.put(
             f"/api/users/{admin_id}", json={"is_admin": False}, headers=headers
         )
-        assert demote.status_code == 400
+        assert demote.status_code == 409
         assert "管理员" in demote.json()["detail"]
 
         deactivate = await client.put(
             f"/api/users/{admin_id}", json={"is_active": False}, headers=headers
         )
-        assert deactivate.status_code == 400
+        assert deactivate.status_code == 409
 
     # 被拒的请求不得留下半套写入（异常在 commit 之前抛出，会话关闭即回滚）
     db = SessionLocal()
@@ -117,10 +115,8 @@ async def test_last_active_admin_cannot_be_removed(admin_client_state):
 
         # 把自己降权仍然被第一条守卫挡住（此时也确实是最后一个）
         assert (
-            await client.put(
-                f"/api/users/{admin_id}", json={"is_admin": False}, headers=headers
-            )
-        ).status_code == 400
+            await client.put(f"/api/users/{admin_id}", json={"is_admin": False}, headers=headers)
+        ).status_code == 409
 
 
 @pytest.mark.anyio
@@ -205,16 +201,14 @@ async def test_concurrent_demotions_cannot_drain_the_admin_set(admin_client_stat
         finally:
             await other_client.aclose()
 
-    # 不钉具体状态码：败的那条可能是 400（被守卫挡住），也可能是 403
+    # 不钉具体状态码：败的那条可能是 409（被守卫挡住），也可能是 403
     # （对手先提交，它的管理员依赖当场失效）。不变量是"只有一条成功"。
     assert results.count(200) == 1, f"两条并发降权的结果是 {results}"
 
     db = SessionLocal()
     try:
         live_admins = (
-            db.query(User)
-            .filter(User.is_admin.is_(True), User.is_active.is_(True))
-            .count()
+            db.query(User).filter(User.is_admin.is_(True), User.is_active.is_(True)).count()
         )
         assert live_admins >= 1, "活跃管理员被并发降权清空"
     finally:
@@ -243,7 +237,7 @@ async def test_deleting_the_last_other_admin_still_leaves_one(admin_client_state
         # 先把自己停用是不允许的，所以换个路子：让自己不再是唯一活跃管理员的
         # 反面——把别人删掉应当成功（自己还在），再删自己被既有守卫挡住。
         assert (await client.delete(f"/api/users/{other_id}", headers=headers)).status_code == 204
-        assert (await client.delete(f"/api/users/{admin_id}", headers=headers)).status_code == 400
+        assert (await client.delete(f"/api/users/{admin_id}", headers=headers)).status_code == 409
 
 
 def test_admin_guard_serializes_two_interleaved_transactions(admin_client_state):
@@ -252,7 +246,7 @@ def test_admin_guard_serializes_two_interleaved_transactions(admin_client_state)
     HTTP 层的并发用例只能碰运气撞上时序；这里直接用两条真实 DB 会话把顺序
     摆出来——B 在 A 提交**之前**进入守卫。没有事务级顾问锁时，B 的计数看不到
     A 未提交的降权，于是判定"还剩一个活跃管理员"放行，两笔都提交、归零。
-    有锁时 B 阻塞到 A 提交后才计数，看到 0，抛 400。
+    有锁时 B 阻塞到 A 提交后才计数，看到 0，抛 409。
     """
     import threading
 
@@ -315,7 +309,7 @@ def test_admin_guard_serializes_two_interleaved_transactions(admin_client_state)
     thread_b.join(timeout=10)
 
     assert outcome.get("first") == 200
-    assert outcome.get("second") == 400, f"第二个事务应被挡住，实得 {outcome.get('second')}"
+    assert outcome.get("second") == 409, f"第二个事务应被挡住，实得 {outcome.get('second')}"
 
     db = SessionLocal()
     try:
@@ -353,7 +347,7 @@ async def test_user_admin_errors_are_chinese_and_email_is_clearable(admin_client
             json={"username": "guard-tmp-mail", "password": "x" * 12},
             headers=headers,
         )
-        assert duplicate.status_code == 400
+        assert duplicate.status_code == 409
         assert duplicate.json()["detail"] == "用户名已被注册"
 
         # 不传 email：保持原值
@@ -370,7 +364,7 @@ async def test_user_admin_errors_are_chinese_and_email_is_clearable(admin_client
         assert missing.json()["detail"] == "用户不存在"
 
         self_delete = await client.delete(f"/api/users/{admin_id}", headers=headers)
-        assert self_delete.status_code == 400
+        assert self_delete.status_code == 409
         assert self_delete.json()["detail"] == "不能删除自己的账户"
 
         bad_login = await client.post(

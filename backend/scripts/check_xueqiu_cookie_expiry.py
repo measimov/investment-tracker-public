@@ -59,12 +59,15 @@ def _push(url: str, status: str, message: str, timeout: float) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="检查雪球 Cookie 到期日，并可选发一次真实请求探活。")
+    parser = argparse.ArgumentParser(
+        description="检查雪球 Cookie 到期日，并可选发一次真实请求探活。"
+    )
     parser.add_argument("--cookie-file", default=settings.xueqiu_cookie_file or "")
     parser.add_argument("--warn-days", type=float, default=settings.xueqiu_cookie_warn_days)
     parser.add_argument("--critical-days", type=float, default=settings.xueqiu_cookie_critical_days)
-    parser.add_argument("--probe", action="store_true",
-                        help="额外发一次真实请求确认登录态（花一次 2-4s 限速请求）")
+    parser.add_argument(
+        "--probe", action="store_true", help="额外发一次真实请求确认登录态（花一次 2-4s 限速请求）"
+    )
     parser.add_argument(
         "--push-url",
         default=os.environ.get("XUEQIU_COOKIE_PUSH_URL", ""),
@@ -72,8 +75,9 @@ def main() -> int:
     )
     parser.add_argument("--timeout", type=float, default=10)
     parser.add_argument("--dry-run", action="store_true", help="只打印，不推送")
-    parser.add_argument("--status", choices=["up", "down"],
-                        help="推送一条自定义状态（不做 Cookie 检查）")
+    parser.add_argument(
+        "--status", choices=["up", "down"], help="推送一条自定义状态（不做 Cookie 检查）"
+    )
     parser.add_argument("--message", help="与 --status 配合的消息")
     args = parser.parse_args()
 
@@ -91,8 +95,10 @@ def main() -> int:
     )
     print(result["message"])
     exit_code = {
-        "normal": EXIT_OK, "warning": EXIT_WARNING,
-        "critical": EXIT_CRITICAL, "unconfigured": EXIT_UNCONFIGURED,
+        "normal": EXIT_OK,
+        "warning": EXIT_WARNING,
+        "critical": EXIT_CRITICAL,
+        "unconfigured": EXIT_UNCONFIGURED,
     }[result["level"]]
 
     if args.probe:

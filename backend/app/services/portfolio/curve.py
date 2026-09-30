@@ -13,15 +13,18 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .fx import ExchangeRateLookup, convert_on_date
 from .semantics import (
-    OPENING_POSITION,
     bonus_share_factor,
     cash_dividend_amounts,
+    OPENING_POSITION,
     opening_position_lot,
+    rights_issue_lot,
     split_share_factor,
 )
 
 
-def get_current_price(current_prices: Dict[str, float], symbol: str, market: str) -> Optional[Decimal]:
+def get_current_price(
+    current_prices: Dict[str, float], symbol: str, market: str
+) -> Optional[Decimal]:
     candidates = (
         f"{symbol}:{market}",
         f"{market}:{symbol}",
@@ -84,19 +87,22 @@ def apply_position_corporate_action(
                 elif deferred_inflows is not None:
                     deferred_inflows[key] = deferred_inflows.get(key, Decimal("0")) + quantity
                 if estimated_inflow_events is not None:
-                    estimated_inflow_events.append({
-                        "symbol": action.symbol,
-                        "market": action.market,
-                        "date": effective_date.isoformat(),
-                        "quantity": float(quantity),
-                        "valued": bool(valued),
-                        "valuation_price": float(valuation_price) if valued else None,
-                        "valued_on": effective_date.isoformat() if valued else None,
-                    })
+                    estimated_inflow_events.append(
+                        {
+                            "symbol": action.symbol,
+                            "market": action.market,
+                            "date": effective_date.isoformat(),
+                            "quantity": float(quantity),
+                            "valued": bool(valued),
+                            "valuation_price": float(valuation_price) if valued else None,
+                            "valued_on": effective_date.isoformat() if valued else None,
+                        }
+                    )
         return cash_in_cny
 
-
-    trackers = [tracker for tracker in (deferred_inflows, *scaled_quantities) if tracker is not None]
+    trackers = [
+        tracker for tracker in (deferred_inflows, *scaled_quantities) if tracker is not None
+    ]
 
     def scale_tracked(factor: Decimal) -> None:
         for tracker in trackers:
@@ -110,10 +116,9 @@ def apply_position_corporate_action(
             scale_tracked(factor)
 
     elif action.action_type == "RIGHTS_ISSUE":
-        if action.subscription_quantity and action.subscription_price:
-            quantity = Decimal(str(action.subscription_quantity))
-            price = Decimal(str(action.subscription_price))
-            total_cost = Decimal(str(action.subscription_amount)) if action.subscription_amount else quantity * price
+        lot = rights_issue_lot(action)
+        if lot is not None:
+            quantity, total_cost = lot
             positions[key] += quantity
             cash_in_cny += convert_on_date(
                 total_cost,
@@ -129,6 +134,62 @@ def apply_position_corporate_action(
             scale_tracked(factor)
 
     return cash_in_cny
+
+
+def corporate_action_inflows(
+    actions,
+    *,
+    rate_lookup: ExchangeRateLookup,
+    fallback_currency: Callable[[str], str],
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> Tuple[List[Tuple[date, Decimal]], List[Dict[str, Any]]]:
+    """公司行动带来的外部投入 → XIRR 现金流（#271），与本曲线计入 cash_in 的口径一致。
+
+    - 期初建仓（成本已知）：按成本、除权日汇率计为投入（负流）；
+    - 配股：按 rights_issue_lot 的认购成本计为投入；
+    - 期初建仓（成本未知）：不计流入，逐条返回供调用方标注——曲线对它按当日估值价计入，
+      但估值可能延迟到首个有价日、份额还会随拆股缩放，XIRR 这里不重演那套回退。
+
+    此前两处 XIRR 只看买卖与股息：转托管转入的股份在期末市值里、却从没出现在投入里，年化被
+    系统性高估，与同屏的 TTWR 口径不一。返回 (flows, unknown_cost_positions)。"""
+    flows: List[Tuple[date, Decimal]] = []
+    unknown: List[Dict[str, Any]] = []
+    for action in actions:
+        effective_date = action.ex_date
+        if effective_date is None:
+            continue
+        if start_date is not None and effective_date < start_date:
+            continue
+        if end_date is not None and effective_date > end_date:
+            continue
+        currency = action.currency or fallback_currency(action.market)
+        if action.action_type == OPENING_POSITION:
+            lot = opening_position_lot(action)
+            if lot is None:
+                continue
+            quantity, total_cost = lot
+            if total_cost is None:
+                unknown.append(
+                    {
+                        "symbol": action.symbol,
+                        "market": action.market,
+                        "date": effective_date.isoformat(),
+                        "quantity": float(quantity),
+                    }
+                )
+                continue
+        elif action.action_type == "RIGHTS_ISSUE":
+            lot = rights_issue_lot(action)
+            if lot is None:
+                continue
+            _quantity, total_cost = lot
+        else:
+            continue
+        flows.append(
+            (effective_date, -convert_on_date(total_cost, currency, effective_date, rate_lookup))
+        )
+    return flows, unknown
 
 
 def settle_deferred_inflows(
@@ -150,12 +211,11 @@ def settle_deferred_inflows(
         if price is None or price <= 0:
             continue
         quantity = deferred_inflows.pop(key)
-        cash_in_cny += convert_on_date(quantity * price, currency_of(key), current_date, rate_lookup)
+        cash_in_cny += convert_on_date(
+            quantity * price, currency_of(key), current_date, rate_lookup
+        )
         for event in estimated_inflow_events:
-            if (
-                not event.get("valued")
-                and (event.get("symbol"), event.get("market")) == key
-            ):
+            if not event.get("valued") and (event.get("symbol"), event.get("market")) == key:
                 event["valued"] = True
                 event["valuation_price"] = float(price)
                 event["valued_on"] = current_date.isoformat()
@@ -353,8 +413,13 @@ def replay_opening_positions(
         if quantity > 0 and key in last_price_dates
     }
     return (
-        positions, last_prices, invalid_position_events, opening_estimated_positions,
-        estimated_inflow_events, deferred_inflows, opening_price_basis,
+        positions,
+        last_prices,
+        invalid_position_events,
+        opening_estimated_positions,
+        estimated_inflow_events,
+        deferred_inflows,
+        opening_price_basis,
     )
 
 
@@ -573,7 +638,11 @@ def build_return_curve(
             if quantity <= 0:
                 continue
             current_price = get_current_price(current_prices, key[0], key[1])
-            price = current_price if use_current_price_snapshot and current_price is not None else last_prices.get(key) or current_price
+            price = (
+                current_price
+                if use_current_price_snapshot and current_price is not None
+                else last_prices.get(key) or current_price
+            )
             if price is None:
                 unpriced_positions.append({"symbol": key[0], "market": key[1]})
                 continue
@@ -610,28 +679,32 @@ def build_return_curve(
         cumulative_sell_proceeds_cny += sell_proceeds_today_cny
         cumulative_dividend_income_cny += dividend_income_today_cny
 
-        curve.append({
-            "date": current_date.isoformat(),
-            "equity_cny": float(market_value_cny),
-            "market_value_cny": float(market_value_cny),
-            "begin_market_value_cny": float(previous_market_value_cny),
-            "cash_in_cny": float(cash_in_cny),
-            "cash_out_cny": float(cash_out_cny),
-            "cumulative_cash_in_cny": float(cumulative_cash_in_cny),
-            "cumulative_cash_out_cny": float(cumulative_cash_out_cny),
-            "capital_base_cny": float(cumulative_cash_in_cny),
-            "net_invested_principal_cny": float(cumulative_cash_in_cny - cumulative_cash_out_cny),
-            "sell_proceeds_cny": float(cumulative_sell_proceeds_cny),
-            "dividend_income_cny": float(cumulative_dividend_income_cny),
-            "total_return_cny": float(period_return_cny),
-            "cumulative_return_rate": float(cumulative_return_rate),
-            "drawdown_rate": float(drawdown_rate),
-            "daily_return_rate": daily_return_rate,
-            "return_method": "ttwr",
-            "priced_positions": priced_positions,
-            "unpriced_positions": unpriced_positions,
-            "stale_price_positions": stale_price_positions,
-        })
+        curve.append(
+            {
+                "date": current_date.isoformat(),
+                "equity_cny": float(market_value_cny),
+                "market_value_cny": float(market_value_cny),
+                "begin_market_value_cny": float(previous_market_value_cny),
+                "cash_in_cny": float(cash_in_cny),
+                "cash_out_cny": float(cash_out_cny),
+                "cumulative_cash_in_cny": float(cumulative_cash_in_cny),
+                "cumulative_cash_out_cny": float(cumulative_cash_out_cny),
+                "capital_base_cny": float(cumulative_cash_in_cny),
+                "net_invested_principal_cny": float(
+                    cumulative_cash_in_cny - cumulative_cash_out_cny
+                ),
+                "sell_proceeds_cny": float(cumulative_sell_proceeds_cny),
+                "dividend_income_cny": float(cumulative_dividend_income_cny),
+                "total_return_cny": float(period_return_cny),
+                "cumulative_return_rate": float(cumulative_return_rate),
+                "drawdown_rate": float(drawdown_rate),
+                "daily_return_rate": daily_return_rate,
+                "return_method": "ttwr",
+                "priced_positions": priced_positions,
+                "unpriced_positions": unpriced_positions,
+                "stale_price_positions": stale_price_positions,
+            }
+        )
         previous_market_value_cny = market_value_cny
 
     terminal_positions = [
@@ -640,19 +713,24 @@ def build_return_curve(
         if quantity > 0
     ]
 
-    return curve, calculation_level, {
-        "invalid_position_events": invalid_position_events,
-        "opening_market_value_cny": float(opening_market_value_cny),
-        "opening_positions": opening_positions,
-        "opening_estimated_positions": opening_estimated_positions,
-        "opening_unpriced_positions": opening_unpriced_positions,
-        # 期初估值价的日期与来源（"symbol:market" → {date, source}）：区间损益判断基准是否可靠
-        "opening_price_basis": {
-            f"{symbol}:{market}": basis for (symbol, market), basis in sorted(opening_price_basis.items())
+    return (
+        curve,
+        calculation_level,
+        {
+            "invalid_position_events": invalid_position_events,
+            "opening_market_value_cny": float(opening_market_value_cny),
+            "opening_positions": opening_positions,
+            "opening_estimated_positions": opening_estimated_positions,
+            "opening_unpriced_positions": opening_unpriced_positions,
+            # 期初估值价的日期与来源（"symbol:market" → {date, source}）：区间损益判断基准是否可靠
+            "opening_price_basis": {
+                f"{symbol}:{market}": basis
+                for (symbol, market), basis in sorted(opening_price_basis.items())
+            },
+            "terminal_positions": terminal_positions,
+            # 成本未知的期初建仓：流入按与当日市值同一回退的价格估算并记 valuation_price；
+            # 到达当天无价可估的份额挂起，在首个能定价的日子（valued_on）按该价补记流入，
+            # valued=False = 直到区间末仍无任何可用价格（此时它也不在市值里）
+            "estimated_inflow_events": estimated_inflow_events,
         },
-        "terminal_positions": terminal_positions,
-        # 成本未知的期初建仓：流入按与当日市值同一回退的价格估算并记 valuation_price；
-        # 到达当天无价可估的份额挂起，在首个能定价的日子（valued_on）按该价补记流入，
-        # valued=False = 直到区间末仍无任何可用价格（此时它也不在市值里）
-        "estimated_inflow_events": estimated_inflow_events,
-    }
+    )

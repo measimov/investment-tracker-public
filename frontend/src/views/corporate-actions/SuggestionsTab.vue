@@ -6,17 +6,15 @@ import api from '@/api'
 import type { BrokerAccount, DividendSuggestion } from '@/types'
 import { formatNumber, formatDate, formatQuantity, toNumber } from '@/utils/helpers'
 import { pollJobUntilDone } from '@/utils/polling'
-import { UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
-import { useAliveGuard } from '@/composables/useAliveGuard'
 import {
-  brokerAccountLabel,
-  brokerAccountLabelById as labelById,
-  getActionTypeName,
-  getActionTypeTag,
-  hkDividendNotes,
-  suggestionSourceLabel,
-  type HkAnnouncementDetail
-} from './shared'
+  accountLabel,
+  accountOptionLabel,
+  actionTypeLabel,
+  actionTypeTag,
+  UNASSIGNED_ACCOUNT_LABEL
+} from '@/utils/labels'
+import { useAliveGuard } from '@/composables/useAliveGuard'
+import { hkDividendNotes, suggestionSourceLabel, type HkAnnouncementDetail } from './shared'
 
 // 后端 schema 为准（此前手写副本把 status 枚举放宽为 string）
 type SuggestionRow = DividendSuggestion
@@ -46,7 +44,7 @@ const acceptDialog = reactive<{
 }>({ visible: false, row: null, brokerAccountId: null, totalDividend: null, taxWithheld: null })
 
 function brokerAccountLabelById(accountId: number | null | undefined) {
-  return labelById(props.brokerAccounts, accountId)
+  return accountLabel(props.brokerAccounts, accountId)
 }
 
 function suggestionStatusLabel(status: string) {
@@ -272,8 +270,8 @@ watch(
         </el-table-column>
         <el-table-column label="类型" width="100">
           <template #default="{ row }">
-            <el-tag :type="getActionTypeTag(row.action_type)" size="small">
-              {{ getActionTypeName(row.action_type) }}
+            <el-tag :type="actionTypeTag(row.action_type)" size="small">
+              {{ actionTypeLabel(row.action_type) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -407,7 +405,7 @@ watch(
         <el-form-item label="标的">
           <span>
             {{ acceptDialog.row?.symbol }} {{ acceptDialog.row?.name || '' }} （{{
-              getActionTypeName(acceptDialog.row?.action_type || '')
+              actionTypeLabel(acceptDialog.row?.action_type || '')
             }}）
           </span>
         </el-form-item>
@@ -420,7 +418,7 @@ watch(
             <el-option
               v-for="account in brokerAccounts"
               :key="account.id"
-              :label="brokerAccountLabel(account)"
+              :label="accountOptionLabel(account)"
               :value="account.id"
             />
           </el-select>

@@ -6,27 +6,21 @@
  * （filters/pagination 由壳层过滤表单与表格分页双向绑定）。
  */
 
-import { reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { UNASSIGNED_ACCOUNT, type UnassignedAccount } from '@/utils/labels'
+import { makeConfirmedAction } from '@/composables/useConfirmAction'
+import { reactive } from 'vue'
+import { usePagedList } from '@/composables/usePagedList'
 import { useTransactionsStore, type Transaction } from '@/stores/transactions'
 import { isTransfer } from './shared'
-import { showApiError } from '@/utils/showApiError'
 
 export function useTransactionsList() {
   const transactionsStore = useTransactionsStore()
 
-  const loading = ref(false)
-  const transactions = ref<Transaction[]>([])
-  const pagination = reactive({
-    page: 1,
-    pageSize: 50,
-    total: 0
-  })
   const filters = reactive<{
     symbol: string
     market: string
     transaction_type: string
-    account: '' | 'UNASSIGNED' | number
+    account: '' | UnassignedAccount | number
   }>({
     symbol: '',
     market: '',
@@ -36,10 +30,11 @@ export function useTransactionsList() {
 
   function buildQueryParams() {
     const params: Record<string, unknown> = {}
-    if (filters.symbol) params.symbol = filters.symbol
+    const symbol = filters.symbol.trim()
+    if (symbol) params.symbol = symbol
     if (filters.market) params.market = filters.market
     if (filters.transaction_type) params.transaction_type = filters.transaction_type
-    if (filters.account === 'UNASSIGNED') {
+    if (filters.account === UNASSIGNED_ACCOUNT) {
       params.unassigned_account = true
     } else if (filters.account !== '' && filters.account != null) {
       params.broker_account_id = filters.account
@@ -47,44 +42,21 @@ export function useTransactionsList() {
     return params
   }
 
-  async function loadTransactions(options: { force?: boolean } = {}) {
-    loading.value = true
-    try {
+  // 分页、页码回退与旧请求守卫在 usePagedList（与公司行动页共用）
+  const list = usePagedList<Transaction>({
+    failureMessage: '加载交易记录失败',
+    fetchPage: async ({ skip, limit }, { force }) => {
       const params = buildQueryParams()
-      params.skip = (pagination.page - 1) * pagination.pageSize
-      params.limit = pagination.pageSize
-
-      const [transactionsData, total] = await Promise.all([
-        transactionsStore.fetchTransactions(params, { force: options?.force === true }),
-        transactionsStore.fetchTransactionsCount(buildQueryParams(), {
-          force: options?.force === true
-        })
+      const [items, total] = await Promise.all([
+        transactionsStore.fetchTransactions({ ...params, skip, limit }, { force }),
+        transactionsStore.fetchTransactionsCount(params, { force })
       ])
-
-      transactions.value = transactionsData
-      pagination.total = total
-
-      const maxPage = Math.max(1, Math.ceil(pagination.total / pagination.pageSize))
-      if (pagination.page > maxPage) {
-        pagination.page = maxPage
-        await loadTransactions()
-      }
-    } catch (error) {
-      showApiError(error, '加载交易记录失败')
-    } finally {
-      loading.value = false
+      return { items, total }
     }
-  }
-
-  function handleSearch() {
-    pagination.page = 1
-    loadTransactions({ force: true })
-  }
-
-  function handlePageSizeChange() {
-    pagination.page = 1
-    loadTransactions()
-  }
+  })
+  const loadTransactions = list.load
+  const handleSearch = list.search
+  const handlePageSizeChange = list.changePageSize
 
   function resetFilters() {
     filters.symbol = ''
@@ -94,29 +66,23 @@ export function useTransactionsList() {
     handleSearch()
   }
 
-  function handleDelete(row: Transaction) {
-    const message = isTransfer(row)
-      ? '这是转仓交易：删除将同时删除配对的另一腿，并重算相关持仓。确定继续吗？'
-      : '确定要删除这条交易记录吗？'
-    ElMessageBox.confirm(message, '提示', {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }).then(async () => {
-      try {
-        await transactionsStore.deleteTransaction(row.id)
-        ElMessage.success('删除成功')
-        loadTransactions()
-      } catch (error) {
-        showApiError(error, '删除失败')
-      }
-    })
-  }
+  const handleDelete = makeConfirmedAction<Transaction>({
+    title: '删除交易',
+    message: (row) =>
+      isTransfer(row)
+        ? '这是转仓交易：删除将同时删除配对的另一腿，并重算相关持仓。确定继续吗？'
+        : '确定要删除这条交易记录吗？',
+    confirmText: '删除',
+    request: (row) => transactionsStore.deleteTransaction(row.id),
+    successMessage: '删除成功',
+    failureMessage: '删除失败',
+    reload: () => loadTransactions()
+  })
 
   return reactive({
-    loading,
-    transactions,
-    pagination,
+    loading: list.loading,
+    transactions: list.items,
+    pagination: list.pagination,
     filters,
     loadTransactions,
     handleSearch,

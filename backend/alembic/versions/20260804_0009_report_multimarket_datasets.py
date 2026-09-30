@@ -30,9 +30,7 @@ _NEW_DATASETS = _OLD_DATASETS + ", " + _ADDED
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",
@@ -46,9 +44,7 @@ def downgrade() -> None:
         "'report_section', 'report_digest', 'business_profile', 'peer_list', "
         "'edgar_companyfacts', 'yahoo_fundamentals')"
     )
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",

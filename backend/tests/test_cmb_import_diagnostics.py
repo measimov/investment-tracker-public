@@ -129,8 +129,7 @@ def install_fake_pdf(monkeypatch, rows, *, section_titles=True, pages=1, pdf_met
     for index, values in enumerate(rows):
         top = 20.0 + index * 10.0
         words.extend(
-            {"text": text, "x0": x0, "top": top}
-            for text, x0 in zip(values, VALUE_POSITIONS)
+            {"text": text, "x0": x0, "top": top} for text, x0 in zip(values, VALUE_POSITIONS)
         )
 
     class FakePage:
@@ -490,9 +489,7 @@ def test_diagnostics_vocabulary_lists_every_market_business_combination(monkeypa
 
 def test_diagnostics_report_untruncated_counts(monkeypatch):
     """列表截断到 50 条，真实条数必须另有出口——否则"看到 8 条"与"共 8 条"不可分。"""
-    rows = [
-        make_row(market="港股通", trade_amount="920.00", amount="-925.06") for _ in range(60)
-    ]
+    rows = [make_row(market="港股通", trade_amount="920.00", amount="-925.06") for _ in range(60)]
     report, errors = diagnose(monkeypatch, rows)
 
     assert len(errors) == 60
@@ -757,13 +754,11 @@ def test_business_row_shapes_separate_small_businesses_from_trades(monkeypatch):
 
 def test_business_row_shapes_keep_unparsable_separate_from_zero(monkeypatch):
     """解析不出来 ≠ 为零——把两者折在一起正是 fees_all_zero 那次误报的成因。"""
-    report, _errors = diagnose(
-        monkeypatch, [make_row(business="证券买入", price="--")]
-    )
+    report, _errors = diagnose(monkeypatch, [make_row(business="证券买入", price="--")])
     shapes = report["vocabulary"]["business_row_shapes"]
-    counts = next(
-        item for item in shapes if item["业务名称"] == "证券买入"
-    )["value_counts"]["成交价格"]
+    counts = next(item for item in shapes if item["业务名称"] == "证券买入")["value_counts"][
+        "成交价格"
+    ]
 
     assert counts == {"zero": 0, "nonzero": 0, "unparsable": 1}
 
@@ -802,7 +797,9 @@ def test_symbol_linkage_uses_ordinals_not_reversible_hashes(monkeypatch):
         monkeypatch,
         [make_row(code="600000"), make_row(code="000001", market="深圳")],
     )
-    ordinals = [item["symbol_ordinal"] for item in report["vocabulary"]["symbol_linkage"]["symbols"]]
+    ordinals = [
+        item["symbol_ordinal"] for item in report["vocabulary"]["symbol_linkage"]["symbols"]
+    ]
 
     assert sorted(ordinals) == [1, 2]
     blob = flatten(report)
@@ -909,7 +906,10 @@ def test_symbol_linkage_carries_order_and_magnitude_evidence(monkeypatch):
     by_business = {item["业务名称"]: item for item in target["businesses"]}
 
     # 行序即时间序：申购在转入之前
-    assert by_business["产品申购确认"]["first_row_number"] < by_business["转托转入"]["first_row_number"]
+    assert (
+        by_business["产品申购确认"]["first_row_number"]
+        < by_business["转托转入"]["first_row_number"]
+    )
     # 数量级对得上（等量 → 占比同为 1）
     assert by_business["产品申购确认"]["quantity_share"] == Decimal("1.000000")
     assert by_business["转托转入"]["quantity_share"] == Decimal("1.000000")
@@ -1017,9 +1017,7 @@ def test_linkage_keeps_all_symbols_of_one_rare_business(monkeypatch):
     assert linkage["symbols_shown"] == 41
     # 最后出现的那个标的同样在结果里
     assert max(item["symbol_ordinal"] for item in linkage["symbols"]) == 41
-    custody = next(
-        item for item in linkage["business_coverage"] if item["业务名称"] == "转托转入"
-    )
+    custody = next(item for item in linkage["business_coverage"] if item["业务名称"] == "转托转入")
     assert custody == {"业务名称": "转托转入", "symbols_total": 41, "symbols_shown": 41}
 
 
@@ -1041,9 +1039,7 @@ def test_linkage_reports_per_business_gap_when_the_backstop_bites(monkeypatch):
 
     report, _errors = diagnose(monkeypatch, rows)
     linkage = report["vocabulary"]["symbol_linkage"]
-    custody = next(
-        item for item in linkage["business_coverage"] if item["业务名称"] == "转托转入"
-    )
+    custody = next(item for item in linkage["business_coverage"] if item["业务名称"] == "转托转入")
 
     assert linkage["symbols_total"] == 4
     assert linkage["symbols_shown"] == 2

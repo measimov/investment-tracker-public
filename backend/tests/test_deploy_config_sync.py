@@ -390,7 +390,9 @@ def test_collector_infra_allowlist_is_truthful():
 
 def test_collector_environment_keys_are_settings_fields(compose_text):
     unknown = sorted(environment_keys(compose_text, COLLECTOR_SERVICE) - settings_env_names())
-    assert not unknown, f"compose xueqiu-collector environment: 里有 config.py 不认识的键：{unknown}"
+    assert not unknown, (
+        f"compose xueqiu-collector environment: 里有 config.py 不认识的键：{unknown}"
+    )
 
 
 @pytest.mark.parametrize("service", [WEB_SERVICE, COLLECTOR_SERVICE])

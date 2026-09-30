@@ -490,9 +490,7 @@ def test_backup_notify_resolves_on_success(env):
     log = _install_notify_stubs(env)
     result = _run(env, extra_env=_backup_env(log, BACKUP_NOTIFY="1"))
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _notify_calls(log) == [
-        "exec -T backend python manage.py notify --resolve --key backup"
-    ]
+    assert _notify_calls(log) == ["exec -T backend python manage.py notify --resolve --key backup"]
 
 
 @pytest.mark.parametrize("compose_exit", ["0", "1"])

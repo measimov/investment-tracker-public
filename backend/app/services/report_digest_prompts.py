@@ -20,8 +20,15 @@ from .prompt_guardrails import no_prior_knowledge_guardrail
 DIGEST_PROMPT_VERSION = 2
 
 DIGEST_FIELDS = (
-    "经营回顾", "业务分部占比", "上下游与产业链", "主营收入结构",
-    "成本与费用", "一次性项目", "会计信号", "风险要点", "展望",
+    "经营回顾",
+    "业务分部占比",
+    "上下游与产业链",
+    "主营收入结构",
+    "成本与费用",
+    "一次性项目",
+    "会计信号",
+    "风险要点",
+    "展望",
 )
 
 # C 档字段：与 serialize_digest_for_analysis 压缩后保留的集合严格一致
@@ -64,11 +71,10 @@ def assign_digest_tiers(targets: List[Dict[str, Any]]) -> Dict[str, str]:
         if target.get("report_type") == "semi":
             tiers[target["period_key"]] = "A"  # 最新中报：最贴近当下的经营信息
             continue
-        tiers[target["period_key"]] = (
-            "A" if annual_seen == 0 else "B" if annual_seen <= 4 else "C"
-        )
+        tiers[target["period_key"]] = "A" if annual_seen == 0 else "B" if annual_seen <= 4 else "C"
         annual_seen += 1
     return tiers
+
 
 # 首段守则来自共享骨架（issue #145）。**字节必须与历史版本一致**：
 # tests/test_llm_pipeline_misc.py 的金样钉住首段——共享化是维护性重构，
@@ -116,11 +122,18 @@ _SECTION_LABELS: Tuple[Tuple[str, str], ...] = (
 
 
 def build_digest_messages(
-    symbol: str, market: str, report_type: str, end_date: str,
-    sections: Dict[str, str], *, tier: str = DEFAULT_TIER,
+    symbol: str,
+    market: str,
+    report_type: str,
+    end_date: str,
+    sections: Dict[str, str],
+    *,
+    tier: str = DEFAULT_TIER,
 ) -> List[Dict[str, str]]:
     type_label = {
-        "annual": "年度报告", "semi": "半年度报告", "10-K": "10-K 年度报告",
+        "annual": "年度报告",
+        "semi": "半年度报告",
+        "10-K": "10-K 年度报告",
         "20-F": "20-F 年度报告（外国私人发行人）",
     }.get(report_type, report_type)
     parts = []
@@ -135,9 +148,7 @@ def build_digest_messages(
     return [
         {
             "role": "system",
-            "content": (
-                COMPACT_DIGEST_SYSTEM_PROMPT if tier == "C" else DIGEST_SYSTEM_PROMPT
-            ),
+            "content": (COMPACT_DIGEST_SYSTEM_PROMPT if tier == "C" else DIGEST_SYSTEM_PROMPT),
         },
         {"role": "user", "content": user_content},
     ]
@@ -164,9 +175,7 @@ def parse_digest_output(content: str, *, tier: str = DEFAULT_TIER) -> Dict[str, 
         digest[field] = value.strip()[:600]
 
     key_numbers = data.get("关键数字")
-    if not isinstance(key_numbers, list) or not all(
-        isinstance(item, str) for item in key_numbers
-    ):
+    if not isinstance(key_numbers, list) or not all(isinstance(item, str) for item in key_numbers):
         raise ValueError("关键数字必须是字符串数组")
     digest["关键数字"] = [item.strip() for item in key_numbers[:8] if item.strip()]
     return digest

@@ -24,7 +24,9 @@ from app.services.llm_client import LLMClientError, LLMNotConfiguredError
 from .helpers import reset_tables
 
 JOB_TYPES = [
-    "security_analysis_batch", "security_analysis", "report_digest_backfill",
+    "security_analysis_batch",
+    "security_analysis",
+    "report_digest_backfill",
 ]
 
 
@@ -33,29 +35,37 @@ def db():
     session = SessionLocal()
     try:
         reset_tables(session, [SecurityAnalysis, Holding, SecurityRule, BrokerAccount])
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(JOB_TYPES)
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.in_(JOB_TYPES)).delete(
+            synchronize_session=False
+        )
         session.commit()
         yield session
         session.rollback()
         reset_tables(session, [SecurityAnalysis, Holding, SecurityRule, BrokerAccount])
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(JOB_TYPES)
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.in_(JOB_TYPES)).delete(
+            synchronize_session=False
+        )
         session.commit()
     finally:
         session.close()
 
 
-def _hold(db, symbol: str, market: str, user_id: int = 1, quantity: str = "100",
-          broker_account_id=None):
-    db.add(Holding(
-        user_id=user_id, symbol=symbol, name=symbol, market=market,
-        broker_account_id=broker_account_id,
-        quantity=Decimal(quantity), avg_cost=Decimal("10"),
-        total_cost=Decimal("1000"), currency="CNY",
-    ))
+def _hold(
+    db, symbol: str, market: str, user_id: int = 1, quantity: str = "100", broker_account_id=None
+):
+    db.add(
+        Holding(
+            user_id=user_id,
+            symbol=symbol,
+            name=symbol,
+            market=market,
+            broker_account_id=broker_account_id,
+            quantity=Decimal(quantity),
+            avg_cost=Decimal("10"),
+            total_cost=Decimal("1000"),
+            currency="CNY",
+        )
+    )
     db.commit()
 
 
@@ -72,9 +82,14 @@ def _run(db, monkeypatch, *, outcomes=None, side_effect=None, user_id=1, **start
         if outcomes:
             return outcomes[min(len(calls) - 1, len(outcomes) - 1)](symbol, market)
         return {
-            "symbol": symbol, "market": market, "status": "succeeded",
-            "analysis_id": len(calls), "error": None, "error_kind": None,
-            "degraded": [], "digest_gaps": [],
+            "symbol": symbol,
+            "market": market,
+            "status": "succeeded",
+            "analysis_id": len(calls),
+            "error": None,
+            "error_kind": None,
+            "degraded": [],
+            "digest_gaps": [],
         }
 
     monkeypatch.setattr(batch, "analyze_one", fake_analyze)
@@ -88,18 +103,28 @@ def _run(db, monkeypatch, *, outcomes=None, side_effect=None, user_id=1, **start
 
 def _ok(symbol, market):
     return {
-        "symbol": symbol, "market": market, "status": "succeeded",
-        "analysis_id": 1, "error": None, "error_kind": None,
-        "degraded": [], "digest_gaps": [],
+        "symbol": symbol,
+        "market": market,
+        "status": "succeeded",
+        "analysis_id": 1,
+        "error": None,
+        "error_kind": None,
+        "degraded": [],
+        "digest_gaps": [],
     }
 
 
 def _fail(error="boom", kind="parse"):
     def build(symbol, market):
         return {
-            "symbol": symbol, "market": market, "status": "failed",
-            "analysis_id": None, "error": error, "error_kind": kind,
-            "degraded": [], "digest_gaps": [],
+            "symbol": symbol,
+            "market": market,
+            "status": "failed",
+            "analysis_id": None,
+            "error": error,
+            "error_kind": kind,
+            "degraded": [],
+            "digest_gaps": [],
         }
 
     return build
@@ -116,9 +141,7 @@ def test_targets_dedupe_filter_and_rotate_markets(db):
     轮转（A股→美股→港股→…）让同一 Tushare 接口的相邻调用被其他市场拉开，
     是零成本的接口级降频。
     """
-    account = BrokerAccount(
-        user_id=1, broker="CMB", account_name="测试账户", base_currency="CNY"
-    )
+    account = BrokerAccount(user_id=1, broker="CMB", account_name="测试账户", base_currency="CNY")
     db.add(account)
     db.commit()
     _hold(db, "600036", "A股", broker_account_id=None)
@@ -131,7 +154,10 @@ def test_targets_dedupe_filter_and_rotate_markets(db):
 
     targets = batch.get_batch_analysis_targets(db, 1)
     assert [(t["symbol"], t["market"]) for t in targets] == [
-        ("000001", "A股"), ("AAPL", "美股"), ("00700", "港股"), ("600036", "A股"),
+        ("000001", "A股"),
+        ("AAPL", "美股"),
+        ("00700", "港股"),
+        ("600036", "A股"),
     ]
 
 
@@ -140,12 +166,24 @@ def test_targets_exclude_rule_driven_symbols(db):
     _hold(db, "600036", "A股")
     _hold(db, "511990", "A股")
     _hold(db, "000001", "A股")
-    db.add(SecurityRule(
-        user_id=1, rule_type="EXCLUDE", symbol="000001", market="A股", payload={},
-    ))
-    db.add(SecurityRule(
-        user_id=1, rule_type="CASH_MANAGEMENT", symbol="511990", market="A股", payload={},
-    ))
+    db.add(
+        SecurityRule(
+            user_id=1,
+            rule_type="EXCLUDE",
+            symbol="000001",
+            market="A股",
+            payload={},
+        )
+    )
+    db.add(
+        SecurityRule(
+            user_id=1,
+            rule_type="CASH_MANAGEMENT",
+            symbol="511990",
+            market="A股",
+            payload={},
+        )
+    )
     db.commit()
 
     targets = batch.get_batch_analysis_targets(db, 1)
@@ -155,9 +193,7 @@ def test_targets_exclude_rule_driven_symbols(db):
 def test_start_without_targets_raises_and_creates_no_job(db):
     with pytest.raises(batch.NoBatchTargetsError):
         batch.start_batch_analysis_job(db, 1)
-    assert db.query(BackgroundJob).filter(
-        BackgroundJob.job_type == batch.JOB_TYPE
-    ).count() == 0
+    assert db.query(BackgroundJob).filter(BackgroundJob.job_type == batch.JOB_TYPE).count() == 0
 
 
 def test_full_mode_rejects_too_many_symbols(db):
@@ -206,7 +242,9 @@ def test_single_symbol_failure_does_not_stop_batch(db, monkeypatch):
         _hold(db, symbol, "A股")
 
     job, calls = _run(
-        db, monkeypatch, outcomes=[_ok, _fail("LLM 输出解析失败"), _ok],
+        db,
+        monkeypatch,
+        outcomes=[_ok, _fail("LLM 输出解析失败"), _ok],
     )
     assert len(calls) == 3  # 失败后继续
     assert job.status == "succeeded"
@@ -274,11 +312,19 @@ def test_llm_not_configured_aborts(db, monkeypatch):
 def test_recent_analyses_are_skipped(db, monkeypatch):
     _hold(db, "600036", "A股")
     _hold(db, "000001", "A股")
-    db.add(SecurityAnalysis(
-        symbol="600036", market="A股", tags=["高股息"], risk_level="low",
-        summary="s", content="c", model="m", input_payload={},
-        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
-    ))
+    db.add(
+        SecurityAnalysis(
+            symbol="600036",
+            market="A股",
+            tags=["高股息"],
+            risk_level="low",
+            summary="s",
+            content="c",
+            model="m",
+            input_payload={},
+            created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        )
+    )
     db.commit()
 
     job, calls = _run(db, monkeypatch)
@@ -291,11 +337,19 @@ def test_recent_analyses_are_skipped(db, monkeypatch):
 
 def test_force_bypasses_freshness(db, monkeypatch):
     _hold(db, "600036", "A股")
-    db.add(SecurityAnalysis(
-        symbol="600036", market="A股", tags=["高股息"], risk_level="low",
-        summary="s", content="c", model="m", input_payload={},
-        created_at=datetime.now(timezone.utc),
-    ))
+    db.add(
+        SecurityAnalysis(
+            symbol="600036",
+            market="A股",
+            tags=["高股息"],
+            risk_level="low",
+            summary="s",
+            content="c",
+            model="m",
+            input_payload={},
+            created_at=datetime.now(timezone.utc),
+        )
+    )
     db.commit()
 
     _, calls = _run(db, monkeypatch, force=True)
@@ -304,11 +358,19 @@ def test_force_bypasses_freshness(db, monkeypatch):
 
 def test_stale_analysis_is_not_skipped(db, monkeypatch):
     _hold(db, "600036", "A股")
-    db.add(SecurityAnalysis(
-        symbol="600036", market="A股", tags=["高股息"], risk_level="low",
-        summary="s", content="c", model="m", input_payload={},
-        created_at=datetime.now(timezone.utc) - timedelta(days=3),
-    ))
+    db.add(
+        SecurityAnalysis(
+            symbol="600036",
+            market="A股",
+            tags=["高股息"],
+            risk_level="low",
+            summary="s",
+            content="c",
+            model="m",
+            input_payload={},
+            created_at=datetime.now(timezone.utc) - timedelta(days=3),
+        )
+    )
     db.commit()
 
     _, calls = _run(db, monkeypatch)
@@ -322,7 +384,8 @@ def test_completed_keys_resume_without_reanalyzing(db, monkeypatch):
 
     calls: list = []
     monkeypatch.setattr(
-        batch, "analyze_one",
+        batch,
+        "analyze_one",
         lambda db_, symbol, market, **kw: calls.append(symbol) or _ok(symbol, market),
     )
     monkeypatch.setattr(batch.settings, "security_analysis_batch_pause_seconds", 0)
@@ -398,12 +461,8 @@ def api_user():
 @pytest.mark.anyio
 async def test_batch_api_flow_and_route_isolation(db, api_user, monkeypatch):
     _hold(db, "600036", "A股", user_id=api_user)
-    monkeypatch.setattr(
-        "app.api.security_profiles.is_llm_configured", lambda: True
-    )
-    monkeypatch.setattr(
-        "app.api.security_profiles.run_batch_analysis_job", lambda job_id: None
-    )
+    monkeypatch.setattr("app.api.security_profiles.is_llm_configured", lambda: True)
+    monkeypatch.setattr("app.api.security_profiles.run_batch_analysis_job", lambda job_id: None)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -427,9 +486,7 @@ async def test_batch_api_flow_and_route_isolation(db, api_user, monkeypatch):
         assert again.json()["id"] == job_id
 
         # 互斥：批量活跃时单标的分析与摘要回填都 409
-        blocked = await client.post(
-            "/api/securities/A股/600036/analysis-jobs", headers=auth
-        )
+        blocked = await client.post("/api/securities/A股/600036/analysis-jobs", headers=auth)
         assert blocked.status_code == 409
         assert "批量分析" in blocked.json()["detail"]
         blocked_backfill = await client.post(
@@ -442,13 +499,9 @@ async def test_batch_api_flow_and_route_isolation(db, api_user, monkeypatch):
         assert [row["id"] for row in active.json()] == [job_id]
 
         # [路由回归] 批量与单标的两个 job 端点互不串味
-        detail = await client.get(
-            f"/api/securities/analysis-batch-jobs/{job_id}", headers=auth
-        )
+        detail = await client.get(f"/api/securities/analysis-batch-jobs/{job_id}", headers=auth)
         assert detail.status_code == 200
-        crossed = await client.get(
-            f"/api/securities/analysis-jobs/{job_id}", headers=auth
-        )
+        crossed = await client.get(f"/api/securities/analysis-jobs/{job_id}", headers=auth)
         assert crossed.status_code == 404
 
         # 终止
@@ -458,9 +511,7 @@ async def test_batch_api_flow_and_route_isolation(db, api_user, monkeypatch):
         assert cancelled.status_code == 200
         assert cancelled.json()["cancel_requested"] is True
         assert (
-            await client.post(
-                "/api/securities/analysis-batch-jobs/nope/cancel", headers=auth
-            )
+            await client.post("/api/securities/analysis-batch-jobs/nope/cancel", headers=auth)
         ).status_code == 404
 
 
@@ -474,27 +525,19 @@ async def test_batch_api_rejects_without_targets_or_llm(db, api_user, monkeypatc
         )
         auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        monkeypatch.setattr(
-            "app.api.security_profiles.is_llm_configured", lambda: False
-        )
+        monkeypatch.setattr("app.api.security_profiles.is_llm_configured", lambda: False)
         no_llm = await client.post("/api/securities/analysis-batch-jobs", headers=auth)
         assert no_llm.status_code == 409
 
-        monkeypatch.setattr(
-            "app.api.security_profiles.is_llm_configured", lambda: True
-        )
-        no_targets = await client.post(
-            "/api/securities/analysis-batch-jobs", headers=auth
-        )
+        monkeypatch.setattr("app.api.security_profiles.is_llm_configured", lambda: True)
+        no_targets = await client.post("/api/securities/analysis-batch-jobs", headers=auth)
         assert no_targets.status_code == 409
         assert "没有可分析" in no_targets.json()["detail"]
 
 
 def test_batch_job_is_user_scoped(db, monkeypatch):
     _hold(db, "600036", "A股", user_id=1)
-    monkeypatch.setattr(
-        batch, "analyze_one", lambda db_, s, m, **kw: _ok(s, m)
-    )
+    monkeypatch.setattr(batch, "analyze_one", lambda db_, s, m, **kw: _ok(s, m))
     job = batch.start_batch_analysis_job(db, 1)
     assert batch.get_batch_analysis_job(job["id"], 2) is None
 
@@ -519,7 +562,8 @@ def _run_real(db, monkeypatch, *, user_id=1):
     from app.services import report_digest_service as digest_svc
 
     monkeypatch.setattr(
-        digest_svc, "ensure_report_digests",
+        digest_svc,
+        "ensure_report_digests",
         lambda db_, s, m, max_new: {"gaps": []},
     )
     monkeypatch.setattr(bp_svc, "ensure_peer_list", lambda db_, s, m: [])
@@ -541,7 +585,8 @@ def test_llm_auth_error_aborts_through_real_analyze_one(db, monkeypatch):
     for symbol in ("600036", "000001", "600519"):
         _hold(db, symbol, "A股")
     monkeypatch.setattr(
-        profile_svc, "fetch_dataset_rows",
+        profile_svc,
+        "fetch_dataset_rows",
         lambda dataset, symbol, market: [{"end_date": "20251231", "roe": 15.0}],
     )
     llm_calls: list = []
@@ -576,7 +621,8 @@ def test_tushare_fatal_aborts_and_skips_degraded_analysis(db, monkeypatch):
 
     monkeypatch.setattr(profile_svc, "fetch_dataset_rows", fatal_fetch)
     monkeypatch.setattr(
-        jobs, "chat_completion",
+        jobs,
+        "chat_completion",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("致命错误后不应调用 LLM")),
     )
 
@@ -595,7 +641,8 @@ def test_ordinary_llm_4xx_is_symbol_level_not_batch_abort(db, monkeypatch):
     for symbol in ("600036", "000001"):
         _hold(db, symbol, "A股")
     monkeypatch.setattr(
-        profile_svc, "fetch_dataset_rows",
+        profile_svc,
+        "fetch_dataset_rows",
         lambda dataset, symbol, market: [{"end_date": "20251231", "roe": 15.0}],
     )
     calls: list = []
@@ -619,13 +666,19 @@ def test_analyze_one_marks_fatal_kinds(db, monkeypatch):
 
     monkeypatch.setattr(jobs, "resolve_public_security_name", lambda s, m: None)
     monkeypatch.setattr(
-        profile_svc, "fetch_dataset_rows",
+        profile_svc,
+        "fetch_dataset_rows",
         lambda dataset, symbol, market: [{"end_date": "20251231"}],
     )
-    for status_code, expected in ((401, "llm_auth"), (402, "llm_auth"),
-                                  (429, "llm_auth"), (400, "llm_4xx")):
+    for status_code, expected in (
+        (401, "llm_auth"),
+        (402, "llm_auth"),
+        (429, "llm_auth"),
+        (400, "llm_4xx"),
+    ):
         monkeypatch.setattr(
-            jobs, "chat_completion",
+            jobs,
+            "chat_completion",
             lambda *a, sc=status_code, **k: (_ for _ in ()).throw(
                 LLMClientError("x", status_code=sc)
             ),
@@ -646,20 +699,28 @@ async def test_batch_targets_preview_matches_job_total(db, api_user, monkeypatch
     _hold(db, "000001", "A股", user_id=api_user)  # 排除清单
     _hold(db, "600519", "A股", user_id=api_user, quantity="0")  # 已清仓
     _hold(db, "BTC", "加密货币", user_id=api_user)  # 不支持市场
-    db.add(SecurityRule(
-        user_id=api_user, rule_type="CASH_MANAGEMENT", symbol="511990",
-        market="A股", payload={},
-    ))
-    db.add(SecurityRule(
-        user_id=api_user, rule_type="EXCLUDE", symbol="000001",
-        market="A股", payload={},
-    ))
+    db.add(
+        SecurityRule(
+            user_id=api_user,
+            rule_type="CASH_MANAGEMENT",
+            symbol="511990",
+            market="A股",
+            payload={},
+        )
+    )
+    db.add(
+        SecurityRule(
+            user_id=api_user,
+            rule_type="EXCLUDE",
+            symbol="000001",
+            market="A股",
+            payload={},
+        )
+    )
     db.commit()
 
     monkeypatch.setattr("app.api.security_profiles.is_llm_configured", lambda: True)
-    monkeypatch.setattr(
-        "app.api.security_profiles.run_batch_analysis_job", lambda job_id: None
-    )
+    monkeypatch.setattr("app.api.security_profiles.run_batch_analysis_job", lambda job_id: None)
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -721,9 +782,14 @@ def test_losing_ownership_mid_loop_stops_the_batch_immediately(db, monkeypatch):
         finally:
             state["armed"] = False
         return {
-            "symbol": symbol, "market": market, "status": "succeeded",
-            "analysis_id": 1, "error": None, "error_kind": None,
-            "degraded": [], "digest_gaps": [],
+            "symbol": symbol,
+            "market": market,
+            "status": "succeeded",
+            "analysis_id": 1,
+            "error": None,
+            "error_kind": None,
+            "degraded": [],
+            "digest_gaps": [],
         }
 
     monkeypatch.setattr(batch, "analyze_one", fake_analyze)
@@ -736,3 +802,10 @@ def test_losing_ownership_mid_loop_stops_the_batch_immediately(db, monkeypatch):
     stored = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
     db.refresh(stored)
     assert stored.status != "failed", "失权不是失败，僵尸不得把 job 标成 failed"
+
+
+def test_incomplete_report_is_not_batch_fatal():
+    """#287：半截报告只影响该标的（重试一次后记 incomplete），批量继续下一只。"""
+    from app.services.security_analysis_jobs import FATAL_ANALYSIS_ERROR_KINDS
+
+    assert "incomplete" not in FATAL_ANALYSIS_ERROR_KINDS

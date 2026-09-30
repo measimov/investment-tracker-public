@@ -32,7 +32,8 @@ def _make_report(mdna_title: str = "管理层讨论与分析", body_chars: int =
     business = (
         "第三节 公司业务概要\n"
         "一、主要业务\n本公司主营零售银行与批发金融业务，经营模式为吸收存款发放贷款。"
-        + "业务描述" * 100
+        + "业务描述"
+        * 100
     )
     mdna = (
         f"第四节 {mdna_title}\n"
@@ -71,12 +72,14 @@ def test_extract_legacy_board_report_title():
 
 def test_extract_falls_back_to_keyword_window():
     """无标准节标题的排版：关键词窗口保底并标记 locator。"""
-    text = pages_to_text([
-        "封面",
-        "目录\n管理层讨论与分析………12",
-        "正文前言" * 50,
-        "以下为管理层讨论与分析的内容：报告期内营业收入增长。" + "分析" * 300,
-    ])
+    text = pages_to_text(
+        [
+            "封面",
+            "目录\n管理层讨论与分析………12",
+            "正文前言" * 50,
+            "以下为管理层讨论与分析的内容：报告期内营业收入增长。" + "分析" * 300,
+        ]
+    )
     sections = extract_cn_sections(text)
     mdna = sections["mdna"]
     assert mdna is not None
@@ -137,13 +140,15 @@ def make_10k_html(mdna_repeats: int = 300) -> str:
     )
     risk = (
         "<h2>Item 1A. Risk Factors</h2><p>Macroeconomic and industry risks. "
-        + "risk factor detail. " * 40 + "</p>"
+        + "risk factor detail. " * 40
+        + "</p>"
     )
     unresolved = "<h2>Item 1B. Unresolved Staff Comments</h2><p>None.</p>"
     mdna = (
         "<h2>Item 7. Management&#8217;s Discussion and Analysis</h2>"
         "<p>Net sales increased 8% driven by Services. "
-        + "management discussion detail. " * mdna_repeats + "</p>"
+        + "management discussion detail. " * mdna_repeats
+        + "</p>"
     )
     item7a = (
         "<h2>Item 7A. Quantitative and Qualitative Disclosures About Market Risk"
@@ -197,34 +202,41 @@ def test_accounting_note_heading_is_not_taken_as_a_risk_section():
     附注标题会重新被放进来，然后带着 low_confidence 被落库并送去摘要。
     尾随只允许页码/编号/标点，且风险章节低置信一律返回 None。
     """
-    text = pages_to_text([
-        "封面",
-        "目录\n第一节 重要提示……3",
-        "第七节 财务报告\n26、收入\n本公司在履行合同中的履约义务时确认收入。\n"
-        "主要风险和报酬\n转移给客户；客户已接受该商品等迹象表明取得控制权。"
-        + "会计政策内容。" * 400,
-    ])
+    text = pages_to_text(
+        [
+            "封面",
+            "目录\n第一节 重要提示……3",
+            "第七节 财务报告\n26、收入\n本公司在履行合同中的履约义务时确认收入。\n"
+            "主要风险和报酬\n转移给客户；客户已接受该商品等迹象表明取得控制权。"
+            + "会计政策内容。"
+            * 400,
+        ]
+    )
     assert extract_cn_sections(text)["risk_factors"] is None
 
     # 更硬的一版：附注正文本身就是风险词密集的（金融工具附注满篇信用风险/
     # 汇率风险），内容置信度拦不住它——只有标题尾随规则能拦
-    dense = pages_to_text([
-        "封面",
-        "目录\n第一节 重要提示……3",
-        "第七节 财务报告\n26、收入\n主要风险和报酬\n"
-        "转移给客户。本集团的金融工具面临信用风险、流动资金风险、利率风险与"
-        "汇率风险，监管环境变化与市场竞争可能导致不确定性。" * 60,
-    ])
+    dense = pages_to_text(
+        [
+            "封面",
+            "目录\n第一节 重要提示……3",
+            "第七节 财务报告\n26、收入\n主要风险和报酬\n"
+            "转移给客户。本集团的金融工具面临信用风险、流动资金风险、利率风险与"
+            "汇率风险，监管环境变化与市场竞争可能导致不确定性。" * 60,
+        ]
+    )
     assert extract_cn_sections(dense)["risk_factors"] is None
 
     # 真正的小节标题（尾随只有页码/标点）仍应命中
-    real = pages_to_text([
-        "封面",
-        "目录\n第一节 重要提示……3",
-        "第四节 董事会报告\n主要风险和不确定因素 12\n"
-        "本集团面临政府政策风险、汇率风险与市场竞争加剧的风险，"
-        "可能导致毛利率下降。" * 40,
-    ])
+    real = pages_to_text(
+        [
+            "封面",
+            "目录\n第一节 重要提示……3",
+            "第四节 董事会报告\n主要风险和不确定因素 12\n"
+            "本集团面临政府政策风险、汇率风险与市场竞争加剧的风险，"
+            "可能导致毛利率下降。" * 40,
+        ]
+    )
     risk = extract_cn_sections(real)["risk_factors"]
     assert risk is not None and risk.locator == "subsection_heading"
     assert risk.confidence >= 0.35
@@ -236,13 +248,15 @@ def test_low_confidence_risk_section_is_dropped_not_persisted():
     返回带 low_confidence 的结果会被 _ensure_section 照样落库并送去摘要——
     其他章节可以"低置信也先用着"，风险不行：它直接决定 risk_level。
     """
-    text = pages_to_text([
-        "封面",
-        "目录\n第一节 重要提示……3",
-        # 标题合法，正文却是子公司名录（无任何风险语义）
-        "第四节 董事会报告\n主要风险\n"
-        + "本公司主要控股子公司包括甲公司、乙公司、丙公司，注册资本合计一百万元。" * 60,
-    ])
+    text = pages_to_text(
+        [
+            "封面",
+            "目录\n第一节 重要提示……3",
+            # 标题合法，正文却是子公司名录（无任何风险语义）
+            "第四节 董事会报告\n主要风险\n"
+            + "本公司主要控股子公司包括甲公司、乙公司、丙公司，注册资本合计一百万元。" * 60,
+        ]
+    )
     assert extract_cn_sections(text)["risk_factors"] is None
 
 
@@ -260,9 +274,14 @@ def test_oversized_high_weight_block_is_sliced_not_dropped():
     """
     text = (
         "本节概要。\n"
-        "一、主营业务分析\n" + "主营内容。" * 300
-        + "\n二、风险因素\n风险开头标记。" + "风险细节。" * 9_000 + "风险结尾标记。"
-        + "\n三、公司未来发展的展望\n" + "展望细节。" * 600 + "章节真尾标记。"
+        "一、主营业务分析\n"
+        + "主营内容。" * 300
+        + "\n二、风险因素\n风险开头标记。"
+        + "风险细节。" * 9_000
+        + "风险结尾标记。"
+        + "\n三、公司未来发展的展望\n"
+        + "展望细节。" * 600
+        + "章节真尾标记。"
     )
     body, meta = budget_section(text, budget=10_000)
     assert meta.strategy == "structured"
@@ -284,10 +303,18 @@ def test_every_high_weight_block_gets_a_share_not_just_the_first(budget):
     """
     text = (
         "本节概要。\n"
-        "一、主营业务分析\n主营开头。" + "主营细节。" * 9_000 + "主营结尾。"
-        + "\n二、风险因素\n风险开头。" + "风险细节。" * 9_000 + "风险结尾。"
-        + "\n三、经营情况讨论与分析\n经营开头。" + "经营细节。" * 9_000 + "经营结尾。"
-        + "\n四、公司未来发展的展望\n" + "展望细节。" * 600 + "章节真尾标记。"
+        "一、主营业务分析\n主营开头。"
+        + "主营细节。" * 9_000
+        + "主营结尾。"
+        + "\n二、风险因素\n风险开头。"
+        + "风险细节。" * 9_000
+        + "风险结尾。"
+        + "\n三、经营情况讨论与分析\n经营开头。"
+        + "经营细节。" * 9_000
+        + "经营结尾。"
+        + "\n四、公司未来发展的展望\n"
+        + "展望细节。" * 600
+        + "章节真尾标记。"
     )
     body, meta = budget_section(text, budget=budget)
     assert meta.strategy == "structured"
@@ -332,9 +359,7 @@ def test_head_tail_fallback_stays_within_budget_and_keeps_real_tail():
 
 
 def test_html_to_text_strips_tags_and_entities():
-    text = html_to_text(
-        "<p>Revenue &amp; margin&nbsp;grew</p><div>Q4&#8217;s results</div>"
-    )
+    text = html_to_text("<p>Revenue &amp; margin&nbsp;grew</p><div>Q4&#8217;s results</div>")
     assert "Revenue & margin grew" in text
     assert "Q4's results" in text
     assert "<" not in text  # 无残留标签

@@ -19,9 +19,10 @@ from app.database import SessionLocal
 from app.models.security_price import SecurityPrice
 from app.models.security_profile import SecurityProfileData
 from app.services import report_fetchers
+from app.services import profile_store
 from app.services import security_profile_service as svc
+from app.services.edgar_facts import EDGAR_PIVOT_VERSION, edgar_reporting_currency
 from app.services.earnings_quality import (
-    EDGAR_PIVOT_VERSION,
     compute_earnings_quality,
     market_statements,
 )
@@ -69,7 +70,7 @@ def test_usd_issuer_pivot_unchanged_against_pre_change_golden(monkeypatch):
 
 def test_pdd_pivot_uses_cny_reporting_currency(monkeypatch):
     facts = _facts("pdd")
-    assert svc.edgar_reporting_currency(facts["facts"]["us-gaap"]) == "CNY"
+    assert edgar_reporting_currency(facts["facts"]["us-gaap"]) == "CNY"
     rows = _pivot(monkeypatch, facts)
     assert {row["currency"] for row in rows} == {"CNY"}
     annual = {row["end_date"][:4]: row for row in rows if row["fp"] == "FY"}
@@ -91,43 +92,71 @@ def test_pdd_pivot_uses_cny_reporting_currency(monkeypatch):
 
 
 def test_reporting_currency_rules():
-    both = {"Revenues": {"units": {
-        "USD": [_item("2025-12-31", 1.0, start="2025-01-01")],
-        "EUR": [_item("2025-12-31", 1.0, start="2025-01-01")],
-    }}}
-    assert svc.edgar_reporting_currency(both) == "USD"  # 并列 → USD
-    cny = {
-        "NetIncomeLoss": {"units": {
-            "CNY": [_item(f"{y}-12-31", 1.0, start=f"{y}-01-01") for y in (2024, 2025)],
-            "USD": [_item("2025-12-31", 1.0, start="2025-01-01")],
-        }},
-        # 每股单位不参与判定
-        "EarningsPerShareBasic": {"units": {
-            "USD/shares": [_item(f"{y}-12-31", 1.0, start=f"{y}-01-01") for y in range(2015, 2026)],
-        }},
+    both = {
+        "Revenues": {
+            "units": {
+                "USD": [_item("2025-12-31", 1.0, start="2025-01-01")],
+                "EUR": [_item("2025-12-31", 1.0, start="2025-01-01")],
+            }
+        }
     }
-    assert svc.edgar_reporting_currency(cny) == "CNY"
+    assert edgar_reporting_currency(both) == "USD"  # 并列 → USD
+    cny = {
+        "NetIncomeLoss": {
+            "units": {
+                "CNY": [_item(f"{y}-12-31", 1.0, start=f"{y}-01-01") for y in (2024, 2025)],
+                "USD": [_item("2025-12-31", 1.0, start="2025-01-01")],
+            }
+        },
+        # 每股单位不参与判定
+        "EarningsPerShareBasic": {
+            "units": {
+                "USD/shares": [
+                    _item(f"{y}-12-31", 1.0, start=f"{y}-01-01") for y in range(2015, 2026)
+                ],
+            }
+        },
+    }
+    assert edgar_reporting_currency(cny) == "CNY"
     # 单季事实、期间不符的 FY 事实不计
-    quarterly = {"Assets": {"units": {
-        "CNY": [_item("2025-12-31", 1.0, fp="Q3"), _item("2025-09-30", 1.0, fp="Q2")],
-        "USD": [_item("2025-12-31", 1.0)],
-    }}}
-    assert svc.edgar_reporting_currency(quarterly) == "USD"
-    assert svc.edgar_reporting_currency({}) == "USD"
+    quarterly = {
+        "Assets": {
+            "units": {
+                "CNY": [_item("2025-12-31", 1.0, fp="Q3"), _item("2025-09-30", 1.0, fp="Q2")],
+                "USD": [_item("2025-12-31", 1.0)],
+            }
+        }
+    }
+    assert edgar_reporting_currency(quarterly) == "USD"
+    assert edgar_reporting_currency({}) == "USD"
 
 
 def test_concept_missing_reporting_currency_is_left_empty_not_mixed(monkeypatch):
     """报告币种缺某概念时留空，不回退到 USD——一行只能有一个币种。"""
-    facts = {"facts": {"us-gaap": {
-        "Revenues": {"units": {"CNY": [
-            _item(f"{y}-12-31", 1000.0 * y, start=f"{y}-01-01") for y in (2024, 2025)
-        ], "USD": [_item("2025-12-31", 140.0, start="2025-01-01")]}},
-        "CostOfRevenue": {"units": {"USD": [_item("2025-12-31", 80.0, start="2025-01-01")]}},
-        "EarningsPerShareBasic": {"units": {
-            "CNY/shares": [_item("2025-12-31", 7.0, start="2025-01-01")],
-            "USD/shares": [_item("2025-12-31", 1.0, start="2025-01-01")],
-        }},
-    }}}
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {
+                    "units": {
+                        "CNY": [
+                            _item(f"{y}-12-31", 1000.0 * y, start=f"{y}-01-01")
+                            for y in (2024, 2025)
+                        ],
+                        "USD": [_item("2025-12-31", 140.0, start="2025-01-01")],
+                    }
+                },
+                "CostOfRevenue": {
+                    "units": {"USD": [_item("2025-12-31", 80.0, start="2025-01-01")]}
+                },
+                "EarningsPerShareBasic": {
+                    "units": {
+                        "CNY/shares": [_item("2025-12-31", 7.0, start="2025-01-01")],
+                        "USD/shares": [_item("2025-12-31", 1.0, start="2025-01-01")],
+                    }
+                },
+            }
+        }
+    }
     row = _pivot(monkeypatch, facts)[0]
     assert row["currency"] == "CNY"
     assert row["total_revenue"] == 1000.0 * 2025
@@ -145,7 +174,9 @@ def _pdd_rows(monkeypatch):
 def test_pdd_earnings_quality_is_currency_neutral(monkeypatch):
     statements = market_statements("美股", {"edgar_companyfacts": _pdd_rows(monkeypatch)})
     quality = compute_earnings_quality(
-        statements["income"], statements["balancesheet"], statements["cashflow"],
+        statements["income"],
+        statements["balancesheet"],
+        statements["cashflow"],
         statements["fina_indicator"],
     )
     assert quality["status"] == "ok"
@@ -158,11 +189,19 @@ def test_pdd_earnings_quality_is_currency_neutral(monkeypatch):
 def _pdd_valuation(rows, close=77.57):
     lookup = ExchangeRateLookup([Rate("USD", "CNY", USD_CNY, date(2026, 1, 1))])
     return {
-        "price": {"close": close, "currency": "USD", "date": "2026-09-25", "stale": False,
-                  "age_days": 2, "source": "tencent-kline"},
+        "price": {
+            "close": close,
+            "currency": "USD",
+            "date": "2026-09-25",
+            "stale": False,
+            "age_days": 2,
+            "source": "tencent-kline",
+        },
         "fx_rates": resolve_fx_rates({"CNY"}, "USD", date(2026, 9, 25), lookup),
         "interim_rows": [row for row in rows if row["fp"] != "FY"],
-        "annual_form": "20-F", "share_ratio": 4, "share_ratio_note": "1 ADS = 4 股",
+        "annual_form": "20-F",
+        "share_ratio": 4,
+        "share_ratio_note": "1 ADS = 4 股",
     }
 
 
@@ -214,10 +253,22 @@ def db():
 
 def test_sync_replaces_old_usd_rows_and_graham_end_to_end(db, monkeypatch):
     # 旧 USD 透视行：一个与新 CNY 行同键（被 upsert 覆盖），一个只在旧透视里出现的键（须删除）
-    svc.upsert_profile_row(db, "PDD", "美股", "edgar_companyfacts", "20251231|FY",
-                           {"end_date": "20251231", "fp": "FY", "currency": "USD", "basic_eps": 2.5})
-    svc.upsert_profile_row(db, "PDD", "美股", "edgar_companyfacts", "20141231|FY",
-                           {"end_date": "20141231", "fp": "FY", "currency": "USD"})
+    profile_store.upsert_profile_row(
+        db,
+        "PDD",
+        "美股",
+        "edgar_companyfacts",
+        "20251231|FY",
+        {"end_date": "20251231", "fp": "FY", "currency": "USD", "basic_eps": 2.5},
+    )
+    profile_store.upsert_profile_row(
+        db,
+        "PDD",
+        "美股",
+        "edgar_companyfacts",
+        "20141231|FY",
+        {"end_date": "20141231", "fp": "FY", "currency": "USD"},
+    )
     db.commit()
     facts = _facts("pdd")
     monkeypatch.setattr(report_fetchers, "edgar_lookup", lambda s: {"cik": 1, "title": "x"})
@@ -225,22 +276,46 @@ def test_sync_replaces_old_usd_rows_and_graham_end_to_end(db, monkeypatch):
 
     result = svc.sync_symbol_profile(db, "PDD", "美股")
     assert result["failed"] == []
-    stored = db.query(SecurityProfileData).filter(
-        SecurityProfileData.symbol == "PDD", SecurityProfileData.dataset == "edgar_companyfacts",
-    ).all()
+    stored = (
+        db.query(SecurityProfileData)
+        .filter(
+            SecurityProfileData.symbol == "PDD",
+            SecurityProfileData.dataset == "edgar_companyfacts",
+        )
+        .all()
+    )
     assert {row.payload["currency"] for row in stored} == {"CNY"}
     assert "20141231|FY" not in {row.period_key for row in stored}
     assert all(row.payload["edgar_chain_version"] == EDGAR_PIVOT_VERSION for row in stored)
 
-    db.add(SecurityPrice(symbol="PDD", market="美股", price_date=local_today() - timedelta(days=2),
-                         currency="USD", close_price=Decimal("77.57"), source="tencent-kline"))
+    db.add(
+        SecurityPrice(
+            symbol="PDD",
+            market="美股",
+            price_date=local_today() - timedelta(days=2),
+            currency="USD",
+            close_price=Decimal("77.57"),
+            source="tencent-kline",
+        )
+    )
     db.commit()
     lookup = ExchangeRateLookup([Rate("USD", "CNY", USD_CNY, date(2026, 1, 1))])
     monkeypatch.setattr(svc, "_rate_lookup_for", lambda _db, _markets: lookup)
     # ADS 换算比来自 20-F 封面解析（ads_ratio_service.ensure_ads_ratio 落库的形状）
-    svc.upsert_profile_row(db, "PDD", "美股", "ads_ratio", "current",
-                           {"status": "ok", "ratio": "4", "section": "cover",
-                            "form": "20-F", "filing_date": "2026-04-29"})
+    profile_store.upsert_profile_row(
+        db,
+        "PDD",
+        "美股",
+        "ads_ratio",
+        "current",
+        {
+            "status": "ok",
+            "ratio": "4",
+            "section": "cover",
+            "form": "20-F",
+            "filing_date": "2026-04-29",
+        },
+    )
     db.commit()
     pe = _by(svc.compute_graham_for(db, "PDD", "美股"), "pe")
     assert pe["basis"]["share_ratio"] == 4
@@ -248,8 +323,14 @@ def test_sync_replaces_old_usd_rows_and_graham_end_to_end(db, monkeypatch):
 
 
 def test_sync_keeps_rows_when_fetch_is_empty(db, monkeypatch):
-    svc.upsert_profile_row(db, "PDD", "美股", "edgar_companyfacts", "20141231|FY",
-                           {"end_date": "20141231", "fp": "FY", "currency": "USD"})
+    profile_store.upsert_profile_row(
+        db,
+        "PDD",
+        "美股",
+        "edgar_companyfacts",
+        "20141231|FY",
+        {"end_date": "20141231", "fp": "FY", "currency": "USD"},
+    )
     db.commit()
     monkeypatch.setattr(svc, "fetch_dataset_rows", lambda *args: [])
     svc.sync_symbol_profile(db, "PDD", "美股")
@@ -261,19 +342,24 @@ def test_sync_keeps_rows_when_fetch_is_empty(db, monkeypatch):
 
 def _cny_issuer(**extra):
     """两年 CNY 营收 → 报告币种 CNY；两年都有 CNY 经营现金流与流动项。"""
+
     def duration(concept, val):
-        return {concept: {"units": {"CNY": [
-            _item(f"{y}-12-31", val, start=f"{y}-01-01") for y in (2024, 2025)
-        ]}}}
+        return {
+            concept: {
+                "units": {
+                    "CNY": [_item(f"{y}-12-31", val, start=f"{y}-01-01") for y in (2024, 2025)]
+                }
+            }
+        }
 
     concepts = {
         **duration("Revenues", 1000.0),
         **duration("NetIncomeLoss", 100.0),
         **duration("NetCashProvidedByUsedInOperatingActivities", 100.0),
         "AssetsCurrent": {"units": {"CNY": [_item(f"{y}-12-31", 500.0) for y in (2024, 2025)]}},
-        "LiabilitiesCurrent": {"units": {"CNY": [
-            _item(f"{y}-12-31", 200.0) for y in (2024, 2025)
-        ]}},
+        "LiabilitiesCurrent": {
+            "units": {"CNY": [_item(f"{y}-12-31", 200.0) for y in (2024, 2025)]}
+        },
     }
     concepts.update(extra)
     return {"facts": {"us-gaap": concepts}}
@@ -293,9 +379,12 @@ def _latest(rows):
 def test_dividend_only_in_other_currency_stays_unknown(monkeypatch):
     """PaymentsOfDividends 只有 USD（无 CNY 单位）：不混币所以留空，但不能推断为「未列 → 0」
     去否定已披露的分红。"""
-    rows, statements, result = _screen(monkeypatch, _cny_issuer(
-        PaymentsOfDividends={"units": {"USD": [_item("2025-12-31", 10.0, start="2025-01-01")]}},
-    ))
+    rows, statements, result = _screen(
+        monkeypatch,
+        _cny_issuer(
+            PaymentsOfDividends={"units": {"USD": [_item("2025-12-31", 10.0, start="2025-01-01")]}},
+        ),
+    )
     latest = _latest(rows)
     assert latest["currency"] == "CNY" and latest.get("div_paid_owners") is None
     assert latest["edgar_missing_reasons"]["div_paid_owners"] == "other_currency_only"
@@ -314,17 +403,23 @@ def test_recent_dividend_only_in_other_currency_does_not_count_as_interrupted(mo
     def duration(values):
         return [_item(f"{y}-12-31", v, start=f"{y}-01-01") for y, v in values]
 
-    facts = {"facts": {"us-gaap": {
-        "Revenues": {"units": {"CNY": duration((y, 1000.0) for y in years)}},
-        "NetIncomeLoss": {"units": {"CNY": duration((y, 100.0) for y in years)}},
-        "NetCashProvidedByUsedInOperatingActivities": {
-            "units": {"CNY": duration((y, 120.0) for y in years)},
-        },
-        "PaymentsOfDividends": {"units": {
-            "CNY": duration((y, 30.0) for y in range(2016, 2024)),
-            "USD": duration((y, 4.0) for y in (2024, 2025)),
-        }},
-    }}}
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"CNY": duration((y, 1000.0) for y in years)}},
+                "NetIncomeLoss": {"units": {"CNY": duration((y, 100.0) for y in years)}},
+                "NetCashProvidedByUsedInOperatingActivities": {
+                    "units": {"CNY": duration((y, 120.0) for y in years)},
+                },
+                "PaymentsOfDividends": {
+                    "units": {
+                        "CNY": duration((y, 30.0) for y in range(2016, 2024)),
+                        "USD": duration((y, 4.0) for y in (2024, 2025)),
+                    }
+                },
+            }
+        }
+    }
     rows, statements, result = _screen(monkeypatch, facts)
     status = {row["end_date"][:4]: row["div_paid_status"] for row in statements["cashflow"]}
     assert status["2023"] == "reported"
@@ -346,10 +441,13 @@ def test_dividend_concept_absent_in_all_units_still_counts_as_zero(monkeypatch):
 
 def test_lt_debt_only_in_other_currency_is_not_zero(monkeypatch):
     """2024 报过 CNY 长期债务，2025 只有 USD 的可转债事实：不得走「本期缺概念 → 0」。"""
-    rows, _, result = _screen(monkeypatch, _cny_issuer(
-        LongTermDebtNoncurrent={"units": {"CNY": [_item("2024-12-31", 50.0)]}},
-        ConvertibleDebtNoncurrent={"units": {"USD": [_item("2025-12-31", 7.0)]}},
-    ))
+    rows, _, result = _screen(
+        monkeypatch,
+        _cny_issuer(
+            LongTermDebtNoncurrent={"units": {"CNY": [_item("2024-12-31", 50.0)]}},
+            ConvertibleDebtNoncurrent={"units": {"USD": [_item("2025-12-31", 7.0)]}},
+        ),
+    )
     latest = _latest(rows)
     assert latest.get("lt_debt") is None
     assert latest["edgar_missing_reasons"]["lt_debt"] == "other_currency_only"
@@ -360,11 +458,17 @@ def test_lt_debt_only_in_other_currency_is_not_zero(monkeypatch):
 
 def test_lt_debt_other_currency_in_another_period_only_keeps_zero_inference(monkeypatch):
     """别币种事实只落在别的期间、且概念本身有报告币种单位：本期空值仍是「没报」→ 0。"""
-    _, _, result = _screen(monkeypatch, _cny_issuer(
-        LongTermDebtNoncurrent={"units": {
-            "CNY": [_item("2024-12-31", 50.0)], "USD": [_item("2024-12-31", 7.0)],
-        }},
-    ))
+    _, _, result = _screen(
+        monkeypatch,
+        _cny_issuer(
+            LongTermDebtNoncurrent={
+                "units": {
+                    "CNY": [_item("2024-12-31", 50.0)],
+                    "USD": [_item("2024-12-31", 7.0)],
+                }
+            },
+        ),
+    )
     item = _by(result, "lt_debt_vs_net_current_assets")
     assert item["verdict"] == "pass"
     assert "往年报过" in item["reason"]
@@ -372,9 +476,12 @@ def test_lt_debt_other_currency_in_another_period_only_keeps_zero_inference(monk
 
 def test_lt_debt_concept_absent_this_period_still_counts_as_zero(monkeypatch):
     """对照：往年报过、本期所有单位都没有 → 仍视为已清偿按 0。"""
-    _, _, result = _screen(monkeypatch, _cny_issuer(
-        LongTermDebtNoncurrent={"units": {"CNY": [_item("2024-12-31", 50.0)]}},
-    ))
+    _, _, result = _screen(
+        monkeypatch,
+        _cny_issuer(
+            LongTermDebtNoncurrent={"units": {"CNY": [_item("2024-12-31", 50.0)]}},
+        ),
+    )
     item = _by(result, "lt_debt_vs_net_current_assets")
     assert item["verdict"] == "pass"
     assert "往年报过" in item["reason"]

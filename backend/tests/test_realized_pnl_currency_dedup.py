@@ -49,23 +49,41 @@ def db():
 def _seed_round_trip(db, *, buy_currency="CNY", sell_currency="CNY"):
     """一次完整买卖：买 100 @10、卖 100 @15 → 已实现盈亏 500、sold_cost 1000。"""
     add_transaction(
-        db, symbol="600000", name="甲", market="A股", transaction_type="BUY",
-        quantity=Decimal("100"), price=Decimal("10"),
-        transaction_date=date(2026, 1, 2), currency=buy_currency,
+        db,
+        symbol="600000",
+        name="甲",
+        market="A股",
+        transaction_type="BUY",
+        quantity=Decimal("100"),
+        price=Decimal("10"),
+        transaction_date=date(2026, 1, 2),
+        currency=buy_currency,
     )
     add_transaction(
-        db, symbol="600000", name="甲", market="A股", transaction_type="SELL",
-        quantity=Decimal("100"), price=Decimal("15"),
-        transaction_date=date(2026, 3, 2), currency=sell_currency,
+        db,
+        symbol="600000",
+        name="甲",
+        market="A股",
+        transaction_type="SELL",
+        quantity=Decimal("100"),
+        price=Decimal("15"),
+        transaction_date=date(2026, 3, 2),
+        currency=sell_currency,
     )
     db.commit()
 
 
 def _seed_hkd_rate(db, rate="0.9"):
-    db.add(ExchangeRate(
-        from_currency="HKD", to_currency="CNY", rate=Decimal(rate),
-        effective_date=date(2026, 1, 1), source="test", is_active=True,
-    ))
+    db.add(
+        ExchangeRate(
+            from_currency="HKD",
+            to_currency="CNY",
+            rate=Decimal(rate),
+            effective_date=date(2026, 1, 1),
+            source="test",
+            is_active=True,
+        )
+    )
     db.commit()
 
 
@@ -147,19 +165,37 @@ def test_same_symbol_in_two_markets_stays_separate(db):
     """去重键是 (symbol, market)：同代码跨市场不得被并成一行。"""
     _seed_round_trip(db)
     add_transaction(
-        db, symbol="600000", name="甲", market="港股", transaction_type="BUY",
-        quantity=Decimal("10"), price=Decimal("10"),
-        transaction_date=date(2026, 1, 2), currency="HKD",
+        db,
+        symbol="600000",
+        name="甲",
+        market="港股",
+        transaction_type="BUY",
+        quantity=Decimal("10"),
+        price=Decimal("10"),
+        transaction_date=date(2026, 1, 2),
+        currency="HKD",
     )
     add_transaction(
-        db, symbol="600000", name="甲", market="港股", transaction_type="SELL",
-        quantity=Decimal("10"), price=Decimal("20"),
-        transaction_date=date(2026, 3, 2), currency="HKD",
+        db,
+        symbol="600000",
+        name="甲",
+        market="港股",
+        transaction_type="SELL",
+        quantity=Decimal("10"),
+        price=Decimal("20"),
+        transaction_date=date(2026, 3, 2),
+        currency="HKD",
     )
-    db.add(ExchangeRate(
-        from_currency="HKD", to_currency="CNY", rate=Decimal("0.9"),
-        effective_date=date(2026, 1, 1), source="test", is_active=True,
-    ))
+    db.add(
+        ExchangeRate(
+            from_currency="HKD",
+            to_currency="CNY",
+            rate=Decimal("0.9"),
+            effective_date=date(2026, 1, 1),
+            source="test",
+            is_active=True,
+        )
+    )
     db.commit()
 
     result = calculate_realized_pnl_fifo(db, 1)

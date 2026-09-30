@@ -56,10 +56,12 @@ def build_benchmark_series(
         if last_close is None or day < base_date:
             continue  # first_available：基点前的栅格日无基准可言
         factor = last_close / base_close
-        points.append({
-            "date": day.isoformat(),
-            "cumulative_return_rate": float((factor - Decimal("1")) * 100),
-        })
+        points.append(
+            {
+                "date": day.isoformat(),
+                "cumulative_return_rate": float((factor - Decimal("1")) * 100),
+            }
+        )
         if factor > peak_factor:
             peak_factor = factor
         elif peak_factor > 0:

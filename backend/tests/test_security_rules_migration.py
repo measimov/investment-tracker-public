@@ -11,13 +11,17 @@ from alembic import command
 from alembic.config import Config
 
 SCRATCH_DB = "investment_test_rules_migration"
-ADMIN_URL = os.environ["DATABASE_URL"].rsplit("/", 1)[0] + "/postgres"
-SCRATCH_URL = os.environ["DATABASE_URL"].rsplit("/", 1)[0] + f"/{SCRATCH_DB}"
+# make_url 保留查询参数（本机要 ?gssencmode=disable；按「/」切串会丢掉它，每次建连挂 180 秒）
+_BASE_URL = sa.engine.make_url(os.environ["DATABASE_URL"])
+ADMIN_URL = _BASE_URL.set(database="postgres").render_as_string(hide_password=False)
+SCRATCH_URL = _BASE_URL.set(database=SCRATCH_DB).render_as_string(hide_password=False)
 
 
 def _alembic_config(url: str) -> Config:
     config = Config(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
-    config.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "..", "alembic"))
+    config.set_main_option(
+        "script_location", os.path.join(os.path.dirname(__file__), "..", "alembic")
+    )
     config.set_main_option("sqlalchemy.url", url)
     return config
 
@@ -59,9 +63,7 @@ def test_migration_merges_exclusions_and_seeds_per_user(monkeypatch):
         with engine.connect() as conn:
             counts = dict(
                 conn.execute(
-                    sa.text(
-                        "SELECT rule_type, count(*) FROM security_rules GROUP BY rule_type"
-                    )
+                    sa.text("SELECT rule_type, count(*) FROM security_rules GROUP BY rule_type")
                 ).all()
             )
             # 两用户各: CASH_MANAGEMENT 1 + RELISTING 1 + NAME_OVERRIDE 2 +

@@ -7,7 +7,13 @@ import { useRouter } from 'vue-router'
 import { InfoFilled } from '@element-plus/icons-vue'
 import { renderMarkdown } from '@/utils/markdown'
 import { EMPTY, formatDateTime } from '@/utils/helpers'
-import { analysisTagType, riskAdjustmentText, riskLabel, riskTagType } from './analysisTags'
+import {
+  analysisTagType,
+  outputAdjustmentText,
+  riskAdjustmentText,
+  riskLabel,
+  riskTagType
+} from './analysisTags'
 import { daysAgoText, isAnalysisOutdated } from './format'
 import {
   GRAHAM_VERDICT_LABELS,
@@ -27,6 +33,8 @@ const outdated = computed(() =>
 )
 // 风险等级按市场下限上调（港股 low→medium）时在风险标签旁提示，不静默改写模型判断
 const riskAdjustment = computed(() => riskAdjustmentText(analysis.value?.risk_level_adjusted))
+// 解析层丢弃/归一标签、补免责声明时提示（#287），不静默改写模型输出
+const outputAdjustment = computed(() => outputAdjustmentText(analysis.value?.output_adjustments))
 
 const businessProfile = computed<ProfileRow | null>(() => props.state.business?.profile || null)
 const peers = computed<ProfileRow[]>(() => props.state.business?.peers || [])
@@ -104,6 +112,11 @@ const fragilityParts = computed(() => {
         <el-tooltip v-if="riskAdjustment" :content="riskAdjustment" placement="top">
           <el-tag type="info" size="small" effect="plain" data-testid="risk-level-adjusted">
             已上调
+          </el-tag>
+        </el-tooltip>
+        <el-tooltip v-if="outputAdjustment" :content="outputAdjustment" placement="top">
+          <el-tag type="info" size="small" effect="plain" data-testid="analysis-output-adjusted">
+            已调整
           </el-tag>
         </el-tooltip>
         <el-tag

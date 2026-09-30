@@ -135,11 +135,15 @@ def test_standard_corporate_action_import_recalculates_holdings():
         )
 
         holding = db.query(Holding).filter_by(user_id=1, symbol="00700", market="港股").one()
-        dividend = db.query(CorporateAction).filter_by(
-            user_id=1,
-            symbol="00700",
-            action_type="CASH_DIVIDEND",
-        ).one()
+        dividend = (
+            db.query(CorporateAction)
+            .filter_by(
+                user_id=1,
+                symbol="00700",
+                action_type="CASH_DIVIDEND",
+            )
+            .one()
+        )
 
         assert result == {
             "message": "Successfully imported 2 corporate actions",
@@ -314,9 +318,9 @@ def _row(**overrides):
         ({"price": -10}, "price"),
         ({"price": 0}, "price"),
         ({"fee": -1}, "fee"),
-        ({"symbol": "X" * 21}, "symbol"),        # max_length=20
-        ({"market": "M" * 21}, "market"),        # max_length=20
-        ({"currency": "C" * 11}, "currency"),    # max_length=10
+        ({"symbol": "X" * 21}, "symbol"),  # max_length=20
+        ({"market": "M" * 21}, "market"),  # max_length=20
+        ({"currency": "C" * 11}, "currency"),  # max_length=10
     ],
 )
 def test_standard_import_rejects_invalid_rows(overrides, expect):
@@ -343,7 +347,8 @@ def test_standard_import_reports_offending_row_number():
     try:
         with pytest.raises(ValueError) as excinfo:
             import_standard_transactions_dataframe(
-                db, 1,
+                db,
+                1,
                 standard_df(_row(), _row(), _row(quantity=-5)),
             )
 
@@ -360,7 +365,8 @@ def test_standard_import_rejects_oversell_within_the_batch():
     try:
         with pytest.raises(ValueError) as excinfo:
             import_standard_transactions_dataframe(
-                db, 1,
+                db,
+                1,
                 standard_df(
                     _row(transaction_type="BUY", quantity=100, transaction_date="2026-01-01"),
                     _row(transaction_type="SELL", quantity=150, transaction_date="2026-02-01"),
@@ -384,9 +390,11 @@ def test_standard_import_rejects_oversell_against_existing_rows():
 
         with pytest.raises(ValueError) as excinfo:
             import_standard_transactions_dataframe(
-                db, 1,
-                standard_df(_row(transaction_type="SELL", quantity=150,
-                                 transaction_date="2026-03-01")),
+                db,
+                1,
+                standard_df(
+                    _row(transaction_type="SELL", quantity=150, transaction_date="2026-03-01")
+                ),
             )
 
         assert "超卖" in str(excinfo.value)
@@ -401,7 +409,8 @@ def test_standard_import_allows_valid_sell_within_position():
     reset_tables(db, RESET_MODELS)
     try:
         result = import_standard_transactions_dataframe(
-            db, 1,
+            db,
+            1,
             standard_df(
                 _row(transaction_type="BUY", quantity=100, transaction_date="2026-01-01"),
                 _row(transaction_type="SELL", quantity=60, transaction_date="2026-02-01"),
@@ -421,7 +430,8 @@ def test_standard_import_keeps_decimal_precision():
     reset_tables(db, RESET_MODELS)
     try:
         import_standard_transactions_dataframe(
-            db, 1,
+            db,
+            1,
             standard_df(_row(quantity="1.00000001", price="8931992295.31575055", fee=0)),
         )
 
@@ -436,7 +446,7 @@ def test_standard_import_keeps_decimal_precision():
     "overrides,field",
     [
         ({"symbol": ""}, "symbol"),
-        ({"symbol": "   "}, "symbol"),      # 纯空白经 normalize 后也是空
+        ({"symbol": "   "}, "symbol"),  # 纯空白经 normalize 后也是空
         ({"market": ""}, "market"),
         ({"market": "  "}, "market"),
         ({"currency": ""}, "currency"),

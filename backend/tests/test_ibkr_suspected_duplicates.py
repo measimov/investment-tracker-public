@@ -527,9 +527,7 @@ def test_mixed_same_day_dividends_pair_taxes_by_per_share_description(db, accoun
     """P1：同日两笔股息一笔被扣、一笔入账 → 税按「币种 每股金额」配对，不把被扣那笔的税
     累加到入账的那笔上（评审复现：应扣 1.91，此前扣了 11.46）。"""
     action = _suggestion_dividend(db, account)
-    contents = ibkr_csv(
-        CSV_CNOOC_DIVIDEND, CSV_CNOOC_TAX, CSV_CNOOC_SPECIAL, CSV_CNOOC_SPECIAL_TAX
-    )
+    contents = ibkr_csv(CSV_CNOOC_DIVIDEND, CSV_CNOOC_TAX, CSV_CNOOC_SPECIAL, CSV_CNOOC_SPECIAL_TAX)
     result = _import(db, account, contents)
     assert result["errors"] == []
     held = sorted(
@@ -537,11 +535,11 @@ def test_mixed_same_day_dividends_pair_taxes_by_per_share_description(db, accoun
         for row in db.query(IbkrActivityFlow).filter_by(skip_reason="suspected_duplicate")
     )
     assert held == [("外国预扣税", True), ("股息", True)]
-    booked = (
-        db.query(CorporateAction).filter(CorporateAction.id != action.id).one()
-    )
+    booked = db.query(CorporateAction).filter(CorporateAction.id != action.id).one()
     assert (booked.total_dividend, booked.tax_withheld, booked.net_dividend) == (
-        Decimal("19.10"), Decimal("1.91"), Decimal("17.19"),
+        Decimal("19.10"),
+        Decimal("1.91"),
+        Decimal("17.19"),
     )
     db.refresh(action)
     assert action.tax_withheld == Decimal("0")
@@ -581,9 +579,7 @@ def test_taxes_imported_later_follow_previously_held_dividend(db, account):
     special = db.query(CorporateAction).filter(CorporateAction.id != action.id).one()
     assert special.total_dividend == Decimal("19.10") and special.tax_withheld == Decimal("0")
 
-    contents = ibkr_csv(
-        CSV_CNOOC_DIVIDEND, CSV_CNOOC_TAX, CSV_CNOOC_SPECIAL, CSV_CNOOC_SPECIAL_TAX
-    )
+    contents = ibkr_csv(CSV_CNOOC_DIVIDEND, CSV_CNOOC_TAX, CSV_CNOOC_SPECIAL, CSV_CNOOC_SPECIAL_TAX)
     preview = _preview(db, account, contents)
     assert preview["errors"] == []
     second = _import(db, account, contents)
@@ -606,25 +602,19 @@ def test_taxes_imported_later_follow_previously_held_dividend(db, account):
         .filter_by(skip_reason="suspected_duplicate", activity_type="股息")
         .one()
     )
-    third = _import(
-        db, account, contents, confirmed_row_hashes=frozenset({held_dividend.row_hash})
-    )
+    third = _import(db, account, contents, confirmed_row_hashes=frozenset({held_dividend.row_hash}))
     assert third["errors"] == []
     db.refresh(special)
     assert special.tax_withheld == Decimal("1.91")
     regular = (
-        db.query(CorporateAction)
-        .filter(CorporateAction.id.notin_([action.id, special.id]))
-        .one()
+        db.query(CorporateAction).filter(CorporateAction.id.notin_([action.id, special.id])).one()
     )
     assert (regular.total_dividend, regular.tax_withheld) == (Decimal("95.50"), Decimal("9.55"))
 
 
 def test_same_day_dividends_each_get_their_own_tax_on_fresh_import(db, account):
     """同日两笔股息各带预扣税（无任何既有记录）：按每股描述各归各的，不再整条报「找不到唯一股息」。"""
-    contents = ibkr_csv(
-        CSV_CNOOC_DIVIDEND, CSV_CNOOC_TAX, CSV_CNOOC_SPECIAL, CSV_CNOOC_SPECIAL_TAX
-    )
+    contents = ibkr_csv(CSV_CNOOC_DIVIDEND, CSV_CNOOC_TAX, CSV_CNOOC_SPECIAL, CSV_CNOOC_SPECIAL_TAX)
     assert _preview(db, account, contents)["errors"] == []
     result = _import(db, account, contents)
     assert result["errors"] == [] and result["imported_corporate_actions"] == 2
@@ -682,12 +672,12 @@ def test_confirmed_tax_is_not_attributed_to_a_dividend_with_other_per_share(db, 
     _import(db, account, ibkr_csv(CSV_CNOOC_DIVIDEND, CSV_CNOOC_SPECIAL))
     taxes_only = ibkr_csv(CSV_CNOOC_TAX)
     _import(db, account, taxes_only)
-    held_tax = db.query(IbkrActivityFlow).filter_by(
-        skip_reason="suspected_duplicate", activity_type="外国预扣税"
-    ).one()
-    result = _import(
-        db, account, taxes_only, confirmed_row_hashes=frozenset({held_tax.row_hash})
+    held_tax = (
+        db.query(IbkrActivityFlow)
+        .filter_by(skip_reason="suspected_duplicate", activity_type="外国预扣税")
+        .one()
     )
+    result = _import(db, account, taxes_only, confirmed_row_hashes=frozenset({held_tax.row_hash}))
     assert any("found 0" in error for error in result["errors"])
     assert all(a.tax_withheld == Decimal("0") for a in db.query(CorporateAction))
     db.refresh(held_tax)

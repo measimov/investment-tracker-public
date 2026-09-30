@@ -49,9 +49,7 @@ class CorporateActionSuggestion(Base):
     symbol = Column(String(20), nullable=False, index=True, comment="股票代码")
     name = Column(String(100), comment="资产名称")
     market = Column(String(20), nullable=False, comment="市场")
-    action_type = Column(
-        String(20), nullable=False, comment="CASH_DIVIDEND / STOCK_DIVIDEND"
-    )
+    action_type = Column(String(20), nullable=False, comment="CASH_DIVIDEND / STOCK_DIVIDEND")
 
     ann_date = Column(Date, comment="公告日")
     record_date = Column(Date, comment="股权登记日")
@@ -64,14 +62,10 @@ class CorporateActionSuggestion(Base):
     stk_div_per_share = Column(Numeric(18, 8), comment="每股送转合计（stk_div）")
 
     record_date_quantity = Column(Numeric(18, 8), comment="登记日推算持仓；NULL=推算失败")
-    quantity_basis = Column(
-        String(20), comment="per_account / merged / unavailable"
-    )
+    quantity_basis = Column(String(20), comment="per_account / merged / unavailable")
     estimated_total_dividend = Column(Numeric(18, 8), comment="税前推算总额")
 
-    status = Column(
-        String(20), nullable=False, default="NEW", server_default="NEW", index=True
-    )
+    status = Column(String(20), nullable=False, default="NEW", server_default="NEW", index=True)
     matched_corporate_action_id = Column(
         Integer,
         ForeignKey("corporate_actions.id", ondelete="SET NULL"),
@@ -86,7 +80,9 @@ class CorporateActionSuggestion(Base):
     )
     match_detail = Column(JSON, comment="判重明细：matched_by / date_gap_days / amount_diff")
     source = Column(
-        String(30), nullable=False, default="tushare-dividend",
+        String(30),
+        nullable=False,
+        default="tushare-dividend",
         server_default="tushare-dividend",
     )
     announcement_detail = Column(
@@ -104,7 +100,12 @@ class CorporateActionSuggestion(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "user_id", "symbol", "market", "action_type", "ex_date", "broker_account_id",
+            "user_id",
+            "symbol",
+            "market",
+            "action_type",
+            "ex_date",
+            "broker_account_id",
             name="uq_ca_suggestions_identity",
             postgresql_nulls_not_distinct=True,
         ),

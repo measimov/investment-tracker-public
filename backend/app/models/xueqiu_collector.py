@@ -169,7 +169,9 @@ class XueqiuCollectorAuthor(Base):
 
     __tablename__ = "xueqiu_collector_authors"
     __table_args__ = (
-        CheckConstraint("xueqiu_user_id ~ '^[0-9]{1,20}$'", name="ck_xueqiu_collector_authors_user_id"),
+        CheckConstraint(
+            "xueqiu_user_id ~ '^[0-9]{1,20}$'", name="ck_xueqiu_collector_authors_user_id"
+        ),
     )
 
     xueqiu_user_id = Column(Text, primary_key=True, comment="雪球用户数字 ID")
@@ -179,7 +181,10 @@ class XueqiuCollectorAuthor(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_run_at = Column(DateTime(timezone=True), comment="最近一次采集结束时间")
     last_status = Column(
-        Text, nullable=False, server_default=sa_text("''"), comment="ok / failed / waf / interrupted"
+        Text,
+        nullable=False,
+        server_default=sa_text("''"),
+        comment="ok / failed / waf / interrupted",
     )
     last_message = Column(Text, nullable=False, server_default=sa_text("''"))
 
@@ -224,7 +229,7 @@ class XueqiuCollectorState(Base):
 
 
 # --------------------------------------------------------------------------- #
-# 按标的监控（迁移 20260927_0025）：公告/讨论、热帖快照、组合调仓、组合名单。
+# 按标的监控（迁移 20260927_0025）：公告/讨论、组合调仓、组合名单（热帖快照表已由 0035 删除）。
 # 与上面五张原表不同，这几张是本仓新建的表：列带 comment、载荷一律 JSONB。
 # --------------------------------------------------------------------------- #
 class XueqiuSymbolPost(Base):
@@ -268,38 +273,11 @@ class XueqiuSymbolPost(Base):
     author_name = Column(Text, nullable=False, server_default=sa_text("''"))
     url = Column(Text, nullable=False, server_default=sa_text("''"), comment="雪球原帖链接")
     payload = Column(
-        JSONB, nullable=False, server_default=sa_text("'{}'::jsonb"),
+        JSONB,
+        nullable=False,
+        server_default=sa_text("'{}'::jsonb"),
         comment="裁剪后的原始字段（互动计数、公告附件链接等）",
     )
-    first_seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    last_seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
-
-
-class XueqiuHotPost(Base):
-    """雪球市场热帖快照（statuses/hots）。rank / snapshot_at = 最近一次上榜的名次与
-    快照时间；「今日热帖」= 该 scope 最新一次快照里的行。"""
-
-    __tablename__ = "xueqiu_hot_posts"
-    __table_args__ = (
-        UniqueConstraint("scope", "post_id", name="uq_xueqiu_hot_posts_scope_post"),
-        Index("ix_xueqiu_hot_posts_snapshot", "scope", sa_text("snapshot_at DESC"), "rank"),
-    )
-
-    id = Column(BigInteger, primary_key=True, autoincrement=True)
-    scope = Column(String(20), nullable=False, comment="热帖口径（day / week）")
-    post_id = Column(Text, nullable=False)
-    rank = Column(Integer, nullable=False, server_default=sa_text("0"), comment="快照内名次（1 起）")
-    snapshot_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(),
-        comment="最近一次出现在热帖榜上的快照时间",
-    )
-    created_at_ms = Column(BigInteger, nullable=False, server_default=sa_text("0"))
-    title = Column(Text, nullable=False, server_default=sa_text("''"))
-    text = Column(Text, nullable=False, server_default=sa_text("''"))
-    author_id = Column(Text, nullable=False, server_default=sa_text("''"))
-    author_name = Column(Text, nullable=False, server_default=sa_text("''"))
-    url = Column(Text, nullable=False, server_default=sa_text("''"))
-    payload = Column(JSONB, nullable=False, server_default=sa_text("'{}'::jsonb"))
     first_seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
@@ -310,12 +288,8 @@ class XueqiuCubeRebalancing(Base):
 
     __tablename__ = "xueqiu_cube_rebalancing"
     __table_args__ = (
-        UniqueConstraint(
-            "cube_id", "rebalancing_id", name="uq_xueqiu_cube_rebalancing_identity"
-        ),
-        Index(
-            "ix_xueqiu_cube_rebalancing_cube_created", "cube_id", sa_text("created_at_ms DESC")
-        ),
+        UniqueConstraint("cube_id", "rebalancing_id", name="uq_xueqiu_cube_rebalancing_identity"),
+        Index("ix_xueqiu_cube_rebalancing_cube_created", "cube_id", sa_text("created_at_ms DESC")),
     )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)

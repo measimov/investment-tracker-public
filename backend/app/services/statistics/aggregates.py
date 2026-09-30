@@ -9,11 +9,13 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy.orm import Session
 
+from ...core.timeutil import local_today
 from ...models.corporate_action import CorporateAction
 from ...models.holding import Holding
 from ...models.transaction import Transaction
 from .. import exchange_rate_service
-from ..portfolio.curve import get_current_price
+from ..market_data_service import infer_price_currency
+from ..portfolio.curve import corporate_action_inflows, get_current_price
 from ..portfolio.fifo import empty_fifo_result, fifo_data_quality
 from ..portfolio.fx import ExchangeRateLookup
 from ..portfolio.metrics import xirr
@@ -227,9 +229,7 @@ def get_holdings_cost_breakdown(db: Session, user_id: int) -> List[Dict[str, Any
     相加）；缺汇率时为 None 并标 missing_rate，排在有 CNY 成本的行之后。
     单账户行的 quantity / avg_cost / total_cost 与合并前逐字段相同。
     """
-    holdings = (
-        db.query(Holding).filter(Holding.user_id == user_id).order_by(Holding.id).all()
-    )
+    holdings = db.query(Holding).filter(Holding.user_id == user_id).order_by(Holding.id).all()
 
     merged: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
     for holding in holdings:
@@ -344,7 +344,13 @@ def calculate_current_holdings_performance(
             # A holding without a usable price is excluded from both cost and market
             # value (keeping the ratio self-consistent) but recorded and surfaced,
             # rather than silently dropped as it was before (issue #45).
-            if Decimal(str(fifo_result.get("current_holdings_cost", 0))) > 0:
+            # 按剩余批次**数量**判定（#271）：成本未知的期初建仓按 0 成本入队，用成本判定会让
+            # 它在缺价时从市值与缺价告警里一起消失
+            remaining = sum(
+                (Decimal(str(lot["quantity"])) for lot in fifo_result.get("buy_queue") or []),
+                Decimal("0"),
+            )
+            if remaining > 0:
                 unpriced_positions.append(
                     {
                         "symbol": symbol,
@@ -411,14 +417,11 @@ def calculate_current_holdings_performance(
     return {
         "unrealized_pnl_cny": float(total_unrealized_pnl_cny),
         "unrealized_pnl_usd": float(total_unrealized_pnl_usd),
-        "unrealized_pnl": float(total_unrealized_pnl_cny),  # 向后兼容
         "current_holdings_cost_cny": float(total_holdings_cost_cny),
         "current_holdings_cost_usd": float(total_holdings_cost_usd),
-        "current_holdings_cost": float(total_holdings_cost_cny),  # 向后兼容
         "unrealized_pnl_rate": float(unrealized_pnl_rate),
         "current_market_value_cny": float(total_market_value_cny),
         "current_market_value_usd": float(total_market_value_usd),
-        "current_market_value": float(total_market_value_cny),  # 向后兼容
         "holdings_detail": holdings_detail,
         "unpriced_positions": unpriced_positions,
         "base_currency": "CNY",
@@ -732,6 +735,8 @@ def _compose_account_total_return(
     rate_lookup: ExchangeRateLookup,
     transactions: Optional[List[Transaction]] = None,
     dividend_actions: Optional[List[CorporateAction]] = None,
+    corporate_actions: Optional[List[CorporateAction]] = None,
+    today: Optional[date] = None,
 ) -> Dict[str, Any]:
     realized_trading_pnl_cny = Decimal(str(realized.get("realized_pnl_cny", 0)))
     net_dividend_cny = Decimal(str(dividends.get("total_dividend_net_cny", 0)))
@@ -778,6 +783,19 @@ def _compose_account_total_return(
             )
         )
 
+    # 公司行动带来的外部投入（期初建仓按成本、配股按认购成本，#271）：它们的股份在期末市值里，
+    # 投入却不在买卖流水里——不计入的话 XIRR 被系统性高估，与同屏 TTWR 口径不一
+    if corporate_actions is None:
+        corporate_actions = (
+            db.query(CorporateAction).filter(CorporateAction.user_id == user_id).all()
+        )
+    action_flows, unknown_cost_positions = corporate_action_inflows(
+        corporate_actions,
+        rate_lookup=rate_lookup,
+        fallback_currency=infer_price_currency,
+    )
+    cash_flows.extend(action_flows)
+
     # Return-rate denominator. net_invested_principal_cny (== cumulative cash-in
     # minus cash-out) drops to zero or negative once an account is fully or nearly
     # exited, which previously forced total_return_rate to a misleading 0%. Track
@@ -802,7 +820,8 @@ def _compose_account_total_return(
         total_return_rate = total_return_cny / rate_denominator_cny * Decimal("100")
 
     if current_market_value_cny > 0:
-        cash_flows.append((date.today(), current_market_value_cny))
+        # 业务时区的今天：UTC 容器里北京 0–8 点 date.today() 还是昨天
+        cash_flows.append((today or local_today(), current_market_value_cny))
 
     xirr_rate = xirr(cash_flows)
 
@@ -833,18 +852,35 @@ def _compose_account_total_return(
         "base_currency": "CNY",
         "calculation_status": "exact",
         "calculation_scope": "invested_securities_only",
+        "xirr_unknown_cost_count": len(unknown_cost_positions),
         "methodology_notes": [
             "权益仓口径：仅统计投入证券的资金，口径内精确；"
             "账户闲置现金与外部出入金按设计不计入、不稀释收益率。",
-            "XIRR 现金流为证券买卖与股息（按各自日期汇率折算）。",
-        ],
+            "XIRR 现金流为证券买卖、股息，以及期初建仓（按成本）与配股（按认购成本）的投入"
+            "（按各自日期汇率折算）。",
+        ]
+        + (
+            [
+                f"{len(unknown_cost_positions)} 笔期初建仓成本未知，未计入 XIRR 投入"
+                "（与未实现盈亏同按 0 成本），补录成本后年化才准确。"
+            ]
+            if unknown_cost_positions
+            else []
+        ),
     }
 
 
 def calculate_performance_summary(
-    db: Session, user_id: int, current_prices: Dict[str, float]
+    db: Session,
+    user_id: int,
+    current_prices: Dict[str, float],
+    *,
+    today: Optional[date] = None,
 ) -> Dict[str, Any]:
-    """Return the statistics tab's performance cards in one pass."""
+    """Return the statistics tab's performance cards in one pass.
+
+    today：XIRR 终值现金流的日期，缺省为今天；口径双跑脚本传固定值，让跨天运行可比。
+    """
     # Load the user's transactions and corporate actions once and share them
     # with every downstream computation (issue #49).
     transactions = (
@@ -881,6 +917,8 @@ def calculate_performance_summary(
         rate_lookup=DbExchangeRateLookup.from_db(db),
         transactions=transactions,
         dividend_actions=dividend_actions,
+        corporate_actions=corporate_actions,
+        today=today,
     )
 
     return {

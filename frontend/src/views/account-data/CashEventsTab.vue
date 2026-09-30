@@ -1,21 +1,20 @@
 <script setup lang="ts">
+import type { CashEventCreate } from '@/types'
+import { LEDGER_CURRENCIES } from '@/utils/currency'
+import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { computed, reactive, ref } from 'vue'
 import { type FormInstance } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { formatDate, formatNumber } from '@/utils/helpers'
-import { CASH_EVENT_TYPE_LABELS, optionsOf } from '@/utils/labels'
+import { accountLabel, accountOptionLabel, CASH_EVENT_TYPE_LABELS, optionsOf } from '@/utils/labels'
 import {
   type AccountRow,
   type CashEventRow,
   type DialogState,
-  accountLabelIn,
-  accountName,
-  currencyOptions,
   isAtListLimit,
   LIST_LIMIT,
-  makeRemover,
   makeSaver,
   today
 } from './shared'
@@ -28,7 +27,7 @@ const props = defineProps<{
 }>()
 
 const isMobileView = useMediaQuery('(max-width: 640px)')
-const accountLabel = (id: unknown) => accountLabelIn(props.accounts, id)
+const accountLabelOf = (id: unknown) => accountLabel(props.accounts, id)
 
 const cashTypeOptions = optionsOf(CASH_EVENT_TYPE_LABELS)
 
@@ -39,7 +38,7 @@ const cashFilters = reactive<{ accountId: number | null; eventType: string }>({
 
 const filteredCashEvents = computed(() =>
   props.cashEvents.filter((item) => {
-    const accountId = item.broker_account_id ?? item.account_id
+    const accountId = item.broker_account_id
     return (
       (!cashFilters.accountId || String(accountId) === String(cashFilters.accountId)) &&
       (!cashFilters.eventType || item.event_type === cashFilters.eventType)
@@ -68,14 +67,13 @@ const cashRules = {
 
 function resetCashForm(row: Partial<CashEventRow> = {}) {
   Object.assign(cashForm, {
-    broker_account_id: row.broker_account_id || row.account_id || props.accounts[0]?.id || null,
-    event_date: (row.event_date || row.occurred_at || today()).slice(0, 10),
+    broker_account_id: row.broker_account_id || props.accounts[0]?.id || null,
+    event_date: (row.event_date || today()).slice(0, 10),
     event_type: row.event_type || 'DEPOSIT',
     amount: row.amount == null ? null : Math.abs(Number(row.amount)),
     currency:
       row.currency ||
-      props.accounts.find((item) => item.id === (row.broker_account_id || row.account_id))
-        ?.base_currency ||
+      props.accounts.find((item) => item.id === row.broker_account_id)?.base_currency ||
       'CNY',
     notes: row.notes || ''
   })
@@ -90,15 +88,17 @@ function openCashDialog(row?: CashEventRow) {
 const saveCashEvent = makeSaver({
   formRef: cashFormRef,
   dialog: cashDialog,
-  buildPayload: () => ({ ...cashForm }),
+  // 表单校验（cashRules）保证必填项：这里是「已校验表单 → 请求体」的唯一断言点
+  buildPayload: () => ({ ...cashForm }) as CashEventCreate,
   update: (id, payload) => api.updateCashEvent(id, payload),
   create: (payload) => api.createCashEvent(payload),
   messages: { updated: '现金事件已更新', created: '现金事件已新增', failure: '现金事件保存失败' },
   reload: () => props.reload()
 })
 
-const removeCashEvent = makeRemover<CashEventRow>({
+const removeCashEvent = makeConfirmedAction<CashEventRow>({
   title: '删除现金事件',
+  confirmText: '删除',
   message: '该操作会影响后续账户收益校准，确认删除？',
   request: (row) => api.deleteCashEvent(row.id),
   successMessage: '现金事件已删除',
@@ -146,7 +146,7 @@ const amountClass = (row: CashEventRow) => ({
           <el-option
             v-for="account in accounts"
             :key="account.id"
-            :label="accountName(account)"
+            :label="accountOptionLabel(account)"
             :value="account.id"
           />
         </el-select>
@@ -178,14 +178,10 @@ const amountClass = (row: CashEventRow) => ({
           <el-empty description="暂无现金事件" :image-size="88" />
         </template>
         <el-table-column prop="event_date" label="日期" width="120">
-          <template #default="{ row }">{{
-            formatDate(row.event_date || row.occurred_at)
-          }}</template>
+          <template #default="{ row }">{{ formatDate(row.event_date) }}</template>
         </el-table-column>
         <el-table-column label="账户" min-width="170">
-          <template #default="{ row }">{{
-            accountLabel(row.broker_account_id || row.account_id)
-          }}</template>
+          <template #default="{ row }">{{ accountLabelOf(row.broker_account_id) }}</template>
         </el-table-column>
         <el-table-column prop="event_type" label="类型" width="110">
           <template #default="{ row }">
@@ -202,7 +198,7 @@ const amountClass = (row: CashEventRow) => ({
         <el-table-column prop="notes" label="备注" min-width="200" show-overflow-tooltip />
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
-            <template v-if="!row.imported">
+            <template v-if="!row.read_only">
               <el-button type="primary" text @click="openCashDialog(row)">编辑</el-button>
               <el-button type="danger" text @click="removeCashEvent(row)">删除</el-button>
             </template>
@@ -226,7 +222,7 @@ const amountClass = (row: CashEventRow) => ({
               {{ signedAmount(row) }}
             </span>
             <span class="mobile-card-name">
-              {{ accountLabel(row.broker_account_id || row.account_id) }}
+              {{ accountLabelOf(row.broker_account_id) }}
             </span>
           </div>
           <div class="mobile-card-tags">
@@ -237,12 +233,12 @@ const amountClass = (row: CashEventRow) => ({
         </div>
 
         <div class="mobile-card-meta">
-          <span>{{ formatDate(row.event_date || row.occurred_at) }}</span>
+          <span>{{ formatDate(row.event_date) }}</span>
           <span v-if="row.notes">{{ row.notes }}</span>
         </div>
 
         <div class="mobile-card-actions">
-          <template v-if="!row.imported">
+          <template v-if="!row.read_only">
             <el-button type="primary" size="small" text @click="openCashDialog(row)">
               编辑
             </el-button>
@@ -266,7 +262,7 @@ const amountClass = (row: CashEventRow) => ({
             <el-option
               v-for="account in accounts"
               :key="account.id"
-              :label="accountName(account)"
+              :label="accountOptionLabel(account)"
               :value="account.id"
             />
           </el-select>
@@ -297,7 +293,7 @@ const amountClass = (row: CashEventRow) => ({
         <el-form-item label="币种" prop="currency">
           <el-select v-model="cashForm.currency">
             <el-option
-              v-for="currency in currencyOptions"
+              v-for="currency in LEDGER_CURRENCIES"
               :key="currency"
               :label="currency"
               :value="currency"

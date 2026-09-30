@@ -1,14 +1,9 @@
 <script setup lang="ts">
+import { accountLabel } from '@/utils/labels'
 import { ref } from 'vue'
 import api from '@/api'
-import { formatDateTime } from '@/utils/helpers'
-import {
-  type AccountRow,
-  type ImportBatchRow,
-  LIST_LIMIT,
-  accountLabelIn,
-  isAtListLimit
-} from './shared'
+import { EMPTY, formatDateTime } from '@/utils/helpers'
+import { type AccountRow, type ImportBatchRow, LIST_LIMIT, isAtListLimit } from './shared'
 
 const props = defineProps<{
   importBatches: ImportBatchRow[]
@@ -16,7 +11,7 @@ const props = defineProps<{
   loading: boolean
 }>()
 
-const accountLabel = (id: unknown) => accountLabelIn(props.accounts, id)
+const accountLabelOf = (id: unknown) => accountLabel(props.accounts, id)
 
 const batchDrawerVisible = ref(false)
 const selectedBatch = ref<ImportBatchRow | null>(null)
@@ -33,8 +28,8 @@ async function openBatchDetails(row: ImportBatchRow) {
 }
 
 const reportPeriod = (row: ImportBatchRow) => {
-  const start = row.period_start || row.statement_start_date
-  const end = row.period_end || row.statement_end_date
+  const start = row.period_start
+  const end = row.period_end
   return start || end ? `${start || '?'} 至 ${end || '?'}` : '未声明报表区间'
 }
 
@@ -85,19 +80,15 @@ const batchStatusTag = (status: string | undefined) => {
           <el-empty description="暂无可追溯的导入批次" :image-size="88" />
         </template>
         <el-table-column label="导入时间" min-width="160">
-          <template #default="{ row }">{{
-            formatDateTime(row.created_at || row.imported_at)
-          }}</template>
+          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
         </el-table-column>
         <el-table-column label="账户" min-width="160">
-          <template #default="{ row }">{{
-            accountLabel(row.broker_account_id || row.account_id)
-          }}</template>
+          <template #default="{ row }">{{ accountLabelOf(row.broker_account_id) }}</template>
         </el-table-column>
         <el-table-column label="文件" min-width="230" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="primary-cell">
-              <strong>{{ row.source_filename || row.original_filename || '未命名来源' }}</strong>
+              <strong>{{ row.source_filename || '未命名来源' }}</strong>
               <span>{{ reportPeriod(row) }}</span>
             </div>
           </template>
@@ -140,33 +131,31 @@ const batchStatusTag = (status: string | undefined) => {
     <el-drawer v-model="batchDrawerVisible" title="导入批次详情" size="min(520px, 92%)">
       <el-descriptions v-if="selectedBatch" :column="1" border>
         <el-descriptions-item label="文件">{{
-          selectedBatch.source_filename || selectedBatch.original_filename || '-'
+          selectedBatch.source_filename || EMPTY
         }}</el-descriptions-item>
         <el-descriptions-item label="账户">{{
-          accountLabel(selectedBatch.broker_account_id || selectedBatch.account_id)
+          accountLabelOf(selectedBatch.broker_account_id)
         }}</el-descriptions-item>
         <el-descriptions-item label="导入时间">{{
-          formatDateTime(selectedBatch.created_at || selectedBatch.imported_at)
+          formatDateTime(selectedBatch.created_at)
         }}</el-descriptions-item>
         <el-descriptions-item label="报表区间">{{
           reportPeriod(selectedBatch)
         }}</el-descriptions-item>
         <el-descriptions-item label="来源类型">{{
-          selectedBatch.source_type || '-'
+          selectedBatch.source_type || EMPTY
         }}</el-descriptions-item>
         <el-descriptions-item label="解析器">
           {{
             [selectedBatch.parser_name, selectedBatch.parser_version].filter(Boolean).join(' ') ||
-            '-'
+            EMPTY
           }}
         </el-descriptions-item>
         <el-descriptions-item label="文件哈希">
-          <code class="hash-value">{{
-            selectedBatch.source_sha256 || selectedBatch.file_sha256 || '-'
-          }}</code>
+          <code class="hash-value">{{ selectedBatch.source_sha256 || EMPTY }}</code>
         </el-descriptions-item>
         <el-descriptions-item label="总行数">{{
-          selectedBatch.row_count ?? selectedBatch.total_rows ?? '-'
+          selectedBatch.row_count ?? EMPTY
         }}</el-descriptions-item>
         <el-descriptions-item label="来源归档">{{
           selectedBatch.archived_count ?? 0

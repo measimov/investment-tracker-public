@@ -25,7 +25,10 @@ def main() -> int:
 
     from app.database import SessionLocal
     from app.models.security_profile import SecurityProfileData
-    from app.services.report_statement_service import STATEMENT_DATASET, revalidate_report_statements
+    from app.services.report_statement_service import (
+        STATEMENT_DATASET,
+        revalidate_report_statements,
+    )
 
     db = SessionLocal()
     try:

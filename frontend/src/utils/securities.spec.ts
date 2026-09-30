@@ -35,7 +35,7 @@ function candidate(overrides: Partial<SecuritySearchItem>): SecuritySearchItem {
 }
 
 describe('MARKETS / inferCurrency', () => {
-  it('市场常量与后端 VALID_MARKETS 一致', () => {
+  it('市场常量与后端 MANUAL_MARKETS 一致', () => {
     expect([...MARKETS]).toEqual(['A股', 'B股', '港股', '美股', '新加坡股', '加密货币'])
   })
 

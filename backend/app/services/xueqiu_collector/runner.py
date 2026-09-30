@@ -116,8 +116,12 @@ class CycleResult:
 class _Pacer:
     """可中断的停顿：按块等待 stop_event，块间写心跳（长停顿不让 healthcheck 误判）。"""
 
-    def __init__(self, stop_event: Optional[threading.Event], heartbeat: Optional[st.Heartbeat],
-                 chunk_seconds: float = 60.0) -> None:
+    def __init__(
+        self,
+        stop_event: Optional[threading.Event],
+        heartbeat: Optional[st.Heartbeat],
+        chunk_seconds: float = 60.0,
+    ) -> None:
         self.stop_event = stop_event or threading.Event()
         self.heartbeat = heartbeat
         self.chunk_seconds = chunk_seconds
@@ -143,8 +147,11 @@ def should_fetch_candidate_detail(post: CandidatePost) -> bool:
 
 
 def enrich_candidates(
-    client: XueqiuWebClient, store: ArchiverStore, candidates: List[CandidatePost],
-    pacer: _Pacer, failures: List[str],
+    client: XueqiuWebClient,
+    store: ArchiverStore,
+    candidates: List[CandidatePost],
+    pacer: _Pacer,
+    failures: List[str],
 ) -> List[CandidatePost]:
     """未补全文的候选帖抓全文页（已补全的以库内版本为准）。
 
@@ -225,7 +232,9 @@ def run_author(
         result.utterance_keys.append(utterance.utterance_key)
     store.commit()
     result.utterance_count = len(utterances)
-    logger.info("作者 %s 主页发言入库 %s 条，候选帖 %s", author_id, len(utterances), len(candidates))
+    logger.info(
+        "作者 %s 主页发言入库 %s 条，候选帖 %s", author_id, len(utterances), len(candidates)
+    )
 
     candidates = store.merge_candidates(candidates)
     candidates = enrich_candidates(client, store, candidates, pacer, failures)
@@ -277,7 +286,7 @@ def run_author(
 # --------------------------------------------------------------------------- #
 # advisory lock
 # --------------------------------------------------------------------------- #
-class _CycleLock:
+class CycleLock:
     """会话级 advisory lock，持有一条独立连接直到释放。
 
     不能挂在采集 Session 上：Session 每次 commit 后可能把连接还回连接池、下次换一条，
@@ -319,7 +328,9 @@ def _summarize(results: List[AuthorResult]) -> str:
     for item in results:
         piece = f"{item.author_id}:{item.status}"
         if item.status in st.LIVE_RUN_STATUSES:
-            piece += f"(候选{item.candidate_count}/回复{item.reply_count}/发言{item.utterance_count})"
+            piece += (
+                f"(候选{item.candidate_count}/回复{item.reply_count}/发言{item.utterance_count})"
+            )
         if item.error:
             piece += f"({item.error[:80]})"
         parts.append(piece)
@@ -352,7 +363,7 @@ def run_authors_cycle(
     knobs = knobs or CollectorKnobs.from_settings()
     rng = rng or random.Random()
     pacer = _Pacer(stop_event, heartbeat)
-    lock = _CycleLock(db)
+    lock = CycleLock(db)
     if not lock.acquire():
         logger.warning("另一轮雪球采集正在运行（advisory lock 被占用），本次跳过")
         return CycleResult(status=CYCLE_LOCKED, message="另一轮采集正在运行")
@@ -361,7 +372,9 @@ def run_authors_cycle(
         if not dry_run:
             orphans = st.close_orphan_runs(db)
             if orphans:
-                logger.warning("上一个采集进程留下 %s 条未结束的 scan_runs，已标为 interrupted", orphans)
+                logger.warning(
+                    "上一个采集进程留下 %s 条未结束的 scan_runs，已标为 interrupted", orphans
+                )
             st.mark_cycle_started(db)
         cookie = cookie_health.check_expiry(
             settings.xueqiu_cookie_file,
@@ -415,13 +428,18 @@ def run_authors_cycle(
             except WafChallenge as exc:
                 db.rollback()
                 result = AuthorResult(
-                    author_id=author_id, status=st.RUN_WAF, waf=True, stopped_early=True,
+                    author_id=author_id,
+                    status=st.RUN_WAF,
+                    waf=True,
+                    stopped_early=True,
                     error=str(exc),
                 )
             except Interrupted:
                 db.rollback()
                 result = AuthorResult(
-                    author_id=author_id, status=st.RUN_INTERRUPTED, stopped_early=True,
+                    author_id=author_id,
+                    status=st.RUN_INTERRUPTED,
+                    stopped_early=True,
                     error="收到停止信号",
                 )
             except CollectorFetchError as exc:
@@ -434,7 +452,8 @@ def run_authors_cycle(
                 db.rollback()
                 logger.exception("作者 %s 采集失败", author_id)
                 result = AuthorResult(
-                    author_id=author_id, status=st.RUN_FAILED,
+                    author_id=author_id,
+                    status=st.RUN_FAILED,
                     error=f"{type(exc).__name__}: {exc}",
                 )
             results.append(result)
@@ -445,7 +464,8 @@ def run_authors_cycle(
                 waf_at = st.utcnow()
                 logger.warning(
                     "作者 %s 命中 WAF，停止本轮；%ss 冷却期内不开新一轮",
-                    author_id, knobs.waf_cooldown_seconds,
+                    author_id,
+                    knobs.waf_cooldown_seconds,
                 )
                 break
             if result.status == st.RUN_INTERRUPTED:
@@ -467,7 +487,10 @@ def run_authors_cycle(
         if cookie["level"] in ("warning", "critical"):
             message = f"{message}；{cookie['message']}"
         cycle = CycleResult(
-            status=status, message=message, authors=results, cookie=cookie,
+            status=status,
+            message=message,
+            authors=results,
+            cookie=cookie,
             request_count=getattr(client, "request_count", 0),
         )
         if not dry_run:
@@ -478,7 +501,8 @@ def run_authors_cycle(
                 # partial（首屏都成功、个别帖子/页失败）数据仍在流动，推 up 并把原因写进
                 # 消息；有作者整体 error/failed 才推 down
                 healthy = (
-                    bool(statuses) and statuses <= st.LIVE_RUN_STATUSES
+                    bool(statuses)
+                    and statuses <= st.LIVE_RUN_STATUSES
                     and cookie["level"] != "critical"
                 )
                 _push("up" if healthy else "down", f"[{status}] {message}")
@@ -503,9 +527,7 @@ def run_collector_loop(
     session_factory = session_factory or SessionLocal
     heartbeat = st.Heartbeat(engine)
     if not settings.xueqiu_collector_enabled:
-        logger.warning(
-            "雪球采集器未启用（XUEQIU_COLLECTOR_ENABLED=false）：进程空转，只写心跳"
-        )
+        logger.warning("雪球采集器未启用（XUEQIU_COLLECTOR_ENABLED=false）：进程空转，只写心跳")
         while True:
             heartbeat.beat(force_db=True)
             if stop_event.wait(poll_seconds):

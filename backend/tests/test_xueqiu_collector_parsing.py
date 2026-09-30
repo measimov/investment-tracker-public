@@ -229,7 +229,8 @@ class NoWaitThrottle(client_mod.PoliteThrottle):
 
 def _client(responder):
     return client_mod.XueqiuWebClient(
-        {"xq_a_token": "x"}, throttle=NoWaitThrottle(),
+        {"xq_a_token": "x"},
+        throttle=NoWaitThrottle(),
         http_get=lambda url, **kwargs: responder(url),
     )
 
@@ -315,7 +316,8 @@ def test_cookies_unconfigured_is_explicit(monkeypatch):
 
 def test_cookies_from_env_json_and_file(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        client_mod.settings, "xueqiu_cookies",
+        client_mod.settings,
+        "xueqiu_cookies",
         json.dumps({"cookies": [{"name": "xq_a_token", "value": "t"}]}),
     )
     assert client_mod.load_collector_cookies() == {"xq_a_token": "t"}
@@ -340,11 +342,14 @@ def _j2team(tmp_path, cookies):
 def test_cookie_expiry_levels(tmp_path):
     now = 1_800_000_000.0
     day = 86400
-    path = _j2team(tmp_path, [
-        {"name": "xq_a_token", "value": "v", "expirationDate": now + 10 * day},
-        {"name": "xqat", "value": "v", "expirationDate": now + 5 * day},
-        {"name": "u", "value": "v"},
-    ])
+    path = _j2team(
+        tmp_path,
+        [
+            {"name": "xq_a_token", "value": "v", "expirationDate": now + 10 * day},
+            {"name": "xqat", "value": "v", "expirationDate": now + 5 * day},
+            {"name": "u", "value": "v"},
+        ],
+    )
     result = cookie_health.check_expiry(path, warn_days=7, critical_days=3, now=now)
     assert result["level"] == "warning" and result["cookie"] == "xqat"
     assert round(result["days_left"]) == 5
@@ -353,9 +358,12 @@ def test_cookie_expiry_levels(tmp_path):
 def test_cookie_missing_primary_is_critical(tmp_path):
     """合并自原仓库脚本：主凭证缺失 = critical（此前本仓会静默只看剩下那个）。"""
     now = 1_800_000_000.0
-    path = _j2team(tmp_path, [
-        {"name": "xq_a_token", "value": "v", "expirationDate": now + 30 * 86400},
-    ])
+    path = _j2team(
+        tmp_path,
+        [
+            {"name": "xq_a_token", "value": "v", "expirationDate": now + 30 * 86400},
+        ],
+    )
     result = cookie_health.check_expiry(path, warn_days=7, critical_days=3, now=now)
     assert result["level"] == "critical" and result["cookie"] == "xqat"
 
@@ -369,8 +377,14 @@ def test_cookie_missing_primary_is_critical(tmp_path):
         ([{"name": "xq_a_token", "value": None}, {"name": "xqat", "value": "v"}], "xq_a_token"),
         ([{"name": "xq_a_token"}, {"name": "xqat", "value": "v"}], "xq_a_token"),
         # 同名后者覆盖前者（与加载器一致）：后来的空值让先前的有效值失效
-        ([{"name": "xq_a_token", "value": "v"}, {"name": "xqat", "value": "ok"},
-          {"name": "xqat", "value": ""}], "xqat"),
+        (
+            [
+                {"name": "xq_a_token", "value": "v"},
+                {"name": "xqat", "value": "ok"},
+                {"name": "xqat", "value": ""},
+            ],
+            "xqat",
+        ),
     ],
 )
 def test_cookie_empty_primary_value_is_critical(tmp_path, cookies, missing):
@@ -386,11 +400,14 @@ def test_cookie_empty_primary_value_is_critical(tmp_path, cookies, missing):
 
 def test_cookie_later_valid_value_overrides_earlier_empty(tmp_path):
     now = 1_800_000_000.0
-    path = _j2team(tmp_path, [
-        {"name": "xq_a_token", "value": "v", "expirationDate": now + 30 * 86400},
-        {"name": "xqat", "value": "", "expirationDate": now + 1 * 86400},
-        {"name": "xqat", "value": "ok", "expirationDate": now + 20 * 86400},
-    ])
+    path = _j2team(
+        tmp_path,
+        [
+            {"name": "xq_a_token", "value": "v", "expirationDate": now + 30 * 86400},
+            {"name": "xqat", "value": "", "expirationDate": now + 1 * 86400},
+            {"name": "xqat", "value": "ok", "expirationDate": now + 20 * 86400},
+        ],
+    )
     result = cookie_health.check_expiry(path, warn_days=7, critical_days=3, now=now)
     # 生效的是后一条：有值、20 天后到期（前一条的 1 天不作数）
     assert result["level"] == "normal" and round(result["days_left"]) == 20
@@ -407,15 +424,17 @@ def test_cookie_dict_file_with_empty_value_is_critical(tmp_path):
     )
 
 
-def test_effective_cookie_values_match_the_collector_loader():
-    from app.services.xueqiu_collector.client import _cookies_from_data
+def test_collector_loader_uses_the_shared_cookie_parser():
+    """采集器加载器即 effective_cookie_values（#280）：同名后者覆盖、null 为空串，
+    结构不识别时抛 CollectorUnavailable（显式降级），不再各写一份解析。"""
+    from app.services.xueqiu_collector.client import CollectorUnavailable, _cookies_from_data
 
-    for data in (
-        {"cookies": [{"name": "xqat", "value": "a"}, {"name": "xqat", "value": ""}]},
-        [{"name": "xqat", "value": ""}, {"name": "xqat", "value": "b"}],
-        {"xq_a_token": "", "xqat": "c"},
-    ):
-        assert cookie_health.effective_cookie_values(data) == _cookies_from_data(data)
+    assert _cookies_from_data(
+        {"cookies": [{"name": "xqat", "value": "a"}, {"name": "xqat", "value": None}]}
+    ) == {"xqat": ""}
+    assert _cookies_from_data({"xq_a_token": "", "xqat": "c"}) == {"xq_a_token": "", "xqat": "c"}
+    with pytest.raises(CollectorUnavailable, match="结构无法识别"):
+        _cookies_from_data("just-a-string")
 
 
 def test_cookie_without_expiration_is_unconfigured(tmp_path):

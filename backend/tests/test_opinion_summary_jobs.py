@@ -36,27 +36,34 @@ def db():
     session = SessionLocal()
     try:
         reset_tables(session, RESET_MODELS)
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(JOB_TYPES)
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.in_(JOB_TYPES)).delete(
+            synchronize_session=False
+        )
         session.commit()
         yield session
         session.rollback()
         reset_tables(session, RESET_MODELS)
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(JOB_TYPES)
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.in_(JOB_TYPES)).delete(
+            synchronize_session=False
+        )
         session.commit()
     finally:
         session.close()
 
 
 def _hold(db, symbol, market, user_id=1, quantity="100"):
-    db.add(Holding(
-        user_id=user_id, symbol=symbol, name=symbol, market=market,
-        quantity=Decimal(quantity), avg_cost=Decimal("10"),
-        total_cost=Decimal("1000"), currency="CNY",
-    ))
+    db.add(
+        Holding(
+            user_id=user_id,
+            symbol=symbol,
+            name=symbol,
+            market=market,
+            quantity=Decimal(quantity),
+            avg_cost=Decimal("10"),
+            total_cost=Decimal("1000"),
+            currency="CNY",
+        )
+    )
     db.commit()
 
 
@@ -69,26 +76,36 @@ def _utt(author="某作者", days_ago=1.0, body="看好", kind="homepage_post", 
     at = NOW - timedelta(days=days_ago)
     return {
         "utterance_key": key or f"u-{author}-{days_ago}",
-        "kind": kind, "author_name": author, "text": body,
-        "context_text": None, "context_author_name": None,
-        "post_url": None, "created_at": at,
+        "kind": kind,
+        "author_name": author,
+        "text": body,
+        "context_text": None,
+        "context_author_name": None,
+        "post_url": None,
+        "created_at": at,
     }
 
 
 def _llm_output(tags=None, stances=None):
-    return json.dumps({
-        "tags": tags or ["偏多"],
-        "summary": "总体偏多",
-        "author_stances": stances if stances is not None else [
-            {"author": "某作者", "stance": "看多", "recent_change": "无", "evidence": "看好"}
-        ],
-        "report_markdown": "## 近期观点变化\n无",
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "tags": tags or ["偏多"],
+            "summary": "总体偏多",
+            "author_stances": stances
+            if stances is not None
+            else [
+                {"author": "某作者", "stance": "看多", "recent_change": "无", "evidence": "看好"}
+            ],
+            "report_markdown": "## 近期观点变化\n无",
+        },
+        ensure_ascii=False,
+    )
 
 
 def _fake_completion(content):
     return {
-        "content": content, "model": "test-model",
+        "content": content,
+        "model": "test-model",
         "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
     }
 
@@ -105,15 +122,23 @@ def _stats(recent=2, baseline=3, author="某作者", **extra_authors):
 
 
 def _parse(content, author_stats=None, **stats_kwargs):
-    return parse_opinion_output(
-        content, author_stats=author_stats or _stats(**stats_kwargs)
-    )
+    return parse_opinion_output(content, author_stats=author_stats or _stats(**stats_kwargs))
 
 
 def test_parse_happy_path_truncates_and_normalizes():
-    out = json.loads(_llm_output(tags=["近期转多", "多空分歧"], stances=[
-        {"author": "某作者", "stance": "看多", "recent_change": "转多", "evidence": "证" * 200}
-    ]))
+    out = json.loads(
+        _llm_output(
+            tags=["近期转多", "多空分歧"],
+            stances=[
+                {
+                    "author": "某作者",
+                    "stance": "看多",
+                    "recent_change": "转多",
+                    "evidence": "证" * 200,
+                }
+            ],
+        )
+    )
     out["summary"] = "长" * 500
     parsed = _parse(json.dumps(out, ensure_ascii=False))
     assert parsed["tags"] == ["近期转多", "多空分歧"]
@@ -131,8 +156,14 @@ def test_parse_happy_path_truncates_and_normalizes():
         (lambda d: d.update(tags=["近期转多", "近期转空"]), "互斥"),
         (lambda d: d.update(summary=""), "summary"),
         (lambda d: d.update(report_markdown=" "), "report_markdown"),
-        (lambda d: d.update(author_stances=[{"author": "幻觉作者", "stance": "看多",
-                                             "recent_change": "无", "evidence": "x"}]), "作者"),
+        (
+            lambda d: d.update(
+                author_stances=[
+                    {"author": "幻觉作者", "stance": "看多", "recent_change": "无", "evidence": "x"}
+                ]
+            ),
+            "作者",
+        ),
         (lambda d: d["author_stances"][0].update(stance="强烈看多"), "stance"),
         (lambda d: d["author_stances"][0].update(recent_change="翻多"), "recent_change"),
     ],
@@ -160,9 +191,10 @@ def test_parse_grounding_baseline_rules():
     with pytest.raises(ValueError, match="新增关注"):
         _parse(_llm_output(tags=["新增关注"]), recent=2, baseline=3)
     # baseline=0 且该作者确实标了「新增」才允许「新增关注」
-    newly = _llm_output(tags=["新增关注"], stances=[
-        {"author": "某作者", "stance": "看多", "recent_change": "新增", "evidence": "x"}
-    ])
+    newly = _llm_output(
+        tags=["新增关注"],
+        stances=[{"author": "某作者", "stance": "看多", "recent_change": "新增", "evidence": "x"}],
+    )
     parsed = _parse(newly, recent=2, baseline=0)
     assert parsed["tags"] == ["新增关注"]
     with pytest.raises(ValueError, match="讨论沉寂"):
@@ -226,11 +258,18 @@ def test_build_input_groups_and_splits_windows():
         _utt(author="乙", days_ago=40, body="观望", kind="comment_reply"),
     ]
     payload = jobs.build_opinion_input(
-        matched, symbol="600519", market="A股", xq_symbol="SH600519",
-        recent_days=30, lookback_days=180, now=NOW,
+        matched,
+        symbol="600519",
+        market="A股",
+        xq_symbol="SH600519",
+        recent_days=30,
+        lookback_days=180,
+        now=NOW,
     )
     assert payload["stats"] == {
-        "utterance_count": 3, "recent_count": 1, "author_count": 2,
+        "utterance_count": 3,
+        "recent_count": 1,
+        "author_count": 2,
         "author_stats": {"甲": {"recent": 1, "baseline": 1}, "乙": {"recent": 0, "baseline": 1}},
         "latest_utterance_at": (NOW - timedelta(days=2)).isoformat(),
     }
@@ -241,11 +280,17 @@ def test_build_input_groups_and_splits_windows():
 
 
 def test_build_input_shrinks_baseline_and_notes_truncation():
-    matched = [_utt(author="甲", days_ago=100 + i, body="长" * 300, key=f"u{i}")
-               for i in range(120)]
+    matched = [
+        _utt(author="甲", days_ago=100 + i, body="长" * 300, key=f"u{i}") for i in range(120)
+    ]
     payload = jobs.build_opinion_input(
-        matched, symbol="600519", market="A股", xq_symbol="SH600519",
-        recent_days=30, lookback_days=180, now=NOW,
+        matched,
+        symbol="600519",
+        market="A股",
+        xq_symbol="SH600519",
+        recent_days=30,
+        lookback_days=180,
+        now=NOW,
     )
     assert len(payload["authors"]["甲"]["baseline"]) == jobs._BASELINE_KEEP_PER_AUTHOR
     # 逐作者统计必须是收缩前的真实条数，不能被"只留最新 10 条"污染
@@ -259,8 +304,9 @@ def test_build_input_shrinks_baseline_and_notes_truncation():
 # --------------------------------------------------------------------------- #
 # 单标的 job
 # --------------------------------------------------------------------------- #
-def _run_single(db, monkeypatch, *, matched, llm_content=None, user_id=1,
-                symbol="600519", market="A股"):
+def _run_single(
+    db, monkeypatch, *, matched, llm_content=None, user_id=1, symbol="600519", market="A股"
+):
     calls = {"llm": 0}
 
     def fake_scan(db_, wanted, *, since):
@@ -307,9 +353,7 @@ def test_single_job_no_matches_fails_without_llm(db, monkeypatch):
 
 
 def test_single_job_parse_failure_is_deterministic(db, monkeypatch):
-    stored, _ = _run_single(
-        db, monkeypatch, matched=[_utt()], llm_content='{"tags": ["自造"]}'
-    )
+    stored, _ = _run_single(db, monkeypatch, matched=[_utt()], llm_content='{"tags": ["自造"]}')
     assert stored.status == "failed"
     assert "解析失败" in stored.error
     assert stored.attempt_count == 1  # 确定性失败不烧重试
@@ -353,12 +397,15 @@ def test_single_job_busy_on_other_symbol(db, monkeypatch):
 def _prime_source(monkeypatch, matched_map, *, stale=False):
     """把批量模块的外部表依赖替换为固定数据。matched_map 按雪球码给行。"""
     fresh = {
-        "available": True, "latest_scan_at": NOW.isoformat(),
-        "latest_utterance_at": NOW.isoformat(), "stale": stale,
+        "available": True,
+        "latest_scan_at": NOW.isoformat(),
+        "latest_utterance_at": NOW.isoformat(),
+        "stale": stale,
     }
     monkeypatch.setattr(batch, "source_freshness", lambda db_: dict(fresh))
     monkeypatch.setattr(
-        batch, "scan_matched_utterances",
+        batch,
+        "scan_matched_utterances",
         lambda db_, wanted, *, since: {
             key: rows for key, rows in matched_map.items() if key in wanted
         },
@@ -378,8 +425,12 @@ def _run_batch(db, monkeypatch, *, matched_map, outcomes=None, user_id=1, force=
                 raise outcome
             return outcome(symbol, market)
         return {
-            "symbol": symbol, "market": market, "status": "succeeded",
-            "summary_id": len(calls), "error": None, "error_kind": None,
+            "symbol": symbol,
+            "market": market,
+            "status": "succeeded",
+            "summary_id": len(calls),
+            "error": None,
+            "error_kind": None,
             "tags": ["偏多"],
         }
 
@@ -396,8 +447,12 @@ def _run_batch(db, monkeypatch, *, matched_map, outcomes=None, user_id=1, force=
 def _fail(error="boom", kind="parse"):
     def build(symbol, market):
         return {
-            "symbol": symbol, "market": market, "status": "failed",
-            "summary_id": None, "error": error, "error_kind": kind,
+            "symbol": symbol,
+            "market": market,
+            "status": "failed",
+            "summary_id": None,
+            "error": error,
+            "error_kind": kind,
         }
 
     return build
@@ -406,16 +461,19 @@ def _fail(error="boom", kind="parse"):
 def test_batch_targets_union_watchlist_origin_and_pruning(db, monkeypatch):
     """持仓∪自选、B股纳入、零匹配剔除、origin 标注。"""
     _hold(db, "600519", "A股")
-    _hold(db, "200596", "B股")           # B股持仓：观点口径纳入
-    _hold(db, "BTC", "加密货币")          # 非观点市场剔除
-    _watch(db, "00700", "港股")           # 纯自选
-    _watch(db, "600519", "A股")           # 与持仓重叠 → both
-    _hold(db, "999999", "A股")            # 无人提及 → 零匹配剔除
-    _prime_source(monkeypatch, {
-        "SH600519": [_utt(days_ago=2), _utt(days_ago=60)],
-        "SZ200596": [_utt(days_ago=5)],
-        "00700": [_utt(days_ago=1)],
-    })
+    _hold(db, "200596", "B股")  # B股持仓：观点口径纳入
+    _hold(db, "BTC", "加密货币")  # 非观点市场剔除
+    _watch(db, "00700", "港股")  # 纯自选
+    _watch(db, "600519", "A股")  # 与持仓重叠 → both
+    _hold(db, "999999", "A股")  # 无人提及 → 零匹配剔除
+    _prime_source(
+        monkeypatch,
+        {
+            "SH600519": [_utt(days_ago=2), _utt(days_ago=60)],
+            "SZ200596": [_utt(days_ago=5)],
+            "00700": [_utt(days_ago=1)],
+        },
+    )
     preview = batch.get_opinion_batch_targets(db, 1)
     by_key = {f"{t['market']}|{t['symbol']}": t for t in preview["targets"]}
     assert set(by_key) == {"A股|600519", "B股|200596", "港股|00700"}
@@ -431,7 +489,8 @@ def test_batch_runs_targets_and_passes_matched(db, monkeypatch):
     _watch(db, "00700", "港股")
     rows_a = [_utt(days_ago=2)]
     stored, calls = _run_batch(
-        db, monkeypatch,
+        db,
+        monkeypatch,
         matched_map={"SH600519": rows_a, "00700": [_utt(days_ago=1)]},
     )
     assert stored.status == "succeeded"
@@ -446,14 +505,28 @@ def test_batch_freshness_dual_condition(db, monkeypatch):
     _hold(db, "600519", "A股")
     _hold(db, "000001", "A股")
     old = NOW - timedelta(days=3)
-    for symbol, latest_utt in (("600519", NOW - timedelta(days=2)), ("000001", old - timedelta(days=1))):
-        db.add(SecurityOpinionSummary(
-            symbol=symbol, market="A股", tags=["偏多"], author_stances=[],
-            summary="旧摘要", content="x", model="m", input_payload={},
-            recent_days=30, lookback_days=180, utterance_count=1,
-            recent_utterance_count=0, latest_utterance_at=latest_utt,
-            created_at=old,
-        ))
+    for symbol, latest_utt in (
+        ("600519", NOW - timedelta(days=2)),
+        ("000001", old - timedelta(days=1)),
+    ):
+        db.add(
+            SecurityOpinionSummary(
+                symbol=symbol,
+                market="A股",
+                tags=["偏多"],
+                author_stances=[],
+                summary="旧摘要",
+                content="x",
+                model="m",
+                input_payload={},
+                recent_days=30,
+                lookback_days=180,
+                utterance_count=1,
+                recent_utterance_count=0,
+                latest_utterance_at=latest_utt,
+                created_at=old,
+            )
+        )
     db.commit()
     matched_map = {
         # 600519 有晚于摘要锚点的新发言 → 必须重跑
@@ -477,7 +550,8 @@ def test_batch_fatal_outcome_aborts(db, monkeypatch):
     _hold(db, "600519", "A股")
     _hold(db, "000001", "A股")
     stored, calls = _run_batch(
-        db, monkeypatch,
+        db,
+        monkeypatch,
         matched_map={"SH600519": [_utt()], "SZ000001": [_utt()]},
         outcomes=[_fail("API key 无效", "llm_auth")],
     )
@@ -490,7 +564,8 @@ def test_batch_transient_exception_aborts_on_auth(db, monkeypatch):
     _hold(db, "600519", "A股")
     _hold(db, "000001", "A股")
     stored, calls = _run_batch(
-        db, monkeypatch,
+        db,
+        monkeypatch,
         matched_map={"SH600519": [_utt()], "SZ000001": [_utt()]},
         outcomes=[LLMClientError("401", status_code=401)],
     )
@@ -502,7 +577,8 @@ def test_batch_consecutive_failures_early_stop(db, monkeypatch):
     for symbol in ("600519", "000001", "600036", "000858"):
         _hold(db, symbol, "A股")
     stored, calls = _run_batch(
-        db, monkeypatch,
+        db,
+        monkeypatch,
         matched_map={key: [_utt()] for key in ("SH600519", "SZ000001", "SH600036", "SZ000858")},
         outcomes=[_fail()],  # 全部失败
     )
@@ -520,9 +596,14 @@ def test_batch_no_targets_raises(db, monkeypatch):
 
 def test_batch_source_unavailable_raises(db, monkeypatch):
     monkeypatch.setattr(
-        batch, "source_freshness",
-        lambda db_: {"available": False, "latest_scan_at": None,
-                     "latest_utterance_at": None, "stale": False},
+        batch,
+        "source_freshness",
+        lambda db_: {
+            "available": False,
+            "latest_scan_at": None,
+            "latest_utterance_at": None,
+            "stale": False,
+        },
     )
     with pytest.raises(batch.OpinionSourceUnavailable):
         batch.start_opinion_batch_job(db, 1)
@@ -561,20 +642,37 @@ async def test_opinion_summaries_counts_and_missing_summary_rows(db, api_user, m
     _hold(db, "600519", "A股", user_id=api_user)
     _watch(db, "00700", "港股", user_id=api_user)
     anchor = NOW - timedelta(days=5)
-    db.add(SecurityOpinionSummary(
-        symbol="600519", market="A股", tags=["近期转多"], author_stances=[],
-        summary="观点摘要", content="x", model="m", input_payload={},
-        recent_days=30, lookback_days=180, utterance_count=3,
-        recent_utterance_count=1, latest_utterance_at=anchor,
-    ))
+    db.add(
+        SecurityOpinionSummary(
+            symbol="600519",
+            market="A股",
+            tags=["近期转多"],
+            author_stances=[],
+            summary="观点摘要",
+            content="x",
+            model="m",
+            input_payload={},
+            recent_days=30,
+            lookback_days=180,
+            utterance_count=3,
+            recent_utterance_count=1,
+            latest_utterance_at=anchor,
+        )
+    )
     db.commit()
     monkeypatch.setattr(
-        src, "source_freshness",
-        lambda db_: {"available": True, "latest_scan_at": NOW.isoformat(),
-                     "latest_utterance_at": NOW.isoformat(), "stale": False},
+        src,
+        "source_freshness",
+        lambda db_: {
+            "available": True,
+            "latest_scan_at": NOW.isoformat(),
+            "latest_utterance_at": NOW.isoformat(),
+            "stale": False,
+        },
     )
     monkeypatch.setattr(
-        src, "scan_matched_utterances",
+        src,
+        "scan_matched_utterances",
         lambda db_, wanted, *, since: {
             "SH600519": [_utt(days_ago=1, key="new"), _utt(days_ago=10, key="old")],
             "00700": [_utt(days_ago=2, key="hk")],
@@ -601,21 +699,29 @@ async def test_opinion_endpoints_degrade_without_data(db, api_user, monkeypatch)
     """采集器从未成功运行且无发言（测试库的常态）：列表不 5xx 且已存摘要照常返回；
     启动端点 409。"""
     _hold(db, "600519", "A股", user_id=api_user)
-    db.add(SecurityOpinionSummary(
-        symbol="600519", market="A股", tags=["偏多"], author_stances=[],
-        summary="历史摘要", content="x", model="m", input_payload={},
-        recent_days=30, lookback_days=180, utterance_count=1,
-        recent_utterance_count=0,
-    ))
+    db.add(
+        SecurityOpinionSummary(
+            symbol="600519",
+            market="A股",
+            tags=["偏多"],
+            author_stances=[],
+            summary="历史摘要",
+            content="x",
+            model="m",
+            input_payload={},
+            recent_days=30,
+            lookback_days=180,
+            utterance_count=1,
+            recent_utterance_count=0,
+        )
+    )
     db.commit()
     monkeypatch.setattr("app.api.security_profiles.is_llm_configured", lambda: True)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         auth = await _login(client)
         listing = await client.get("/api/securities/opinion-summaries", headers=auth)
-        start_single = await client.post(
-            "/api/securities/A股/600519/opinion-jobs", headers=auth
-        )
+        start_single = await client.post("/api/securities/A股/600519/opinion-jobs", headers=auth)
         start_batch = await client.post("/api/securities/opinion-batch-jobs", headers=auth)
         feed = await client.get("/api/securities/opinion-feed", headers=auth)
     body = listing.json()
@@ -629,33 +735,39 @@ async def test_opinion_endpoints_degrade_without_data(db, api_user, monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_opinion_summaries_degrade_after_real_sql_error(db, api_user, monkeypatch):
+async def test_opinion_summaries_degrade_after_real_sql_error(db, api_user):
     """评审 P2 的端到端口径：发言表列漂移（真实 SQL 错误）后，同一请求里的
     后续查询（持仓/自选/最新摘要）必须照常工作并返回降级响应，而非 500。
-    表现由迁移管理不会缺列，这里把 reader 指向一张刻意缺 last_seen_at 的表复现
-    同一类错误——除此之外不打 monkeypatch，走真实 reader 路径。"""
+    表由迁移管理不会缺列，这里临时改掉 last_seen_at 的列名复现同一类错误——
+    除此之外不打 monkeypatch，走真实 reader 路径。"""
     from sqlalchemy import text as sa_text
 
-    import app.services.xueqiu_opinion_source as src
+    from tests.helpers import drifted_last_seen_column
 
     _hold(db, "600519", "A股", user_id=api_user)
-    db.execute(sa_text(
-        "CREATE TABLE IF NOT EXISTS xueqiu_drift_utterances_api_test "
-        "(utterance_key text PRIMARY KEY, created_at_ms bigint)"  # 刻意缺 last_seen_at
-    ))
-    db.execute(sa_text("INSERT INTO xueqiu_drift_utterances_api_test VALUES ('k', 1)"))
+    db.execute(
+        sa_text(
+            "INSERT INTO xueqiu_archiver_utterances "
+            "(utterance_key, target_user_id, source, kind, created_at_ms) "
+            "VALUES ('drift-api-test', '1', 'profile_timeline', 'homepage_post', 1)"
+        )
+    )
     db.commit()
-    monkeypatch.setattr(src, "UTTERANCE_TABLE", "xueqiu_drift_utterances_api_test")
     try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            auth = await _login(client)
-            listing = await client.get("/api/securities/opinion-summaries", headers=auth)
+        with drifted_last_seen_column(db):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                auth = await _login(client)
+                listing = await client.get("/api/securities/opinion-summaries", headers=auth)
         assert listing.status_code == 200
         assert listing.json()["source_available"] is False
     finally:
         db.rollback()
-        db.execute(sa_text("DROP TABLE IF EXISTS xueqiu_drift_utterances_api_test"))
+        db.execute(
+            sa_text("DELETE FROM xueqiu_archiver_utterances WHERE utterance_key = 'drift-api-test'")
+        )
         db.commit()
 
 
@@ -668,9 +780,14 @@ async def test_opinion_feed_per_author_cap_and_symbol_filter(db, api_user, monke
     _hold(db, "600519", "A股", user_id=api_user)
     _hold(db, "000001", "A股", user_id=api_user)
     monkeypatch.setattr(
-        src, "source_freshness",
-        lambda db_: {"available": True, "latest_scan_at": NOW.isoformat(),
-                     "latest_utterance_at": NOW.isoformat(), "stale": False},
+        src,
+        "source_freshness",
+        lambda db_: {
+            "available": True,
+            "latest_scan_at": NOW.isoformat(),
+            "latest_utterance_at": NOW.isoformat(),
+            "stale": False,
+        },
     )
 
     # 高产作者甲 60 条（600519）+ 低产作者乙 2 条（000001，最新一条比甲新）
@@ -692,9 +809,7 @@ async def test_opinion_feed_per_author_cap_and_symbol_filter(db, api_user, monke
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         auth = await _login(client)
-        feed = await client.get(
-            "/api/securities/opinion-feed?per_author=10", headers=auth
-        )
+        feed = await client.get("/api/securities/opinion-feed?per_author=10", headers=auth)
         body = feed.json()
         groups = {g["author"]: g for g in body["authors"]}
         # 逐作者封顶 + total 如实：乙不因甲高产而消失
@@ -721,13 +836,23 @@ async def test_opinion_feed_per_author_cap_and_symbol_filter(db, api_user, monke
 @pytest.mark.anyio
 async def test_opinion_summary_detail_with_previous(db, api_user):
     for index, tags in enumerate((["偏空"], ["近期转多"])):
-        db.add(SecurityOpinionSummary(
-            symbol="600519", market="A股", tags=tags, author_stances=[],
-            summary=f"第{index}版", content=f"## 全文{index}", model="m",
-            input_payload={}, recent_days=30, lookback_days=180,
-            utterance_count=1, recent_utterance_count=0,
-            created_at=NOW - timedelta(days=1 - index),
-        ))
+        db.add(
+            SecurityOpinionSummary(
+                symbol="600519",
+                market="A股",
+                tags=tags,
+                author_stances=[],
+                summary=f"第{index}版",
+                content=f"## 全文{index}",
+                model="m",
+                input_payload={},
+                recent_days=30,
+                lookback_days=180,
+                utterance_count=1,
+                recent_utterance_count=0,
+                created_at=NOW - timedelta(days=1 - index),
+            )
+        )
     db.commit()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -763,21 +888,44 @@ async def test_opinion_summaries_fill_missing_names(db, api_user, monkeypatch):
     _hold(db, "200596", "B股", user_id=api_user)
     db.query(Holding).filter(Holding.symbol == "200596").update({"name": "古井贡Ｂ"})
     _watch(db, "00700", "港股", user_id=api_user)
-    db.add(SecurityCatalogEntry(symbol="600519", market="A股", name="贵州茅台", source="tushare_stock_basic"))
+    db.add(
+        SecurityCatalogEntry(
+            symbol="600519", market="A股", name="贵州茅台", source="tushare_stock_basic"
+        )
+    )
     for symbol, market, name in (
-        ("600519", "A股", None), ("200596", "B股", None), ("00700", "港股", "腾讯控股（快照）"),
+        ("600519", "A股", None),
+        ("200596", "B股", None),
+        ("00700", "港股", "腾讯控股（快照）"),
     ):
-        db.add(SecurityOpinionSummary(
-            symbol=symbol, market=market, name=name, tags=["偏多"], author_stances=[],
-            summary="摘要", content="x", model="m", input_payload={},
-            recent_days=30, lookback_days=180, utterance_count=1, recent_utterance_count=0,
-        ))
+        db.add(
+            SecurityOpinionSummary(
+                symbol=symbol,
+                market=market,
+                name=name,
+                tags=["偏多"],
+                author_stances=[],
+                summary="摘要",
+                content="x",
+                model="m",
+                input_payload={},
+                recent_days=30,
+                lookback_days=180,
+                utterance_count=1,
+                recent_utterance_count=0,
+            )
+        )
     db.commit()
     try:
         monkeypatch.setattr(
-            src, "source_freshness",
-            lambda db_: {"available": False, "latest_scan_at": None,
-                         "latest_utterance_at": None, "stale": False},
+            src,
+            "source_freshness",
+            lambda db_: {
+                "available": False,
+                "latest_scan_at": None,
+                "latest_utterance_at": None,
+                "stale": False,
+            },
         )
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:

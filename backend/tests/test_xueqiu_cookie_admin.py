@@ -58,8 +58,14 @@ def j2team(*, a_days=12.0, at_days=12.0, a_value=TOKEN_A, drop=()):
             "path": "/",
             "value": TOKEN_AT,
         },
-        {"domain": ".xueqiu.com", "name": "xq_r_token", "path": "/", "value": TOKEN_R,
-         "session": True, "unknownField": {"nested": TOKEN_R}},
+        {
+            "domain": ".xueqiu.com",
+            "name": "xq_r_token",
+            "path": "/",
+            "value": TOKEN_R,
+            "session": True,
+            "unknownField": {"nested": TOKEN_R},
+        },
         {"domain": ".xueqiu.com", "name": "u", "path": "/", "value": TOKEN_U},
     ]
     cookies = [c for c in cookies if c["name"] not in drop]
@@ -116,7 +122,10 @@ def test_parse_header_string_and_other_json_shapes():
     parsed = admin.parse_cookie_content(HEADER)
     assert parsed.source_format == "header"
     assert parsed.as_dict() == {
-        "xq_a_token": TOKEN_A, "xqat": TOKEN_AT, "xq_r_token": TOKEN_R, "u": TOKEN_U,
+        "xq_a_token": TOKEN_A,
+        "xqat": TOKEN_AT,
+        "xq_r_token": TOKEN_R,
+        "u": TOKEN_U,
     }
     assert parsed.expirations() == {}
     assert any("探活" in note for note in parsed.notes)
@@ -290,7 +299,9 @@ def test_os_errors_during_write_are_mapped(cookie_file, monkeypatch, error, kind
 
 
 def test_inline_or_missing_config_refused(monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "xueqiu_cookies", json.dumps({"xq_a_token": TOKEN_A, "xqat": TOKEN_AT}))
+    monkeypatch.setattr(
+        settings, "xueqiu_cookies", json.dumps({"xq_a_token": TOKEN_A, "xqat": TOKEN_AT})
+    )
     monkeypatch.setattr(settings, "xueqiu_cookie_file", str(tmp_path / "x.json"))
     with pytest.raises(admin.CookieAdminError) as info:
         admin.update_cookie(j2team(), now=NOW)
@@ -373,6 +384,7 @@ def test_logs_never_contain_cookie_values(cookie_file, monkeypatch):
 # 共同要求：不合格的输入绝不替换现有文件
 # --------------------------------------------------------------------------- #
 
+
 def _seed_good_file(path):
     """先落一份合格文件，返回其字节，用于断言失败的更新没有改动它。"""
     admin.update_cookie(j2team(), now=NOW)
@@ -397,10 +409,14 @@ def _entry(name, value, expiration=None):
 )
 def test_unrepresentable_primary_expiry_rejected_before_write(cookie_file, expiration):
     before = _seed_good_file(cookie_file)
-    content = json.dumps({"cookies": [
-        _entry("xq_a_token", TOKEN_A, expiration),
-        _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
-    ]})
+    content = json.dumps(
+        {
+            "cookies": [
+                _entry("xq_a_token", TOKEN_A, expiration),
+                _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
+            ]
+        }
+    )
     with pytest.raises(admin.CookieAdminError) as info:
         admin.update_cookie(content, now=NOW)
     assert info.value.kind == "invalid"
@@ -410,11 +426,15 @@ def test_unrepresentable_primary_expiry_rejected_before_write(cookie_file, expir
 
 
 def test_bad_expiry_on_other_cookie_is_dropped_not_fatal(cookie_file):
-    content = json.dumps({"cookies": [
-        _entry("xq_a_token", TOKEN_A, NOW + 5 * DAY),
-        _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
-        _entry("u", TOKEN_U, 1_800_000_000_000),
-    ]})
+    content = json.dumps(
+        {
+            "cookies": [
+                _entry("xq_a_token", TOKEN_A, NOW + 5 * DAY),
+                _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
+                _entry("u", TOKEN_U, 1_800_000_000_000),
+            ]
+        }
+    )
     result = admin.update_cookie(content, now=NOW)
     assert any("u 的 expirationDate" in note for note in result["notes"])
     written = {c["name"]: c for c in json.loads(cookie_file.read_text())["cookies"]}
@@ -423,10 +443,17 @@ def test_bad_expiry_on_other_cookie_is_dropped_not_fatal(cookie_file):
 
 def test_status_degrades_when_file_already_has_bad_expiry(cookie_file):
     """文件已被宿主写进坏元数据：状态查询照常返回（critical + 原因），不抛异常。"""
-    cookie_file.write_text(json.dumps({"cookies": [
-        _entry("xq_a_token", TOKEN_A, 1_800_000_000_000),
-        _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
-    ]}), encoding="utf-8")
+    cookie_file.write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    _entry("xq_a_token", TOKEN_A, 1_800_000_000_000),
+                    _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     health = check_expiry(str(cookie_file), warn_days=7, critical_days=3, now=NOW)
     assert health["level"] == "critical" and "超出" in health["message"]
     status = admin.cookie_status(now=NOW)
@@ -443,9 +470,15 @@ def test_status_degrades_when_file_already_has_bad_expiry(cookie_file):
         f"xq_a_token=   ; xqat={TOKEN_AT}",
         json.dumps({"cookies": [_entry("xq_a_token", "  "), _entry("xqat", TOKEN_AT)]}),
         # 同名后者覆盖：最终值是空白
-        json.dumps({"cookies": [
-            _entry("xq_a_token", TOKEN_A), _entry("xqat", TOKEN_AT), _entry("xq_a_token", " "),
-        ]}),
+        json.dumps(
+            {
+                "cookies": [
+                    _entry("xq_a_token", TOKEN_A),
+                    _entry("xqat", TOKEN_AT),
+                    _entry("xq_a_token", " "),
+                ]
+            }
+        ),
     ],
 )
 def test_whitespace_primary_credentials_rejected(cookie_file, content):
@@ -465,11 +498,15 @@ def test_status_reports_whitespace_credential_as_absent(cookie_file):
 def test_later_session_cookie_drops_earlier_expiry(cookie_file):
     """旧的带过期时间的 xq_a_token 被后面无到期时间的新值覆盖：生效的是新会话 Cookie，
     到期时间随生效那一条（没有），不能拿旧条目的 1970 年判它已过期。"""
-    content = json.dumps({"cookies": [
-        _entry("xq_a_token", "SYNTH_OLD_A", 1),
-        _entry("xq_a_token", TOKEN_A),
-        _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
-    ]})
+    content = json.dumps(
+        {
+            "cookies": [
+                _entry("xq_a_token", "SYNTH_OLD_A", 1),
+                _entry("xq_a_token", TOKEN_A),
+                _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
+            ]
+        }
+    )
     result = admin.update_cookie(content, now=NOW)
     facts = {fact["name"]: fact for fact in result["status"]["primary"]}
     assert facts["xq_a_token"]["present"] is True
@@ -481,11 +518,15 @@ def test_later_session_cookie_drops_earlier_expiry(cookie_file):
 def test_later_expired_entry_wins_over_earlier_session_cookie(cookie_file):
     """反过来：后面的条目已过期，它就是生效值——拒绝，且不改动现有文件。"""
     before = _seed_good_file(cookie_file)
-    content = json.dumps({"cookies": [
-        _entry("xq_a_token", TOKEN_A),
-        _entry("xq_a_token", "SYNTH_OLD_A", 1),
-        _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
-    ]})
+    content = json.dumps(
+        {
+            "cookies": [
+                _entry("xq_a_token", TOKEN_A),
+                _entry("xq_a_token", "SYNTH_OLD_A", 1),
+                _entry("xqat", TOKEN_AT, NOW + 5 * DAY),
+            ]
+        }
+    )
     with pytest.raises(admin.CookieAdminError) as info:
         admin.update_cookie(content, now=NOW)
     assert "已过期" in info.value.message and "1970-01-01" in info.value.message
@@ -493,11 +534,15 @@ def test_later_expired_entry_wins_over_earlier_session_cookie(cookie_file):
 
 
 def test_later_entry_with_new_expiry_replaces_old_expiry(cookie_file):
-    content = json.dumps({"cookies": [
-        _entry("xq_a_token", "SYNTH_OLD_A", 1),
-        _entry("xq_a_token", TOKEN_A, NOW + 9 * DAY),
-        _entry("xqat", TOKEN_AT, NOW + 9 * DAY),
-    ]})
+    content = json.dumps(
+        {
+            "cookies": [
+                _entry("xq_a_token", "SYNTH_OLD_A", 1),
+                _entry("xq_a_token", TOKEN_A, NOW + 9 * DAY),
+                _entry("xqat", TOKEN_AT, NOW + 9 * DAY),
+            ]
+        }
+    )
     result = admin.update_cookie(content, now=NOW)
     days = {fact["name"]: fact["days_left"] for fact in result["status"]["primary"]}
     assert round(days["xq_a_token"]) == 9
@@ -703,10 +748,14 @@ def test_api_bad_expiry_is_422_and_get_stays_200(clients, cookie_file):
     good = admin_client.put("/api/xueqiu-collector/cookie", json={"content": j2team()})
     assert good.status_code == 200
     before = cookie_file.read_bytes()
-    bad = json.dumps({"cookies": [
-        {"name": "xq_a_token", "value": TOKEN_A, "expirationDate": 1_800_000_000_000},
-        {"name": "xqat", "value": TOKEN_AT},
-    ]})
+    bad = json.dumps(
+        {
+            "cookies": [
+                {"name": "xq_a_token", "value": TOKEN_A, "expirationDate": 1_800_000_000_000},
+                {"name": "xqat", "value": TOKEN_AT},
+            ]
+        }
+    )
     response = admin_client.put("/api/xueqiu-collector/cookie", json={"content": bad})
     assert response.status_code == 422
     assert_no_secret(response.text)
@@ -723,7 +772,9 @@ def test_api_bad_expiry_is_422_and_get_stays_200(clients, cookie_file):
 
 
 def test_inline_config_update_is_409(clients, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "xueqiu_cookies", json.dumps({"xq_a_token": TOKEN_A, "xqat": TOKEN_AT}))
+    monkeypatch.setattr(
+        settings, "xueqiu_cookies", json.dumps({"xq_a_token": TOKEN_A, "xqat": TOKEN_AT})
+    )
     monkeypatch.setattr(settings, "xueqiu_cookie_file", "")
     response = clients["admin"].put("/api/xueqiu-collector/cookie", json={"content": HEADER})
     assert response.status_code == 409

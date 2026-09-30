@@ -25,5 +25,7 @@ class SecurityPrice(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        UniqueConstraint("symbol", "market", "price_date", name="uix_security_price_symbol_market_date"),
+        UniqueConstraint(
+            "symbol", "market", "price_date", name="uix_security_price_symbol_market_date"
+        ),
     )

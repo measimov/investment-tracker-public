@@ -16,6 +16,7 @@ import os
 import re
 import socket
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -99,6 +100,11 @@ def _rewrite_host_port(argv: list[str], port: int) -> list[str]:
 def _start_backend(port: int, argv: list[str], **env_overrides):
     env = {
         **os.environ,
+        # 在临时目录里跑、靠 PYTHONPATH 加载 app：日志目录 `logs/` 相对工作目录，
+        # 放在 backend/ 下会写进部署机上属于容器用户的 backend/logs（PermissionError）
+        "PYTHONPATH": os.pathsep.join(
+            filter(None, [str(BACKEND_DIR), os.environ.get("PYTHONPATH")])
+        ),
         "REQUIRE_HTTPS": "true",
         "TRUST_PROXY_HEADERS": "false",
         "BACKGROUND_WORKER_ENABLED": "false",
@@ -106,7 +112,7 @@ def _start_backend(port: int, argv: list[str], **env_overrides):
     }
     process = subprocess.Popen(
         [sys.executable, "-m", *argv],
-        cwd=BACKEND_DIR,
+        cwd=tempfile.mkdtemp(prefix="it-proxy-test-"),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -119,7 +125,9 @@ def _start_backend(port: int, argv: list[str], **env_overrides):
             process.wait()
             pytest.fail(f"uvicorn 启动即退出：\n{output}")
         try:
-            if httpx.get(f"{base_url}/health", timeout=1).status_code == 200:
+            # trust_env=False：访问的是本机 127.0.0.1，不能被环境里的 HTTP/SOCKS 代理变量
+            # 带偏（开着 SOCKS 代理而没装 socksio 时 httpx 直接 ImportError）
+            if httpx.get(f"{base_url}/health", timeout=1, trust_env=False).status_code == 200:
                 return process, base_url
         except httpx.HTTPError:
             time.sleep(0.2)
@@ -171,6 +179,7 @@ def test_spoofed_forwarded_proto_cannot_bypass_require_https(untrusted_backend):
         json={"username": "demo", "password": "irrelevant"},
         headers={"X-Forwarded-Proto": "https"},
         timeout=10,
+        trust_env=False,
     )
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == "登录必须通过 HTTPS 访问"
@@ -191,6 +200,7 @@ def test_slash_redirect_behind_a_trusted_proxy_stays_on_https(trusted_backend):
         headers={"X-Forwarded-Proto": "https", "Host": "app.example.com"},
         follow_redirects=False,
         timeout=10,
+        trust_env=False,
     )
     assert response.status_code in (301, 307, 308), response.status_code
     location = response.headers["location"]
@@ -205,6 +215,7 @@ def test_forwarded_for_is_only_trusted_when_configured(untrusted_backend, truste
             json={"username": "demo", "password": "irrelevant"},
             headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": "203.0.113.9"},
             timeout=10,
+            trust_env=False,
         )
         # 信任时 proto 生效 → 过了 HTTPS 门、落到口令校验；不信任时被 400 挡住
         assert response.status_code == (401 if trusted else 400), response.text

@@ -45,11 +45,13 @@ class AdminHoldingResponse(HoldingResponse):
 
 class HoldingPriceUpdate(BaseModel):
     """Schema for updating a single holding price"""
+
     current_price: Decimal = Field(..., gt=0, description="Current price must be greater than 0")
 
 
 class PriceBatchUpdate(BaseModel):
     """Schema for batch price updates"""
+
     symbol: str = Field(..., description="Stock symbol")
     market: str = Field(..., description="Market")
     price: Decimal = Field(..., gt=0, description="Current price")

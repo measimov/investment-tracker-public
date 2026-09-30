@@ -66,11 +66,17 @@
     </template>
 
     <template v-else>
+      <PriceIssuesAlert
+        :freshness="summary.pricing.priceFreshness"
+        :refreshing="refreshing"
+        @refresh="refreshPricesAndCalculate"
+      />
+      <!-- 与仪表盘同一严重度（#286：此前这里红色、仪表盘黄色） -->
       <el-alert
         v-for="warning in summaryWarnings"
         :key="warning"
         :title="warning"
-        type="error"
+        type="warning"
         show-icon
         :closable="false"
         class="summary-warning"
@@ -109,12 +115,12 @@
 </template>
 
 <script setup lang="ts">
+import PriceIssuesAlert from '@/components/PriceIssuesAlert.vue'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useExchangeRates } from '../composables/useExchangeRates'
 import { useAliveGuard } from '../composables/useAliveGuard'
 import { useRefreshPrices } from '../composables/useRefreshPrices'
-import { getApiErrorMessage } from '../utils/apiErrors'
 import EquityReturnCard from './statistics/EquityReturnCard.vue'
 import AnalyticsCard from './statistics/AnalyticsCard.vue'
 import FifoPerformanceCards from './statistics/FifoPerformanceCards.vue'
@@ -126,6 +132,7 @@ import { useDistributionStats } from './statistics/useDistributionStats'
 import { usePerformanceSummary } from './statistics/usePerformanceSummary'
 import { usePriceInputs } from './statistics/usePriceInputs'
 import { buildSummaryWarnings } from './statistics/warnings'
+import { showApiError } from '@/utils/showApiError'
 
 // 壳层职责（issue #140）：骨架屏 + 顶层警示 + 五个 feature 的编排。
 // script 里原先的五件事（业绩摘要 / analytics 曲线+基准+历史同步 /
@@ -179,10 +186,7 @@ async function loadAllData() {
   initialLoading.value = true
   try {
     const supportingDataPromise = Promise.all([
-      dist.loadMarketStats(),
-      dist.loadTimeStats(),
-      dist.loadProfitLoss(),
-      dist.loadSummaryStats(),
+      dist.loadAll(),
       loadExchangeRates(),
       analytics.loadBenchmarkCatalog()
     ])
@@ -208,7 +212,7 @@ async function calculatePerformance() {
     prices.state.dialogVisible = false
     ElMessage.success('计算完成')
   } catch (error) {
-    ElMessage.error('计算失败：' + getApiErrorMessage(error))
+    showApiError(error, { prefix: '计算失败' })
   } finally {
     loading.value = false
   }
@@ -225,7 +229,7 @@ async function exitWhatIf() {
   try {
     await reloadServerPriced()
   } catch (error) {
-    ElMessage.error('重新计算失败：' + getApiErrorMessage(error))
+    showApiError(error, { prefix: '重新计算失败' })
   } finally {
     loading.value = false
   }
@@ -252,7 +256,7 @@ async function refreshPricesAndCalculate() {
     notifyRefreshResult(refreshResult, '，并完成计算')
   } catch (error) {
     if (!isUnmounted()) {
-      ElMessage.error('刷新失败：' + getApiErrorMessage(error))
+      showApiError(error, { prefix: '刷新失败' })
     }
   } finally {
     if (!isUnmounted()) {

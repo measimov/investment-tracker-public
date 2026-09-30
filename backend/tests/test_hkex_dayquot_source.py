@@ -104,10 +104,18 @@ def test_store_preserves_open_and_reports_conflicts(sample_text, clean_rows):
     quotes = dq.parse_dayquot(sample_text)
     db.add(
         SecurityPrice(
-            symbol="00700", market=dq.HK_MARKET, ts_code="00700.HK", price_date=REPORT_DATE,
-            currency="HKD", open_price=Decimal("445"), high_price=Decimal("447.6"),
-            low_price=Decimal("440.6"), close_price=Decimal("441.5"),
-            adj_factor=Decimal("1"), adj_close_price=Decimal("441.5"), source="tushare-hk_daily",
+            symbol="00700",
+            market=dq.HK_MARKET,
+            ts_code="00700.HK",
+            price_date=REPORT_DATE,
+            currency="HKD",
+            open_price=Decimal("445"),
+            high_price=Decimal("447.6"),
+            low_price=Decimal("440.6"),
+            close_price=Decimal("441.5"),
+            adj_factor=Decimal("1"),
+            adj_close_price=Decimal("441.5"),
+            source="tushare-hk_daily",
         )
     )
     db.commit()
@@ -194,9 +202,12 @@ def test_report_without_storable_rows_is_done_and_window_advances(
         assert first["processed"][0]["suspended"] == ["00007"]
         assert first["processed"][0]["unpriced"] == ["89009"]
         assert first["processed"][0]["missing"] == ["99999"]
-        assert db.query(SecurityPrice).filter(
-            SecurityPrice.source == dq.SOURCE, SecurityPrice.price_date == REPORT_DATE
-        ).count() == 0
+        assert (
+            db.query(SecurityPrice)
+            .filter(SecurityPrice.source == dq.SOURCE, SecurityPrice.price_date == REPORT_DATE)
+            .count()
+            == 0
+        )
         marker = db.query(HkexDayquotReport).filter_by(report_date=REPORT_DATE).one()
         assert (marker.stored_count, marker.parsed_count, marker.universe_size) == (0, 14, 3)
 

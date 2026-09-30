@@ -11,12 +11,12 @@
  * 这里只留批量分析特有的：目标预览、确认框、每完成一只刷标签列、汇总消息。
  */
 
+import type { AnalysisBatchJob, BatchResultRow } from '@/types'
 import { computed, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { useBatchJobProgress } from '@/composables/useBatchJobProgress'
 import type { Holding } from '@/stores/holdings'
-import type { AnalysisBatchJob, BatchResultRow } from './types'
 import { showApiError } from '@/utils/showApiError'
 
 // 与后端 security_profile_service.SUPPORTED_MARKETS 对齐；其余市场后端 409
@@ -193,7 +193,7 @@ export function useBatchAnalysis({
     try {
       const response = await api.startSecurityAnalysisBatchJob()
       if (isUnmounted()) return
-      adopt(response.data as AnalysisBatchJob)
+      adopt(response.data)
       // 启动完成即收起 loading：轮询要跑数十分钟到数小时，让按钮一直转圈既无
       // 信息量（进度块已经在显示了），也与"活跃时只禁用"的设计不符
       starting.value = false

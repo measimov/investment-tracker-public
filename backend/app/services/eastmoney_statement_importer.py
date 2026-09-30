@@ -20,34 +20,35 @@ from ..models.reconciliation_snapshot import ReconciliationSnapshot
 from ..models.transaction import Transaction
 from ..services import broker_import_common
 from ..services.broker_import_common import (
-    RESULT_SAMPLE_LIMIT,
-    archived_row_count,
+    append_note,
+    attribute_tax_source,
     base_import_result,
+    booked_source_rows,
     disambiguated_row_hash,
+    fail_broker_import,
+    find_dividend_for_tax,
+    import_note,
     iso_date_range,
+    load_unattributed_tax_sources,
+    lock_broker_import,
+    mark_unattributed_tax,
+    normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间,
+    parse_strict_decimal,
     ProspectiveCorporateAction,
     ProspectiveTransaction,
-    attribute_tax_source,
-    find_dividend_for_tax,
-    load_unattributed_tax_sources,
-    mark_unattributed_tax,
-    normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间
-    parse_strict_decimal,
+    RESULT_SAMPLE_LIMIT,
     source_error_rows,
     split_new_and_duplicate_rows,
     strip_text,
 )
 from ..services.security_rule_service import get_excluded_symbols
 from ..services.holding_service import (
-    UNPERSISTED_SORT_ID,
-    load_account_quantity_actions,
+    account_precheck_events,
     recalculate_holdings,
     replay_account_quantities,
 )
-from ..services.portfolio.semantics import QUANTITY_ACTION_TYPES
 from ..services.import_batch_service import (
     complete_import_batch,
-    fail_import_batch,
     set_import_batch_source_stats,
     start_import_batch,
     validate_import_account,
@@ -145,7 +146,6 @@ LEGACY_HASH_FIELDS = [
     "cash_balance",
 ]
 AMOUNT_TOLERANCE = Decimal("0.02")
-ROW_HASH_NOTE_PATTERN = re.compile(r"\brow_hash=([0-9a-f]{64})\b")
 POSITION_REQUIRED_COLUMNS = {"证券代码", "证券名称", "持仓数量"}
 
 
@@ -790,65 +790,6 @@ def get_existing_hashes(
     }
 
 
-def _decimal_value(value: Any) -> Decimal:
-    return Decimal(str(value or 0))
-
-
-def _transaction_matches_flow(
-    transaction: Transaction,
-    flow: ParsedEastmoneyFlow,
-) -> bool:
-    return (
-        transaction.symbol == flow.security_code
-        and transaction.market == infer_market(flow.security_code)
-        and transaction.transaction_type == flow.transaction_type
-        and _decimal_value(transaction.quantity) == abs(flow.trade_quantity)
-        and _decimal_value(transaction.price) == flow.normalized_transaction_price
-        and _decimal_value(transaction.fee) == flow.normalized_transaction_fee
-        and transaction.transaction_date == flow.trade_date
-        and transaction.currency == flow.normalized_transaction_currency
-    )
-
-
-def _corporate_action_matches_flow(
-    action: CorporateAction,
-    flow: ParsedEastmoneyFlow,
-) -> bool:
-    if (
-        action.symbol != flow.security_code
-        or action.market != infer_market(flow.security_code)
-        or action.action_type != "CASH_DIVIDEND"
-        or action.currency != flow.currency
-    ):
-        return False
-    if flow.is_cash_dividend:
-        return (
-            action.ex_date == flow.trade_date
-            and _decimal_value(action.total_dividend) == flow.amount
-        )
-    if flow.is_dividend_tax:
-        return action.ex_date <= flow.trade_date
-    return False
-
-
-def _cash_event_matches_flow(
-    cash_event: CashEvent,
-    flow: ParsedEastmoneyFlow,
-) -> bool:
-    return (
-        cash_event.event_type == "FEE"
-        and cash_event.event_date == flow.trade_date
-        and cash_event.currency == flow.currency
-        and _decimal_value(cash_event.amount) == abs(flow.amount)
-    )
-
-
-# 已删除 _validate_corporate_action_source_aggregate（76 行）：全仓无任何调用方。
-# 它是旧公司行动聚合校验的遗留，逻辑复杂（notes 里的 row_hash 反查、跨账户/
-# 币种/日期六种拒绝分支）却从不执行，留着会误导维护者以为它在生效。
-# 语义若需要，应并入判重路径并配测试，而不是悬空。
-
-
 def build_import_result(
     *,
     filename: str,
@@ -923,9 +864,7 @@ def build_import_result(
         duplicate_samples=[
             flow_to_sample(flow, True) for flow in duplicate_rows[:RESULT_SAMPLE_LIMIT]
         ],
-        import_samples=[
-            flow_to_sample(flow, False) for flow in import_rows[:RESULT_SAMPLE_LIMIT]
-        ],
+        import_samples=[flow_to_sample(flow, False) for flow in import_rows[:RESULT_SAMPLE_LIMIT]],
         errors=errors,
     )
     result.update(
@@ -958,6 +897,7 @@ def apply_exclusions(parsed_rows: List[ParsedEastmoneyFlow], excluded_symbols) -
 
 def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
     broker_import_common.reject_unassigned_legacy_sources(db, user_id, BROKER_NAME)
+
 
 def preview_eastmoney_statement(
     db: Session,
@@ -1200,68 +1140,9 @@ def calculate_account_position_quantities(
 
     导入通道在 flush 之后调用，交易已在 DB 查询范围内，故为空；预览不写库，
     用替身补上，这样整批一票否决的两道门在预览里也能预报（#132 子项 C）。
+    装配与排序走 holding_service.account_precheck_events（#279），按快照日截断；
+    东财没有同日 tie-break（同日买前卖后由类型组保证）。
     """
-    events: List[tuple[date, int, int, int, Any]] = []
-    transactions = (
-        db.query(Transaction)
-        .filter(
-            Transaction.user_id == user_id,
-            Transaction.broker_account_id == broker_account_id,
-            Transaction.transaction_date <= snapshot_date,
-        )
-        .all()
-    )
-    # 同日次序对齐内核 _TYPE_SORT_ORDER：先买入、再转仓、最后卖出。
-    # 原来是 `0 if BUY else 1`，转仓与卖出同档，同日「转入后立刻卖出」会误报。
-    type_rank = {"BUY": 0, "TRANSFER_IN": 1, "TRANSFER_OUT": 1}
-    for transaction in transactions:
-        events.append(
-            (
-                transaction.transaction_date,
-                1,
-                type_rank.get(transaction.transaction_type, 2),
-                transaction.id or 0,
-                transaction,
-            )
-        )
-    # 期后的待入账交易不参与该快照日的持仓（与 DB 侧的 <= snapshot_date 同口径）
-    scoped_extra = [
-        prospective
-        for prospective in extra_transactions
-        if prospective.transaction_date <= snapshot_date
-    ]
-    for prospective in scoped_extra:
-        events.append(
-            (
-                prospective.transaction_date,
-                1,
-                type_rank.get(prospective.transaction_type, 2),
-                # 排在持久化 id 之后：用 0 会让替身排到同日既有交易之前，与
-                # 正式导入 flush 拿到真 id 后的次序相反（见 broker_import_common）
-                UNPERSISTED_SORT_ID,
-                prospective,
-            )
-        )
-
-    keys = {(txn.symbol, txn.market) for txn in transactions}
-    keys |= {(txn.symbol, txn.market) for txn in scoped_extra}
-    owned_actions = (
-        db.query(CorporateAction)
-        .filter(
-            CorporateAction.user_id == user_id,
-            CorporateAction.broker_account_id == broker_account_id,
-            CorporateAction.ex_date <= snapshot_date,
-            CorporateAction.action_type.in_(QUANTITY_ACTION_TYPES),
-        )
-        .all()
-    )
-    keys |= {(action.symbol, action.market) for action in owned_actions}
-    quantity_actions = load_account_quantity_actions(
-        db, user_id=user_id, broker_account_id=broker_account_id,
-        keys=keys, through_date=snapshot_date,
-    )
-    for action in quantity_actions:
-        events.append((action.ex_date, 0, 0, action.id or 0, action))
 
     def _reject(event, available: Decimal, needed: Decimal) -> None:
         verb = "转出" if event.transaction_type == "TRANSFER_OUT" else "卖出"
@@ -1271,12 +1152,15 @@ def calculate_account_position_quantities(
             f"{verb} {needed}，当时账户内仅有 {available}"
         )
 
-    # 数量语义统一走 holding_service（内部经 portfolio/semantics），不再本地手写：
-    # 原实现裸读 shares_received（ratio-only 送股加 0 股）、拆股只认 split_ratio
-    # 且解析失败静默吞掉，转仓则被完全忽略——computed 少算会让对账快照误判
-    # MISMATCHED，进而整批回滚。
+    # 宽松模式（raise_on_oversell=False）数量继续减、可为负：对账快照依赖它
     return replay_account_quantities(
-        [event[-1] for event in sorted(events, key=lambda item: item[:-1])],
+        account_precheck_events(
+            db,
+            user_id=user_id,
+            broker_account_id=broker_account_id,
+            through_date=snapshot_date,
+            extra_transactions=extra_transactions,
+        ),
         on_oversell=_reject if raise_on_oversell else None,
     )
 
@@ -1432,6 +1316,9 @@ def import_eastmoney_statement(
     imported_tax_adjustments = 0
     imported_cash_events = 0
     records_committed = False
+    duplicate_hashes: set[str] = set()
+    # 在既有未归属税行上原地转正的行（仍挂在原批次下）：入账来源行数要算上它们
+    recovered_tax_hashes: set[str] = set()
 
     try:
         reject_unassigned_legacy_sources(db, user_id)
@@ -1449,6 +1336,8 @@ def import_eastmoney_statement(
         )
         db.commit()
         db.refresh(batch)
+        # 串行化同一用户的导入（上面的 commit 之后取，锁一直持有到最终 commit）
+        lock_broker_import(db, user_id)
         existing_hashes = get_existing_hashes(
             db,
             user_id,
@@ -1478,7 +1367,6 @@ def import_eastmoney_statement(
             },
             broker_account_id=broker_account_id,
         )
-        recovered_tax_hashes: set[str] = set()
         unmatched_tax_hashes: set[str] = set()
         new_rows = [flow for flow in parsed_rows if flow.row_hash not in existing_hashes]
 
@@ -1502,11 +1390,7 @@ def import_eastmoney_statement(
                     tax_withheld=Decimal("0"),
                     net_dividend=flow.amount,
                     currency=flow.currency,
-                    notes=(
-                        f"{BROKER_NAME}对账单; scope={flow.statement_type}; "
-                        f"row={flow.source_row_number}; 业务={flow.business_name}; "
-                        f"row_hash={flow.row_hash}"
-                    ),
+                    notes=import_note(BROKER_NAME, flow.business_name),
                 )
                 db.add(action)
                 db.flush()
@@ -1531,12 +1415,16 @@ def import_eastmoney_statement(
                     fee=flow.normalized_transaction_fee,
                     transaction_date=flow.trade_date,
                     currency=flow.normalized_transaction_currency,
-                    notes=(
-                        f"{BROKER_NAME}对账单; scope={flow.statement_type}; "
-                        f"row={flow.source_row_number}; 业务={flow.business_name}; "
-                        f"source_cny_price={flow.trade_price}; "
-                        f"source_cny_amount={flow.amount}; "
-                        f"settlement_rate={flow.settlement_rate or ''}"
+                    # 港股通：人民币成交价/金额与结算汇率写成一句留作审计
+                    notes=import_note(
+                        BROKER_NAME,
+                        flow.business_name,
+                        (
+                            f"人民币成交价 {flow.trade_price}、金额 {flow.amount}，"
+                            f"结算汇率 {flow.settlement_rate}"
+                            if flow.settlement_rate
+                            else None
+                        ),
                     ),
                 )
                 db.add(transaction)
@@ -1552,10 +1440,7 @@ def import_eastmoney_statement(
                     amount=abs(flow.amount),
                     currency=flow.currency,
                     event_date=flow.trade_date,
-                    notes=(
-                        f"{BROKER_NAME}港股通组合费; source={filename}; "
-                        f"row={flow.source_row_number}; row_hash={flow.row_hash}"
-                    ),
+                    notes=import_note(BROKER_NAME, "港股通组合费"),
                 )
                 db.add(cash_event)
                 db.flush()
@@ -1582,10 +1467,7 @@ def import_eastmoney_statement(
                     action.net_dividend = max(
                         Decimal("0"), action.total_dividend - action.tax_withheld
                     )
-                action.notes = (
-                    f"{action.notes or ''}; {BROKER_NAME}红利税 "
-                    f"row={flow.source_row_number}; row_hash={flow.row_hash}"
-                ).strip("; ")
+                action.notes = append_note(action.notes, f"{BROKER_NAME}红利税")
                 corporate_action_ids[flow.row_hash] = action.id
                 imported_tax_adjustments += 1
                 preserved = unattributed_tax_sources.pop(flow.row_hash, None)
@@ -1618,8 +1500,7 @@ def import_eastmoney_statement(
                 # 而不是因 hash 判重永久失联
                 mark_unattributed_tax(
                     source,
-                    "preserved without canonical action: "
-                    "no account-scoped dividend found for tax",
+                    "preserved without canonical action: no account-scoped dividend found for tax",
                 )
             db.add(source)
 
@@ -1644,7 +1525,7 @@ def import_eastmoney_statement(
             )
 
         recalculated_symbols = 0
-        for symbol, market in affected_symbols:
+        for symbol, market in sorted(affected_symbols):  # 时间线锁按键排序取，防死锁
             recalculate_holdings(db, user_id, symbol, market, commit=False)
             recalculated_symbols += 1
 
@@ -1672,17 +1553,11 @@ def import_eastmoney_statement(
             db.query(BrokerFundFlow).filter(BrokerFundFlow.import_batch_id == batch_id).count()
         )
         result["archived_source_rows"] = imported_source_rows
-        canonical_imported_count = (
-            imported_transactions
-            + imported_corporate_actions
-            + imported_tax_adjustments
-            + imported_cash_events
-        )
         completed_batch = complete_import_batch(
             db,
             batch_id,
             result=result,
-            imported_count=canonical_imported_count,
+            imported_count=booked_source_rows(db, BrokerFundFlow, batch_id, recovered_tax_hashes),
             archived_count=imported_source_rows,
         )
         result.update(
@@ -1696,24 +1571,14 @@ def import_eastmoney_statement(
         )
         return result
     except Exception as exc:
-        if records_committed:
-            db.rollback()
-            imported_source_rows = archived_row_count(db, BrokerFundFlow, batch_id)
-        canonical_imported_count = (
-            imported_transactions
-            + imported_corporate_actions
-            + imported_tax_adjustments
-            + imported_cash_events
-            if records_committed
-            else 0
-        )
-        fail_import_batch(
+        fail_broker_import(
             db,
             batch_id,
             exc,
+            model=BrokerFundFlow,
             records_committed=records_committed,
             row_count=total_rows,
-            imported_count=canonical_imported_count,
-            archived_count=imported_source_rows if records_committed else 0,
+            duplicate_count=len(duplicate_hashes),
+            revived_hashes=recovered_tax_hashes,
         )
         raise

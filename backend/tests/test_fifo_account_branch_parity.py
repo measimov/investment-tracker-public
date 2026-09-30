@@ -57,7 +57,8 @@ def _scenario(account_a, account_b):
 def test_single_and_multi_account_branches_agree_on_sold_cost():
     """两个账户 → 多账户分支；同样的交易挂同一账户 → 单账户分支。"""
     multi = merge_account_fifo_results(
-        SYMBOL, MARKET,
+        SYMBOL,
+        MARKET,
         replay_fifo_multi_account(SYMBOL, MARKET, _scenario(1, 2), []),
     )
     single = calculate_fifo_pnl(SYMBOL, MARKET, _scenario(1, 1), [])
@@ -74,7 +75,8 @@ def test_single_and_multi_account_branches_agree_on_sold_cost():
 def test_merged_sold_cost_matches_exact_decimal_sum():
     """聚合结果必须等于 Decimal 精确和，而不是逐账户 float 相加的结果。"""
     multi = merge_account_fifo_results(
-        SYMBOL, MARKET,
+        SYMBOL,
+        MARKET,
         replay_fifo_multi_account(SYMBOL, MARKET, _scenario(1, 2), []),
     )
 
@@ -86,7 +88,8 @@ def test_merged_sold_cost_matches_exact_decimal_sum():
 def test_merged_output_is_float_at_the_user_level_exit():
     """内部保持 Decimal，但用户级出口仍必须是 float（既有消费方的形状）。"""
     multi = merge_account_fifo_results(
-        SYMBOL, MARKET,
+        SYMBOL,
+        MARKET,
         replay_fifo_multi_account(SYMBOL, MARKET, _scenario(1, 2), []),
     )
 
@@ -104,10 +107,13 @@ def test_open_lots_also_agree_between_branches():
         _txn(2, "BUY", 1, LOT_B, 3, 2),
     ]
     multi = merge_account_fifo_results(
-        SYMBOL, MARKET, replay_fifo_multi_account(SYMBOL, MARKET, open_only, []),
+        SYMBOL,
+        MARKET,
+        replay_fifo_multi_account(SYMBOL, MARKET, open_only, []),
     )
     single = calculate_fifo_pnl(
-        SYMBOL, MARKET,
+        SYMBOL,
+        MARKET,
         [_txn(1, "BUY", 1, LOT_A, 2, 1), _txn(2, "BUY", 1, LOT_B, 3, 1)],
         [],
     )
@@ -126,7 +132,9 @@ def test_ordinary_amounts_are_unaffected():
         _txn(3, "SELL", 100, "15", 10, 1),
     ]
     multi = merge_account_fifo_results(
-        SYMBOL, MARKET, replay_fifo_multi_account(SYMBOL, MARKET, plain, []),
+        SYMBOL,
+        MARKET,
+        replay_fifo_multi_account(SYMBOL, MARKET, plain, []),
     )
 
     assert multi["sold_cost"] == pytest.approx(1000.0)

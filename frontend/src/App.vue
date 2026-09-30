@@ -138,6 +138,11 @@
         </div>
       </transition>
       <el-main class="app-main">
+        <!-- 首次导航要等会话探测（/auth/me）返回；此前 router-view 为空，页面是整块白屏 -->
+        <div v-if="initialNavigationPending" class="app-boot-loading" role="status">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span>正在连接服务…</span>
+        </div>
         <router-view />
       </el-main>
     </el-container>
@@ -154,6 +159,7 @@ import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
 import {
+  ArrowDown,
   Bell,
   ChatDotRound,
   Close,
@@ -171,6 +177,7 @@ import {
   Tickets,
   TrendCharts,
   User,
+  Loading,
   Wallet,
   WarningFilled
 } from '@element-plus/icons-vue'
@@ -180,6 +187,8 @@ const router = useRouter()
 const authStore = useAuthStore()
 const appStatus = useAppStatusStore()
 const mobileNavVisible = ref(false)
+// 首次导航完成前 route 还是 START_LOCATION（没有匹配记录）
+const initialNavigationPending = computed(() => route.matched.length === 0)
 
 // 导航项集中定义，桌面端与移动端菜单共用（认证状态由路由守卫恢复）。
 // 按使用频率排：常用页在前；低频页主动收进「更多」，不等宽度不够时被 EP 挤进「…」
@@ -416,6 +425,16 @@ const handleUserCommand = async (command: string) => {
   max-width: 1440px;
   margin: 0 auto;
   padding: 20px 24px;
+}
+
+.app-boot-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40vh;
+  color: var(--el-text-color-secondary);
+  font-size: 14px;
 }
 
 .status-overlay {

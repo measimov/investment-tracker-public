@@ -54,8 +54,12 @@ CHINA_OVERSEAS_PS_ROWS = {
 
 def _row(year, currency, eps, profit, revenue, **extra):
     return {
-        "end_date": f"{year}1231", "fp": "FY", "currency": currency,
-        "basic_eps": eps, "n_income_attr_p": profit, "total_revenue": revenue,
+        "end_date": f"{year}1231",
+        "fp": "FY",
+        "currency": currency,
+        "basic_eps": eps,
+        "n_income_attr_p": profit,
+        "total_revenue": revenue,
         **extra,
     }
 
@@ -78,8 +82,11 @@ def _valuation(fx_rates, currency="HKD"):
 
 def _eq(statements, market):
     return compute_earnings_quality(
-        statements["income"], statements["balancesheet"],
-        statements["cashflow"], statements["fina_indicator"], market=market,
+        statements["income"],
+        statements["balancesheet"],
+        statements["cashflow"],
+        statements["fina_indicator"],
+        market=market,
     )
 
 
@@ -93,7 +100,9 @@ def test_single_currency_outputs_byte_identical_to_pre_change():
         statements = market_statements("A股", inputs["statement_datasets"])
         actual[f"A股:{case['symbol']}"] = {
             "graham": compute_graham_screen(
-                "A股", statements, daily_basic_rows=inputs["daily_basic_rows"],
+                "A股",
+                statements,
+                daily_basic_rows=inputs["daily_basic_rows"],
                 dividend_rows=inputs["dividend_rows"],
             ),
             "earnings_quality": _eq(statements, "A股"),
@@ -105,9 +114,13 @@ def test_single_currency_outputs_byte_identical_to_pre_change():
         )
         actual[f"港股:{symbol}"] = {
             "graham": compute_graham_screen(
-                "港股", statements,
-                valuation={"price": _price(close), "fx_rates": {"CNY": CNY_HKD},
-                           "interim_rows": interim},
+                "港股",
+                statements,
+                valuation={
+                    "price": _price(close),
+                    "fx_rates": {"CNY": CNY_HKD},
+                    "interim_rows": interim,
+                },
             ),
             "earnings_quality": _eq(statements, "港股"),
         }
@@ -121,7 +134,9 @@ def test_single_currency_outputs_byte_identical_to_pre_change():
 def test_usd_to_hkd_growth_compared_in_constant_currency_flips_to_fail():
     """00799：2016 年 0.0537 USD 按价格日汇率 ≈ 0.4212 HKD，对 2025 年 0.5102 HKD 仅 +21%。"""
     result = compute_graham_screen(
-        "港股", _statements(IGG_ROWS), valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
+        "港股",
+        _statements(IGG_ROWS),
+        valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
     )
     growth = _growth(result)
     expected = (0.5102 / (0.0537 * USD_HKD) - 1) * 100
@@ -141,7 +156,8 @@ def test_usd_to_hkd_growth_compared_in_constant_currency_flips_to_fail():
 def test_hkd_to_cny_growth_converted_into_latest_currency():
     """02669：2016 年 HKD 折成 2025 年的 CNY 再比（首尾共用价格日汇率）。"""
     result = compute_graham_screen(
-        "港股", _statements(CHINA_OVERSEAS_PS_ROWS),
+        "港股",
+        _statements(CHINA_OVERSEAS_PS_ROWS),
         valuation=_valuation({"CNY": CNY_HKD_0925, "HKD": 1.0}),
     )
     growth = _growth(result)
@@ -154,13 +170,20 @@ def test_hkd_to_cny_growth_converted_into_latest_currency():
 
 def test_growth_independent_of_price_currency():
     """同一汇率折算：增幅与用哪种价格币种做中转无关（汇率变动不计入增长）。"""
-    hkd = _growth(compute_graham_screen(
-        "港股", _statements(IGG_ROWS), valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
-    ))
-    cny = _growth(compute_graham_screen(
-        "港股", _statements(IGG_ROWS),
-        valuation=_valuation({"USD": 6.7126, "HKD": 0.85590422}, currency="CNY"),
-    ))
+    hkd = _growth(
+        compute_graham_screen(
+            "港股",
+            _statements(IGG_ROWS),
+            valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
+        )
+    )
+    cny = _growth(
+        compute_graham_screen(
+            "港股",
+            _statements(IGG_ROWS),
+            valuation=_valuation({"USD": 6.7126, "HKD": 0.85590422}, currency="CNY"),
+        )
+    )
     assert hkd["value"] == pytest.approx(cny["value"], rel=1e-6)
 
 
@@ -188,9 +211,13 @@ def test_unknown_endpoint_currency_is_indeterminate(unknown_years, market):
     table = dict(IGG_ROWS)
     for year in unknown_years:
         table[year] = (None, *IGG_ROWS[year][1:])
-    growth = _growth(compute_graham_screen(
-        market, _statements(table), valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
-    ))
+    growth = _growth(
+        compute_graham_screen(
+            market,
+            _statements(table),
+            valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
+        )
+    )
     assert growth["verdict"] == "indeterminate"
     assert growth["value"] is None
     assert "首尾币种无法确认一致" in growth["reason"]
@@ -220,11 +247,17 @@ def test_a_share_rows_without_currency_resolved_by_market():
 
 def test_same_currency_endpoints_unchanged_even_if_middle_years_switch():
     """只看首尾：两端同币种（中间年份换过币种）照旧直接比较，不带折算依据。"""
-    table = {year: ("HKD" if year in (2016, 2025) else "USD", *values[1:])
-             for year, values in IGG_ROWS.items()}
-    growth = _growth(compute_graham_screen(
-        "港股", _statements(table), valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
-    ))
+    table = {
+        year: ("HKD" if year in (2016, 2025) else "USD", *values[1:])
+        for year, values in IGG_ROWS.items()
+    }
+    growth = _growth(
+        compute_graham_screen(
+            "港股",
+            _statements(table),
+            valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
+        )
+    )
     assert growth["value"] == pytest.approx((0.5102 / 0.0537 - 1) * 100, abs=1e-4)
     assert "basis" not in growth
     assert "同一汇率" not in growth["reason"]
@@ -232,10 +265,15 @@ def test_same_currency_endpoints_unchanged_even_if_middle_years_switch():
 
 def test_three_year_average_supplement_uses_one_rate_for_all_years():
     """三年平均 PE 补充值：跨币种年份逐行按同一组汇率折价格币种（既有行为，钉住）。"""
-    table = {2025: ("HKD", 0.5, 1.0e8, 1.0e9), 2024: ("USD", 0.05, 1.0e7, 1.0e8),
-             2023: ("USD", 0.05, 1.0e7, 1.0e8)}
+    table = {
+        2025: ("HKD", 0.5, 1.0e8, 1.0e9),
+        2024: ("USD", 0.05, 1.0e7, 1.0e8),
+        2023: ("USD", 0.05, 1.0e7, 1.0e8),
+    }
     result = compute_graham_screen(
-        "港股", _statements(table), valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
+        "港股",
+        _statements(table),
+        valuation=_valuation({"USD": USD_HKD, "HKD": 1.0}),
     )
     supplement = next(c for c in result["criteria"] if c["criterion"] == "pe")["supplement"]
     average = (0.5 + 0.05 * USD_HKD * 2) / 3
@@ -249,10 +287,20 @@ def _full_row(year, currency, scale, revenue_growth=1.1):
     """科目齐全、同一 scale 的年度行：M-score 所需八因子都可算。"""
     k = scale * (revenue_growth ** (year - 2016))
     return _row(
-        year, currency, 0.1 * k, 100.0 * k, 1000.0 * k,
-        cost_of_revenue=600.0 * k, accounts_receiv=150.0 * k, inventories=200.0 * k,
-        total_cur_assets=800.0 * k, fix_assets=600.0 * k, total_assets=2000.0 * k,
-        total_liab=1000.0 * k, sga_exp=120.0 * k, n_cashflow_act=90.0 * k,
+        year,
+        currency,
+        0.1 * k,
+        100.0 * k,
+        1000.0 * k,
+        cost_of_revenue=600.0 * k,
+        accounts_receiv=150.0 * k,
+        inventories=200.0 * k,
+        total_cur_assets=800.0 * k,
+        fix_assets=600.0 * k,
+        total_assets=2000.0 * k,
+        total_liab=1000.0 * k,
+        sga_exp=120.0 * k,
+        n_cashflow_act=90.0 * k,
         depr_fa_coga_dpba=80.0 * k,
     )
 
@@ -264,8 +312,10 @@ def _quality(rows):
 
 def test_earnings_quality_skips_cross_currency_pair_and_marks_switch_year():
     """00799 形态：2021 年起 HKD（金额 ≈ USD × 7.8）。切换年的增速差与 M-score 不计，其余年份照算。"""
-    rows = [_full_row(year, "HKD" if year >= 2021 else "USD", 7.8 if year >= 2021 else 1.0)
-            for year in range(2025, 2016, -1)]
+    rows = [
+        _full_row(year, "HKD" if year >= 2021 else "USD", 7.8 if year >= 2021 else 1.0)
+        for year in range(2025, 2016, -1)
+    ]
     result = _quality(rows)
     switch = result["per_year"]["2021"]
     assert switch["currency_change"] == "USD→HKD"
@@ -289,7 +339,9 @@ def test_earnings_quality_skips_cross_currency_pair_and_marks_switch_year():
 
 def test_five_year_cfo_ni_stops_at_currency_switch():
     """02669 形态：2023 年起 CNY、此前 HKD——近 5 年累计只含 CNY 的 3 年，不把 HKD 与 CNY 相加。"""
-    rows = [_full_row(year, "CNY" if year >= 2023 else "HKD", 1.0) for year in range(2025, 2016, -1)]
+    rows = [
+        _full_row(year, "CNY" if year >= 2023 else "HKD", 1.0) for year in range(2025, 2016, -1)
+    ]
     # 让 HKD 年份的 CFO/NI 明显不同：混进来累计值就会偏离 0.9
     for row in rows:
         if row["currency"] == "HKD":
@@ -304,8 +356,12 @@ def test_five_year_cfo_ni_stops_at_currency_switch():
 def test_single_currency_quality_has_no_currency_keys():
     rows = [_full_row(year, "HKD", 1.0) for year in range(2025, 2016, -1)]
     result = _quality(rows)
-    assert not {"currency_changes", "currency_change_note", "cfo_ni_ratio_5y_note",
-                "cfo_ni_ratio_5y_years"} & set(result)
+    assert not {
+        "currency_changes",
+        "currency_change_note",
+        "cfo_ni_ratio_5y_note",
+        "cfo_ni_ratio_5y_years",
+    } & set(result)
     assert all("currency_change" not in item for item in result["per_year"].values())
 
 

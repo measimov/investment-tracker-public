@@ -1,26 +1,6 @@
 // 标的详情页页内类型（跨页共享形状见 types/index.ts）
-import type { OpinionAuthorStance } from '@/types'
-import type { RiskLevelAdjustment } from './analysisTags'
-
-export interface OpinionSummaryDetail {
-  id: number
-  symbol: string
-  market: string
-  name: string | null
-  tags: string[]
-  summary: string
-  author_stances: OpinionAuthorStance[]
-  content: string
-  model: string
-  total_tokens: number | null
-  utterance_count: number
-  recent_utterance_count: number
-  recent_days: number
-  lookback_days: number
-  latest_utterance_at: string | null
-  created_at: string
-  previous: { tags: string[]; summary: string; created_at: string | null } | null
-}
+import type { AnalysisJob, OpinionAuthorStance } from '@/types'
+import type { OutputAdjustment, RiskLevelAdjustment } from './analysisTags'
 
 export interface AnalysisDetail {
   id: number
@@ -29,24 +9,14 @@ export interface AnalysisDetail {
   risk_level: string
   /** 风险等级按市场下限上调的记录（港股 low→medium）；未上调或旧分析行为 null */
   risk_level_adjusted?: RiskLevelAdjustment | null
+  /** 解析层对模型输出的调整记录（标签归一/丢弃/截断、补免责声明）；无调整或旧分析行为 null */
+  output_adjustments?: OutputAdjustment[] | null
   summary: string
   content: string
   model?: string
   total_tokens?: number | null
   created_at?: string | null
   data_fetched_at?: string | null
-}
-
-export interface AnalysisJob {
-  id?: string
-  status?: string
-  stage?: string | null
-  stage_label?: string | null
-  completed?: number
-  total?: number
-  progress_percent?: number | string | null
-  error?: string | null
-  [key: string]: unknown
 }
 
 // 档案端点是 Dict[str, Any]（无 OpenAPI schema），行形状随数据集而变
@@ -124,16 +94,4 @@ export interface SecurityProfileState {
   backfilling: boolean
   backfillResult: ProfileRow | null
   watchState: WatchState
-}
-
-export interface OpinionJob {
-  id: string
-  status: string
-  stage?: string | null
-  stage_label?: string | null
-  completed?: number
-  total?: number
-  error?: string | null
-  summary_id?: number | null
-  [key: string]: unknown
 }

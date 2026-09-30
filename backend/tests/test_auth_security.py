@@ -11,7 +11,6 @@ from app.models.transaction import Transaction
 from app.models.user import User
 
 
-
 def _clean_auth_test_data(db, user_id: int) -> None:
     symbols = ["COOKIE001", "BEARER001"]
     db.query(Transaction).filter(
@@ -136,9 +135,7 @@ async def test_logout_revokes_replayed_jwt(prepared_auth_user):
         csrf_token = client.cookies.get(CSRF_COOKIE_NAME)
 
         # Replay works while the session lives.
-        replay = await client.get(
-            "/api/auth/me", headers={"Authorization": f"Bearer {stolen_jwt}"}
-        )
+        replay = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {stolen_jwt}"})
         assert replay.status_code == 200
 
         logout = await client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf_token})
@@ -179,9 +176,7 @@ async def test_password_change_revokes_all_outstanding_tokens(prepared_auth_user
 
         # Both pre-change tokens are dead, including the one that made the change.
         for token in (token_a, token_b):
-            check = await client.get(
-                "/api/auth/me", headers={"Authorization": f"Bearer {token}"}
-            )
+            check = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
             assert check.status_code == 401
 
         # The new password issues a working session.
@@ -218,9 +213,7 @@ async def test_reactivated_user_cannot_reuse_pre_deactivation_token(prepared_aut
         finally:
             db.close()
 
-        check = await client.get(
-            "/api/auth/me", headers={"Authorization": f"Bearer {token}"}
-        )
+        check = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert check.status_code == 401
 
 
@@ -270,9 +263,7 @@ async def test_refresh_extends_same_session_and_keeps_in_flight_tokens_valid(
 
         # 新 Cookie 正常工作；旧令牌在自身剩余寿命内仍有效
         assert (await client.get("/api/auth/me")).status_code == 200
-        replay = await client.get(
-            "/api/auth/me", headers={"Authorization": f"Bearer {old_jwt}"}
-        )
+        replay = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {old_jwt}"})
         assert replay.status_code == 200
 
 
@@ -379,9 +370,7 @@ def test_security_settings_default_to_fail_closed():
 
 
 @pytest.mark.anyio
-async def test_plaintext_login_is_rejected_when_https_is_required(
-    prepared_auth_user, monkeypatch
-):
+async def test_plaintext_login_is_rejected_when_https_is_required(prepared_auth_user, monkeypatch):
     """require_https 打开后，明文登录必须被拒。"""
     from app.api import auth as auth_api
 
@@ -450,9 +439,7 @@ def test_session_renewal_stops_at_the_absolute_lifetime():
         db.refresh(session)
         assert session.revoked_at is not None, "到顶必须吊销，而不是留着等下次再试"
     finally:
-        db.query(AuthSession).filter(AuthSession.id == jti).delete(
-            synchronize_session=False
-        )
+        db.query(AuthSession).filter(AuthSession.id == jti).delete(synchronize_session=False)
         db.commit()
         db.close()
 

@@ -5,6 +5,7 @@ from datetime import date, datetime
 
 import pytest
 
+from app.core.timeutil import local_today
 from app.database import SessionLocal
 from app.models.background_job import BackgroundJob
 from app.services import performance_history_jobs, stock_price_service
@@ -13,16 +14,14 @@ from app.services.stock_price_service import retry_with_backoff, wait_for_tushar
 
 @pytest.fixture
 def reset_rate_gate():
-    stock_price_service._tushare_last_call_by_api.clear()
+    stock_price_service.reset_tushare_rate_gate()
     yield
-    stock_price_service._tushare_last_call_by_api.clear()
+    stock_price_service.reset_tushare_rate_gate()
 
 
 def test_global_gate_spaces_all_apis(monkeypatch, reset_rate_gate):
     """全局闸对所有 API（含跨接口、无 per-API 间隔的接口）统一生效。"""
-    monkeypatch.setattr(
-        stock_price_service.settings, "tushare_global_min_interval_seconds", 0.12
-    )
+    monkeypatch.setattr(stock_price_service.settings, "tushare_global_min_interval_seconds", 0.12)
     start = time.monotonic()
     wait_for_tushare_rate_limit("daily")
     wait_for_tushare_rate_limit("stock_basic")  # 不同 API 也要隔开
@@ -32,9 +31,7 @@ def test_global_gate_spaces_all_apis(monkeypatch, reset_rate_gate):
 
 
 def test_global_gate_disabled_when_zero(monkeypatch, reset_rate_gate):
-    monkeypatch.setattr(
-        stock_price_service.settings, "tushare_global_min_interval_seconds", 0.0
-    )
+    monkeypatch.setattr(stock_price_service.settings, "tushare_global_min_interval_seconds", 0.0)
     start = time.monotonic()
     for _ in range(5):
         wait_for_tushare_rate_limit("daily")
@@ -150,19 +147,33 @@ def test_refresh_history_uses_incremental_fetch(monkeypatch):
         db.query(model).delete()
     db.commit()
     try:
-        db.add(Transaction(
-            user_id=1, symbol="600000", name="增量标的", market="A股",
-            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-            fee=Decimal("0"), transaction_date=date(2026, 1, 5), currency="CNY",
-        ))
+        db.add(
+            Transaction(
+                user_id=1,
+                symbol="600000",
+                name="增量标的",
+                market="A股",
+                transaction_type="BUY",
+                quantity=Decimal("100"),
+                price=Decimal("10"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 1, 5),
+                currency="CNY",
+            )
+        )
         db.commit()
 
         calls = []
 
         def fake_incremental(db_, **kwargs):
             calls.append(kwargs["symbol"])
-            return {"symbol": kwargs["symbol"], "market": kwargs["market"],
-                    "success": True, "rows": 0, "skipped": True}
+            return {
+                "symbol": kwargs["symbol"],
+                "market": kwargs["market"],
+                "success": True,
+                "rows": 0,
+                "skipped": True,
+            }
 
         monkeypatch.setattr(
             analytics,
@@ -170,7 +181,10 @@ def test_refresh_history_uses_incremental_fetch(monkeypatch):
             fake_incremental,
         )
         result = analytics.calculate_performance_analytics(
-            db, 1, {"600000": 10}, refresh_history=True,
+            db,
+            1,
+            {"600000": 10},
+            refresh_history=True,
         )
         assert calls == ["600000"]
         assert result["data_quality"]["sync_results"][0]["skipped"] is True
@@ -203,28 +217,40 @@ def test_exchange_rate_auto_refresh_checks_all_required_currencies(monkeypatch):
     monkeypatch.setattr(exchange_rate_service, "fetch_latest_rates_from_api", fake_fetch)
 
     # 空库 → 刷新
-    assert exchange_rate_service.refresh_rates_if_stale() == 1
+    assert exchange_rate_service.periodic_refresh_rates().count == 1
     assert calls["n"] == 1
 
     db = SessionLocal()
     try:
         # 仅今日 USD → 仍不完整，继续刷新（不得被掩盖）
-        db.add(ExchangeRate(
-            from_currency="USD", to_currency="CNY", rate=Decimal("7.2"),
-            effective_date=date.today(), source="test", is_active=True,
-        ))
+        db.add(
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("7.2"),
+                effective_date=local_today(),
+                source="test",
+                is_active=True,
+            )
+        )
         db.commit()
-        assert exchange_rate_service.refresh_rates_if_stale() == 1
+        assert exchange_rate_service.periodic_refresh_rates().count == 1
         assert calls["n"] == 2
 
         # 三币种齐备 → 零外呼跳过
         for currency, rate in (("HKD", "0.92"), ("SGD", "5.4")):
-            db.add(ExchangeRate(
-                from_currency=currency, to_currency="CNY", rate=Decimal(rate),
-                effective_date=date.today(), source="test", is_active=True,
-            ))
+            db.add(
+                ExchangeRate(
+                    from_currency=currency,
+                    to_currency="CNY",
+                    rate=Decimal(rate),
+                    effective_date=local_today(),
+                    source="test",
+                    is_active=True,
+                )
+            )
         db.commit()
-        assert exchange_rate_service.refresh_rates_if_stale() == 0
+        assert exchange_rate_service.periodic_refresh_rates().count == 0
         assert calls["n"] == 2
     finally:
         db.query(ExchangeRate).delete()
@@ -237,13 +263,12 @@ def test_compose_passes_tushare_and_llm_settings():
     只参与插值、不进容器，运行时永远用代码默认值。"""
     from pathlib import Path
 
+    import re
+
     compose = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
-    for var in (
-        "TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS=${TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS:-0.35}",
-        "LLM_REPORT_API_KEY=${LLM_REPORT_API_KEY:-}",
-        "LLM_REPORT_MODEL=${LLM_REPORT_MODEL:-deepseek-flash}",
-    ):
-        assert var in compose, var
+    for var in ("TUSHARE_GLOBAL_MIN_INTERVAL_SECONDS", "LLM_REPORT_API_KEY", "LLM_REPORT_MODEL"):
+        # 裸键透传（默认值只在 config.py，#278）
+        assert re.search(rf"^\s+- {var}\s*$", compose, re.M), var
 
 
 def test_incremental_skips_when_cached_through_yesterday(monkeypatch):
@@ -260,13 +285,19 @@ def test_incremental_skips_when_cached_through_yesterday(monkeypatch):
     db.query(SecurityPrice).filter_by(symbol="INCR01").delete()
     db.commit()
     try:
-        yesterday = date.today() - timedelta(days=1)
+        yesterday = local_today() - timedelta(days=1)
         for offset in (3, 2, 1):
-            db.add(SecurityPrice(
-                symbol="INCR01", market="A股", ts_code="INCR01.SH",
-                price_date=date.today() - timedelta(days=offset),
-                currency="CNY", close_price=Decimal("10"), source="test",
-            ))
+            db.add(
+                SecurityPrice(
+                    symbol="INCR01",
+                    market="A股",
+                    ts_code="INCR01.SH",
+                    price_date=local_today() - timedelta(days=offset),
+                    currency="CNY",
+                    close_price=Decimal("10"),
+                    source="test",
+                )
+            )
         db.commit()
 
         def explode(*args, **kwargs):
@@ -274,9 +305,11 @@ def test_incremental_skips_when_cached_through_yesterday(monkeypatch):
 
         monkeypatch.setattr(mds, "fetch_and_store_security_price_history", explode)
         result = mds.fetch_and_store_security_price_history_incremental(
-            db, symbol="INCR01", market="A股",
-            start_date=date.today() - timedelta(days=3),
-            end_date=date.today(),  # 含今天
+            db,
+            symbol="INCR01",
+            market="A股",
+            start_date=local_today() - timedelta(days=3),
+            end_date=local_today(),  # 含今天
         )
         assert result["skipped"] is True
         assert result["coverage_before"]["end_date"] == yesterday.isoformat()
@@ -302,23 +335,48 @@ def test_sync_targets_clamp_exited_symbols_to_last_trade_date():
     try:
         # 已清仓：买入后全部卖出，最后交易日 2026-03-01
         for txn_type, txn_date in (("BUY", date(2026, 1, 5)), ("SELL", date(2026, 3, 1))):
-            db.add(Transaction(
-                user_id=2, symbol="DEAD01", name="退市标的", market="港股",
-                transaction_type=txn_type, quantity=Decimal("100"),
-                price=Decimal("10"), fee=Decimal("0"),
-                transaction_date=txn_date, currency="HKD",
-            ))
+            db.add(
+                Transaction(
+                    user_id=2,
+                    symbol="DEAD01",
+                    name="退市标的",
+                    market="港股",
+                    transaction_type=txn_type,
+                    quantity=Decimal("100"),
+                    price=Decimal("10"),
+                    fee=Decimal("0"),
+                    transaction_date=txn_date,
+                    currency="HKD",
+                )
+            )
         # 在持：有持仓行
-        db.add(Transaction(
-            user_id=2, symbol="ALIVE1", name="在持标的", market="美股",
-            transaction_type="BUY", quantity=Decimal("10"), price=Decimal("5"),
-            fee=Decimal("0"), transaction_date=date(2026, 2, 1), currency="USD",
-        ))
-        db.add(Holding(
-            user_id=2, broker_account_id=None, symbol="ALIVE1", name="在持标的",
-            market="美股", quantity=Decimal("10"), avg_cost=Decimal("5"),
-            total_cost=Decimal("50"), currency="USD",
-        ))
+        db.add(
+            Transaction(
+                user_id=2,
+                symbol="ALIVE1",
+                name="在持标的",
+                market="美股",
+                transaction_type="BUY",
+                quantity=Decimal("10"),
+                price=Decimal("5"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 2, 1),
+                currency="USD",
+            )
+        )
+        db.add(
+            Holding(
+                user_id=2,
+                broker_account_id=None,
+                symbol="ALIVE1",
+                name="在持标的",
+                market="美股",
+                quantity=Decimal("10"),
+                avg_cost=Decimal("5"),
+                total_cost=Decimal("50"),
+                currency="USD",
+            )
+        )
         db.commit()
 
         info = performance_history_jobs.get_history_sync_targets(db, 2)
@@ -345,8 +403,12 @@ def test_uncovered_on_held_symbol_still_counts_as_failure(monkeypatch, clear_his
             "start_date": datetime(2026, 7, 1).date(),
             "end_date": datetime(2026, 7, 10).date(),
             "targets": [
-                {"symbol": f"S{i}", "market": "美股", "currency": "USD",
-                 "end_date": datetime(2026, 7, 10).date()}
+                {
+                    "symbol": f"S{i}",
+                    "market": "美股",
+                    "currency": "USD",
+                    "end_date": datetime(2026, 7, 10).date(),
+                }
                 for i in range(6)
             ],
         },
@@ -355,8 +417,11 @@ def test_uncovered_on_held_symbol_still_counts_as_failure(monkeypatch, clear_his
         performance_history_jobs,
         "fetch_and_store_security_price_history_incremental",
         lambda *a, **kw: {
-            "symbol": kw["symbol"], "market": kw["market"], "success": False,
-            "rows": 0, "error": "数据源未返回请求区间内的历史行情",
+            "symbol": kw["symbol"],
+            "market": kw["market"],
+            "success": False,
+            "rows": 0,
+            "error": "数据源未返回请求区间内的历史行情",
             "coverage_status": "uncovered",
         },
     )
@@ -386,17 +451,24 @@ def test_effective_tail_end_skips_weekends(monkeypatch):
     mds._trade_cal_cache.clear()
     try:
         for offset in range(3):
-            db.add(SecurityPrice(
-                symbol="WKND01", market="A股", ts_code="WKND01.SH",
-                price_date=friday - timedelta(days=offset),
-                currency="CNY", close_price=Decimal("10"), source="test",
-            ))
+            db.add(
+                SecurityPrice(
+                    symbol="WKND01",
+                    market="A股",
+                    ts_code="WKND01.SH",
+                    price_date=friday - timedelta(days=offset),
+                    currency="CNY",
+                    close_price=Decimal("10"),
+                    source="test",
+                )
+            )
         db.commit()
 
         monkeypatch.setattr(mds, "_today", lambda: sunday)
         # 日历接口失败 → 退化为最近工作日（周五）
         monkeypatch.setattr(
-            mds, "tushare_query_once",
+            mds,
+            "tushare_query_once",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("calendar down")),
         )
 
@@ -405,8 +477,11 @@ def test_effective_tail_end_skips_weekends(monkeypatch):
 
         monkeypatch.setattr(mds, "fetch_and_store_security_price_history", explode)
         result = mds.fetch_and_store_security_price_history_incremental(
-            db, symbol="WKND01", market="A股",
-            start_date=friday - timedelta(days=2), end_date=sunday,
+            db,
+            symbol="WKND01",
+            market="A股",
+            start_date=friday - timedelta(days=2),
+            end_date=sunday,
         )
         assert result["skipped"] is True
     finally:
@@ -450,11 +525,17 @@ def test_trade_calendar_excludes_weekday_holiday(monkeypatch):
     mds._trade_cal_cache.clear()
     try:
         for sym in ("HOLI01", "HOLI02"):
-            db.add(SecurityPrice(
-                symbol=sym, market="A股", ts_code=f"{sym}.SH",
-                price_date=last_open, currency="CNY",
-                close_price=Decimal("10"), source="test",
-            ))
+            db.add(
+                SecurityPrice(
+                    symbol=sym,
+                    market="A股",
+                    ts_code=f"{sym}.SH",
+                    price_date=last_open,
+                    currency="CNY",
+                    close_price=Decimal("10"),
+                    source="test",
+                )
+            )
         db.commit()
         monkeypatch.setattr(mds, "_today", lambda: tuesday)
         monkeypatch.setattr(mds, "tushare_query_once", fake_calendar)
@@ -465,8 +546,11 @@ def test_trade_calendar_excludes_weekday_holiday(monkeypatch):
         monkeypatch.setattr(mds, "fetch_and_store_security_price_history", explode)
         for sym in ("HOLI01", "HOLI02"):
             result = mds.fetch_and_store_security_price_history_incremental(
-                db, symbol=sym, market="A股",
-                start_date=last_open, end_date=tuesday,
+                db,
+                symbol=sym,
+                market="A股",
+                start_date=last_open,
+                end_date=tuesday,
             )
             assert result["skipped"] is True
         assert calendar_calls == ["trade_cal"]  # 日历每市场每天仅 1 次
@@ -498,15 +582,22 @@ def test_one_symbols_empty_result_never_suppresses_another(monkeypatch):
     mds._trade_cal_cache.clear()
     try:
         for sym in ("SUSP01", "LIVE01"):
-            db.add(SecurityPrice(
-                symbol=sym, market="A股", ts_code=f"{sym}.SH",
-                price_date=tuesday - timedelta(days=1), currency="CNY",
-                close_price=Decimal("10"), source="test",
-            ))
+            db.add(
+                SecurityPrice(
+                    symbol=sym,
+                    market="A股",
+                    ts_code=f"{sym}.SH",
+                    price_date=tuesday - timedelta(days=1),
+                    currency="CNY",
+                    close_price=Decimal("10"),
+                    source="test",
+                )
+            )
         db.commit()
         monkeypatch.setattr(mds, "_today", lambda: wednesday)
         monkeypatch.setattr(
-            mds, "tushare_query_once",
+            mds,
+            "tushare_query_once",
             lambda *a, **k: (_ for _ in ()).throw(RuntimeError("calendar down")),
         )
 
@@ -515,18 +606,29 @@ def test_one_symbols_empty_result_never_suppresses_another(monkeypatch):
         def fetch(db_, *, symbol, market, start_date, end_date, currency=None):
             fetched.append(symbol)
             if symbol == "SUSP01":  # 停牌标的：空返回
-                return {"symbol": symbol, "market": market, "success": True,
-                        "rows": 0, "coverage_status": "no_data"}
+                return {
+                    "symbol": symbol,
+                    "market": market,
+                    "success": True,
+                    "rows": 0,
+                    "coverage_status": "no_data",
+                }
             return {"symbol": symbol, "market": market, "success": True, "rows": 1}
 
         monkeypatch.setattr(mds, "fetch_and_store_security_price_history", fetch)
         r1 = mds.fetch_and_store_security_price_history_incremental(
-            db, symbol="SUSP01", market="A股",
-            start_date=tuesday - timedelta(days=1), end_date=wednesday,
+            db,
+            symbol="SUSP01",
+            market="A股",
+            start_date=tuesday - timedelta(days=1),
+            end_date=wednesday,
         )
         r2 = mds.fetch_and_store_security_price_history_incremental(
-            db, symbol="LIVE01", market="A股",
-            start_date=tuesday - timedelta(days=1), end_date=wednesday,
+            db,
+            symbol="LIVE01",
+            market="A股",
+            start_date=tuesday - timedelta(days=1),
+            end_date=wednesday,
         )
         assert fetched == ["SUSP01", "LIVE01"]  # 第二只必须仍然抓取
         assert r1["success"] and r2["success"]
@@ -544,9 +646,7 @@ def test_dual_gate_release_spacing_under_concurrency(monkeypatch, reset_rate_gat
     另一线程凭"全局间隔已过"同时放行。"""
     import threading
 
-    monkeypatch.setattr(
-        stock_price_service.settings, "tushare_global_min_interval_seconds", 0.15
-    )
+    monkeypatch.setattr(stock_price_service.settings, "tushare_global_min_interval_seconds", 0.15)
     monkeypatch.setattr(stock_price_service.settings, "tushare_hk_min_interval_seconds", 0.4)
 
     releases = {}
@@ -576,8 +676,11 @@ def test_incremental_empty_cache_today_only_window_does_not_crash():
     db = SessionLocal()
     try:
         result = mds.fetch_and_store_security_price_history_incremental(
-            db, symbol="EMPTY01", market="A股",
-            start_date=date.today(), end_date=date.today(),
+            db,
+            symbol="EMPTY01",
+            market="A股",
+            start_date=local_today(),
+            end_date=local_today(),
         )
         assert result["skipped"] is True
         assert result["coverage_before"]["start_date"] is None

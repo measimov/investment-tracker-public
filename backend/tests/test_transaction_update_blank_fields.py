@@ -36,9 +36,16 @@ def seeded():
         original = user.hashed_password
         user.hashed_password = get_password_hash(password)
         txn = Transaction(
-            user_id=user.id, symbol="600000", name="浦发银行", market="A股",
-            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-            fee=Decimal("1"), transaction_date=date(2026, 1, 1), currency="CNY",
+            user_id=user.id,
+            symbol="600000",
+            name="浦发银行",
+            market="A股",
+            transaction_type="BUY",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            fee=Decimal("1"),
+            transaction_date=date(2026, 1, 1),
+            currency="CNY",
         )
         db.add(txn)
         db.commit()
@@ -52,9 +59,7 @@ def seeded():
 
 
 def _client():
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver")
 
 
 @pytest.mark.anyio
@@ -84,9 +89,9 @@ async def test_blank_field_update_is_rejected_before_commit(seeded, payload, fie
     password, txn_id = seeded
 
     async with _client() as client:
-        token = (await client.post(
-            "/api/auth/token", json={"username": "demo", "password": password}
-        )).json()["access_token"]
+        token = (
+            await client.post("/api/auth/token", json={"username": "demo", "password": password})
+        ).json()["access_token"]
         response = await client.put(
             f"/api/transactions/{txn_id}",
             headers={"Authorization": f"Bearer {token}"},
@@ -116,9 +121,9 @@ async def test_nullable_fields_still_accept_explicit_null(seeded, field):
     password, txn_id = seeded
 
     async with _client() as client:
-        token = (await client.post(
-            "/api/auth/token", json={"username": "demo", "password": password}
-        )).json()["access_token"]
+        token = (
+            await client.post("/api/auth/token", json={"username": "demo", "password": password})
+        ).json()["access_token"]
         response = await client.put(
             f"/api/transactions/{txn_id}",
             headers={"Authorization": f"Bearer {token}"},
@@ -140,9 +145,9 @@ async def test_partial_update_still_works(seeded):
     password, txn_id = seeded
 
     async with _client() as client:
-        token = (await client.post(
-            "/api/auth/token", json={"username": "demo", "password": password}
-        )).json()["access_token"]
+        token = (
+            await client.post("/api/auth/token", json={"username": "demo", "password": password})
+        ).json()["access_token"]
         response = await client.put(
             f"/api/transactions/{txn_id}",
             headers={"Authorization": f"Bearer {token}"},
@@ -159,9 +164,9 @@ async def test_update_strips_surrounding_whitespace(seeded):
     password, txn_id = seeded
 
     async with _client() as client:
-        token = (await client.post(
-            "/api/auth/token", json={"username": "demo", "password": password}
-        )).json()["access_token"]
+        token = (
+            await client.post("/api/auth/token", json={"username": "demo", "password": password})
+        ).json()["access_token"]
         response = await client.put(
             f"/api/transactions/{txn_id}",
             headers={"Authorization": f"Bearer {token}"},
@@ -204,9 +209,7 @@ def test_every_update_field_is_explicitly_classified():
     assert actual - classified == set(), (
         f"这些字段未归类，显式传 null 可能落库后 500：{sorted(actual - classified)}"
     )
-    assert classified - actual == set(), (
-        f"清单里有已不存在的字段：{sorted(classified - actual)}"
-    )
+    assert classified - actual == set(), f"清单里有已不存在的字段：{sorted(classified - actual)}"
     # 两个集合不得重叠，否则语义自相矛盾
     assert set(TRANSACTION_REQUIRED_FIELDS) & set(TRANSACTION_NULLABLE_FIELDS) == set()
 
@@ -234,15 +237,20 @@ def test_model_non_nullable_columns_are_all_required_in_schema():
     from app.schemas.transaction import TRANSACTION_REQUIRED_FIELDS, TransactionUpdate
 
     # 服务端自管的列不在更新 schema 里，排除
-    server_managed = {"id", "user_id", "created_at", "updated_at",
-                      "import_batch_id", "linked_transaction_id"}
+    server_managed = {
+        "id",
+        "user_id",
+        "created_at",
+        "updated_at",
+        "import_batch_id",
+        "linked_transaction_id",
+    }
     non_nullable = {
-        c.name for c in Transaction.__table__.columns
+        c.name
+        for c in Transaction.__table__.columns
         if not c.nullable and c.name not in server_managed
     }
     updatable = non_nullable & set(TransactionUpdate.model_fields)
 
     missing = updatable - set(TRANSACTION_REQUIRED_FIELDS)
-    assert missing == set(), (
-        f"这些列在 DB 里非空，但 schema 未按必填处理：{sorted(missing)}"
-    )
+    assert missing == set(), f"这些列在 DB 里非空，但 schema 未按必填处理：{sorted(missing)}"

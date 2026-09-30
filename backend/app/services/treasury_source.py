@@ -10,14 +10,14 @@
 
 from __future__ import annotations
 
-import threading
-import time
 import xml.etree.ElementTree as ET
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Dict, List, Tuple
 
 import requests
+
+from .http_source import throttle
 
 SOURCE = "us-treasury"
 BILL_RATES_URL = (
@@ -72,17 +72,8 @@ def parse_bill_rates(xml_text: str, field: str = FIELD_13WK) -> List[Tuple[date,
     return points
 
 
-_throttle_lock = threading.Lock()
-_last_fetch_at = 0.0
-
-
 def _throttle() -> None:
-    global _last_fetch_at
-    with _throttle_lock:
-        elapsed = time.monotonic() - _last_fetch_at
-        if elapsed < _MIN_INTERVAL_SECONDS:
-            time.sleep(_MIN_INTERVAL_SECONDS - elapsed)
-        _last_fetch_at = time.monotonic()
+    throttle("treasury", _MIN_INTERVAL_SECONDS)
 
 
 def fetch_bill_rates(start: date, end: date, field: str = FIELD_13WK) -> List[Tuple[date, Decimal]]:

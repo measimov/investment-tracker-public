@@ -75,16 +75,34 @@ def api_user():
 
 async def _client_auth(client):
     login = await client.post(
-        "/api/auth/token", json={"username": "demo", "password": "known-api-password"},
+        "/api/auth/token",
+        json={"username": "demo", "password": "known-api-password"},
     )
     return {"Authorization": f"Bearer {login.json()['access_token']}"}
 
 
-def _opening_action(db, *, account_id, quantity="269", cost_per_share=None, total_cost=None,
-                    symbol="161226", market="A股", ex_date=date(2026, 1, 10), user_id=1, **extra):
+def _opening_action(
+    db,
+    *,
+    account_id,
+    quantity="269",
+    cost_per_share=None,
+    total_cost=None,
+    symbol="161226",
+    market="A股",
+    ex_date=date(2026, 1, 10),
+    user_id=1,
+    **extra,
+):
     action = CorporateAction(
-        user_id=user_id, broker_account_id=account_id, symbol=symbol, name=symbol, market=market,
-        action_type="OPENING_POSITION", ex_date=ex_date, currency="CNY",
+        user_id=user_id,
+        broker_account_id=account_id,
+        symbol=symbol,
+        name=symbol,
+        market=market,
+        action_type="OPENING_POSITION",
+        ex_date=ex_date,
+        currency="CNY",
         adjusted_quantity=Decimal(quantity),
         adjusted_cost_per_share=Decimal(cost_per_share) if cost_per_share is not None else None,
         cost_basis_adjustment=Decimal(total_cost) if total_cost is not None else None,
@@ -112,17 +130,32 @@ async def test_api_create_backfill_and_delete_opening_position(db, api_user):
         auth = await _client_auth(client)
 
         # 数量缺失 → 422（schema 校验）
-        bad = await client.post("/api/corporate-actions", headers=auth, json={
-            "symbol": "161226", "market": "A股", "action_type": "OPENING_POSITION",
-            "ex_date": "2026-01-10", "broker_account_id": account.id,
-        })
+        bad = await client.post(
+            "/api/corporate-actions",
+            headers=auth,
+            json={
+                "symbol": "161226",
+                "market": "A股",
+                "action_type": "OPENING_POSITION",
+                "ex_date": "2026-01-10",
+                "broker_account_id": account.id,
+            },
+        )
         assert bad.status_code == 422
 
-        created = await client.post("/api/corporate-actions", headers=auth, json={
-            "symbol": "161226", "name": "白银LOF", "market": "A股",
-            "action_type": "OPENING_POSITION", "ex_date": "2026-01-10",
-            "broker_account_id": account.id, "adjusted_quantity": "269",
-        })
+        created = await client.post(
+            "/api/corporate-actions",
+            headers=auth,
+            json={
+                "symbol": "161226",
+                "name": "白银LOF",
+                "market": "A股",
+                "action_type": "OPENING_POSITION",
+                "ex_date": "2026-01-10",
+                "broker_account_id": account.id,
+                "adjusted_quantity": "269",
+            },
+        )
         assert created.status_code == 201, created.text
         action_id = created.json()["id"]
         holding = _holding(db, user_id=api_user)
@@ -131,25 +164,36 @@ async def test_api_create_backfill_and_delete_opening_position(db, api_user):
         assert holding.broker_account_id == account.id
 
         # 非期初建仓不能走补录端点
-        dividend = await client.post("/api/corporate-actions", headers=auth, json={
-            "symbol": "161226", "market": "A股", "action_type": "CASH_DIVIDEND",
-            "ex_date": "2026-02-01", "dividend_per_share": "0.1", "total_dividend": "26.9",
-        })
+        dividend = await client.post(
+            "/api/corporate-actions",
+            headers=auth,
+            json={
+                "symbol": "161226",
+                "market": "A股",
+                "action_type": "CASH_DIVIDEND",
+                "ex_date": "2026-02-01",
+                "dividend_per_share": "0.1",
+                "total_dividend": "26.9",
+            },
+        )
         wrong = await client.patch(
-            f"/api/corporate-actions/{dividend.json()['id']}/cost-basis", headers=auth,
+            f"/api/corporate-actions/{dividend.json()['id']}/cost-basis",
+            headers=auth,
             json={"adjusted_cost_per_share": "1"},
         )
         assert wrong.status_code == 422
 
         # 两个成本不一致 → 422
         inconsistent = await client.patch(
-            f"/api/corporate-actions/{action_id}/cost-basis", headers=auth,
+            f"/api/corporate-actions/{action_id}/cost-basis",
+            headers=auth,
             json={"adjusted_cost_per_share": "4", "cost_basis_adjustment": "999"},
         )
         assert inconsistent.status_code == 422
 
         filled = await client.patch(
-            f"/api/corporate-actions/{action_id}/cost-basis", headers=auth,
+            f"/api/corporate-actions/{action_id}/cost-basis",
+            headers=auth,
             json={"adjusted_cost_per_share": "4.5", "notes": "按转出前场外净值补录"},
         )
         assert filled.status_code == 200, filled.text
@@ -169,31 +213,50 @@ async def test_api_imported_opening_position_only_accepts_cost_backfill(db, api_
     """导入建的行动整体只读（409），但 cost-basis 通道对它开放——否则成本永远补不上。"""
     account = make_account(db, "招商证券", user_id=api_user, commit=True)
     batch = ImportBatch(
-        user_id=api_user, broker_account_id=account.id, broker="招商证券",
-        source_type="cmb_fund_flow", source_filename="a.pdf", status="COMPLETED", row_count=1,
+        user_id=api_user,
+        broker_account_id=account.id,
+        broker="招商证券",
+        source_type="cmb_fund_flow",
+        source_filename="a.pdf",
+        status="COMPLETED",
+        row_count=1,
     )
     db.add(batch)
     db.commit()
     action = _opening_action(db, account_id=account.id, import_batch_id=batch.id, user_id=api_user)
-    db.add(BrokerFundFlow(
-        user_id=api_user, broker_account_id=account.id, import_batch_id=batch.id,
-        source_filename="a.pdf", source_row_number=1,
-        row_hash=hashlib.sha256(b"imported-opening").hexdigest(), trade_date=date(2026, 1, 10),
-        business_name="转托转入", security_code="161226", security_name="白银LOF",
-        trade_quantity=Decimal("269"), trade_price=Decimal("0"), amount=Decimal("0"),
-        currency="CNY", corporate_action_id=action.id,
-    ))
+    db.add(
+        BrokerFundFlow(
+            user_id=api_user,
+            broker_account_id=account.id,
+            import_batch_id=batch.id,
+            source_filename="a.pdf",
+            source_row_number=1,
+            row_hash=hashlib.sha256(b"imported-opening").hexdigest(),
+            trade_date=date(2026, 1, 10),
+            business_name="转托转入",
+            security_code="161226",
+            security_name="白银LOF",
+            trade_quantity=Decimal("269"),
+            trade_price=Decimal("0"),
+            amount=Decimal("0"),
+            currency="CNY",
+            corporate_action_id=action.id,
+        )
+    )
     db.commit()
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         auth = await _client_auth(client)
         blocked = await client.put(
-            f"/api/corporate-actions/{action.id}", headers=auth, json={"notes": "改备注"},
+            f"/api/corporate-actions/{action.id}",
+            headers=auth,
+            json={"notes": "改备注"},
         )
         assert blocked.status_code == 409
         filled = await client.patch(
-            f"/api/corporate-actions/{action.id}/cost-basis", headers=auth,
+            f"/api/corporate-actions/{action.id}/cost-basis",
+            headers=auth,
             json={"cost_basis_adjustment": "1076"},
         )
         assert filled.status_code == 200, filled.text
@@ -215,15 +278,21 @@ def test_transfer_blocked_until_cost_is_backfilled(db):
 
     def transfer():
         return create_transfer(
-            TransferCreate(symbol="161226", market="A股", quantity=Decimal("100"),
-                           from_broker_account_id=cmb.id, to_broker_account_id=other.id,
-                           transfer_date=date(2026, 2, 1)),
-            current_user=get_user(db), db=db,
+            TransferCreate(
+                symbol="161226",
+                market="A股",
+                quantity=Decimal("100"),
+                from_broker_account_id=cmb.id,
+                to_broker_account_id=other.id,
+                transfer_date=date(2026, 2, 1),
+            ),
+            current_user=get_user(db),
+            db=db,
         )
 
     with pytest.raises(HTTPException) as exc:
         transfer()
-    assert exc.value.status_code == 422 and "补录成本" in exc.value.detail
+    assert exc.value.status_code == 409 and "补录成本" in exc.value.detail
     assert db.query(Transaction).count() == 0
 
     action.adjusted_cost_per_share = Decimal("4")
@@ -231,7 +300,9 @@ def test_transfer_blocked_until_cost_is_backfilled(db):
     recalculate_holdings(db, 1, "161226", "A股")
     transfer()
     db.expire_all()
-    quantities = {h.broker_account_id: h.quantity for h in db.query(Holding).filter_by(symbol="161226")}
+    quantities = {
+        h.broker_account_id: h.quantity for h in db.query(Holding).filter_by(symbol="161226")
+    }
     assert quantities == {cmb.id: Decimal("169"), other.id: Decimal("100")}
 
 
@@ -239,11 +310,21 @@ def test_fifo_marks_sales_out_of_unknown_cost_lots_as_estimated(db):
     account = make_account(db, "招商证券")
     db.commit()
     _opening_action(db, account_id=account.id)
-    db.add(Transaction(
-        user_id=1, broker_account_id=account.id, symbol="161226", name="白银LOF", market="A股",
-        transaction_type="SELL", quantity=Decimal("269"), price=Decimal("5"), fee=Decimal("5"),
-        currency="CNY", transaction_date=date(2026, 1, 29),
-    ))
+    db.add(
+        Transaction(
+            user_id=1,
+            broker_account_id=account.id,
+            symbol="161226",
+            name="白银LOF",
+            market="A股",
+            transaction_type="SELL",
+            quantity=Decimal("269"),
+            price=Decimal("5"),
+            fee=Decimal("5"),
+            currency="CNY",
+            transaction_date=date(2026, 1, 29),
+        )
+    )
     db.commit()
     results = fifo_results_for_user(db, 1)
     result = results[("161226", "A股")]
@@ -262,11 +343,15 @@ def test_reconciliation_matches_position_built_from_opening_position(db):
     _opening_action(db, account_id=account.id)
     snapshot = create_reconciliation_snapshot(
         ReconciliationSnapshotCreate(
-            broker_account_id=account.id, snapshot_date=date(2026, 1, 31),
-            positions=[ReconciliationPosition(symbol="161226", market="A股", quantity=Decimal("269"))],
+            broker_account_id=account.id,
+            snapshot_date=date(2026, 1, 31),
+            positions=[
+                ReconciliationPosition(symbol="161226", market="A股", quantity=Decimal("269"))
+            ],
             cash_balances={"CNY": Decimal("0")},
         ),
-        current_user=get_user(db), db=db,
+        current_user=get_user(db),
+        db=db,
     )
     assert snapshot.status == "MATCHED", snapshot.diff_detail
     assert snapshot.diff_detail["positions"][0]["status"] == "MATCH"
@@ -279,26 +364,51 @@ def test_migration_backfill_is_idempotent_across_downgrade(db):
     account = make_account(db, "招商证券")
     db.flush()
     orphan = BrokerFundFlow(
-        user_id=1, broker_account_id=account.id, source_filename="legacy.pdf",
-        source_row_number=3, row_hash=hashlib.sha256(b"orphan").hexdigest(),
-        trade_date=date(2025, 12, 20), business_name="转托转入", security_code="161226",
-        security_name="白银LOF", trade_quantity=Decimal("269"), trade_price=Decimal("0"),
-        amount=Decimal("0"), currency="CNY", notes="原备注",
+        user_id=1,
+        broker_account_id=account.id,
+        source_filename="legacy.pdf",
+        source_row_number=3,
+        row_hash=hashlib.sha256(b"orphan").hexdigest(),
+        trade_date=date(2025, 12, 20),
+        business_name="转托转入",
+        security_code="161226",
+        security_name="白银LOF",
+        trade_quantity=Decimal("269"),
+        trade_price=Decimal("0"),
+        amount=Decimal("0"),
+        currency="CNY",
+        notes="原备注",
     )
     out = BrokerFundFlow(
-        user_id=1, broker_account_id=account.id, source_filename="legacy.pdf",
-        source_row_number=4, row_hash=hashlib.sha256(b"out").hexdigest(),
-        trade_date=date(2025, 12, 21), business_name="托管转出", security_code="161226",
-        security_name="白银LOF", trade_quantity=Decimal("-10"), trade_price=Decimal("0"),
-        amount=Decimal("0"), currency="CNY",
+        user_id=1,
+        broker_account_id=account.id,
+        source_filename="legacy.pdf",
+        source_row_number=4,
+        row_hash=hashlib.sha256(b"out").hexdigest(),
+        trade_date=date(2025, 12, 21),
+        business_name="托管转出",
+        security_code="161226",
+        security_name="白银LOF",
+        trade_quantity=Decimal("-10"),
+        trade_price=Decimal("0"),
+        amount=Decimal("0"),
+        currency="CNY",
     )
     # 存管账户侧的记账行：同名但无代码、「资金」市场——不是持仓事件，回填必须跳过
     ledger_side = BrokerFundFlow(
-        user_id=1, broker_account_id=account.id, source_filename="legacy.pdf",
-        source_row_number=5, row_hash=hashlib.sha256(b"ledger").hexdigest(),
-        trade_date=date(2025, 12, 22), business_name="转存管转入", security_code=None,
-        security_name=None, trade_quantity=Decimal("0"), trade_price=Decimal("0"),
-        amount=Decimal("0"), currency="CNY",
+        user_id=1,
+        broker_account_id=account.id,
+        source_filename="legacy.pdf",
+        source_row_number=5,
+        row_hash=hashlib.sha256(b"ledger").hexdigest(),
+        trade_date=date(2025, 12, 22),
+        business_name="转存管转入",
+        security_code=None,
+        security_name=None,
+        trade_quantity=Decimal("0"),
+        trade_price=Decimal("0"),
+        amount=Decimal("0"),
+        currency="CNY",
     )
     db.add_all([orphan, out, ledger_side])
     db.flush()

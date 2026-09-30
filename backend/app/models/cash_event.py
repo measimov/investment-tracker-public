@@ -33,9 +33,7 @@ class CashEvent(Base):
     )
     event_type = Column(String(20), nullable=False, index=True)
     amount = Column(Numeric(24, 8), nullable=False)
-    currency = Column(
-        String(10), nullable=False, default="CNY", server_default="CNY", index=True
-    )
+    currency = Column(String(10), nullable=False, default="CNY", server_default="CNY", index=True)
     event_date = Column(Date, nullable=False, index=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

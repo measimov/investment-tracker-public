@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useSecurityFormBinding } from '@/composables/useSecurityFormBinding'
+import { LEDGER_CURRENCY_OPTIONS } from '@/utils/currency'
+import { accountOptionLabel, transactionTypeLabel } from '@/utils/labels'
 import { showApiError } from '@/utils/showApiError'
 import { ref, reactive } from 'vue'
 import { ElMessage, type FormInstance, type FormItemRule } from 'element-plus'
@@ -12,8 +15,12 @@ import {
   resolvedFormPatch,
   securityFormPatch
 } from '@/utils/securities'
-import type { BrokerAccount, SecurityResolveResponse, SecuritySearchItem } from '@/types'
-import { brokerAccountLabel } from './shared'
+import type {
+  BrokerAccount,
+  SecurityResolveResponse,
+  SecuritySearchItem,
+  TransactionCreate
+} from '@/types'
 
 defineProps<{ brokerAccounts: BrokerAccount[]; brokerAccountsLoading: boolean }>()
 
@@ -87,30 +94,14 @@ const rules: Record<string, FormItemRule[]> = {
  * 手输未收录代码（新加坡股/加密货币/漏网 B 股）照样可提交；市场已知时后端按需
  * 解析名称/币种并只填空。三种补丁语义见 utils/securities.ts。
  */
-function onSymbolSelected(item: SecuritySearchItem) {
-  Object.assign(form, securityFormPatch(item))
-  currencyAuto = true
-}
-
-// 币种是否仍是自动推导值（选候选 / 换市场 / 解析回填）：用户手选过一次就不再跟随市场。
-// 只挂在两个 el-select 的 @change（用户动作）上，编辑回填/重置这类程序赋值不触发。
-let currencyAuto = true
-function onMarketChange(market: string) {
-  // 自动态下推不出也要清空（评审 P1：默认 CNY 配加密货币会把 BTC 当 CNY 入账）
-  form.currency = followMarketCurrency(form.currency, market, form.symbol, currencyAuto)
-}
-
-function onCurrencyChange() {
-  currencyAuto = false
-}
-
-function onSymbolFreeText(payload: { symbol: string; lastPicked: SecuritySearchItem | null }) {
-  Object.assign(form, freeTextFormPatch(form, payload))
-}
-
-function onSymbolResolved(result: SecurityResolveResponse) {
-  Object.assign(form, resolvedFormPatch(form, result))
-}
+const {
+  onSymbolSelected,
+  onMarketChange,
+  onCurrencyChange,
+  onSymbolFreeText,
+  onSymbolResolved,
+  setCurrencyAuto
+} = useSecurityFormBinding(form)
 
 function resetForm() {
   delete form.id
@@ -133,13 +124,13 @@ function resetForm() {
 function openAdd() {
   isEdit.value = false
   resetForm()
-  currencyAuto = true
+  setCurrencyAuto(true)
   dialogVisible.value = true
 }
 
 function openEdit(row: Transaction) {
   isEdit.value = true
-  currencyAuto = false // 已有记录的币种是事实，不随市场重推
+  setCurrencyAuto(false) // 已有记录的币种是事实，不随市场重推
   Object.assign(form, {
     id: row.id,
     broker_account_id: row.broker_account_id || null,
@@ -165,6 +156,7 @@ async function handleSubmit() {
   try {
     // 后端 TransactionCreate/Update 均为 extra="forbid"：payload 只能含
     // schema 字段——把编辑态残留的 form.id 一并提交会被 422 拒绝
+    // 表单校验（rules）保证数量/价格等必填：已校验表单 → 请求体的唯一断言点
     const payload = {
       broker_account_id: form.broker_account_id || null,
       symbol: form.symbol,
@@ -177,7 +169,7 @@ async function handleSubmit() {
       transaction_date: form.transaction_date,
       currency: form.currency,
       notes: form.notes
-    }
+    } as TransactionCreate
     if (isEdit.value) {
       await transactionsStore.updateTransaction(form.id as number, payload)
       ElMessage.success('更新成功')
@@ -210,7 +202,7 @@ defineExpose({ openAdd, openEdit })
           <el-option
             v-for="account in brokerAccounts"
             :key="account.id"
-            :label="brokerAccountLabel(account)"
+            :label="accountOptionLabel(account)"
             :value="account.id"
           />
         </el-select>
@@ -235,8 +227,8 @@ defineExpose({ openAdd, openEdit })
       </el-form-item>
       <el-form-item label="交易类型" prop="transaction_type">
         <el-radio-group v-model="form.transaction_type">
-          <el-radio value="BUY">买入</el-radio>
-          <el-radio value="SELL">卖出</el-radio>
+          <el-radio value="BUY">{{ transactionTypeLabel('BUY') }}</el-radio>
+          <el-radio value="SELL">{{ transactionTypeLabel('SELL') }}</el-radio>
         </el-radio-group>
       </el-form-item>
       <!-- 不设 :precision：固定精度会把 1500 渲染成 1500.00000000；
@@ -261,10 +253,12 @@ defineExpose({ openAdd, openEdit })
       </el-form-item>
       <el-form-item label="币种" prop="currency">
         <el-select v-model="form.currency" @change="onCurrencyChange">
-          <el-option label="CNY (人民币)" value="CNY" />
-          <el-option label="USD (美元)" value="USD" />
-          <el-option label="HKD (港币)" value="HKD" />
-          <el-option label="SGD (新加坡元)" value="SGD" />
+          <el-option
+            v-for="option in LEDGER_CURRENCY_OPTIONS"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
+          />
         </el-select>
       </el-form-item>
       <el-form-item label="备注" prop="notes">

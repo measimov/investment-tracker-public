@@ -26,33 +26,34 @@ def _a_share_statements(years, *, loss_years=(), eps_first=1.0, eps_last=1.5):
     for idx, year in enumerate(sorted(years)):
         eps = eps_first + (eps_last - eps_first) * idx / span
         profit = -1000.0 if year in loss_years else 10_000.0
-        income.append({
-            "end_date": f"{year}1231",
-            "n_income_attr_p": profit,
-            "basic_eps": eps,
-            "operate_profit": 12_000.0,
-            "int_exp": 1_000.0,
-        })
-        balance.append({
-            "end_date": f"{year}1231",
-            "total_cur_assets": 50_000.0,
-            "total_cur_liab": 20_000.0,
-            "total_assets": 100_000.0,
-            "total_liab": 40_000.0,
-            "money_cap": 30_000.0,
-            "st_borr": 5_000.0,
-            "lt_borr": 8_000.0,
-            "bond_payable": 2_000.0,
-            "non_cur_liab_due_1y": 1_000.0,
-        })
+        income.append(
+            {
+                "end_date": f"{year}1231",
+                "n_income_attr_p": profit,
+                "basic_eps": eps,
+                "operate_profit": 12_000.0,
+                "int_exp": 1_000.0,
+            }
+        )
+        balance.append(
+            {
+                "end_date": f"{year}1231",
+                "total_cur_assets": 50_000.0,
+                "total_cur_liab": 20_000.0,
+                "total_assets": 100_000.0,
+                "total_liab": 40_000.0,
+                "money_cap": 30_000.0,
+                "st_borr": 5_000.0,
+                "lt_borr": 8_000.0,
+                "bond_payable": 2_000.0,
+                "non_cur_liab_due_1y": 1_000.0,
+            }
+        )
     return {"income": income, "balancesheet": balance, "cashflow": [], "fina_indicator": []}
 
 
 def _dividends(years):
-    return [
-        {"end_date": f"{year}1231", "div_proc": "实施", "cash_div_tax": 0.5}
-        for year in years
-    ]
+    return [{"end_date": f"{year}1231", "div_proc": "实施", "cash_div_tax": 0.5} for year in years]
 
 
 DAILY_BASIC_CHEAP = [
@@ -118,7 +119,9 @@ class TestFailPaths:
     def test_pb_over_limit_but_product_clause_saves_it(self):
         rows = [{"trade_date": "20260810", "pe_ttm": 10.0, "pb": 2.0, "total_mv": 1.0}]
         result = compute_graham_screen(
-            "A股", _a_share_statements(range(2016, 2026)), daily_basic_rows=rows,
+            "A股",
+            _a_share_statements(range(2016, 2026)),
+            daily_basic_rows=rows,
         )
         assert _verdicts(result)["pb_or_product"] == "pass"
         assert "放宽条款" in _reasons(result)["pb_or_product"]
@@ -126,7 +129,9 @@ class TestFailPaths:
     def test_pb_and_product_both_over_fail(self):
         rows = [{"trade_date": "20260810", "pe_ttm": 20.0, "pb": 2.0, "total_mv": 1.0}]
         result = compute_graham_screen(
-            "A股", _a_share_statements(range(2016, 2026)), daily_basic_rows=rows,
+            "A股",
+            _a_share_statements(range(2016, 2026)),
+            daily_basic_rows=rows,
         )
         verdicts = _verdicts(result)
         assert verdicts["pe"] == "fail"
@@ -135,7 +140,9 @@ class TestFailPaths:
     def test_negative_pe_is_fail_not_cheap(self):
         rows = [{"trade_date": "20260810", "pe_ttm": -5.0, "pb": 0.8, "total_mv": 1.0}]
         result = compute_graham_screen(
-            "A股", _a_share_statements(range(2016, 2026)), daily_basic_rows=rows,
+            "A股",
+            _a_share_statements(range(2016, 2026)),
+            daily_basic_rows=rows,
         )
         assert _verdicts(result)["pe"] == "fail"
         assert "为负" in _reasons(result)["pe"]
@@ -194,7 +201,9 @@ class TestFailPaths:
     def test_missing_latest_income_year_is_indeterminate(self):
         # 资产负债表到 2025，利润表只到 2024：末年缺失 → 以 2025 为锚连续覆盖 0 年
         statements = _a_share_statements(range(2015, 2026))
-        statements["income"] = [row for row in statements["income"] if not row["end_date"].startswith("2025")]
+        statements["income"] = [
+            row for row in statements["income"] if not row["end_date"].startswith("2025")
+        ]
         result = compute_graham_screen("A股", statements)
         stability = next(c for c in result["criteria"] if c["criterion"] == "earnings_stability")
         assert stability["verdict"] == "indeterminate"
@@ -225,7 +234,9 @@ class TestFailPaths:
     def test_negative_pb_is_fail_not_margin_of_safety(self):
         rows = [{"trade_date": "20260810", "pe_ttm": 8.0, "pb": -0.5, "total_mv": 1.0}]
         result = compute_graham_screen(
-            "A股", _a_share_statements(range(2016, 2026)), daily_basic_rows=rows,
+            "A股",
+            _a_share_statements(range(2016, 2026)),
+            daily_basic_rows=rows,
         )
         pb = next(c for c in result["criteria"] if c["criterion"] == "pb_or_product")
         assert pb["verdict"] == "fail"
@@ -245,22 +256,29 @@ class TestFailPaths:
 def _hk_statements(years, *, total_debt=10_000.0):
     income, balance = [], []
     for idx, year in enumerate(sorted(years)):
-        income.append({
-            "end_date": f"{year}1231", "fp": "FY", "currency": "HKD",
-            "n_income_attr_p": 8_000.0,
-            "basic_eps": 1.0 + 0.2 * idx,
-            "operating_income": 9_000.0,
-            "int_exp": 500.0,
-        })
-        balance.append({
-            "end_date": f"{year}1231", "fp": "FY",
-            "total_cur_assets": 40_000.0,
-            "total_cur_liab": 15_000.0,
-            "total_assets": 90_000.0,
-            "total_liab": 30_000.0,
-            "money_cap": 20_000.0,
-            "total_debt": total_debt,
-        })
+        income.append(
+            {
+                "end_date": f"{year}1231",
+                "fp": "FY",
+                "currency": "HKD",
+                "n_income_attr_p": 8_000.0,
+                "basic_eps": 1.0 + 0.2 * idx,
+                "operating_income": 9_000.0,
+                "int_exp": 500.0,
+            }
+        )
+        balance.append(
+            {
+                "end_date": f"{year}1231",
+                "fp": "FY",
+                "total_cur_assets": 40_000.0,
+                "total_cur_liab": 15_000.0,
+                "total_assets": 90_000.0,
+                "total_liab": 30_000.0,
+                "money_cap": 20_000.0,
+                "total_debt": total_debt,
+            }
+        )
     return {"income": income, "balancesheet": balance, "cashflow": [], "fina_indicator": []}
 
 
@@ -270,7 +288,9 @@ class TestHkBoundaries:
         verdicts = _verdicts(result)
         assert verdicts["earnings_stability"] == "indeterminate"
         # 整段连续、只是起点晚：说"历史短"而不是"缺某某年数据"
-        assert "披露历史仅 4 年（最早 2022），不足原著十年" in _reasons(result)["earnings_stability"]
+        assert (
+            "披露历史仅 4 年（最早 2022），不足原著十年" in _reasons(result)["earnings_stability"]
+        )
         assert "披露历史仅 4 年" in _reasons(result)["earnings_growth"]
         # 无行情价格 / 无现金流量表股息数据：如实 indeterminate，不冒充判定
         assert verdicts["pe"] == "indeterminate"
@@ -279,12 +299,16 @@ class TestHkBoundaries:
 
     def test_total_debt_within_nca_gives_conservative_pass(self):
         # 含短债的合计都 ≤ 净流动资产（25000），长期债务必然满足 → 可判 pass
-        result = compute_graham_screen("港股", _hk_statements(range(2022, 2026), total_debt=10_000.0))
+        result = compute_graham_screen(
+            "港股", _hk_statements(range(2022, 2026), total_debt=10_000.0)
+        )
         assert _verdicts(result)["lt_debt_vs_net_current_assets"] == "pass"
 
     def test_total_debt_exceeding_nca_cannot_be_attributed(self):
         # 合计超出但无法区分长短债 → indeterminate 而非 fail
-        result = compute_graham_screen("港股", _hk_statements(range(2022, 2026), total_debt=30_000.0))
+        result = compute_graham_screen(
+            "港股", _hk_statements(range(2022, 2026), total_debt=30_000.0)
+        )
         assert _verdicts(result)["lt_debt_vs_net_current_assets"] == "indeterminate"
         assert "无法单独判定长期债务" in _reasons(result)["lt_debt_vs_net_current_assets"]
 
@@ -292,23 +316,29 @@ class TestHkBoundaries:
 def _us_statements(years):
     income, balance = [], []
     for idx, year in enumerate(sorted(years)):
-        income.append({
-            "end_date": f"{year}0930", "fp": "FY",  # 美股财年不止于 12/31
-            "currency": "USD",  # 透视行逐行带报告币种（EDGAR 按构造必有）
-            "n_income_attr_p": 5_000.0,
-            "basic_eps": 2.0 + 0.5 * idx,
-            "operating_income": 6_000.0,
-            "int_exp": 300.0,
-        })
-        balance.append({
-            "end_date": f"{year}0930", "fp": "FY",
-            "total_cur_assets": 30_000.0,
-            "total_cur_liab": 12_000.0,
-            "total_assets": 80_000.0,
-            "total_liab": 35_000.0,
-            "money_cap": 15_000.0,
-            "lt_debt": 9_000.0,
-        })
+        income.append(
+            {
+                "end_date": f"{year}0930",
+                "fp": "FY",  # 美股财年不止于 12/31
+                "currency": "USD",  # 透视行逐行带报告币种（EDGAR 按构造必有）
+                "n_income_attr_p": 5_000.0,
+                "basic_eps": 2.0 + 0.5 * idx,
+                "operating_income": 6_000.0,
+                "int_exp": 300.0,
+            }
+        )
+        balance.append(
+            {
+                "end_date": f"{year}0930",
+                "fp": "FY",
+                "total_cur_assets": 30_000.0,
+                "total_cur_liab": 12_000.0,
+                "total_assets": 80_000.0,
+                "total_liab": 35_000.0,
+                "money_cap": 15_000.0,
+                "lt_debt": 9_000.0,
+            }
+        )
     return {"income": income, "balancesheet": balance, "cashflow": [], "fina_indicator": []}
 
 
@@ -322,9 +352,7 @@ class TestUsMarket:
 
     def test_eps_growth_computed_from_fiscal_year_rows(self):
         result = compute_graham_screen("美股", _us_statements(range(2016, 2026)))
-        growth = next(
-            c for c in result["criteria"] if c["criterion"] == "earnings_growth"
-        )
+        growth = next(c for c in result["criteria"] if c["criterion"] == "earnings_growth")
         assert growth["verdict"] == "pass"  # 2.0 → 6.5，远超 33%
         assert "每股盈利" in growth["reason"]
 
@@ -332,7 +360,8 @@ class TestUsMarket:
 class TestDegenerateInputs:
     def test_no_statements_returns_no_data(self):
         result = compute_graham_screen(
-            "A股", {"income": [], "balancesheet": [], "cashflow": [], "fina_indicator": []},
+            "A股",
+            {"income": [], "balancesheet": [], "cashflow": [], "fina_indicator": []},
         )
         assert result["status"] == "no_data"
         assert "criteria_semantics" in result

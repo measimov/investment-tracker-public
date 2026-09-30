@@ -2,7 +2,7 @@
 前端 api.generated.ts 拿到真实形状（Dict[str, Any] 端点只会生成 unknown）。"""
 
 from datetime import date, datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -52,27 +52,6 @@ class SecurityResolveResponse(BaseModel):
     in_catalog: bool = False
     resolved_from: Optional[Literal["catalog", "tencent-quote"]] = None
     error: Optional[str] = None
-
-
-class CatalogSourceStatus(BaseModel):
-    source: str
-    markets: List[str]
-    status: Literal["ok", "failed", "skipped", "running", "never"]
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    last_success_at: Optional[datetime] = None
-    rows_seen: int = 0
-    rows_upserted: int = 0
-    error: Optional[str] = None
-    detail: Dict[str, Any] = {}
-
-
-class CatalogStatusResponse(BaseModel):
-    health: CatalogHealth
-    sources: List[CatalogSourceStatus]  # LOADERS 顺序，未跑过的源 status=never
-    total_rows: int
-    by_market: Dict[str, int]
-    coverage_notes: List[str]
 
 
 class CatalogSyncAccepted(BaseModel):

@@ -34,7 +34,9 @@ def clients():
     try:
         yield result
     finally:
-        db.execute(text("DELETE FROM xueqiu_collector_authors WHERE xueqiu_user_id = :id"), {"id": NEW_ID})
+        db.execute(
+            text("DELETE FROM xueqiu_collector_authors WHERE xueqiu_user_id = :id"), {"id": NEW_ID}
+        )
         db.execute(text("UPDATE xueqiu_collector_state SET run_requested_at = NULL WHERE id = 1"))
         for name, user in users.items():
             user.hashed_password = originals[name]
@@ -81,7 +83,9 @@ def test_author_mutations_are_admin_only(clients):
 
 @pytest.mark.parametrize("bad_id", ["abc", "", "12a", "１２３", "1" * 21, "https://xueqiu.com/u/1"])
 def test_author_id_must_be_numeric(clients, bad_id):
-    response = clients["admin"].post("/api/xueqiu-collector/authors", json={"xueqiu_user_id": bad_id})
+    response = clients["admin"].post(
+        "/api/xueqiu-collector/authors", json={"xueqiu_user_id": bad_id}
+    )
     assert response.status_code == 422
 
 

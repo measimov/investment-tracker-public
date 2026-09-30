@@ -219,12 +219,39 @@ class Settings(BaseSettings):
     notify_collector_stale_hours: float = Field(default=3, gt=0)
     # 告警检查周期任务（每 10 分钟）总开关
     alert_check_enabled: bool = True
+    # 数据自动刷新（DEPLOYMENT.md「自动刷新一览」）：
+    # 交易时段每 15 分钟刷新持仓与自选的实时价（按市场交易时段判定，收盘后再补一次）
+    quote_auto_refresh_enabled: bool = True
+    # A股/B股/美股日线尾部每小时检查、落后才补（港股由港交所日报负责）
+    price_tail_sync_enabled: bool = True
+    # A股估值快照（Tushare daily_basic）每个交易日收盘后一次（一次调用取全市场，只存跟踪标的）
+    daily_basic_refresh_enabled: bool = True
+    # 每周数据刷新：档案（非 LLM）+ 最新一期财报摘要/港股报表 + 观点摘要，凌晨入队后台任务
+    weekly_data_refresh_enabled: bool = True
+    # 事件提醒（新分红建议、除净日临近、持仓价格异动）走同一个 NOTIFY_URLS
+    event_notifications_enabled: bool = True
+    # 持仓单日涨跌幅（相对昨收）达到该百分比即推送，同一标的每个行情日一次
+    notify_price_move_pct: float = Field(default=7, gt=0)
+    # 除净日在今天起 N 天内的持仓分红提前提醒
+    notify_ex_date_days_ahead: int = Field(default=3, ge=0)
+    # 官方公告同步（巨潮/披露易/EDGAR，#306）：跟踪范围逐标的每 30 分钟增量拉取、分类入库
+    announcement_sync_enabled: bool = True
+    # 首次同步（无水位）的回溯天数
+    announcement_backfill_days: int = Field(default=365, ge=1)
+    # 重大公告推送（持仓或自选标的，走 NOTIFY_URLS；首次回溯的历史公告不推）
+    announcement_notify_enabled: bool = True
     price_refresh_max_workers: int = 4
     # 主动刷新股价的新鲜度窗口：窗口内重复请求跳过（防连点浪费配额）
     price_refresh_freshness_seconds: int = 600
     background_job_retention_hours: int = 168
     background_job_stale_minutes: int = 60
+    # 排队（queued）任务的放弃上限：排队不看心跳（慢车道跨用户串行，排几个小时是正常的），
+    # 只防 worker 关闭时永远挂着（#272）
+    background_job_queued_ttl_hours: int = 24
     background_worker_enabled: bool = True
+    # 周期任务总开关：false 时 worker 只执行排队任务、不起周期调度线程（E2E 隔离外呼用；
+    # 各任务自己的 *_ENABLED 开关仍然有效，且有的还管非周期路径，不能由它替代）
+    periodic_tasks_enabled: bool = True
     background_job_poll_seconds: int = 5
     background_job_lease_seconds: int = 300
     background_job_max_attempts: int = 3

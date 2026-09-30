@@ -19,14 +19,14 @@ SHIBOR（#200）：每个工作日 11:00 发布，3M 期限作为本币（CNY）
 
 from __future__ import annotations
 
-import threading
-import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Dict, Iterable, List, Optional
 
 import requests
+
+from .http_source import throttle
 
 SOURCE_CCPR = "cfets-ccpr"
 SOURCE_SHIBOR = "cfets-shibor"
@@ -95,9 +95,7 @@ def parse_ccpr_history(payload: dict, currencies: Iterable[str] = CCPR_PAIRS) ->
         raise ChinamoneyError(f"中间价接口拒绝查询：{flag}")
     searchlist = list(data.get("searchlist") or [])
     wanted = {CCPR_PAIRS[c]: c for c in currencies if c in CCPR_PAIRS}
-    positions = {
-        wanted[pair]: index for index, pair in enumerate(searchlist) if pair in wanted
-    }
+    positions = {wanted[pair]: index for index, pair in enumerate(searchlist) if pair in wanted}
     if records and not positions:
         raise ChinamoneyError(f"中间价响应不含所需币对：searchlist={searchlist}")
 
@@ -133,17 +131,8 @@ def query_windows(start: date, end: date, max_days: int = MAX_QUERY_DAYS) -> Lis
     return windows
 
 
-_throttle_lock = threading.Lock()
-_last_fetch_at = 0.0
-
-
 def _throttle() -> None:
-    global _last_fetch_at
-    with _throttle_lock:
-        elapsed = time.monotonic() - _last_fetch_at
-        if elapsed < _MIN_INTERVAL_SECONDS:
-            time.sleep(_MIN_INTERVAL_SECONDS - elapsed)
-        _last_fetch_at = time.monotonic()
+    throttle("chinamoney", _MIN_INTERVAL_SECONDS)
 
 
 def _post_json(url: str, data: dict) -> dict:

@@ -58,18 +58,14 @@ def test_benchmark_max_drawdown():
     closes = {_d(5): Decimal("100"), _d(6): Decimal("130"), _d(7): Decimal("104")}
     series = build_benchmark_series(closes, [_d(5), _d(6), _d(7)])
 
-    assert series["max_drawdown_rate"] == float(
-        (Decimal("104") / Decimal("130") - 1) * 100
-    )
+    assert series["max_drawdown_rate"] == float((Decimal("104") / Decimal("130") - 1) * 100)
 
 
 def test_no_data_paths():
     assert build_benchmark_series({}, [_d(5)]) == {"status": "no_data"}
     assert build_benchmark_series({_d(5): Decimal("100")}, []) == {"status": "no_data"}
     # 区间后才有数据 → 无可用点
-    assert build_benchmark_series({_d(9): Decimal("100")}, [_d(5), _d(6)]) == {
-        "status": "no_data"
-    }
+    assert build_benchmark_series({_d(9): Decimal("100")}, [_d(5), _d(6)]) == {"status": "no_data"}
     # 非法基点（0 值）
     assert build_benchmark_series({_d(3): Decimal("0")}, [_d(5)]) == {"status": "no_data"}
 

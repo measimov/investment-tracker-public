@@ -43,21 +43,29 @@ def db():
 
 def _seed_index_prices(db, code, closes):
     for price_date, close in closes.items():
-        db.add(SecurityPrice(
-            symbol=code, market=benchmark_service.BENCHMARK_MARKET,
-            price_date=price_date, close_price=close,
-            currency=benchmark_service.BENCHMARKS[code]["currency"],
-            source="tushare-index_daily",
-        ))
+        db.add(
+            SecurityPrice(
+                symbol=code,
+                market=benchmark_service.BENCHMARK_MARKET,
+                price_date=price_date,
+                close_price=close,
+                currency=benchmark_service.BENCHMARKS[code]["currency"],
+                source="tushare-index_daily",
+            )
+        )
     db.commit()
 
 
 def test_routing_and_catalog():
     assert resolve_tushare_history_api("000300.SH", "指数") == {
-        "api": "index_daily", "adjust_api": "", "ts_code": "000300.SH",
+        "api": "index_daily",
+        "adjust_api": "",
+        "ts_code": "000300.SH",
     }
     assert resolve_tushare_history_api("HSI", "指数") == {
-        "api": "index_global", "adjust_api": "", "ts_code": "HSI",
+        "api": "index_global",
+        "adjust_api": "",
+        "ts_code": "HSI",
     }
     assert resolve_tushare_history_api("UNKNOWN", "指数") is None
 
@@ -67,8 +75,9 @@ def test_routing_and_catalog():
 
 
 def test_history_sync_targets_include_benchmarks(db):
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2026, 1, 5))
+    add_transaction(
+        db, symbol="600036", market="A股", currency="CNY", transaction_date=date(2026, 1, 5)
+    )
     db.commit()
 
     info = get_history_sync_targets(db, 1)
@@ -81,11 +90,15 @@ def test_history_sync_targets_include_benchmarks(db):
 
 
 def test_load_benchmark_closes_includes_anchor_before_start(db):
-    _seed_index_prices(db, "000300.SH", {
-        date(2026, 1, 3): Decimal("4000"),
-        date(2026, 1, 6): Decimal("4100"),
-        date(2026, 1, 7): Decimal("4200"),
-    })
+    _seed_index_prices(
+        db,
+        "000300.SH",
+        {
+            date(2026, 1, 3): Decimal("4000"),
+            date(2026, 1, 6): Decimal("4100"),
+            date(2026, 1, 7): Decimal("4200"),
+        },
+    )
     closes = benchmark_service.load_benchmark_closes(
         db, "000300.SH", date(2026, 1, 5), date(2026, 1, 7)
     )
@@ -112,19 +125,46 @@ def api_user():
 async def test_first_available_benchmark_has_no_comparison(db, api_user):
     """[评审回归] 基准数据晚于区间起点（first_available）：不产出超额收益，
     响应携带 alignment 与中文警告，不得输出误导性的全区间超额。"""
-    add_transaction(db, user_id=api_user, symbol="600036", market="A股",
-                    currency="CNY", transaction_date=date(2026, 1, 5),
-                    quantity=Decimal("100"), price=Decimal("10"))
-    db.add(SecurityPrice(symbol="600036", market="A股", price_date=date(2026, 1, 5),
-                         close_price=Decimal("10"), currency="CNY", source="test"))
-    db.add(SecurityPrice(symbol="600036", market="A股", price_date=date(2026, 1, 7),
-                         close_price=Decimal("11"), currency="CNY", source="test"))
+    add_transaction(
+        db,
+        user_id=api_user,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2026, 1, 5),
+        quantity=Decimal("100"),
+        price=Decimal("10"),
+    )
+    db.add(
+        SecurityPrice(
+            symbol="600036",
+            market="A股",
+            price_date=date(2026, 1, 5),
+            close_price=Decimal("10"),
+            currency="CNY",
+            source="test",
+        )
+    )
+    db.add(
+        SecurityPrice(
+            symbol="600036",
+            market="A股",
+            price_date=date(2026, 1, 7),
+            close_price=Decimal("11"),
+            currency="CNY",
+            source="test",
+        )
+    )
     db.commit()
     # 基准数据从区间中段（1/6）才开始，起点前无锚点
-    _seed_index_prices(db, "000300.SH", {
-        date(2026, 1, 6): Decimal("4100"),
-        date(2026, 1, 7): Decimal("4200"),
-    })
+    _seed_index_prices(
+        db,
+        "000300.SH",
+        {
+            date(2026, 1, 6): Decimal("4100"),
+            date(2026, 1, 7): Decimal("4200"),
+        },
+    )
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -142,9 +182,7 @@ async def test_first_available_benchmark_has_no_comparison(db, api_user):
         assert block["status"] == "ok"
         assert block["alignment"] == "first_available"
         assert block["comparison"] is None
-        assert any(
-            "晚于区间起点" in w for w in response.json()["data_quality"]["warnings"]
-        )
+        assert any("晚于区间起点" in w for w in response.json()["data_quality"]["warnings"])
 
 
 def test_concurrent_price_upsert_is_atomic(db):
@@ -161,14 +199,20 @@ def test_concurrent_price_upsert_is_atomic(db):
         try:
             rows = [
                 SecurityPrice(
-                    symbol="000300.SH", market=benchmark_service.BENCHMARK_MARKET,
-                    price_date=date(2026, 1, 6), close_price=Decimal("4100"),
-                    currency="CNY", source="tushare-index_daily",
+                    symbol="000300.SH",
+                    market=benchmark_service.BENCHMARK_MARKET,
+                    price_date=date(2026, 1, 6),
+                    close_price=Decimal("4100"),
+                    currency="CNY",
+                    source="tushare-index_daily",
                 ),
                 SecurityPrice(
-                    symbol="000300.SH", market=benchmark_service.BENCHMARK_MARKET,
-                    price_date=date(2026, 1, 7), close_price=Decimal("4200"),
-                    currency="CNY", source="tushare-index_daily",
+                    symbol="000300.SH",
+                    market=benchmark_service.BENCHMARK_MARKET,
+                    price_date=date(2026, 1, 7),
+                    close_price=Decimal("4200"),
+                    currency="CNY",
+                    source="tushare-index_daily",
                 ),
             ]
             barrier.wait(timeout=10)
@@ -186,29 +230,60 @@ def test_concurrent_price_upsert_is_atomic(db):
         t.join(timeout=30)
 
     assert errors == []
-    rows = db.query(SecurityPrice).filter(
-        SecurityPrice.symbol == "000300.SH",
-        SecurityPrice.market == benchmark_service.BENCHMARK_MARKET,
-    ).all()
+    rows = (
+        db.query(SecurityPrice)
+        .filter(
+            SecurityPrice.symbol == "000300.SH",
+            SecurityPrice.market == benchmark_service.BENCHMARK_MARKET,
+        )
+        .all()
+    )
     assert len(rows) == 2  # 两个交易日各一份，无重复无回滚
 
 
 @pytest.mark.anyio
 async def test_analytics_benchmark_block_and_validation(db, api_user):
     # 用户持仓：1/5 买入 100 股 @10；行情 1/5=10、1/7=11 → 组合 +10%
-    add_transaction(db, user_id=api_user, symbol="600036", market="A股",
-                    currency="CNY", transaction_date=date(2026, 1, 5),
-                    quantity=Decimal("100"), price=Decimal("10"))
-    db.add(SecurityPrice(symbol="600036", market="A股", price_date=date(2026, 1, 5),
-                         close_price=Decimal("10"), currency="CNY", source="test"))
-    db.add(SecurityPrice(symbol="600036", market="A股", price_date=date(2026, 1, 7),
-                         close_price=Decimal("11"), currency="CNY", source="test"))
+    add_transaction(
+        db,
+        user_id=api_user,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2026, 1, 5),
+        quantity=Decimal("100"),
+        price=Decimal("10"),
+    )
+    db.add(
+        SecurityPrice(
+            symbol="600036",
+            market="A股",
+            price_date=date(2026, 1, 5),
+            close_price=Decimal("10"),
+            currency="CNY",
+            source="test",
+        )
+    )
+    db.add(
+        SecurityPrice(
+            symbol="600036",
+            market="A股",
+            price_date=date(2026, 1, 7),
+            close_price=Decimal("11"),
+            currency="CNY",
+            source="test",
+        )
+    )
     db.commit()
     # 基准：同区间 4000 → 4200（+5%）
-    _seed_index_prices(db, "000300.SH", {
-        date(2026, 1, 3): Decimal("4000"),
-        date(2026, 1, 7): Decimal("4200"),
-    })
+    _seed_index_prices(
+        db,
+        "000300.SH",
+        {
+            date(2026, 1, 3): Decimal("4000"),
+            date(2026, 1, 7): Decimal("4200"),
+        },
+    )
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -246,9 +321,7 @@ async def test_analytics_benchmark_block_and_validation(db, api_user):
         assert payload["curve"]
 
         # 不带参数：响应无 benchmarks 键（向后兼容）
-        plain = await client.get(
-            "/api/statistics/performance-analytics", headers=auth
-        )
+        plain = await client.get("/api/statistics/performance-analytics", headers=auth)
         assert "benchmarks" not in plain.json()
 
         # 未知 code → 422；超上限 → 422

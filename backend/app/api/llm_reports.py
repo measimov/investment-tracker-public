@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..core.deps import get_current_active_user
+from ..core.logging import get_app_logger
 from ..database import get_db
 from ..models.llm_report import LlmReport, LlmReportMessage, LlmReportSchedule
 from ..models.user import User
@@ -20,10 +21,11 @@ from ..schemas.llm_report import (
     LlmReportScheduleUpdate,
 )
 from ..services.llm_client import (
-    LLMClientError,
-    LLMNotConfiguredError,
     chat_completion,
     is_llm_configured,
+    llm_error_user_message,
+    LLMClientError,
+    LLMNotConfiguredError,
 )
 from ..services.llm_report_jobs import (
     get_llm_report_job,
@@ -32,6 +34,8 @@ from ..services.llm_report_jobs import (
 )
 from ..services.llm_report_prompts import build_chat_messages
 from ._ownership import get_owned_record
+
+logger = get_app_logger(__name__)
 
 router = APIRouter()
 
@@ -43,7 +47,7 @@ def _require_llm_configured() -> None:
     if not is_llm_configured():
         raise HTTPException(
             status_code=409,
-            detail="未配置 LLM API Key（llm_report_api_key），无法使用 AI 复盘功能",
+            detail="未配置 LLM API Key（LLM_REPORT_API_KEY），无法使用 AI 复盘功能",
         )
 
 
@@ -90,11 +94,7 @@ def get_schedule(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    row = (
-        db.query(LlmReportSchedule)
-        .filter(LlmReportSchedule.user_id == current_user.id)
-        .first()
-    )
+    row = db.query(LlmReportSchedule).filter(LlmReportSchedule.user_id == current_user.id).first()
     return LlmReportScheduleResponse(cadence=row.cadence if row else "off")
 
 
@@ -107,11 +107,7 @@ def update_schedule(
     cadence = payload.cadence.strip()
     if cadence not in VALID_CADENCES:
         raise HTTPException(status_code=422, detail=f"未知节奏: {cadence}")
-    row = (
-        db.query(LlmReportSchedule)
-        .filter(LlmReportSchedule.user_id == current_user.id)
-        .first()
-    )
+    row = db.query(LlmReportSchedule).filter(LlmReportSchedule.user_id == current_user.id).first()
     if row is None:
         row = LlmReportSchedule(user_id=current_user.id, cadence=cadence)
         db.add(row)
@@ -135,9 +131,7 @@ def get_report(
         .all()
     )
     detail = LlmReportDetail.model_validate(report)
-    detail.messages = [
-        LlmReportMessageResponse.model_validate(message) for message in messages
-    ]
+    detail.messages = [LlmReportMessageResponse.model_validate(message) for message in messages]
     return detail
 
 
@@ -183,7 +177,8 @@ def ask_report(
     except LLMNotConfiguredError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except LLMClientError as exc:
-        raise HTTPException(status_code=502, detail=f"LLM 调用失败：{exc}")
+        logger.warning("报告追问 LLM 调用失败 report=%s: %s", report.id, str(exc)[:300])
+        raise HTTPException(status_code=502, detail=llm_error_user_message(exc)) from exc
 
     question = LlmReportMessage(
         report_id=report.id, user_id=current_user.id, role="user", content=payload.content

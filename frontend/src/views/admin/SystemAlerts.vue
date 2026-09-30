@@ -126,6 +126,42 @@
           </el-table-column>
         </el-table>
       </div>
+
+      <h3 class="section-title">最近提醒</h3>
+      <p v-if="events" class="hint">{{ eventSettingsText(events) }}</p>
+      <div class="responsive-table">
+        <el-table
+          :data="events?.items ?? []"
+          v-loading="loading"
+          stripe
+          empty-text="还没有事件提醒"
+        >
+          <el-table-column label="类型" width="110">
+            <template #default="{ row }">{{ eventKindLabel(row.kind) }}</template>
+          </el-table-column>
+          <el-table-column label="内容" min-width="280">
+            <template #default="{ row }">
+              <div class="alert-message event-message">{{ row.message || row.title }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="推送" min-width="150">
+            <template #default="{ row }">
+              <el-tag :type="eventStatus(row).type" size="small" effect="plain">
+                {{ eventStatus(row).text }}
+              </el-tag>
+              <div v-if="row.last_error && row.status !== 'sent'" class="muted">
+                {{ row.last_error }}
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" min-width="150">
+            <template #default="{ row }">
+              <div>{{ formatDateTime(row.created_at) }}</div>
+              <div v-if="row.sent_at" class="muted">送达 {{ formatDateTime(row.sent_at) }}</div>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-card>
   </div>
 </template>
@@ -135,13 +171,16 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Bell, Refresh } from '@element-plus/icons-vue'
 import api from '../../api'
-import type { AlertList } from '../../types'
+import type { AlertList, NotificationEventList } from '../../types'
 import { EMPTY, formatDateTime } from '../../utils/helpers'
 import { showApiError } from '../../utils/showApiError'
 import { useAliveGuard } from '../../composables/useAliveGuard'
 import {
   channelStatus,
   durationText,
+  eventKindLabel,
+  eventSettingsText,
+  eventStatus,
   notifyStatusText,
   severityLabel,
   severityTagType,
@@ -151,6 +190,7 @@ import {
 } from './systemAlerts'
 
 const data = ref<AlertList | null>(null)
+const events = ref<NotificationEventList | null>(null)
 const loading = ref(false)
 const checking = ref(false)
 const testing = ref(false)
@@ -172,10 +212,19 @@ function apply(result: AlertList) {
   nowIso.value = new Date().toISOString()
 }
 
+async function loadEvents() {
+  try {
+    const response = await api.getNotificationEvents()
+    if (!isGone()) events.value = response.data
+  } catch (error) {
+    showApiError(error, '加载事件提醒失败')
+  }
+}
+
 async function load() {
   loading.value = true
   try {
-    const response = await api.getSystemAlerts()
+    const [response] = await Promise.all([api.getSystemAlerts(), loadEvents()])
     if (!isGone()) apply(response.data)
   } catch (error) {
     showApiError(error, '加载系统告警失败')
@@ -267,6 +316,12 @@ onMounted(load)
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.event-message {
+  margin-top: 0;
+  color: var(--el-text-color-primary);
+  font-size: 13px;
 }
 
 .muted {

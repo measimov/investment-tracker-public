@@ -81,9 +81,9 @@ docker compose up -d
 - `/api/reconciliation-snapshots`：月末对账快照与自动比对
 - `/api/holdings`：持仓查询、价格更新、行情刷新任务
 - `/api/statistics`：汇总、市场/时间统计、FIFO 盈亏、股息、TTWR 曲线、组合快照、当日/本月/本年损益（`GET /api/statistics/period-pnl`）
-- `/api/corporate-actions`、`/api/exchange-rates`、`/api/security-rules`（账本特例规则；`/api/excluded-securities` 为兼容路由）
+- `/api/corporate-actions`、`/api/exchange-rates`、`/api/security-rules`（账本特例规则）
 - `/api/llm-reports`：AI 复盘报告生成、追问、定期计划
-- `/api/import/*`、`/api/export/*`：文件导入与 CSV/Excel 导出
+- `/api/import/*`、`/api/export/*`：文件导入与 Excel 导出
 
 ## 备份
 

@@ -37,7 +37,9 @@ class AlertState(Base):
     title = Column(Text, nullable=False)
     message = Column(Text, nullable=False, server_default=sa_text("''"))
     first_seen_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(),
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
         comment="本次事件首次触发时间（恢复后再触发会重置）",
     )
     last_seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -55,6 +57,8 @@ class AlertState(Base):
         comment="「已恢复」推送成功的时间；推送过的告警恢复后为空 = 待重试的恢复通知",
     )
     payload = Column(
-        JSONB, nullable=False, server_default=sa_text("'{}'::jsonb"),
+        JSONB,
+        nullable=False,
+        server_default=sa_text("'{}'::jsonb"),
         comment="检查器给出的明细 + 最近一次推送结果",
     )

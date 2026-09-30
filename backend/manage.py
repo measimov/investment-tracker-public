@@ -56,23 +56,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collector.add_argument("--once", action="store_true", help="run one authors cycle and exit")
     collector.add_argument(
-        "--author", action="append", help="limit to these Xueqiu user ids (repeatable; implies --once)"
+        "--author",
+        action="append",
+        help="limit to these Xueqiu user ids (repeatable; implies --once)",
     )
     collector.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="fetch and parse but write nothing (implies --once)",
     )
     collector.add_argument(
-        "--max-posts", type=int,
+        "--max-posts",
+        type=int,
         help="low-cost check: profile page 1, at most N candidate posts, 1 comment page each "
         "(use with --dry-run for a shadow run; implies --once)",
     )
     collector.add_argument(
-        "--symbols-once", action="store_true",
+        "--symbols-once",
+        action="store_true",
         help="run one per-symbol cycle (announcements/discussion + cubes) and exit",
     )
     collector.add_argument(
-        "--symbol", action="append",
+        "--symbol",
+        action="append",
         help="with --symbols-once: only these codes (our code, e.g. 600519 / 00700; "
         "repeatable; needs --market; skips cubes and does not mark the day as done)",
     )
@@ -101,13 +107,96 @@ def build_parser() -> argparse.ArgumentParser:
         "state machine as the periodic checks (no repeat pushes while active)",
     )
     notify.add_argument("--key", required=True, help="alert key, e.g. backup")
-    notify.add_argument(
-        "--severity", choices=("info", "warning", "critical"), default="warning"
-    )
+    notify.add_argument("--severity", choices=("info", "warning", "critical"), default="warning")
     notify.add_argument("--title", help="alert title (required unless --resolve)")
     notify.add_argument("--message", default="", help="alert details")
     notify.add_argument("--resolve", action="store_true", help="mark the alert as recovered")
+    backfill_watch = subcommands.add_parser(
+        "backfill-watchlist-added-price",
+        help="fill missing watchlist baseline prices with the close on (or up to 7 days before) "
+        "the add date; idempotent, only fills empty values",
+    )
+    backfill_watch.add_argument("--dry-run", action="store_true", help="report, write nothing")
+    reset = subcommands.add_parser(
+        "reset-password",
+        help="Set a user's password (prompted, or read from --password-env) and revoke all of "
+        "that user's sessions",
+    )
+    reset.add_argument("username")
+    reset.add_argument(
+        "--password-env",
+        metavar="VAR",
+        help="read the new password from this environment variable instead of prompting",
+    )
+    sync_ann = subcommands.add_parser(
+        "sync-announcements",
+        help="sync official announcements (cninfo / HKEXnews / EDGAR) for tracked securities; "
+        "idempotent. Without --days uses each security's watermark (first run backfills "
+        "ANNOUNCEMENT_BACKFILL_DAYS)",
+    )
+    sync_ann.add_argument("--days", type=int, help="look back N days, ignoring watermarks")
+    sync_ann.add_argument("--symbol", help="only this symbol (requires --market)")
+    sync_ann.add_argument("--market", help="market of --symbol (A股/B股/港股/美股)")
+    reclassify = subcommands.add_parser(
+        "reclassify-announcements",
+        help="recompute announcement category/importance/group after a classifier version bump "
+        "(no network)",
+    )
+    reclassify.add_argument("--all", action="store_true", help="reclassify every row")
     return parser
+
+
+def reset_password(username: str, password_env: str | None) -> int:
+    """重置口令并吊销该用户全部会话（替代旧 scripts/reset_passwords.py，#277）。
+
+    旧脚本只会把 admin/demo 重置成 .env 里的初始口令，且不吊销已签发的会话。
+    口令规则与 API 一致（长度下限 + bcrypt 72 字节上限），经 NewPassword 校验。
+    """
+    import getpass
+    import os
+
+    from pydantic import TypeAdapter, ValidationError
+
+    from app.core.security import get_password_hash
+    from app.database import SessionLocal
+    from app.models.user import User
+    from app.schemas.user import NewPassword
+    from app.core.logging import get_app_logger
+    from app.services.auth_session_service import revoke_user_sessions
+
+    if password_env:
+        password = os.environ.get(password_env)
+        if not password:
+            print(f"环境变量 {password_env} 未设置或为空")
+            return 1
+    else:
+        password = getpass.getpass("新密码：")
+        if getpass.getpass("再输入一次：") != password:
+            print("两次输入不一致，未修改")
+            return 1
+    try:
+        TypeAdapter(NewPassword).validate_python(password)
+    except ValidationError as exc:
+        print("密码不符合要求：" + "; ".join(err["msg"] for err in exc.errors()))
+        return 1
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.username == username).first()
+        if user is None:
+            print(f"用户 {username} 不存在")
+            return 1
+        user.hashed_password = get_password_hash(password)
+        # revoke_user_sessions 自带 commit，口令与吊销在同一事务里落库
+        revoked = revoke_user_sessions(db, user.id)
+    finally:
+        db.close()
+    # 运维直接改口令：与 API 改密同一条审计日志（auth 日志），不记口令本身
+    get_app_logger("auth").info(
+        "Password reset via CLI - Username: %s, sessions revoked: %s", username, revoked
+    )
+    print(f"已重置 {username} 的密码，吊销 {revoked} 个会话")
+    return 0
 
 
 def rebuild_holdings() -> int:
@@ -123,9 +212,7 @@ def rebuild_holdings() -> int:
     rebuilt = 0
     failures = []
     try:
-        txn_keys = db.query(
-            Transaction.user_id, Transaction.symbol, Transaction.market
-        )
+        txn_keys = db.query(Transaction.user_id, Transaction.symbol, Transaction.market)
         action_keys = db.query(
             CorporateAction.user_id, CorporateAction.symbol, CorporateAction.market
         )
@@ -150,6 +237,7 @@ def rebuild_holdings() -> int:
         return 0
     finally:
         db.close()
+
 
 def sync_reference_rates(start) -> int:
     from datetime import date
@@ -320,8 +408,12 @@ def xueqiu_collector(args) -> int:
         return 2
 
     once = (
-        args.once or args.dry_run or bool(args.author) or bool(args.database_url)
-        or args.symbols_once or bool(args.max_posts)
+        args.once
+        or args.dry_run
+        or bool(args.author)
+        or bool(args.database_url)
+        or args.symbols_once
+        or bool(args.max_posts)
     )
     if not once:
         runner.run_collector_loop(stop_event)
@@ -418,8 +510,10 @@ def xueqiu_import_archive_exports(args) -> int:
     finally:
         db.close()
     mode = "dry-run (nothing written)" if args.dry_run else "imported"
-    print(f"{mode}: files={stats.files} symbols={len(stats.symbols)} "
-          f"malformed_blocks={stats.malformed_blocks}")
+    print(
+        f"{mode}: files={stats.files} symbols={len(stats.symbols)} "
+        f"malformed_blocks={stats.malformed_blocks}"
+    )
     for key in sorted(stats.parsed):
         print(
             f"  {key}: parsed={stats.parsed[key]} unique={len(stats.unique.get(key, ()))} "
@@ -427,7 +521,9 @@ def xueqiu_import_archive_exports(args) -> int:
             f"with_author={stats.with_author.get(key, 0)} with_text={stats.with_text.get(key, 0)}"
         )
     if stats.skipped_files:
-        print(f"  skipped (unrecognized symbol): {', '.join(stats.skipped_files)}")
+        print(
+            f"  skipped (unrecognized symbol or retired market hots): {', '.join(stats.skipped_files)}"
+        )
     return 0
 
 
@@ -497,6 +593,75 @@ def notify(args) -> int:
     return 0
 
 
+def backfill_watchlist_added_price(dry_run: bool) -> int:
+    from app.database import SessionLocal
+    from app.services.watchlist_price_service import backfill_added_prices
+
+    db = SessionLocal()
+    try:
+        result = backfill_added_prices(db, dry_run=dry_run)
+    finally:
+        db.close()
+    prefix = "[dry-run] " if dry_run else ""
+    for entry in result["filled"]:
+        print(
+            f"{prefix}filled {entry['market']}/{entry['symbol']} added {entry['added_on']}: "
+            f"close {entry['close']} on {entry['price_date']} ({entry['basis']})"
+        )
+    for entry in result["pending_quote"]:
+        print(
+            f"{prefix}no close around {entry['added_on']} after history probe: "
+            f"{entry['market']}/{entry['symbol']} (next successful quote becomes the baseline)"
+        )
+    for entry in result["missing"]:
+        print(
+            f"{prefix}waiting: {entry['market']}/{entry['symbol']} added {entry['added_on']} "
+            "(recently added, or history before the add date not synced yet)"
+        )
+    print(
+        f"{prefix}candidates {result['candidates']}, filled {len(result['filled'])}, "
+        f"pending_quote {len(result['pending_quote'])}, waiting {len(result['missing'])}"
+    )
+    return 0
+
+
+def sync_announcements_command(args) -> int:
+    from app.database import SessionLocal
+    from app.services.announcement_sync import sync_announcements
+
+    if bool(args.symbol) != bool(args.market):
+        print("--symbol and --market must be given together")
+        return 2
+    keys = [(args.symbol.strip().upper(), args.market)] if args.symbol else None
+    db = SessionLocal()
+    try:
+        summary = sync_announcements(db, keys=keys, force_window_days=args.days)
+    finally:
+        db.close()
+    for item in summary["failed"]:
+        print(f"failed {item['key']}: {item['error']}")
+    if summary["unsupported"]:
+        print(f"unsupported (no official source): {', '.join(summary['unsupported'])}")
+    print(
+        f"synced {summary['synced']}, new {summary['new']}, failed {len(summary['failed'])}, "
+        f"deferred {summary['deferred']}"
+    )
+    return 1 if summary["failed"] else 0
+
+
+def reclassify_announcements_command(all_rows: bool) -> int:
+    from app.database import SessionLocal
+    from app.services.announcement_sync import reclassify_announcements
+
+    db = SessionLocal()
+    try:
+        updated = reclassify_announcements(db, all_rows=all_rows)
+    finally:
+        db.close()
+    print(f"reclassified {updated} announcements")
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -543,6 +708,17 @@ def main() -> int:
 
     if args.command == "notify":
         return notify(args)
+
+    if args.command == "backfill-watchlist-added-price":
+        return backfill_watchlist_added_price(args.dry_run)
+
+    if args.command == "reset-password":
+        return reset_password(args.username, args.password_env)
+    if args.command == "sync-announcements":
+        return sync_announcements_command(args)
+
+    if args.command == "reclassify-announcements":
+        return reclassify_announcements_command(args.all)
 
     parser.error(f"Unknown command: {args.command}")
 

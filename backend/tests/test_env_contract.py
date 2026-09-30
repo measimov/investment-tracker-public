@@ -153,3 +153,29 @@ def test_bare_passthrough_examples_match_config_defaults():
         if not _same_value(example[key], default):
             drift.append(f"{key}: .env.example={example[key]!r} 但 config.py 默认={default!r}")
     assert not drift, "裸键透传项的示例值与代码默认值漂移:\n" + "\n".join(drift)
+
+
+# 部署口径刻意与 config.py 默认不同的旋钮：生产走 nginx + HTTPS、不开 /docs，
+# 而 config.py 的默认面向本地开发。只有这三项允许在 compose 里写 `:-默认`。
+COMPOSE_DEFAULT_OVERRIDES = {
+    "ENABLE_DOCS": "生产不暴露 /docs（与 config 默认同为 false，显式写出防误开）",
+    "REQUIRE_HTTPS": "生产必须 HTTPS 登录",
+    "TRUST_PROXY_HEADERS": "后端只经 nginx 访问，X-Forwarded-Proto 由 nginx 覆写，可信",
+}
+
+
+def test_compose_settings_have_no_second_default():
+    """#278：Settings 字段在 compose 里一律裸键透传，`${X:-默认}` 只允许白名单。
+
+    `:-默认` 等于给同一配置立了第二个默认值来源：改了 config.py 的默认值，Docker 部署
+    不会跟着变（#128 的原型）。此前只校验裸键，这种写法完全不受检查。
+    """
+    settings_keys = {name.upper() for name in Settings.model_fields}
+    offenders = []
+    for block in _compose_service_blocks():
+        for key, default in re.findall(
+            r"^\s+-\s+([A-Z][A-Z0-9_]*)=\$\{\1:-([^}]*)\}\s*$", block, re.M
+        ):
+            if key in settings_keys and key not in COMPOSE_DEFAULT_OVERRIDES:
+                offenders.append(f"{key}（:-{default}）")
+    assert not offenders, "改成裸键 `- NAME`，默认值只留在 config.py：" + ", ".join(offenders)

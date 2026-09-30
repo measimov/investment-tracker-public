@@ -124,25 +124,35 @@ def check_expiry(
         return {
             "level": "unconfigured",
             "message": "未配置 XUEQIU_COOKIE_FILE，跳过到期日检查"
-                       "（XUEQIU_COOKIES 形状不含 expirationDate）",
-            "days_left": None, "cookie": "",
+            "（XUEQIU_COOKIES 形状不含 expirationDate）",
+            "days_left": None,
+            "cookie": "",
         }
     path = Path(cookie_file)
     if not path.is_file():
-        return {"level": "critical", "message": f"Cookie 文件不存在：{path}",
-                "days_left": None, "cookie": ""}
+        return {
+            "level": "critical",
+            "message": f"Cookie 文件不存在：{path}",
+            "days_left": None,
+            "cookie": "",
+        }
     try:
         facts = load_cookie_facts(path)
     except (json.JSONDecodeError, OSError, ValueError, AttributeError, TypeError) as exc:
-        return {"level": "critical", "message": f"Cookie 文件无法解析：{exc}",
-                "days_left": None, "cookie": ""}
+        return {
+            "level": "critical",
+            "message": f"Cookie 文件无法解析：{exc}",
+            "days_left": None,
+            "cookie": "",
+        }
 
     missing = facts["missing"]
     if missing:
         return {
             "level": "critical",
             "message": f"雪球登录凭证缺失或为空：{', '.join(missing)}（请重新导出完整 Cookie）",
-            "days_left": None, "cookie": missing[0],
+            "days_left": None,
+            "cookie": missing[0],
         }
 
     expirations = facts["expirations"]
@@ -150,8 +160,9 @@ def check_expiry(
         return {
             "level": "unconfigured",
             "message": f"{path} 不含 expirationDate（非浏览器完整导出），"
-                       "无法预判到期；请改用 --probe",
-            "days_left": None, "cookie": "",
+            "无法预判到期；请改用 --probe",
+            "days_left": None,
+            "cookie": "",
         }
 
     days = {name: (value - now) / 86400 for name, value in expirations.items()}
@@ -163,9 +174,13 @@ def check_expiry(
     else:
         level = "normal"
     return {
-        "level": level, "cookie": cookie, "days_left": days_left,
-        "message": (f"雪球 Cookie {level}：{cookie} 还有 {days_left:.1f} 天到期"
-                    f"（warn={warn_days:g}d critical={critical_days:g}d）"),
+        "level": level,
+        "cookie": cookie,
+        "days_left": days_left,
+        "message": (
+            f"雪球 Cookie {level}：{cookie} 还有 {days_left:.1f} 天到期"
+            f"（warn={warn_days:g}d critical={critical_days:g}d）"
+        ),
     }
 
 

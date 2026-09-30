@@ -134,9 +134,12 @@ def test_budget_names_the_omitted_subsections():
     要求"原文未提及一律写'原文未提及'"——截断会伪装成"公司没披露"。"""
     text = (
         "前言部分。\n"
-        + "一、主营业务分析\n" + "核心内容。" * 2_000
-        + "\n二、募集资金使用情况\n" + "低价值内容。" * 2_000
-        + "\n三、主要控股参股公司\n" + "子公司名录。" * 2_000
+        + "一、主营业务分析\n"
+        + "核心内容。" * 2_000
+        + "\n二、募集资金使用情况\n"
+        + "低价值内容。" * 2_000
+        + "\n三、主要控股参股公司\n"
+        + "子公司名录。" * 2_000
     )
     body, meta = budget_section(text, budget=12_000)
     assert meta.strategy == "structured"
@@ -172,10 +175,7 @@ def test_risk_section_needs_a_real_subsection_heading():
     家电都抽出「主要风险和报酬转移给客户」开头的 50k 盲窗，一段会计政策被贴上
     【风险因素】喂给 LLM。中文年报本就未必设独立风险章节，抽不到就该是 None。
     """
-    found = {
-        name: extract_cn_sections(_load(name)).get("risk_factors")
-        for name in ALL_FIXTURES
-    }
+    found = {name: extract_cn_sections(_load(name)).get("risk_factors") for name in ALL_FIXTURES}
     # 四份真实年报里只有 02156 设了「主要風險和不確定因素」小节
     assert {name for name, r in found.items() if r} == {"hk_02156_20251231"}
     risk = found["hk_02156_20251231"]
@@ -218,7 +218,9 @@ def test_score_section_flags_registration_page():
     assert score == 0.0
     assert "boilerplate_profile" in flags
 
-    real = "公司主营业务涵盖冰箱、空调等，经营模式为自主研发生产销售，行业情况如下，核心竞争力在于" * 5
+    real = (
+        "公司主营业务涵盖冰箱、空调等，经营模式为自主研发生产销售，行业情况如下，核心竞争力在于" * 5
+    )
     score, flags = score_section("business", real)
     assert score >= 0.35
     assert "boilerplate_profile" not in flags

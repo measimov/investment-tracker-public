@@ -10,11 +10,11 @@
 （A股/美股/港股），其他市场显式 409。
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy import and_
+from sqlalchemy import and_, tuple_
 from sqlalchemy.orm import Session, defer
 
 from ..core.deps import get_current_active_user
@@ -23,6 +23,8 @@ from ..models.holding import Holding
 from ..models.security_profile import SecurityAnalysis
 from ..models.user import User
 from ..services.llm_client import is_llm_configured
+from ..services.report_freshness import latest_report_data_at, latest_report_data_at_batch
+from ..services.symbol_normalization import normalize_manual_symbol
 from ..services.security_analysis_batch_jobs import (
     ANALYSIS_EXCLUSIVE_JOB_TYPES,
     NoBatchTargetsError,
@@ -46,6 +48,45 @@ from ..services.security_profile_service import (
     load_security_events_for,
     load_symbol_profile,
 )
+from ..config import settings
+from ..models.security_opinion import SecurityOpinionSummary
+from ..models.security_profile import SecurityProfileData
+from ..services.background_job_store import find_active_job_of_types
+from ..services.business_profile_service import load_business_profile
+from ..services.earnings_quality import compute_earnings_quality, market_statements
+from ..services.opinion_summary_batch_jobs import (
+    candidate_opinion_targets,
+    get_opinion_batch_job,
+    get_opinion_batch_targets,
+    request_opinion_batch_cancel,
+    run_opinion_batch_job,
+    start_opinion_batch_job,
+)
+from ..services.opinion_summary_jobs import (
+    OPINION_MARKETS,
+    get_opinion_summary_job,
+    run_opinion_summary_job,
+    start_opinion_summary_job,
+)
+from ..services.report_digest_batch_jobs import (
+    JOB_TYPE as DIGEST_BATCH_JOB_TYPE,
+    get_digest_batch_job,
+    preview_digest_backfill,
+    request_digest_batch_cancel,
+    run_digest_batch_job,
+    start_digest_batch_job,
+)
+from ..services.report_digest_jobs import (
+    get_report_backfill_job,
+    run_report_backfill_job,
+    start_report_backfill_job,
+)
+from ..services.report_digest_service import REPORT_MARKETS, digest_progress, load_report_digests
+from ..services.report_statement_service import STATEMENT_MARKETS, statement_progress
+from ..services.security_catalog_service import display_names
+from ..services.security_profile_service import compute_graham_for
+from ..services import xueqiu_opinion_source as opinion_source
+from ..services.xueqiu_opinion_source import KIND_LABELS, OpinionSourceUnavailable
 
 router = APIRouter()
 
@@ -105,9 +146,12 @@ def _analysis_summary(analysis: SecurityAnalysis) -> Dict[str, Any]:
         "tags": analysis.tags,
         "risk_level": analysis.risk_level,
         "risk_level_adjusted": analysis.risk_level_adjusted,
+        "output_adjustments": analysis.output_adjustments,
         "summary": analysis.summary,
         "created_at": analysis.created_at.isoformat() if analysis.created_at else None,
-        "data_fetched_at": analysis.data_fetched_at.isoformat() if analysis.data_fetched_at else None,
+        "data_fetched_at": analysis.data_fetched_at.isoformat()
+        if analysis.data_fetched_at
+        else None,
     }
 
 
@@ -118,9 +162,20 @@ def list_holding_analyses(
 ):
     """当前用户持仓标的的最新分析摘要（持仓页 AI 标签列，一次取全）。
 
-    列表端点：按持仓收敛（见模块 docstring 的全局表读取口径）。
+    列表端点：按持仓收敛（见模块 docstring 的全局表读取口径）。每行带 `latest_data_at`
+    （与详情页同一判定），持仓页据此给早于最新摘要/报表的分析标「可能过期」。
     """
-    return [_analysis_summary(analysis) for analysis in _latest_held_analyses(db, current_user.id)]
+    analyses = _latest_held_analyses(db, current_user.id)
+    latest = latest_report_data_at_batch(
+        db, [(analysis.symbol, analysis.market) for analysis in analyses]
+    )
+    return [
+        {
+            **_analysis_summary(analysis),
+            "latest_data_at": latest.get((analysis.symbol, analysis.market)),
+        }
+        for analysis in analyses
+    ]
 
 
 @router.get("/analysis-jobs/{job_id}")
@@ -163,7 +218,8 @@ def start_batch_analysis(
     try:
         ensure_no_conflicting_analysis_job(db, current_user.id, BATCH_JOB_TYPE)
         job = start_batch_analysis_job(
-            db, current_user.id,
+            db,
+            current_user.id,
             include_report_digests=include_report_digests,
             force=force,
             freshness_hours=freshness_hours,
@@ -224,8 +280,6 @@ def list_active_analysis_jobs(
     无活跃任务返回空列表而非 404——404 会触发前端的全局错误通知，
     而"当前没有任务"是完全正常的状态。
     """
-    from ..services.background_job_store import find_active_job_of_types
-
     active = find_active_job_of_types(current_user.id, ANALYSIS_EXCLUSIVE_JOB_TYPES)
     return [active] if active else []
 
@@ -239,13 +293,11 @@ def start_analysis(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """启动标的分析（同步基本面 → LLM 生成；每用户单活跃任务去重）。"""
+    symbol = normalize_manual_symbol(symbol, market)  # 手敲 URL 的非规范代码不得入队（#278）
     if market not in SUPPORTED_MARKETS:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"{market} 暂不支持基本面数据分析"
-                f"（支持：{'/'.join(SUPPORTED_MARKETS)}）"
-            ),
+            detail=(f"{market} 暂不支持基本面数据分析（支持：{'/'.join(SUPPORTED_MARKETS)}）"),
         )
     if not is_llm_configured():
         raise HTTPException(
@@ -285,23 +337,6 @@ def get_latest_analysis(
     }
 
 
-def _latest_report_data_at(
-    digests: List[Dict[str, Any]], statement_progress: Optional[Dict[str, Any]]
-) -> Optional[str]:
-    """最新一次「报告类数据」落库时间（财报摘要生成 / 港股报表抽取），ISO 串。
-
-    详情页拿它与分析的 created_at 比较：分析早于它 = 分析没吃到最新的摘要/报表，
-    标「可能过期」。只看报告类产物，不看 fetched_at（行情/指标的例行同步不意味着
-    分析过期）。展示字段，零外呼。
-    """
-    candidates = [str(item["fetched_at"]) for item in digests if item.get("fetched_at")]
-    if statement_progress and statement_progress.get("last_extracted_at"):
-        candidates.append(str(statement_progress["last_extracted_at"]))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda text: datetime.fromisoformat(text))
-
-
 @router.get("/{market}/{symbol}/profile")
 def get_symbol_profile(
     market: str,
@@ -313,12 +348,6 @@ def get_symbol_profile(
 
     单标的端点：允许查未持仓标的（见模块 docstring 的全局表读取口径）。
     """
-    from ..services.report_digest_service import digest_progress, load_report_digests
-    from ..services.report_statement_service import STATEMENT_MARKETS, statement_progress
-
-    from ..services.business_profile_service import load_business_profile
-    from ..services.earnings_quality import compute_earnings_quality, market_statements
-    from ..services.security_profile_service import compute_graham_for
 
     profile = load_symbol_profile(db, symbol, market)
     profile["events"] = load_security_events_for(db, symbol, market)
@@ -330,7 +359,7 @@ def get_symbol_profile(
     profile["statement_progress"] = (
         statement_progress(db, symbol, market) if market in STATEMENT_MARKETS else None
     )
-    profile["latest_data_at"] = _latest_report_data_at(
+    profile["latest_data_at"] = latest_report_data_at(
         profile["report_digests"], profile["statement_progress"]
     )
     profile["business"] = load_business_profile(db, symbol, market)
@@ -346,9 +375,7 @@ def get_symbol_profile(
     # 准则取数走年度行专取口径（caps 窗口的季报会挤掉年度行，见
     # load_graham_inputs 注释），与分析输入一致
     # 美股 ADS 换算比：当前用户的 ADS_RATIO 规则优先于 20-F 封面解析值
-    profile["graham_screen"] = compute_graham_for(
-        db, symbol, market, user_id=current_user.id
-    ) or {
+    profile["graham_screen"] = compute_graham_for(db, symbol, market, user_id=current_user.id) or {
         "status": "no_data"
     }
     return profile
@@ -371,8 +398,6 @@ def get_report_sections(
     默认每节只回前 `SECTION_PREVIEW_CHARS` 字符：抽取期不再截断后单节可达十万
     字符量级，三份报告的全文足以让这个响应到 MB 级。要全文用 `?full=1`。
     """
-    from ..models.security_profile import SecurityProfileData
-
     rows = (
         db.query(SecurityProfileData)
         .filter(
@@ -409,12 +434,7 @@ def start_report_backfill(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """启动财报摘要回填（每次最多补 4 份，可重复触发续跑至补齐十年）。"""
-    from ..services.report_digest_jobs import (
-        run_report_backfill_job,
-        start_report_backfill_job,
-    )
-
-    from ..services.report_digest_service import REPORT_MARKETS
+    symbol = normalize_manual_symbol(symbol, market)  # 手敲 URL 的非规范代码不得入队（#278）
 
     if market not in REPORT_MARKETS:
         raise HTTPException(
@@ -442,8 +462,6 @@ def preview_digest_backfill_targets(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """批量回填确认框数据（纯 DB 统计，不打任何外部数据源）。"""
-    from ..services.report_digest_batch_jobs import preview_digest_backfill
-
     return preview_digest_backfill(db, current_user.id)
 
 
@@ -454,14 +472,6 @@ def start_digest_batch_backfill(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """批量财报摘要回填：全部持仓标的、每标的每轮最多补 4 份，可重复触发续跑加深。"""
-    from ..services.report_digest_batch_jobs import (
-        JOB_TYPE as DIGEST_BATCH_JOB_TYPE,
-    )
-    from ..services.report_digest_batch_jobs import (
-        run_digest_batch_job,
-        start_digest_batch_job,
-    )
-
     if not is_llm_configured():
         raise HTTPException(
             status_code=409,
@@ -484,7 +494,6 @@ def get_digest_batch_backfill(
     job_id: str,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    from ..services.report_digest_batch_jobs import get_digest_batch_job
 
     job = get_digest_batch_job(job_id, current_user.id)
     if not job:
@@ -498,8 +507,6 @@ def cancel_digest_batch_backfill(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     """请求终止：当前标的跑完即收尾，已生成的摘要保留，可再次触发续跑。"""
-    from ..services.report_digest_batch_jobs import request_digest_batch_cancel
-
     job = request_digest_batch_cancel(job_id, current_user.id)
     if not job:
         raise HTTPException(status_code=404, detail="批量回填任务不存在")
@@ -511,7 +518,6 @@ def get_report_backfill_status(
     job_id: str,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    from ..services.report_digest_jobs import get_report_backfill_job
 
     job = get_report_backfill_job(job_id, current_user.id)
     if not job:
@@ -528,26 +534,24 @@ def get_report_backfill_status(
 
 
 def _latest_opinions(db: Session, pairs: List[tuple]) -> Dict[tuple, Any]:
-    """给定 (symbol, market) 对，各取最新一条摘要。"""
-    from ..models.security_opinion import SecurityOpinionSummary
+    """给定 (symbol, market) 对，各取最新一条摘要。
 
+    与 `_latest_held_analyses` 同一写法（#283）：DISTINCT ON (symbol, market) 一条查询、
+    全文与压缩输入不取。摘要只追加不删，此前按 symbol 拉全部历史整行进内存再去重，
+    观点页耗时与内存随历史线性增长。
+    """
     if not pairs:
         return {}
+    summary = SecurityOpinionSummary
     rows = (
-        db.query(SecurityOpinionSummary)
-        .filter(SecurityOpinionSummary.symbol.in_({s for s, _ in pairs}))
-        .order_by(
-            SecurityOpinionSummary.created_at.desc(), SecurityOpinionSummary.id.desc()
-        )
+        db.query(summary)
+        .filter(tuple_(summary.symbol, summary.market).in_(sorted(set(pairs))))
+        .options(defer(summary.content), defer(summary.input_payload))
+        .distinct(summary.symbol, summary.market)
+        .order_by(summary.symbol, summary.market, summary.created_at.desc(), summary.id.desc())
         .all()
     )
-    wanted = set(pairs)
-    latest: Dict[tuple, Any] = {}
-    for row in rows:
-        pair = (row.symbol, row.market)
-        if pair in wanted and pair not in latest:
-            latest[pair] = row
-    return latest
+    return {(row.symbol, row.market): row for row in rows}
 
 
 def _opinion_row(summary) -> Dict[str, Any]:
@@ -579,17 +583,8 @@ def list_opinion_summaries(
     表不可用时 source_available=false、计数字段置 null，但**已存的摘要照常
     返回**——历史产物不因数据源下线而消失，且绝不静默返回空冒充"无观点"。
     """
-    from datetime import datetime, timedelta, timezone
 
-    from ..services.opinion_summary_batch_jobs import candidate_opinion_targets
-    from ..services.xueqiu_opinion_source import (
-        build_wanted_map,
-        scan_matched_utterances,
-        source_freshness,
-    )
-    from ..config import settings
-
-    freshness = source_freshness(db)
+    freshness = opinion_source.source_freshness(db)
     candidates = candidate_opinion_targets(db, current_user.id)
     pairs = [(t["symbol"], t["market"]) for t in candidates]
     latest = _latest_opinions(db, pairs)
@@ -597,11 +592,9 @@ def list_opinion_summaries(
     matched: Dict[str, list] = {}
     wanted: Dict[str, tuple] = {}
     if freshness["available"] and candidates:
-        wanted = build_wanted_map(pairs)
-        since = datetime.now(timezone.utc) - timedelta(
-            days=settings.xueqiu_opinion_lookback_days
-        )
-        matched = scan_matched_utterances(db, set(wanted), since=since)
+        wanted = opinion_source.build_wanted_map(pairs)
+        since = datetime.now(timezone.utc) - timedelta(days=settings.xueqiu_opinion_lookback_days)
+        matched = opinion_source.scan_matched_utterances(db, set(wanted), since=since)
     reverse = {pair: key for key, pair in wanted.items()}
 
     items: List[Dict[str, Any]] = []
@@ -616,9 +609,7 @@ def list_opinion_summaries(
             anchor = summary.latest_utterance_at if summary else None
             if anchor is not None and anchor.tzinfo is None:
                 anchor = anchor.replace(tzinfo=timezone.utc)
-            new_count = (
-                sum(1 for row in rows if anchor is None or row["created_at"] > anchor)
-            )
+            new_count = sum(1 for row in rows if anchor is None or row["created_at"] > anchor)
         else:
             matched_count = None
             new_count = None
@@ -626,10 +617,18 @@ def list_opinion_summaries(
             _opinion_row(summary)
             if summary is not None
             else {
-                "id": None, "symbol": target["symbol"], "market": target["market"],
-                "name": None, "tags": [], "summary": None, "author_stances": [],
-                "utterance_count": None, "recent_utterance_count": None,
-                "recent_days": None, "latest_utterance_at": None, "created_at": None,
+                "id": None,
+                "symbol": target["symbol"],
+                "market": target["market"],
+                "name": None,
+                "tags": [],
+                "summary": None,
+                "author_stances": [],
+                "utterance_count": None,
+                "recent_utterance_count": None,
+                "recent_days": None,
+                "latest_utterance_at": None,
+                "created_at": None,
             }
         )
         item["origin"] = target["origin"]
@@ -639,7 +638,6 @@ def list_opinion_summaries(
 
     # 摘要是快照：生成时没取到名称的行 name 为空，观点页只能显示代码。读取时统一补名
     # （目录简体名优先，缺失再用持仓/自选名），不改存量摘要
-    from ..services.security_catalog_service import display_names
 
     unnamed = [(item["symbol"], item["market"]) for item in items if not item.get("name")]
     if unnamed:
@@ -677,17 +675,6 @@ def get_opinion_feed(
     前端整块堆叠的展示埋没）。每组返回 total 供前端展示"另有 N 条未显示"。
     作者按各自最新发言时间倒序排列。
     """
-    from datetime import datetime, timedelta, timezone
-
-    from ..services.opinion_summary_jobs import OPINION_MARKETS
-    from ..services.opinion_summary_batch_jobs import candidate_opinion_targets
-    from ..services.xueqiu_opinion_source import (
-        KIND_LABELS,
-        OpinionSourceUnavailable,
-        build_wanted_map,
-        scan_matched_utterances,
-        source_freshness,
-    )
 
     if (symbol is None) != (market is None):
         raise HTTPException(status_code=422, detail="symbol 与 market 必须成对提供")
@@ -697,7 +684,7 @@ def get_opinion_feed(
             detail=f"{market} 暂不支持观点数据（支持：{'/'.join(OPINION_MARKETS)}）",
         )
 
-    freshness = source_freshness(db)
+    freshness = opinion_source.source_freshness(db)
     if not freshness["available"]:
         return {"source_available": False, "freshness": freshness, "authors": []}
     if symbol is not None and market is not None:
@@ -705,10 +692,10 @@ def get_opinion_feed(
     else:
         candidates = candidate_opinion_targets(db, current_user.id)
         pairs = [(t["symbol"], t["market"]) for t in candidates]
-    wanted = build_wanted_map(pairs)
+    wanted = opinion_source.build_wanted_map(pairs)
     since = datetime.now(timezone.utc) - timedelta(days=days)
     try:
-        matched = scan_matched_utterances(db, set(wanted), since=since)
+        matched = opinion_source.scan_matched_utterances(db, set(wanted), since=since)
     except OpinionSourceUnavailable:
         return {"source_available": False, "freshness": freshness, "authors": []}
 
@@ -733,9 +720,7 @@ def get_opinion_feed(
             entry["symbols"].append({"symbol": row_symbol, "market": row_market})
 
     epoch = datetime.min.replace(tzinfo=timezone.utc)
-    ordered = sorted(
-        by_key.values(), key=lambda item: item["sort_key"] or epoch, reverse=True
-    )
+    ordered = sorted(by_key.values(), key=lambda item: item["sort_key"] or epoch, reverse=True)
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for entry in ordered:
         entry.pop("sort_key", None)
@@ -756,7 +741,6 @@ def get_opinion_job(
     job_id: str,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    from ..services.opinion_summary_jobs import get_opinion_summary_job
 
     job = get_opinion_summary_job(job_id, current_user.id)
     if not job:
@@ -771,11 +755,6 @@ def start_opinion_batch(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    from ..services.opinion_summary_batch_jobs import (
-        run_opinion_batch_job,
-        start_opinion_batch_job,
-    )
-    from ..services.xueqiu_opinion_source import OpinionSourceUnavailable
 
     if not is_llm_configured():
         raise HTTPException(status_code=409, detail="未配置 LLM API Key，无法生成观点摘要")
@@ -798,7 +777,6 @@ def preview_opinion_batch_targets(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    from ..services.opinion_summary_batch_jobs import get_opinion_batch_targets
 
     return get_opinion_batch_targets(db, current_user.id)
 
@@ -808,7 +786,6 @@ def get_opinion_batch(
     job_id: str,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    from ..services.opinion_summary_batch_jobs import get_opinion_batch_job
 
     job = get_opinion_batch_job(job_id, current_user.id)
     if not job:
@@ -821,7 +798,6 @@ def cancel_opinion_batch(
     job_id: str,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    from ..services.opinion_summary_batch_jobs import request_opinion_batch_cancel
 
     job = request_opinion_batch_cancel(job_id, current_user.id)
     if not job:
@@ -837,15 +813,7 @@ def start_opinion_job(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    from ..services.opinion_summary_jobs import (
-        OPINION_MARKETS,
-        run_opinion_summary_job,
-        start_opinion_summary_job,
-    )
-    from ..services.xueqiu_opinion_source import (
-        OpinionSourceUnavailable,
-        ensure_opinion_source,
-    )
+    symbol = normalize_manual_symbol(symbol, market)  # 手敲 URL 的非规范代码不得入队（#278）
 
     if market not in OPINION_MARKETS:
         raise HTTPException(
@@ -855,7 +823,7 @@ def start_opinion_job(
     if not is_llm_configured():
         raise HTTPException(status_code=409, detail="未配置 LLM API Key，无法生成观点摘要")
     try:
-        ensure_opinion_source(db)
+        opinion_source.ensure_opinion_source(db)
         ensure_no_conflicting_analysis_job(db, current_user.id, "opinion_summary")
         job = start_opinion_summary_job(current_user.id, symbol, market)
     except OpinionSourceUnavailable as exc:
@@ -875,17 +843,13 @@ def get_opinion_summary(
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """最新观点摘要全文 + 上一条的标签快照（前端展示"较上次变化"）。"""
-    from ..models.security_opinion import SecurityOpinionSummary
-
     rows = (
         db.query(SecurityOpinionSummary)
         .filter(
             SecurityOpinionSummary.symbol == symbol,
             SecurityOpinionSummary.market == market,
         )
-        .order_by(
-            SecurityOpinionSummary.created_at.desc(), SecurityOpinionSummary.id.desc()
-        )
+        .order_by(SecurityOpinionSummary.created_at.desc(), SecurityOpinionSummary.id.desc())
         .limit(2)
         .all()
     )

@@ -7,24 +7,38 @@ from app.services.earnings_quality import (
 
 
 def _income(year, revenue, ni, sell_exp=100.0, admin_exp=50.0):
-    return {"end_date": f"{year}1231", "total_revenue": revenue,
-            "n_income_attr_p": ni, "sell_exp": sell_exp, "admin_exp": admin_exp}
+    return {
+        "end_date": f"{year}1231",
+        "total_revenue": revenue,
+        "n_income_attr_p": ni,
+        "sell_exp": sell_exp,
+        "admin_exp": admin_exp,
+    }
 
 
 def _balance(year, assets, receivable, inventory, cur_assets, ppe, liab):
-    return {"end_date": f"{year}1231", "total_assets": assets,
-            "accounts_receiv": receivable, "inventories": inventory,
-            "total_cur_assets": cur_assets, "fix_assets": ppe, "total_liab": liab}
+    return {
+        "end_date": f"{year}1231",
+        "total_assets": assets,
+        "accounts_receiv": receivable,
+        "inventories": inventory,
+        "total_cur_assets": cur_assets,
+        "fix_assets": ppe,
+        "total_liab": liab,
+    }
 
 
 def _cashflow(year, cfo, depreciation=80.0):
-    return {"end_date": f"{year}1231", "n_cashflow_act": cfo,
-            "depr_fa_coga_dpba": depreciation}
+    return {"end_date": f"{year}1231", "n_cashflow_act": cfo, "depr_fa_coga_dpba": depreciation}
 
 
 def _fina(year, gross_margin, net_margin, profit_dedt):
-    return {"end_date": f"{year}1231", "grossprofit_margin": gross_margin,
-            "netprofit_margin": net_margin, "profit_dedt": profit_dedt}
+    return {
+        "end_date": f"{year}1231",
+        "grossprofit_margin": gross_margin,
+        "netprofit_margin": net_margin,
+        "profit_dedt": profit_dedt,
+    }
 
 
 def test_core_ratios_hand_computed():
@@ -54,19 +68,26 @@ def test_core_ratios_hand_computed():
 
 def test_beneish_m_score_hand_computed():
     """M-score 因子手算：构造两年完整科目，逐因子对照公式。"""
-    income = [_income(2026, 1100.0, 200.0, sell_exp=110.0, admin_exp=55.0),
-              _income(2025, 1000.0, 180.0, sell_exp=100.0, admin_exp=50.0)]
+    income = [
+        _income(2026, 1100.0, 200.0, sell_exp=110.0, admin_exp=55.0),
+        _income(2025, 1000.0, 180.0, sell_exp=100.0, admin_exp=50.0),
+    ]
     balance = [
         _balance(2026, 2000.0, 150.0, 300.0, 800.0, 600.0, 1000.0),
         _balance(2025, 1800.0, 100.0, 250.0, 700.0, 550.0, 900.0),
     ]
-    cashflow = [_cashflow(2026, 150.0, depreciation=90.0),
-                _cashflow(2025, 170.0, depreciation=80.0)]
+    cashflow = [
+        _cashflow(2026, 150.0, depreciation=90.0),
+        _cashflow(2025, 170.0, depreciation=80.0),
+    ]
     fina = [_fina(2026, 40.0, 18.0, 160.0), _fina(2025, 42.0, 18.0, 150.0)]
 
     result = compute_earnings_quality(
-        income_rows=income, balancesheet_rows=balance,
-        cashflow_rows=cashflow, fina_indicator_rows=fina, market="A股",
+        income_rows=income,
+        balancesheet_rows=balance,
+        cashflow_rows=cashflow,
+        fina_indicator_rows=fina,
+        market="A股",
     )
     entry = result["beneish_m_score"]["2026"]
     factors = entry["factors"]
@@ -88,8 +109,17 @@ def test_beneish_m_score_hand_computed():
     assert factors["LVGI"] == round(lvgi, 4)
     assert factors["TATA"] == round(tata, 4)
 
-    expected = (-4.84 + 0.92 * dsri + 0.528 * gmi + 0.404 * aqi + 0.892 * sgi
-                + 0.115 * depi - 0.172 * sgai + 4.679 * tata - 0.327 * lvgi)
+    expected = (
+        -4.84
+        + 0.92 * dsri
+        + 0.528 * gmi
+        + 0.404 * aqi
+        + 0.892 * sgi
+        + 0.115 * depi
+        - 0.172 * sgai
+        + 4.679 * tata
+        - 0.327 * lvgi
+    )
     assert entry["score"] == round(expected, 3)
     assert entry["flag"] == (expected > -1.78)
 
@@ -145,15 +175,28 @@ def test_edgar_rows_map_to_statement_shape():
     年度行，否则 per_year 全空。"""
     rows = [
         _edgar_fy(
-            2025, total_revenue=1000.0, cost_of_revenue=600.0,
-            n_income_attr_p=200.0, sga_exp=120.0, total_assets=2000.0,
-            total_liab=900.0, accounts_receiv=150.0, inventories=80.0,
-            total_cur_assets=700.0, fix_assets=500.0,
-            n_cashflow_act=260.0, depr_fa_coga_dpba=90.0,
+            2025,
+            total_revenue=1000.0,
+            cost_of_revenue=600.0,
+            n_income_attr_p=200.0,
+            sga_exp=120.0,
+            total_assets=2000.0,
+            total_liab=900.0,
+            accounts_receiv=150.0,
+            inventories=80.0,
+            total_cur_assets=700.0,
+            fix_assets=500.0,
+            n_cashflow_act=260.0,
+            depr_fa_coga_dpba=90.0,
         ),
         {"end_date": "20250628", "fp": "Q3", "total_revenue": 250.0},  # 季度行剔除
-        _edgar_fy(2024, total_revenue=900.0, n_income_attr_p=150.0,
-                  total_assets=1800.0, n_cashflow_act=180.0),
+        _edgar_fy(
+            2024,
+            total_revenue=900.0,
+            n_income_attr_p=150.0,
+            total_assets=1800.0,
+            n_cashflow_act=180.0,
+        ),
     ]
     stmts = pivot_rows_to_statements(rows)
     assert [r["end_date"] for r in stmts["income"]] == ["20250927", "20240927"]
@@ -169,8 +212,10 @@ def test_edgar_rows_map_to_statement_shape():
 
     # 端到端：映射产物可直接进指标函数
     quality = compute_earnings_quality(
-        stmts["income"], stmts["balancesheet"],
-        stmts["cashflow"], stmts["fina_indicator"],
+        stmts["income"],
+        stmts["balancesheet"],
+        stmts["cashflow"],
+        stmts["fina_indicator"],
     )
     assert quality["per_year"]["2025"]["cfo_ni_ratio"] == 1.3  # 260/200
     assert quality["per_year"]["2025"]["gross_margin"] == 40.0

@@ -102,9 +102,16 @@ def test_tushare_daily_fallback_reports_trade_date(monkeypatch):
 
 def _holding(symbol: str, **kwargs) -> Holding:
     return Holding(
-        user_id=1, broker_account_id=None, symbol=symbol, name=symbol,
-        market="A股", quantity=Decimal("100"), avg_cost=Decimal("10"),
-        total_cost=Decimal("1000"), currency="CNY", **kwargs,
+        user_id=1,
+        broker_account_id=None,
+        symbol=symbol,
+        name=symbol,
+        market="A股",
+        quantity=Decimal("100"),
+        avg_cost=Decimal("10"),
+        total_cost=Decimal("1000"),
+        currency="CNY",
+        **kwargs,
     )
 
 
@@ -116,10 +123,15 @@ def test_refresh_writes_as_of_and_source_and_clears_stale_date(monkeypatch):
         old = datetime.now(timezone.utc) - timedelta(days=3)
         db.add(_holding("ASOF01", current_price=Decimal("9"), price_updated_at=old))
         # 上次刷新有日期、这次报价源拿不到：必须清成 None，不保留旧日期
-        db.add(_holding(
-            "ASOF02", current_price=Decimal("9"), price_updated_at=old,
-            price_as_of=date(2026, 9, 1), price_source="tushare-daily",
-        ))
+        db.add(
+            _holding(
+                "ASOF02",
+                current_price=Decimal("9"),
+                price_updated_at=old,
+                price_as_of=date(2026, 9, 1),
+                price_source="tushare-daily",
+            )
+        )
         db.commit()
 
         def fake_fetch(symbol, market):
@@ -154,11 +166,15 @@ def test_batch_manual_price_update_marks_manual():
     db.query(Holding).filter(Holding.user_id == 1).delete()
     db.commit()
     try:
-        db.add(_holding(
-            "ASOF03", current_price=Decimal("9"),
-            price_updated_at=datetime.now(timezone.utc) - timedelta(days=3),
-            price_as_of=date(2026, 9, 1), price_source="tushare-daily",
-        ))
+        db.add(
+            _holding(
+                "ASOF03",
+                current_price=Decimal("9"),
+                price_updated_at=datetime.now(timezone.utc) - timedelta(days=3),
+                price_as_of=date(2026, 9, 1),
+                price_source="tushare-daily",
+            )
+        )
         db.commit()
         user = db.query(User).filter(User.id == 1).one()
         batch_update_prices(

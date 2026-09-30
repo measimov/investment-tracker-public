@@ -69,6 +69,7 @@ declare module 'vue' {
     ElUpload: typeof import('element-plus/es')['ElUpload']
     JobProgressCard: typeof import('./components/JobProgressCard.vue')['default']
     OpinionAuthorFeed: typeof import('./components/OpinionAuthorFeed.vue')['default']
+    PriceIssuesAlert: typeof import('./components/PriceIssuesAlert.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SecuritySelect: typeof import('./components/SecuritySelect.vue')['default']

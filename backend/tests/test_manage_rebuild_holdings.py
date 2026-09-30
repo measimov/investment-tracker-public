@@ -20,9 +20,9 @@ def _cleanup(db, user_id):
     db.query(CorporateAction).filter(
         CorporateAction.user_id == user_id, CorporateAction.symbol.in_(SYMBOLS)
     ).delete(synchronize_session=False)
-    db.query(Holding).filter(
-        Holding.user_id == user_id, Holding.symbol.in_(SYMBOLS)
-    ).delete(synchronize_session=False)
+    db.query(Holding).filter(Holding.user_id == user_id, Holding.symbol.in_(SYMBOLS)).delete(
+        synchronize_session=False
+    )
     db.commit()
 
 
@@ -74,9 +74,7 @@ def test_rebuild_holdings_cleans_orphans_and_rebuilds_live_keys():
         assert orphan is None, "交易全删的孤儿持仓行应被清理"
 
         alive = (
-            db.query(Holding)
-            .filter(Holding.user_id == user.id, Holding.symbol == "ALIVE001")
-            .one()
+            db.query(Holding).filter(Holding.user_id == user.id, Holding.symbol == "ALIVE001").one()
         )
         assert alive.quantity == Decimal("10")
     finally:

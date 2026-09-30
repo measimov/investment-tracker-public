@@ -4,12 +4,13 @@
       <template #header>
         <div class="card-header">
           <span>汇率管理</span>
-          <div class="header-actions">
+          <div v-if="canEdit" class="header-actions">
             <el-button :icon="Refresh" @click="refreshFromAPI" :loading="refreshing">
               从API更新汇率
             </el-button>
             <el-button type="primary" :icon="Plus" @click="showAddDialog">手动添加汇率</el-button>
           </div>
+          <el-text v-else type="info" size="small">汇率为全局数据，由管理员维护</el-text>
         </div>
       </template>
 
@@ -122,7 +123,16 @@
 
       <!-- 汇率历史记录 -->
       <div class="rate-history">
-        <h3>汇率历史记录</h3>
+        <div class="history-header">
+          <h3>汇率历史记录</h3>
+          <!-- 停用行保留作审计，默认不列出；管理员可切换查看 -->
+          <el-switch
+            v-if="canEdit"
+            v-model="showInactive"
+            active-text="显示已停用"
+            @change="loadRateHistory"
+          />
+        </div>
         <el-alert
           v-if="rateHistory.length >= HISTORY_LIMIT"
           type="info"
@@ -154,12 +164,13 @@
                 <el-tag size="small" :type="sourceTagType(row.source)">
                   {{ sourceLabel(row.source) }}
                 </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="is_active" label="状态" width="80">
-              <template #default="{ row }">
-                <el-tag :type="row.is_active ? 'success' : 'info'" size="small">
-                  {{ row.is_active ? '启用' : '禁用' }}
+                <el-tag
+                  v-if="row.is_active === false"
+                  size="small"
+                  type="info"
+                  class="inactive-tag"
+                >
+                  已停用
                 </el-tag>
               </template>
             </el-table-column>
@@ -168,10 +179,19 @@
                 {{ formatDateTime(row.created_at) }}
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="150" fixed="right">
+            <el-table-column v-if="canEdit" label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" type="primary" @click="editRate(row)"> 编辑 </el-button>
-                <el-button size="small" type="danger" @click="deleteRate(row.id)"> 删除 </el-button>
+                <!-- 只有手工行能停用：官方/第三方行会被下一次刷新重建，改值请编辑 -->
+                <el-button
+                  v-if="isManualSource(row.source) && row.is_active !== false"
+                  size="small"
+                  type="danger"
+                  plain
+                  @click="deactivateRate(row.id)"
+                >
+                  停用
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -249,8 +269,8 @@
           </el-tag>
         </el-form-item>
 
-        <el-form-item label="状态" prop="is_active">
-          <el-switch v-model="rateForm.is_active" />
+        <el-form-item v-if="editingRate">
+          <el-text type="info" size="small">修改数值后该行记为「手工」，不再被自动刷新覆盖</el-text>
         </el-form-item>
       </el-form>
 
@@ -270,16 +290,27 @@ import { Refresh, Plus } from '@element-plus/icons-vue'
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormItemRule } from 'element-plus'
 import api from '@/api'
-import type { ExchangeRate, ExchangeRateCheck, ExchangeRateLatest } from '@/types'
+import { useAuthStore } from '@/stores/auth'
+import type {
+  ExchangeRate,
+  ExchangeRateCheck,
+  ExchangeRateCreate,
+  ExchangeRateLatest
+} from '@/types'
 import { CURRENCIES } from '@/utils/currency'
 import { formatDate, formatDateTime, formatNumber, todayLocalISODate } from '@/utils/helpers'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import { RATE_STALE_DAYS, buildRateCards } from './exchange-rates/rateCards'
 import { isDiffAbnormal, sourceLabel, sourceTagType } from './exchange-rates/sources'
 
 // 汇率是全局表（不分用户）：任何人的增删改都会改变所有用户的折算与估值
 const GLOBAL_RATE_NOTICE = '汇率为全局数据，修改会影响所有用户的金额折算与持仓估值'
 const HISTORY_LIMIT = 100
+
+// 写入仅管理员（#277）：非管理员只读，不显示新增/刷新/编辑/停用
+const authStore = useAuthStore()
+const canEdit = computed(() => authStore.isAdmin)
+const showInactive = ref(false)
+const isManualSource = (source: string | null | undefined) => !source || source === 'manual'
 
 // 后端 ExchangeRate schema 为准（此前手写副本把 source/is_active 写成非空，已漂移）
 type RateRow = ExchangeRate
@@ -304,13 +335,11 @@ const rateForm = ref<{
   to_currency: string
   rate: number | null
   effective_date: string
-  is_active: boolean
 }>({
   from_currency: '',
   to_currency: 'CNY',
   rate: null,
-  effective_date: todayLocalISODate(),
-  is_active: true
+  effective_date: todayLocalISODate()
 })
 
 const currencies = CURRENCIES
@@ -367,7 +396,10 @@ const loadLatestRates = async () => {
 const loadRateHistory = async () => {
   loadingHistory.value = true
   try {
-    const response = await api.getExchangeRates({ limit: HISTORY_LIMIT })
+    const response = await api.getExchangeRates({
+      limit: HISTORY_LIMIT,
+      ...(showInactive.value ? { include_inactive: true } : {})
+    })
     rateHistory.value = response.data
   } catch (error) {
     showApiError(error, '加载汇率历史失败')
@@ -405,7 +437,7 @@ const refreshFromAPI = async () => {
     await loadLatestRates()
     await loadRateHistory()
   } catch (error) {
-    ElMessage.error('从API更新汇率失败: ' + getApiErrorMessage(error))
+    showApiError(error, { prefix: '从 API 更新汇率失败' })
     console.error(error)
   } finally {
     refreshing.value = false
@@ -419,8 +451,7 @@ const showAddDialog = () => {
     from_currency: '',
     to_currency: 'CNY',
     rate: null,
-    effective_date: todayLocalISODate(),
-    is_active: true
+    effective_date: todayLocalISODate()
   }
   dialogVisible.value = true
 }
@@ -432,11 +463,7 @@ const editRate = (rate: RateRow) => {
     from_currency: rate.from_currency,
     to_currency: rate.to_currency,
     rate: Number(rate.rate),
-    effective_date: rate.effective_date,
-    // is_active 可空（手工录入历史行）；兜 false 而不是 true：折算查询按 is_(True)
-    // 过滤、列表也把 NULL 按禁用显示——NULL 的现状语义就是"不参与估值"，编辑
-    // 其他字段时顺带发送 true 会让它静默生效并改变组合折算（PR #172 复审）。
-    is_active: rate.is_active ?? false
+    effective_date: rate.effective_date
   }
   dialogVisible.value = true
 }
@@ -453,16 +480,14 @@ const submitRate = async () => {
 
       if (editingRate.value) {
         // 更新
-        // 来源不开放编辑：它记录的是这条汇率从哪来，不是可调的属性
-        await api.updateExchangeRate(editingRate.value.id, {
-          rate: rateForm.value.rate,
-          is_active: rateForm.value.is_active
-        })
+        // 只改数值：来源由服务端记为 manual，状态不在此编辑（停用走单独按钮）
+        await api.updateExchangeRate(editingRate.value.id, { rate: rateForm.value.rate as number })
         ElMessage.success('汇率更新成功')
       } else {
         // 创建
-        // 手工添加的来源固定为 manual（此前可选成「API获取/系统默认」冒充自动来源）
-        await api.createOrUpdateExchangeRate({ ...rateForm.value, source: 'manual' })
+        // 来源由服务端固定为 manual（#277：客户端不能再指定来源）
+        // 表单校验（rules）保证汇率必填
+        await api.createOrUpdateExchangeRate({ ...rateForm.value } as ExchangeRateCreate)
         ElMessage.success('汇率添加成功')
       }
 
@@ -470,7 +495,7 @@ const submitRate = async () => {
       await loadLatestRates()
       await loadRateHistory()
     } catch (error) {
-      ElMessage.error('操作失败: ' + getApiErrorMessage(error))
+      showApiError(error, { prefix: '操作失败' })
       console.error(error)
     } finally {
       submitting.value = false
@@ -478,26 +503,26 @@ const submitRate = async () => {
   })
 }
 
-// 删除汇率
-const deleteRate = async (id: number) => {
+// 停用汇率（#277：删除改为停用，保留审计；折算不再使用它，同日重新录入即恢复）
+const deactivateRate = async (id: number) => {
   try {
-    await ElMessageBox.confirm(`确定要删除这条汇率记录吗？${GLOBAL_RATE_NOTICE}。`, '删除汇率', {
-      type: 'warning',
-      confirmButtonText: '确定删除',
-      cancelButtonText: '取消'
-    })
-
+    await ElMessageBox.confirm(
+      `确定要停用这条汇率吗？停用后折算不再使用它。${GLOBAL_RATE_NOTICE}。`,
+      '停用汇率',
+      { type: 'warning', confirmButtonText: '确定停用', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 取消
+  }
+  try {
     await api.deleteExchangeRate(id)
-    ElMessage.success('删除成功')
-    // 与 submitRate 对齐：最新汇率卡片也要刷——删掉某币种唯一一条汇率后，
-    // 卡片不能继续展示已不存在的汇率（E2E 汇率增删改用例锁定此行为）
+    ElMessage.success('已停用')
+    // 与 submitRate 对齐：最新汇率卡片也要刷——停用某币种唯一一条汇率后，
+    // 卡片不能继续展示已不生效的汇率（E2E 汇率增删改用例锁定此行为）
     await loadLatestRates()
     await loadRateHistory()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error('删除失败')
-      console.error(error)
-    }
+    showApiError(error, '停用失败')
   }
 }
 
@@ -625,5 +650,16 @@ onMounted(() => {
     align-items: flex-start;
     flex-direction: column;
   }
+}
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.inactive-tag {
+  margin-left: 4px;
 }
 </style>

@@ -47,10 +47,10 @@ defineEmits<{ 'refresh-prices': []; 'open-price-dialog': [] }>()
           <el-col :xs="24" :sm="12">
             <el-statistic
               title="未实现盈亏"
-              :value="currentPerformance.unrealized_pnl"
+              :value="currentPerformance.unrealized_pnl_cny"
               :precision="2"
               prefix="¥"
-              :value-style="{ color: getProfitColor(currentPerformance.unrealized_pnl) }"
+              :value-style="{ color: getProfitColor(currentPerformance.unrealized_pnl_cny) }"
             />
           </el-col>
           <el-col :xs="24" :sm="12">
@@ -59,7 +59,7 @@ defineEmits<{ 'refresh-prices': []; 'open-price-dialog': [] }>()
               :value="currentPerformance.unrealized_pnl_rate"
               :formatter="signed"
               suffix="%"
-              :value-style="{ color: getProfitColor(currentPerformance.unrealized_pnl) }"
+              :value-style="{ color: getProfitColor(currentPerformance.unrealized_pnl_cny) }"
             />
           </el-col>
         </el-row>
@@ -72,13 +72,13 @@ defineEmits<{ 'refresh-prices': []; 'open-price-dialog': [] }>()
             <!-- 只显示 FIFO 口径本身：为 0 时不再回退到平均成本口径的总投入（#218），
                  否则同一行混了两种成本口径 -->
             <span class="value">{{
-              formatCurrency(currentPerformance.current_holdings_cost)
+              formatCurrency(currentPerformance.current_holdings_cost_cny)
             }}</span>
           </div>
           <div class="stat-item">
             <span>当前市值：</span>
             <span class="value">
-              {{ formatCurrency(currentPerformance.current_market_value) }}
+              {{ formatCurrency(currentPerformance.current_market_value_cny) }}
               <el-text
                 v-if="currentPerformance.data_quality?.unpriced_position_count"
                 type="warning"

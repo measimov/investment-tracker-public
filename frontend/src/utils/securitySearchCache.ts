@@ -104,12 +104,14 @@ export function resolveCacheSet(
 }
 
 const SAFE_METHODS = new Set(['get', 'head', 'options'])
-// 会改变检索候选（持仓 ∪ 自选 ∪ 历史交易）的写端点；导入预览不落库故排除
+// 会改变检索候选（持仓 ∪ 自选 ∪ 历史交易）或持仓/交易数据的写端点；导入预览不落库故排除
 const LEDGER_MUTATION_PATTERNS = [
   /^\/transactions(\/|$)/,
   /^\/watchlist(\/|$)/,
   /^\/holdings(\/|$)/,
   /^\/broker-accounts(\/|$)/,
+  // 公司行动改持仓数量/成本（送转、拆股、期初建仓、补录成本、接受分红建议）
+  /^\/corporate-actions(\/|$)/,
   /^\/import\/(?!.*\/preview$)/
 ]
 

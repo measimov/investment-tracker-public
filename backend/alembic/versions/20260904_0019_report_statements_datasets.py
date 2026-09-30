@@ -31,9 +31,7 @@ _ADDED = "'report_statement_extract', 'report_statements'"
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",
@@ -44,9 +42,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     # 先删再收紧：留着新 dataset 的行会让 create_check_constraint 直接失败
     op.execute(f"DELETE FROM security_profile_data WHERE dataset IN ({_ADDED})")
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",

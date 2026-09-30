@@ -4,6 +4,10 @@
 手动报告抑制周期内的自动生成，避免重复花费）早于周期长度。幂等性由两层
 保证：报告落库即不再到期；create_or_get_active_job 的"每用户单活跃任务"
 唯一约束吞掉并发入队。宕机恢复后每用户恰好补一份，无回填风暴。
+
+失败退避（#272）：失败的任务不写报告，下一个整点它仍然「到期」——确定性失败（4xx、输出
+截断）会每小时烧一份完整输出额度的 token 并持续触发告警。该用户最近一次报告任务在
+FAILURE_BACKOFF 内失败过就先不重排。
 """
 
 from datetime import datetime, timedelta, timezone
@@ -22,6 +26,8 @@ from .llm_client import is_llm_configured
 logger = get_app_logger(__name__)
 
 CADENCE_DAYS = {"weekly": 7, "monthly": 30}
+JOB_TYPE = "llm_report"
+FAILURE_BACKOFF = timedelta(hours=12)
 
 
 def enqueue_due_scheduled_reports(now: Optional[datetime] = None) -> int:
@@ -49,8 +55,16 @@ def enqueue_due_scheduled_reports(now: Optional[datetime] = None) -> int:
         users_with_active_job = {
             row[0]
             for row in db.query(BackgroundJob.user_id).filter(
-                BackgroundJob.job_type == "llm_report",
+                BackgroundJob.job_type == JOB_TYPE,
                 BackgroundJob.status.in_(ACTIVE_STATUSES),
+            )
+        }
+        users_backing_off = {
+            row[0]
+            for row in db.query(BackgroundJob.user_id).filter(
+                BackgroundJob.job_type == JOB_TYPE,
+                BackgroundJob.status == "failed",
+                BackgroundJob.finished_at >= now - FAILURE_BACKOFF,
             )
         }
     finally:
@@ -60,13 +74,15 @@ def enqueue_due_scheduled_reports(now: Optional[datetime] = None) -> int:
     for schedule in schedules:
         if schedule.user_id in users_with_active_job:
             continue  # 已有进行中的报告任务（含手动触发）
+        if schedule.user_id in users_backing_off:
+            continue  # 最近失败过：退避，不每小时重烧 token
         latest = latest_by_user.get(schedule.user_id)
         if latest is not None and latest.tzinfo is None:
             latest = latest.replace(tzinfo=timezone.utc)
         due_before = now - timedelta(days=CADENCE_DAYS[schedule.cadence])
         if latest is None or latest < due_before:
             create_or_get_active_job(
-                "llm_report",
+                JOB_TYPE,
                 schedule.user_id,
                 {"trigger": "scheduled", "report_id": None},
             )

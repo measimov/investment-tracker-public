@@ -38,12 +38,29 @@ RESET_MODELS = (
 )
 
 
-def add_txn(db, *, account_id=None, txn_type="BUY", quantity="100", price="10",
-            fee="0", txn_date=date(2026, 1, 1), symbol="AAPL", market="美股"):
+def add_txn(
+    db,
+    *,
+    account_id=None,
+    txn_type="BUY",
+    quantity="100",
+    price="10",
+    fee="0",
+    txn_date=date(2026, 1, 1),
+    symbol="AAPL",
+    market="美股",
+):
     return add_transaction(
-        db, broker_account_id=account_id, symbol=symbol, name=symbol, market=market,
-        transaction_type=txn_type, quantity=Decimal(quantity), price=Decimal(price),
-        fee=Decimal(fee), transaction_date=txn_date,
+        db,
+        broker_account_id=account_id,
+        symbol=symbol,
+        name=symbol,
+        market=market,
+        transaction_type=txn_type,
+        quantity=Decimal(quantity),
+        price=Decimal(price),
+        fee=Decimal(fee),
+        transaction_date=txn_date,
     )
 
 
@@ -105,18 +122,24 @@ def test_fifo_lots_keep_original_dates_and_costs_after_transfer():
         # 转 150 股到 IBKR：应带走整批 10 元 100 股 + 半批 20 元 50 股
         do_transfer(db, from_id=cmb.id, to_id=ibkr.id, quantity="150")
         # 在 IBKR 卖 120 股 @25：FIFO 匹配 100@10 + 20@20 → pnl = 3000-1400 = 1600
-        add_txn(db, account_id=ibkr.id, txn_type="SELL", quantity="120", price="25",
-                txn_date=date(2026, 3, 1))
+        add_txn(
+            db,
+            account_id=ibkr.id,
+            txn_type="SELL",
+            quantity="120",
+            price="25",
+            txn_date=date(2026, 3, 1),
+        )
         db.commit()
 
         fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
-        assert fifo['realized_pnl'] == pytest.approx(1600.0)
-        assert fifo['sold_cost'] == pytest.approx(1400.0)
+        assert fifo["realized_pnl"] == pytest.approx(1600.0)
+        assert fifo["sold_cost"] == pytest.approx(1400.0)
         # 剩余批次：IBKR 30@20 + CMB 50@20 = 1600
-        assert fifo['current_holdings_cost'] == pytest.approx(1600.0)
-        assert fifo['closed_trades'][0]['holding_days'] == (
-            date(2026, 3, 1) - date(2026, 1, 1)
-        ).days
+        assert fifo["current_holdings_cost"] == pytest.approx(1600.0)
+        assert (
+            fifo["closed_trades"][0]["holding_days"] == (date(2026, 3, 1) - date(2026, 1, 1)).days
+        )
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -131,15 +154,21 @@ def test_account_scoped_fifo_matches_only_own_lots():
         # CMB 先买便宜批，IBKR 后买贵批；在 IBKR 卖出
         add_txn(db, account_id=cmb.id, quantity="100", price="10", txn_date=date(2026, 1, 1))
         add_txn(db, account_id=ibkr.id, quantity="100", price="20", txn_date=date(2026, 1, 15))
-        add_txn(db, account_id=ibkr.id, txn_type="SELL", quantity="50", price="25",
-                txn_date=date(2026, 2, 1))
+        add_txn(
+            db,
+            account_id=ibkr.id,
+            txn_type="SELL",
+            quantity="50",
+            price="25",
+            txn_date=date(2026, 2, 1),
+        )
         db.commit()
 
         fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
         # 账户级：IBKR 卖出只匹配自己 20 元的批次 → pnl = 1250-1000 = 250
         # （旧的用户级合并 FIFO 会错误匹配 CMB 的 10 元批次得到 750）
-        assert fifo['realized_pnl'] == pytest.approx(250.0)
-        assert fifo['sold_cost'] == pytest.approx(1000.0)
+        assert fifo["realized_pnl"] == pytest.approx(250.0)
+        assert fifo["sold_cost"] == pytest.approx(1000.0)
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -154,14 +183,20 @@ def test_cross_account_oversell_falls_back_to_merged_fifo():
         add_txn(db, account_id=cmb.id, quantity="100", price="10", txn_date=date(2026, 1, 1))
         add_txn(db, account_id=ibkr.id, quantity="100", price="20", txn_date=date(2026, 1, 15))
         # IBKR 卖 150：桶内只有 100 → 降级合并重放（用户级共 200 股，可卖）
-        add_txn(db, account_id=ibkr.id, txn_type="SELL", quantity="150", price="25",
-                txn_date=date(2026, 2, 1))
+        add_txn(
+            db,
+            account_id=ibkr.id,
+            txn_type="SELL",
+            quantity="150",
+            price="25",
+            txn_date=date(2026, 2, 1),
+        )
         db.commit()
 
         fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
         # 合并 FIFO：100@10 + 50@20 = 2000 成本，收入 3750 → pnl 1750
-        assert fifo['realized_pnl'] == pytest.approx(1750.0)
-        assert fifo['sold_cost'] == pytest.approx(2000.0)
+        assert fifo["realized_pnl"] == pytest.approx(1750.0)
+        assert fifo["sold_cost"] == pytest.approx(2000.0)
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -184,24 +219,25 @@ def test_transfer_does_not_change_user_level_performance():
         after = calculate_performance_summary(db, 1, dict(prices))
 
         # 转仓对用户级口径完全透明
-        assert after['current_performance']['unrealized_pnl_cny'] == pytest.approx(
-            before['current_performance']['unrealized_pnl_cny']
+        assert after["current_performance"]["unrealized_pnl_cny"] == pytest.approx(
+            before["current_performance"]["unrealized_pnl_cny"]
         )
-        assert after['realized_pnl']['realized_pnl_cny'] == pytest.approx(
-            before['realized_pnl']['realized_pnl_cny']
+        assert after["realized_pnl"]["realized_pnl_cny"] == pytest.approx(
+            before["realized_pnl"]["realized_pnl_cny"]
         )
-        assert after['account_return']['total_return_cny'] == pytest.approx(
-            before['account_return']['total_return_cny']
+        assert after["account_return"]["total_return_cny"] == pytest.approx(
+            before["account_return"]["total_return_cny"]
         )
-        assert after['account_return']['cash_flow_count'] == (
-            before['account_return']['cash_flow_count']
+        assert (
+            after["account_return"]["cash_flow_count"]
+            == (before["account_return"]["cash_flow_count"])
         )
 
         # 汇总计数与时间分布同样透明（review #55 P2）
         summary = get_summary_statistics(db, 1)
-        assert summary['total_transactions'] == 1  # 仅那笔 BUY，转仓对不计
+        assert summary["total_transactions"] == 1  # 仅那笔 BUY，转仓对不计
         by_month = get_statistics_by_time(db, 1, "month")
-        periods = [b['period'] for b in by_month]
+        periods = [b["period"] for b in by_month]
         assert periods == ["2026-01"]  # 只有转仓的 2026-02 不产生全零 bucket
     finally:
         reset_tables(db, RESET_MODELS)
@@ -224,7 +260,7 @@ def test_transfer_validation_rejects_same_account_and_oversell():
 
         with pytest.raises(HTTPException) as exc:
             do_transfer(db, from_id=cmb.id, to_id=ibkr.id, quantity="500")
-        assert exc.value.status_code == 422
+        assert exc.value.status_code == 409
         assert "转仓无法成立" in exc.value.detail
     finally:
         reset_tables(db, RESET_MODELS)
@@ -245,9 +281,11 @@ def test_deleting_one_leg_removes_pair_and_restores_holdings():
         assert len(get_rows(db)) == 2
 
         delete_transaction(legs[0].id, current_user=get_user(db), db=db)
-        remaining = db.query(Transaction).filter(
-            Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"])
-        ).count()
+        remaining = (
+            db.query(Transaction)
+            .filter(Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"]))
+            .count()
+        )
         assert remaining == 0
 
         rows = get_rows(db)
@@ -261,7 +299,6 @@ def test_deleting_one_leg_removes_pair_and_restores_holdings():
 
 def test_transfer_pair_and_recalc_commit_atomically(monkeypatch):
     """重算失败时转仓对必须回滚，不留半完成状态（review #55 P1）。"""
-    from app.api import transactions as transactions_api
 
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
@@ -276,14 +313,19 @@ def test_transfer_pair_and_recalc_commit_atomically(monkeypatch):
         def boom(*args, **kwargs):
             raise RuntimeError("simulated recalc failure")
 
-        monkeypatch.setattr(transactions_api, "recalculate_holdings", boom)
+        # 转仓写入已下沉到 transfer_service（#283）：在那里注入重算失败
+        from app.services import transfer_service
+
+        monkeypatch.setattr(transfer_service, "recalculate_holdings", boom)
         with pytest.raises(RuntimeError):
             do_transfer(db, from_id=cmb.id, to_id=ibkr.id, quantity="60")
 
         # ledger 与派生持仓都保持原状
-        transfers = db.query(Transaction).filter(
-            Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"])
-        ).count()
+        transfers = (
+            db.query(Transaction)
+            .filter(Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"]))
+            .count()
+        )
         assert transfers == 0
         assert [(r.broker_account_id, r.quantity) for r in get_rows(db)] == before_rows
     finally:
@@ -299,18 +341,21 @@ def test_backdated_transfer_without_shares_on_date_rejected():
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
         # 2 月才买入；1 月的转仓当天无仓可转
-        add_txn(db, account_id=cmb.id, quantity="100", price="10",
-                txn_date=date(2026, 2, 1))
+        add_txn(db, account_id=cmb.id, quantity="100", price="10", txn_date=date(2026, 2, 1))
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
 
         with pytest.raises(HTTPException) as exc:
-            do_transfer(db, from_id=cmb.id, to_id=ibkr.id, quantity="60",
-                        transfer_date=date(2026, 1, 15))
-        assert exc.value.status_code == 422
-        assert db.query(Transaction).filter(
-            Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"])
-        ).count() == 0
+            do_transfer(
+                db, from_id=cmb.id, to_id=ibkr.id, quantity="60", transfer_date=date(2026, 1, 15)
+            )
+        assert exc.value.status_code == 409
+        assert (
+            db.query(Transaction)
+            .filter(Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"]))
+            .count()
+            == 0
+        )
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -323,17 +368,23 @@ def test_transfer_conflicting_with_future_sell_rejected():
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
-        add_txn(db, account_id=cmb.id, quantity="100", price="10",
-                txn_date=date(2026, 1, 1))
-        add_txn(db, account_id=cmb.id, txn_type="SELL", quantity="80", price="15",
-                txn_date=date(2026, 3, 1))
+        add_txn(db, account_id=cmb.id, quantity="100", price="10", txn_date=date(2026, 1, 1))
+        add_txn(
+            db,
+            account_id=cmb.id,
+            txn_type="SELL",
+            quantity="80",
+            price="15",
+            txn_date=date(2026, 3, 1),
+        )
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
 
         with pytest.raises(HTTPException) as exc:
-            do_transfer(db, from_id=cmb.id, to_id=ibkr.id, quantity="60",
-                        transfer_date=date(2026, 2, 1))
-        assert exc.value.status_code == 422
+            do_transfer(
+                db, from_id=cmb.id, to_id=ibkr.id, quantity="60", transfer_date=date(2026, 2, 1)
+            )
+        assert exc.value.status_code == 409
         assert "转仓无法成立" in exc.value.detail
     finally:
         reset_tables(db, RESET_MODELS)
@@ -348,8 +399,7 @@ def test_same_day_chained_transfers_replay_in_pair_order():
         a = make_account(db, "A")
         b = make_account(db, "B")
         c = make_account(db, "C")
-        add_txn(db, account_id=a.id, quantity="100", price="10",
-                txn_date=date(2026, 1, 1))
+        add_txn(db, account_id=a.id, quantity="100", price="10", txn_date=date(2026, 1, 1))
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
 
@@ -365,8 +415,8 @@ def test_same_day_chained_transfers_replay_in_pair_order():
 
         # FIFO 同样成立：批次最终在 C 账户，原始日期保留
         fifo = fifo_results_for_user(db, 1, {("AAPL", "美股")})[("AAPL", "美股")]
-        assert fifo['current_holdings_cost'] == pytest.approx(1000.0)
-        assert fifo['buy_queue'][0]['date'] == "2026-01-01"
+        assert fifo["current_holdings_cost"] == pytest.approx(1000.0)
+        assert fifo["buy_queue"][0]["date"] == "2026-01-01"
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
@@ -382,12 +432,12 @@ def test_sell_exceeding_post_transfer_balance_rejected():
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
-        add_txn(db, account_id=cmb.id, quantity="100", price="10",
-                txn_date=date(2026, 1, 1))
+        add_txn(db, account_id=cmb.id, quantity="100", price="10", txn_date=date(2026, 1, 1))
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
-        do_transfer(db, from_id=cmb.id, to_id=ibkr.id, quantity="60",
-                    transfer_date=date(2026, 2, 1))
+        do_transfer(
+            db, from_id=cmb.id, to_id=ibkr.id, quantity="60", transfer_date=date(2026, 2, 1)
+        )
 
         with pytest.raises(HTTPException) as exc:
             create_transaction(
@@ -404,7 +454,7 @@ def test_sell_exceeding_post_transfer_balance_rejected():
                 current_user=get_user(db),
                 db=db,
             )
-        assert exc.value.status_code == 400
+        assert exc.value.status_code == 409
 
         # 卖 40 以内可以
         create_transaction(
@@ -433,15 +483,21 @@ def test_delete_transfer_with_dependent_sell_rejected():
     try:
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
-        add_txn(db, account_id=cmb.id, quantity="100", price="10",
-                txn_date=date(2026, 1, 1))
+        add_txn(db, account_id=cmb.id, quantity="100", price="10", txn_date=date(2026, 1, 1))
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
-        legs = do_transfer(db, from_id=cmb.id, to_id=ibkr.id, quantity="60",
-                           transfer_date=date(2026, 2, 1))
+        legs = do_transfer(
+            db, from_id=cmb.id, to_id=ibkr.id, quantity="60", transfer_date=date(2026, 2, 1)
+        )
         # 目标账户卖出 50：依赖转入的 60 股
-        add_txn(db, account_id=ibkr.id, txn_type="SELL", quantity="50", price="15",
-                txn_date=date(2026, 3, 1))
+        add_txn(
+            db,
+            account_id=ibkr.id,
+            txn_type="SELL",
+            quantity="50",
+            price="15",
+            txn_date=date(2026, 3, 1),
+        )
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
 
@@ -451,9 +507,11 @@ def test_delete_transfer_with_dependent_sell_rejected():
         assert "不能删除" in exc.value.detail
 
         # 转仓对仍在，持仓保持账户级（无 NULL 合并行）
-        remaining = db.query(Transaction).filter(
-            Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"])
-        ).count()
+        remaining = (
+            db.query(Transaction)
+            .filter(Transaction.transaction_type.in_(["TRANSFER_OUT", "TRANSFER_IN"]))
+            .count()
+        )
         assert remaining == 2
         rows = get_rows(db)
         assert all(row.broker_account_id is not None for row in rows)
@@ -470,6 +528,7 @@ def test_advisory_lock_serializes_same_security_timeline():
     from sqlalchemy import create_engine, text
 
     import os
+
     engine = create_engine(os.environ["DATABASE_URL"])
     key = "security-timeline:1:AAPL:美股"
     other_key = "security-timeline:1:0700:港股"
@@ -506,7 +565,7 @@ def test_concurrent_transfer_and_sell_never_degrade():
     """两个独立 session 并发：转仓 vs 卖出，任一顺序都恰好一个成功、零静默降级。
 
     主线程先持有时间线锁把两个操作压在门外，再释放让它们排队执行——
-    转仓先行则卖出被账户校验拒绝(400)；卖出先行则转仓因未来超卖被拒(422)。
+    转仓先行则卖出被账户校验拒绝(409)；卖出先行则转仓因未来超卖被拒(409)。
     """
     import os
     import threading
@@ -522,8 +581,7 @@ def test_concurrent_transfer_and_sell_never_degrade():
     cmb = make_account(db, "CMB")
     ibkr = make_account(db, "IBKR")
     cmb_id, ibkr_id = cmb.id, ibkr.id
-    add_txn(db, account_id=cmb_id, quantity="100", price="10",
-            txn_date=date(2026, 1, 1))
+    add_txn(db, account_id=cmb_id, quantity="100", price="10", txn_date=date(2026, 1, 1))
     db.commit()
     recalculate_holdings(db, 1, "AAPL", "美股")
     db.close()
@@ -535,16 +593,19 @@ def test_concurrent_transfer_and_sell_never_degrade():
         try:
             create_transfer(
                 TransferCreate(
-                    symbol="AAPL", market="美股", quantity=Decimal("60"),
-                    from_broker_account_id=cmb_id, to_broker_account_id=ibkr_id,
+                    symbol="AAPL",
+                    market="美股",
+                    quantity=Decimal("60"),
+                    from_broker_account_id=cmb_id,
+                    to_broker_account_id=ibkr_id,
                     transfer_date=date(2026, 2, 1),
                 ),
                 current_user=session.query(User).filter(User.id == 1).one(),
                 db=session,
             )
-            results['transfer'] = 'ok'
+            results["transfer"] = "ok"
         except HTTPException as exc:
-            results['transfer'] = exc.status_code
+            results["transfer"] = exc.status_code
         finally:
             session.close()
 
@@ -553,17 +614,21 @@ def test_concurrent_transfer_and_sell_never_degrade():
         try:
             create_transaction(
                 TransactionCreate(
-                    broker_account_id=cmb_id, symbol="AAPL", market="美股",
-                    transaction_type="SELL", quantity=Decimal("80"),
-                    price=Decimal("15"), transaction_date=date(2026, 3, 1),
+                    broker_account_id=cmb_id,
+                    symbol="AAPL",
+                    market="美股",
+                    transaction_type="SELL",
+                    quantity=Decimal("80"),
+                    price=Decimal("15"),
+                    transaction_date=date(2026, 3, 1),
                     currency="USD",
                 ),
                 current_user=session.query(User).filter(User.id == 1).one(),
                 db=session,
             )
-            results['sell'] = 'ok'
+            results["sell"] = "ok"
         except HTTPException as exc:
-            results['sell'] = exc.status_code
+            results["sell"] = exc.status_code
         finally:
             session.close()
 
@@ -580,6 +645,7 @@ def test_concurrent_transfer_and_sell_never_degrade():
     for thread in threads:
         thread.start()
     import time
+
     time.sleep(0.4)  # 两个操作都已阻塞在锁上
     gate_tx.rollback()
     gate.close()
@@ -587,12 +653,12 @@ def test_concurrent_transfer_and_sell_never_degrade():
     for thread in threads:
         thread.join(timeout=10)
 
-    # 恰好一个成功；失败方必须是校验拒绝（400/422），不是静默通过
+    # 恰好一个成功；失败方必须是状态冲突拒绝（409），不是静默通过
     outcomes = sorted(str(v) for v in results.values())
-    assert 'ok' in results.values(), results
-    assert outcomes.count('ok') == 1, results
-    failure = [v for v in results.values() if v != 'ok'][0]
-    assert failure in (400, 422), results
+    assert "ok" in results.values(), results
+    assert outcomes.count("ok") == 1, results
+    failure = [v for v in results.values() if v != "ok"][0]
+    assert failure == 409, results
 
     # 终态时间线严格自洽：无降级、无 NULL 合并行
     verify = SessionLocal()
@@ -637,8 +703,7 @@ def test_concurrent_symbol_move_and_quantity_update_converge():
 
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
-    txn = add_txn(db, account_id=None, quantity="100", price="10",
-                  txn_date=date(2026, 1, 1))
+    txn = add_txn(db, account_id=None, quantity="100", price="10", txn_date=date(2026, 1, 1))
     db.commit()
     recalculate_holdings(db, 1, "AAPL", "美股")
     txn_id = txn.id
@@ -650,9 +715,12 @@ def test_concurrent_symbol_move_and_quantity_update_converge():
     def move_symbol():
         session = SessionLocal()
         try:
-            update_transaction(txn_id, TransactionUpdate(symbol="MSFT"),
-                               current_user=session.query(User).filter(User.id == 1).one(),
-                               db=session)
+            update_transaction(
+                txn_id,
+                TransactionUpdate(symbol="MSFT"),
+                current_user=session.query(User).filter(User.id == 1).one(),
+                db=session,
+            )
         except Exception as exc:  # noqa: BLE001
             errors.append(("move", exc))
         finally:
@@ -661,9 +729,12 @@ def test_concurrent_symbol_move_and_quantity_update_converge():
     def change_quantity():
         session = SessionLocal()
         try:
-            update_transaction(txn_id, TransactionUpdate(quantity=Decimal("200")),
-                               current_user=session.query(User).filter(User.id == 1).one(),
-                               db=session)
+            update_transaction(
+                txn_id,
+                TransactionUpdate(quantity=Decimal("200")),
+                current_user=session.query(User).filter(User.id == 1).one(),
+                db=session,
+            )
         except Exception as exc:  # noqa: BLE001
             errors.append(("qty", exc))
         finally:
@@ -673,6 +744,7 @@ def test_concurrent_symbol_move_and_quantity_update_converge():
     for thread in threads:
         thread.start()
     import time
+
     time.sleep(0.4)
     release()
     for thread in threads:
@@ -703,8 +775,7 @@ def test_concurrent_symbol_move_and_delete_leave_no_orphans():
 
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
-    txn = add_txn(db, account_id=None, quantity="100", price="10",
-                  txn_date=date(2026, 1, 1))
+    txn = add_txn(db, account_id=None, quantity="100", price="10", txn_date=date(2026, 1, 1))
     db.commit()
     recalculate_holdings(db, 1, "AAPL", "美股")
     txn_id = txn.id
@@ -716,24 +787,27 @@ def test_concurrent_symbol_move_and_delete_leave_no_orphans():
     def move_symbol():
         session = SessionLocal()
         try:
-            update_transaction(txn_id, TransactionUpdate(symbol="MSFT"),
-                               current_user=session.query(User).filter(User.id == 1).one(),
-                               db=session)
-            outcomes['move'] = 'ok'
+            update_transaction(
+                txn_id,
+                TransactionUpdate(symbol="MSFT"),
+                current_user=session.query(User).filter(User.id == 1).one(),
+                db=session,
+            )
+            outcomes["move"] = "ok"
         except HTTPException as exc:
-            outcomes['move'] = exc.status_code
+            outcomes["move"] = exc.status_code
         finally:
             session.close()
 
     def delete_it():
         session = SessionLocal()
         try:
-            delete_transaction(txn_id,
-                               current_user=session.query(User).filter(User.id == 1).one(),
-                               db=session)
-            outcomes['delete'] = 'ok'
+            delete_transaction(
+                txn_id, current_user=session.query(User).filter(User.id == 1).one(), db=session
+            )
+            outcomes["delete"] = "ok"
         except HTTPException as exc:
-            outcomes['delete'] = exc.status_code
+            outcomes["delete"] = exc.status_code
         finally:
             session.close()
 
@@ -741,14 +815,15 @@ def test_concurrent_symbol_move_and_delete_leave_no_orphans():
     for thread in threads:
         thread.start()
     import time
+
     time.sleep(0.4)
     release()
     for thread in threads:
         thread.join(timeout=10)
 
     # 删除必成功；迁移要么在删除前完成(ok)、要么锁后重读 404
-    assert outcomes.get('delete') == 'ok', outcomes
-    assert outcomes.get('move') in ('ok', 404), outcomes
+    assert outcomes.get("delete") == "ok", outcomes
+    assert outcomes.get("move") in ("ok", 404), outcomes
 
     verify = SessionLocal()
     try:

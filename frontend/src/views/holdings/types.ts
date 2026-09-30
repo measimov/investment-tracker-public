@@ -4,74 +4,15 @@
  * index signature：job 进度是渐进回写的，任何字段都可能暂缺。
  */
 
+import type { UnassignedAccount } from '@/utils/labels'
+
 export interface TransferForm {
   symbol: string
   market: string
   from_broker_account_id: number | null | undefined
-  to_broker_account_id: number | 'unassigned' | null | undefined
+  to_broker_account_id: number | UnassignedAccount | null | undefined
   quantity: number
   max_quantity: number
   transfer_date: string
   notes: string
-}
-
-export interface AnalysisSummaryRow {
-  symbol: string
-  market: string
-  tags: string[]
-  risk_level: string
-  summary: string
-  /** 分析生成时刻（带时区 ISO） */
-  created_at?: string | null
-}
-
-export interface BatchResultRow {
-  symbol: string
-  market: string
-  status: string
-  error?: string | null
-  reason?: string | null
-}
-
-export interface AnalysisBatchJob {
-  id?: string
-  status?: string
-  total?: number
-  completed?: number
-  progress_percent?: number | string | null
-  success_count?: number
-  failed_count?: number
-  skipped_count?: number
-  current_symbol?: string | null
-  current_market?: string | null
-  current_stage?: string | null
-  results?: BatchResultRow[]
-  abort_reason?: string | null
-  cancelled?: boolean
-  started_at?: string | null
-  [key: string]: unknown
-}
-
-export interface DigestBatchJob {
-  id: string
-  type?: string
-  status: string
-  total?: number
-  completed?: number
-  progress_percent?: number
-  success_count?: number
-  failed_count?: number
-  digests_generated?: number
-  digests_blocked?: number
-  symbols_with_remaining?: number
-  // 港股顺带的三张报表抽取（其他市场不计）
-  statements_generated?: number
-  statements_blocked?: number
-  statements_suspect?: number
-  current_symbol?: string | null
-  current_market?: string | null
-  cancelled?: boolean
-  abort_reason?: string | null
-  started_at?: string | null
-  [key: string]: unknown
 }

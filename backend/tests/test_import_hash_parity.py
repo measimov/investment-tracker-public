@@ -26,7 +26,7 @@ PARITY_SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "impor
 
 # 按 PYTHONPATH 那一侧的 marker.txt 产出快照：两侧代码不同 → 快照不同。
 # 行为由环境变量控制，好让每个失效场景各自打桩。
-STUB_TOOL = '''\
+STUB_TOOL = """\
 import json, os, pathlib, sys
 
 mode = os.environ.get("STUB_MODE", "ok")
@@ -45,7 +45,7 @@ if mode == "no_hashes":
 
 payload = {"cmb::x.pdf": {"total_rows": 1, "hashes": [side], "errors": []}}
 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-'''
+"""
 
 
 def _git(repo, *args):
@@ -200,6 +200,8 @@ def test_baseline_worktree_is_cleaned_up(repo):
 
     listed = subprocess.run(
         ["git", "-C", str(root), "worktree", "list"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     assert len(listed.stdout.strip().splitlines()) == 1, listed.stdout

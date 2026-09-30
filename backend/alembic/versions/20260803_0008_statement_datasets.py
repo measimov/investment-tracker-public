@@ -25,9 +25,7 @@ _NEW_DATASETS = _OLD_DATASETS + ", 'income', 'balancesheet', 'cashflow'"
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",
@@ -37,12 +35,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(
-        "DELETE FROM security_profile_data "
-        "WHERE dataset IN ('income', 'balancesheet', 'cashflow')"
+        "DELETE FROM security_profile_data WHERE dataset IN ('income', 'balancesheet', 'cashflow')"
     )
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",

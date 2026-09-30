@@ -61,13 +61,18 @@ def _patch_get(monkeypatch, clock, plans):
 
 def test_normal_download_returns_bytes_and_closes(monkeypatch, clock):
     calls = _patch_get(monkeypatch, clock, [([b"a" * 65536] * 4, 0.1)])
-    assert rf.download_report_pdf("https://www1.hkexnews.hk/x.pdf", source="hkexnews") == b"a" * 65536 * 4
+    assert (
+        rf.download_report_pdf("https://www1.hkexnews.hk/x.pdf", source="hkexnews")
+        == b"a" * 65536 * 4
+    )
     assert len(calls) == 1 and calls[0].closed
 
 
 def test_trickle_connection_is_abandoned_and_retried_on_a_fresh_one(monkeypatch, clock):
     # 第一条连接：每 36 秒才来 64KB（≈1.8KB/s）→ 宽限期后判过慢；第二条正常
-    calls = _patch_get(monkeypatch, clock, [([b"s" * 65536] * 100, 36.0), ([b"f" * 65536] * 3, 0.1)])
+    calls = _patch_get(
+        monkeypatch, clock, [([b"s" * 65536] * 100, 36.0), ([b"f" * 65536] * 3, 0.1)]
+    )
     body = rf.download_report_pdf("https://www1.hkexnews.hk/x.pdf", source="hkexnews")
     assert body == b"f" * 65536 * 3
     assert len(calls) == 2 and calls[0].closed
@@ -193,7 +198,6 @@ def test_real_stream_completes_within_limits(trickle_server, monkeypatch):
     assert rf._download_once(url, {}) == b"x" * 4096
 
 
-
 class _EndlessHeaderServer:
     """发出状态行后持续涓流一个永不结束的响应头（评审 P2 复现）：`requests` 在响应头读完前
     拿不到 response，每个字节又重置读超时。记录服务端连接数与被对端关闭的连接数。"""
@@ -273,7 +277,6 @@ def test_body_trickle_timeout_also_releases_worker(trickle_server, fast_limits):
     assert len(_download_threads()) == baseline
 
 
-
 # ---------------------------------------------------------------------------
 # HTTPS（生产路径，评审 P1）：wrap_socket 会 detach 原始 socket 的 fd，登记原始 socket 等于
 # 登记了一个 fileno()=-1 的空壳。自签名证书只在测试里关闭校验
@@ -294,17 +297,25 @@ def tls_context(tmp_path_factory):
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (
-        x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(now - datetime.timedelta(days=1)).not_valid_after(now + datetime.timedelta(days=1))
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
         .sign(key, hashes.SHA256())
     )
     directory = tmp_path_factory.mktemp("tls")
     cert_path, key_path = directory / "cert.pem", directory / "key.pem"
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(key.private_bytes(
-        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
-    ))
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert_path, key_path)
     return context
@@ -382,7 +393,9 @@ def insecure_tracking_session(monkeypatch):
 
 @pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
 @pytest.mark.parametrize("mode", ["endless_header", "stall_handshake"])
-def test_https_timeout_releases_thread_and_connection(tls_context, insecure_tracking_session, monkeypatch, mode):
+def test_https_timeout_releases_thread_and_connection(
+    tls_context, insecure_tracking_session, monkeypatch, mode
+):
     """评审 P1 复现：HTTPS 下响应头永不结束 / TLS 握手卡住。走生产入口 download_report_pdf
     （两次尝试），每次都在 deadline 附近放弃，之后无存活 pdf-download 线程，连接均被我方关闭。"""
     monkeypatch.setattr(rf, "PDF_DOWNLOAD_DEADLINE_SECONDS", 0.15)

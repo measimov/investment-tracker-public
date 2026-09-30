@@ -42,13 +42,21 @@ def test_portfolio_snapshot_bundles_dashboard_data():
             ("600000", "100", "10", date(2026, 1, 5)),
             ("PCT", "50", "5", date(2026, 1, 8)),
         ]:
-            db.add(Transaction(
-                user_id=1, broker_account_id=account.id, symbol=symbol, name=symbol,
-                market="A股" if symbol == "600000" else "新加坡股",
-                transaction_type="BUY", quantity=Decimal(quantity),
-                price=Decimal(price), fee=Decimal("0"),
-                transaction_date=txn_date, currency="CNY",
-            ))
+            db.add(
+                Transaction(
+                    user_id=1,
+                    broker_account_id=account.id,
+                    symbol=symbol,
+                    name=symbol,
+                    market="A股" if symbol == "600000" else "新加坡股",
+                    transaction_type="BUY",
+                    quantity=Decimal(quantity),
+                    price=Decimal(price),
+                    fee=Decimal("0"),
+                    transaction_date=txn_date,
+                    currency="CNY",
+                )
+            )
         db.commit()
         recalculate_holdings(db, 1, "600000", "A股")
         recalculate_holdings(db, 1, "PCT", "新加坡股")
@@ -65,7 +73,9 @@ def test_portfolio_snapshot_bundles_dashboard_data():
         db.commit()
 
         snapshot_row = ReconciliationSnapshot(
-            user_id=1, broker_account_id=account.id, snapshot_date=date(2026, 1, 31),
+            user_id=1,
+            broker_account_id=account.id,
+            snapshot_date=date(2026, 1, 31),
             positions=[
                 {"symbol": "600000", "market": "A股", "quantity": "100"},
                 {"symbol": "PCT", "market": "新加坡股", "quantity": "50"},
@@ -104,12 +114,21 @@ def test_portfolio_snapshot_bundles_dashboard_data():
 
 
 def _buy(db, account_id, *, symbol="600000", market="A股", quantity="100"):
-    db.add(Transaction(
-        user_id=1, broker_account_id=account_id, symbol=symbol, name=symbol,
-        market=market, transaction_type="BUY", quantity=Decimal(quantity),
-        price=Decimal("10"), fee=Decimal("0"),
-        transaction_date=date(2026, 1, 5), currency="CNY",
-    ))
+    db.add(
+        Transaction(
+            user_id=1,
+            broker_account_id=account_id,
+            symbol=symbol,
+            name=symbol,
+            market=market,
+            transaction_type="BUY",
+            quantity=Decimal(quantity),
+            price=Decimal("10"),
+            fee=Decimal("0"),
+            transaction_date=date(2026, 1, 5),
+            currency="CNY",
+        )
+    )
 
 
 def test_price_and_timestamp_selected_atomically_regardless_of_row_order():
@@ -165,9 +184,12 @@ def test_account_badge_aggregates_all_scopes_on_latest_date():
                 scoped = list(reversed(scoped))
             for scope, positions in scoped:
                 row = ReconciliationSnapshot(
-                    user_id=1, broker_account_id=account.id,
-                    snapshot_date=date(2026, 1, 31), statement_scope=scope,
-                    positions=positions, cash_balances={},
+                    user_id=1,
+                    broker_account_id=account.id,
+                    snapshot_date=date(2026, 1, 31),
+                    statement_scope=scope,
+                    positions=positions,
+                    cash_balances={},
                 )
                 db.add(row)
                 db.flush()

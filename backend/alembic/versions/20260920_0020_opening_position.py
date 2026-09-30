@@ -64,7 +64,11 @@ def upgrade() -> None:
                   AND skip_reason IS NULL
                 """
             ),
-            {"marker": UNBOOKED_OPENING_POSITION, "business_name": business_name, "note": BACKFILL_NOTE},
+            {
+                "marker": UNBOOKED_OPENING_POSITION,
+                "business_name": business_name,
+                "note": BACKFILL_NOTE,
+            },
         )
 
 

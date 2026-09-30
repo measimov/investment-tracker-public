@@ -10,13 +10,14 @@
  * 再切回 A 发起 A₂（快）时，A₂ 先渲染、A₁ 后到，业务 key 又相等，旧的 A₁ 仍会覆盖更新的
  * A₂（ABA）。
  */
+import type { AnalysisJob } from '@/types'
 import { reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import { pollJobUntilDone } from '@/utils/polling'
 import { showApiError } from '@/utils/showApiError'
-import type { AnalysisJob, ProfileRow, SecurityProfileState } from './types'
+import type { ProfileRow, SecurityProfileState } from './types'
 
 function emptyState(): SecurityProfileState {
   return {
@@ -193,7 +194,7 @@ export function useSecurityProfile({
     try {
       const startResponse = await api.startSecurityAnalysisJob(market(), symbol())
       if (isStale(generation)) return
-      state.analysisJob = startResponse.data as AnalysisJob // 立刻显示「排队中」
+      state.analysisJob = startResponse.data // 立刻显示「排队中」
       const job = await pollJobUntilDone(() => api.getSecurityAnalysisJob(startResponse.data.id), {
         intervalMs: 3000,
         maxAttempts: 400, // 3s × 400 ≈ 20 分钟：冷启动含财报摘要时 6 分钟不够
@@ -216,7 +217,7 @@ export function useSecurityProfile({
       // 失败保留进度块：卡在哪个阶段 + 错误原文是唯一有用的残留（消息会消失）
       const message = getApiErrorMessage(error, '标的分析生成失败')
       state.analysisJob = { ...(state.analysisJob || {}), status: 'failed', error: message }
-      ElMessage.error(message)
+      showApiError(error, '标的分析生成失败')
     } finally {
       if (!isStale(generation)) state.generating = false
     }

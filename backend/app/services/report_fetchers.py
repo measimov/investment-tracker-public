@@ -20,6 +20,7 @@ import urllib3
 import urllib3.connection
 
 from ..core.logging import get_app_logger
+from .http_source import throttle as _throttle
 
 logger = get_app_logger(__name__)
 
@@ -37,19 +38,7 @@ _CNINFO_HEADERS = {
 
 # 保守限速：cninfo 每次请求间隔 ≥1s（全模块共享，含 PDF 下载）
 _CNINFO_MIN_INTERVAL_SECONDS = 1.0
-# 分源限速（issue #145）：每个源一把锁，等待发生在**同源锁内**、按实际
-# monotonic 校验并更新——cninfo 的 1s 等待不再把并发的 EDGAR(0.15s) 调用
-# 挡在外面（旧实现持锁 sleep 且四源共用一把锁，跨源 head-of-line blocking）。
-# 刻意不用"锁外按预约时隙 sleep"：sleep 醒来的时刻不受控（线程拥塞/机器
-# 唤醒），不复验实际间隔就放行，会出现同源突发与顺序反转（PR #170 复审）。
-# 持同源锁 sleep 正是想要的语义：后来者排在锁上，放行时从**实际**上一次
-# 请求时刻重新度量，间隔恒 ≥ min_interval。
-_throttle_state_lock = threading.Lock()  # 只保护下面两张表的创建与取用
-_source_locks: Dict[str, threading.Lock] = {}
-_last_request_at: Dict[str, float] = {}
-
-# sleep 可注入：延迟唤醒场景的回归测试要模拟"第一个 waiter 醒晚了"
-_sleep = time.sleep
+# 分源限速：实现在 http_source（#281，语义见那里）；按模块名调用，测试可整体替换 _throttle
 
 PDF_DOWNLOAD_TIMEOUT_SECONDS = 60
 PDF_MAX_BYTES = 50 * 1024 * 1024
@@ -74,24 +63,20 @@ CNINFO_CATEGORIES = {
     "semi": "category_bndbg_szsh",
 }
 
-# orgId 全量映射（code → orgId），进程内缓存
+# orgId 全量映射（code → orgId），进程内缓存；超过 _MAPPING_MAX_AGE_SECONDS 重新拉取——
+# 常驻进程里新上市/新加入自选的标的否则永远查不到（PR #309 评审 P2-1）
+_MAPPING_MAX_AGE_SECONDS = 24 * 3600
 _org_id_cache: Dict[str, str] = {}
 _org_id_cache_loaded = False
-
-
-def _throttle(source: str, min_interval: float) -> None:
-    with _throttle_state_lock:
-        source_lock = _source_locks.setdefault(source, threading.Lock())
-    with source_lock:
-        elapsed = time.monotonic() - _last_request_at.get(source, 0.0)
-        if elapsed < min_interval:
-            _sleep(min_interval - elapsed)
-        _last_request_at[source] = time.monotonic()
+_org_id_cache_loaded_at = 0.0
 
 
 def _load_org_id_map() -> Dict[str, str]:
-    global _org_id_cache_loaded
-    if _org_id_cache_loaded:
+    global _org_id_cache_loaded, _org_id_cache_loaded_at
+    if (
+        _org_id_cache_loaded
+        and time.monotonic() - _org_id_cache_loaded_at < _MAPPING_MAX_AGE_SECONDS
+    ):
         return _org_id_cache
     _throttle("cninfo", _CNINFO_MIN_INTERVAL_SECONDS)
     response = requests.get(
@@ -106,26 +91,34 @@ def _load_org_id_map() -> Dict[str, str]:
         if code and org_id:
             _org_id_cache[code] = org_id
     _org_id_cache_loaded = True
+    _org_id_cache_loaded_at = time.monotonic()
     logger.info("cninfo orgId 映射加载完成：%d 条", len(_org_id_cache))
     return _org_id_cache
 
 
-def cninfo_org_id(symbol: str) -> Optional[str]:
-    """code → orgId；映射表加载失败时回退沪市惯例 gssh0{code}（实测有效）。"""
+def cninfo_org_id(symbol: str, *, strict: bool = False) -> Optional[str]:
+    """code → orgId；映射表加载失败时回退沪市惯例 gssh0{code}（实测有效）。
+
+    strict=True（公告同步用）：只有映射表**确认加载成功且查无此码**才返回 None；加载失败时
+    已缓存的旧映射里有就用，没有就原样抛出——回退规则只覆盖 6/9 开头，深市代码会被误判
+    为「无官方源」，B 股会退成按 B 股代码检索（恒为 0 条却记成功）。"""
     try:
         org_id = _load_org_id_map().get(symbol)
-        if org_id:
+        if org_id or strict:
             return org_id
     except Exception as exc:
+        cached = _org_id_cache.get(symbol)
+        if cached:
+            return cached
+        if strict:
+            raise
         logger.warning("cninfo orgId 映射加载失败，使用回退规则: %s", str(exc)[:120])
     if symbol.startswith(("6", "9")):
         return f"gssh0{symbol}"
     return None
 
 
-def cninfo_search_reports(
-    symbol: str, *, report_type: str, se_date: str
-) -> List[Dict[str, Any]]:
+def cninfo_search_reports(symbol: str, *, report_type: str, se_date: str) -> List[Dict[str, Any]]:
     """检索年报/半年报公告列表（含修订版与摘要，由调用方过滤）。
 
     返回 [{title, ann_date(YYYY-MM-DD), url, adjunct_size_kb}]，按公告时间倒序。
@@ -158,19 +151,57 @@ def cninfo_search_reports(
             if not adjunct.lower().endswith(".pdf"):
                 continue
             ann_ts = row.get("announcementTime")
-            ann_date = (
-                time.strftime("%Y-%m-%d", time.gmtime(ann_ts / 1000)) if ann_ts else ""
+            ann_date = time.strftime("%Y-%m-%d", time.gmtime(ann_ts / 1000)) if ann_ts else ""
+            announcements.append(
+                {
+                    "title": str(row.get("announcementTitle") or ""),
+                    "ann_date": ann_date,
+                    "url": f"{_CNINFO_STATIC}/{adjunct}",
+                    "adjunct_size_kb": row.get("adjunctSize"),
+                }
             )
-            announcements.append({
-                "title": str(row.get("announcementTitle") or ""),
-                "ann_date": ann_date,
-                "url": f"{_CNINFO_STATIC}/{adjunct}",
-                "adjunct_size_kb": row.get("adjunctSize"),
-            })
         if not body.get("hasMore") and len(rows) < 30:
             break
         page += 1
     return announcements
+
+
+def cninfo_announcement_page(
+    stock: str, *, se_date: str, page: int, page_size: int = 30
+) -> Dict[str, Any]:
+    """巨潮公告检索的一页原始响应（不限类别，含非 PDF 行）。
+
+    stock 为 `代码,orgId`（B 股用 orgId 对应的 A 股代码，见 announcement_sources）；
+    se_date 为 `YYYY-MM-DD~YYYY-MM-DD`。返回 {announcements: [...], hasMore, totalAnnouncement}。
+    偶发返回非 JSON（实测 601899 一次）：重试一次，仍失败抛出由调用方记失败。"""
+    last_exc: Optional[Exception] = None
+    for _attempt in range(2):
+        _throttle("cninfo", _CNINFO_MIN_INTERVAL_SECONDS)
+        try:
+            response = requests.post(
+                f"{_CNINFO_BASE}/new/hisAnnouncement/query",
+                headers=_CNINFO_HEADERS,
+                data={
+                    "pageNum": page,
+                    "pageSize": page_size,
+                    "column": "szse",
+                    "tabName": "fulltext",
+                    "stock": stock,
+                    "seDate": se_date,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            last_exc = exc
+            continue
+        if not isinstance(body, dict):
+            last_exc = ValueError(f"巨潮响应结构异常: {str(body)[:120]}")
+            continue
+        return body
+    assert last_exc is not None
+    raise last_exc
 
 
 def download_report_pdf(url: str, *, source: str = "cninfo") -> bytes:
@@ -220,6 +251,7 @@ def _tracking_session(sockets: List[socket.socket]) -> requests.Session:
                 except OSError:
                     pass
                 return sock
+
         return _Tracked
 
     class _Pool(urllib3.HTTPConnectionPool):
@@ -361,6 +393,7 @@ _EDGAR_MIN_INTERVAL_SECONDS = 0.15
 # symbol → {cik, title} 映射，进程内缓存
 _cik_cache: Dict[str, Dict[str, Any]] = {}
 _cik_cache_loaded = False
+_cik_cache_loaded_at = 0.0
 
 
 def _edgar_headers() -> Dict[str, str]:
@@ -381,10 +414,11 @@ def _edgar_get_json(url: str) -> Dict[str, Any]:
 
 
 def _load_cik_map() -> Dict[str, Dict[str, Any]]:
-    global _cik_cache_loaded
-    if _cik_cache_loaded:
+    global _cik_cache_loaded, _cik_cache_loaded_at
+    if _cik_cache_loaded and time.monotonic() - _cik_cache_loaded_at < _MAPPING_MAX_AGE_SECONDS:
         return _cik_cache
     data = _edgar_get_json("https://www.sec.gov/files/company_tickers.json")
+    _cik_reverse_cache.clear()
     for entry in data.values():
         ticker = str(entry.get("ticker") or "").upper()
         if ticker:
@@ -393,13 +427,21 @@ def _load_cik_map() -> Dict[str, Dict[str, Any]]:
                 "title": entry.get("title"),
             }
     _cik_cache_loaded = True
+    _cik_cache_loaded_at = time.monotonic()
     logger.info("EDGAR CIK 映射加载完成：%d 条", len(_cik_cache))
     return _cik_cache
 
 
 def edgar_lookup(symbol: str) -> Optional[Dict[str, Any]]:
-    """美股 symbol → {cik, title}；未注册返回 None。"""
-    return _load_cik_map().get(str(symbol or "").strip().upper())
+    """美股 symbol → {cik, title}；未注册返回 None。映射表加载失败时旧缓存里有就用，
+    没有就抛出（不当成「未注册」）。"""
+    ticker = str(symbol or "").strip().upper()
+    try:
+        return _load_cik_map().get(ticker)
+    except Exception:
+        if ticker in _cik_cache:
+            return _cik_cache[ticker]
+        raise
 
 
 _cik_reverse_cache: Dict[int, Dict[str, Any]] = {}
@@ -412,20 +454,33 @@ def edgar_reverse_lookup(cik: int) -> Optional[Dict[str, Any]]:
     """
     if not _cik_reverse_cache:
         for ticker, entry in _load_cik_map().items():
-            _cik_reverse_cache.setdefault(
-                entry["cik"], {"symbol": ticker, "title": entry["title"]}
-            )
+            _cik_reverse_cache.setdefault(entry["cik"], {"symbol": ticker, "title": entry["title"]})
     return _cik_reverse_cache.get(int(cik))
 
 
 def edgar_companyfacts(cik: int) -> Dict[str, Any]:
-    return _edgar_get_json(
-        f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
-    )
+    return _edgar_get_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
+
+
+# submissions 的短时进程缓存（#281）：一次分析任务里摘要规划、ADS 换算比、同业、行业会各拉一遍
+# 同一份（几百 KB），SEC 公平访问要求 ≤10 req/s。只缓存成功响应；10 分钟足够覆盖一次任务，
+# 又不会让公告同步（30 分钟一轮）错过新申报
+_SUBMISSIONS_TTL_SECONDS = 600
+_submissions_cache: Dict[int, tuple] = {}
 
 
 def edgar_submissions(cik: int) -> Dict[str, Any]:
-    return _edgar_get_json(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
+    cik = int(cik)
+    cached = _submissions_cache.get(cik)
+    if cached is not None and _monotonic() - cached[0] < _SUBMISSIONS_TTL_SECONDS:
+        return cached[1]
+    payload = _edgar_get_json(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
+    _submissions_cache[cik] = (_monotonic(), payload)
+    return payload
+
+
+def clear_edgar_submissions_cache() -> None:
+    _submissions_cache.clear()
 
 
 # 年报表单：10-K 是美国本土发行人，20-F 是外国私人发行人（中概股几乎全是
@@ -443,13 +498,15 @@ def edgar_recent_annual_filings(cik: int, *, limit: int = 10) -> List[Dict[str, 
     for index, form in enumerate(forms):
         if form not in EDGAR_ANNUAL_FORMS:
             continue
-        filings.append({
-            "form": str(form),
-            "accession": str(recent["accessionNumber"][index]),
-            "primary_document": str(recent["primaryDocument"][index]),
-            "filing_date": str(recent["filingDate"][index]),
-            "report_date": str(recent["reportDate"][index]),
-        })
+        filings.append(
+            {
+                "form": str(form),
+                "accession": str(recent["accessionNumber"][index]),
+                "primary_document": str(recent["primaryDocument"][index]),
+                "filing_date": str(recent["filingDate"][index]),
+                "report_date": str(recent["reportDate"][index]),
+            }
+        )
         if len(filings) >= limit:
             break
     return filings
@@ -458,9 +515,7 @@ def edgar_recent_annual_filings(cik: int, *, limit: int = 10) -> List[Dict[str, 
 def edgar_download_filing(cik: int, accession: str, document: str) -> str:
     """下载 filing 主文档（HTML 文本）。"""
     accession_nodash = accession.replace("-", "")
-    url = (
-        f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{document}"
-    )
+    url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{document}"
     _throttle("edgar", _EDGAR_MIN_INTERVAL_SECONDS)
     response = requests.get(url, headers=_edgar_headers(), timeout=60)
     response.raise_for_status()
@@ -480,8 +535,12 @@ def edgar_same_sic_companies(sic: str, *, limit: int = 100) -> List[Dict[str, An
     response = requests.get(
         "https://www.sec.gov/cgi-bin/browse-edgar",
         params={
-            "action": "getcompany", "SIC": sic, "type": "10-K",
-            "owner": "include", "count": limit, "output": "atom",
+            "action": "getcompany",
+            "SIC": sic,
+            "type": "10-K",
+            "owner": "include",
+            "count": limit,
+            "output": "atom",
         },
         headers=_edgar_headers(),
         timeout=30,
@@ -538,30 +597,22 @@ def hkex_stock_id(symbol: str) -> Optional[str]:
     text = response.text
     # JSONP 响应：c({...})
     try:
-        payload = json.loads(text[text.index("(") + 1: text.rindex(")")])
+        payload = json.loads(text[text.index("(") + 1 : text.rindex(")")])
     except (ValueError, IndexError) as exc:
         raise ValueError(f"披露易 prefix 响应无法解析: {text[:120]}") from exc
     info = payload.get("stockInfo") or []
     stock_id = str(info[0]["stockId"]) if info else None
-    _hkex_stock_id_cache[code] = stock_id
+    # 只缓存命中：新上市标的在披露易建档前查无结果，缓存 None 会让常驻进程永远查不到
+    if stock_id:
+        _hkex_stock_id_cache[code] = stock_id
     return stock_id
-
-
-def hkex_annual_reports(symbol: str, *, limit: int = 12) -> List[Dict[str, Any]]:
-    """披露易年报清单（公告日倒序），返回 [{title, ann_date, url}]。
-
-    只保留 PDF 直链；标题含"摘要/補充/英文"等的由上层判重时处理。
-    2026-08-04 实测：腾讯 12 份、小盘股 6-11 份，PDF 3-13MB 且**纯文本零空白
-    页**（比 A股 招行那份 32MB 轻得多）。
-    """
-    return hkex_reports(symbol, report_type="annual", limit=limit)
 
 
 def hkex_reports(
     symbol: str, *, report_type: str = "annual", limit: int = 12
 ) -> List[Dict[str, Any]]:
     """披露易报告清单：report_type=annual（年报）| interim（中期报告），公告日倒序，
-    返回 [{title, ann_date, url}]。"""
+    返回 [{title, ann_date, url}]。只保留 PDF 直链；去噪声与同期取舍在 hk_report_catalog。"""
     t2code = _HKEX_T2_BY_REPORT_TYPE.get(report_type)
     if t2code is None:
         raise ValueError(f"未知的披露易报告类别: {report_type}")
@@ -573,11 +624,21 @@ def hkex_reports(
     response = requests.get(
         f"{_HKEX_BASE}/search/titleSearchServlet.do",
         params={
-            "sortDir": 0, "sortByOptions": "DateTime", "category": 0, "market": "SEHK",
-            "stockId": stock_id, "documentType": -1,
-            "fromDate": "20150101", "toDate": "20991231", "title": "",
-            "searchType": 1, "t1code": _HKEX_ANNUAL_T1, "t2Gcode": -2,
-            "t2code": t2code, "rowRange": max(limit * 2, 20), "lang": "ZH",
+            "sortDir": 0,
+            "sortByOptions": "DateTime",
+            "category": 0,
+            "market": "SEHK",
+            "stockId": stock_id,
+            "documentType": -1,
+            "fromDate": "20150101",
+            "toDate": "20991231",
+            "title": "",
+            "searchType": 1,
+            "t1code": _HKEX_ANNUAL_T1,
+            "t2Gcode": -2,
+            "t2code": t2code,
+            "rowRange": max(limit * 2, 20),
+            "lang": "ZH",
         },
         headers=_HKEX_HEADERS,
         timeout=45,
@@ -591,11 +652,13 @@ def hkex_reports(
         link = row.get("FILE_LINK") or ""
         if not link.lower().endswith(".pdf"):
             continue
-        reports.append({
-            "title": (row.get("TITLE") or "").strip(),
-            "ann_date": (row.get("DATE_TIME") or "").strip(),
-            "url": f"{_HKEX_BASE}{link}",
-        })
+        reports.append(
+            {
+                "title": (row.get("TITLE") or "").strip(),
+                "ann_date": (row.get("DATE_TIME") or "").strip(),
+                "url": f"{_HKEX_BASE}{link}",
+            }
+        )
     return reports[:limit]
 
 
@@ -623,11 +686,21 @@ def hkex_title_search(
     response = requests.get(
         f"{_HKEX_BASE}/search/titleSearchServlet.do",
         params={
-            "sortDir": 0, "sortByOptions": "DateTime", "category": 0, "market": "SEHK",
-            "stockId": stock_id, "documentType": -1,
-            "fromDate": from_date, "toDate": to_date, "title": "",
-            "searchType": 1, "t1code": t1code, "t2Gcode": t2g_code,
-            "t2code": t2code, "rowRange": row_range, "lang": "ZH",
+            "sortDir": 0,
+            "sortByOptions": "DateTime",
+            "category": 0,
+            "market": "SEHK",
+            "stockId": stock_id,
+            "documentType": -1,
+            "fromDate": from_date,
+            "toDate": to_date,
+            "title": "",
+            "searchType": 1,
+            "t1code": t1code,
+            "t2Gcode": t2g_code,
+            "t2code": t2code,
+            "rowRange": row_range,
+            "lang": "ZH",
         },
         headers=_HKEX_HEADERS,
         timeout=45,
@@ -641,12 +714,56 @@ def hkex_title_search(
         link = row.get("FILE_LINK") or ""
         if not link.lower().endswith(".pdf"):
             continue
-        documents.append({
-            "title": (row.get("TITLE") or "").strip(),
-            "ann_date": (row.get("DATE_TIME") or "").strip(),
-            "url": f"{_HKEX_BASE}{link}",
-        })
+        documents.append(
+            {
+                "title": (row.get("TITLE") or "").strip(),
+                "ann_date": (row.get("DATE_TIME") or "").strip(),
+                "url": f"{_HKEX_BASE}{link}",
+            }
+        )
     return documents
+
+
+def hkex_announcements_raw(
+    symbol: str, *, from_date: str, to_date: str, row_range: int = 500
+) -> Optional[List[Dict[str, Any]]]:
+    """披露易**全部类别**公告原始行（searchType=0、各级类别 -2），公告时间倒序。
+
+    行字段：NEWS_ID（唯一）、DATE_TIME（dd/mm/YYYY HH:MM 香港时间）、TITLE、LONG_TEXT
+    （官方分类「一级 - [二级 / 二级]」，HTML 实体未解码）、FILE_LINK、FILE_TYPE。
+    from/to 为 YYYYMMDD；stockId 找不到返回 None（与「该区间无公告」的空列表区分）。
+    rowRange 上限由调用方按窗口控制（公告公司一年可达数百条，调用方分段请求）。"""
+    stock_id = hkex_stock_id(symbol)
+    if not stock_id:
+        return None
+    _throttle("hkexnews", _HKEX_MIN_INTERVAL_SECONDS)
+    response = requests.get(
+        f"{_HKEX_BASE}/search/titleSearchServlet.do",
+        params={
+            "sortDir": 0,
+            "sortByOptions": "DateTime",
+            "category": 0,
+            "market": "SEHK",
+            "stockId": stock_id,
+            "documentType": -1,
+            "fromDate": from_date,
+            "toDate": to_date,
+            "title": "",
+            "searchType": 0,
+            "t1code": -2,
+            "t2Gcode": -2,
+            "t2code": -2,
+            "rowRange": row_range,
+            "lang": "ZH",
+        },
+        headers=_HKEX_HEADERS,
+        timeout=45,
+    )
+    response.raise_for_status()
+    rows = (response.json() or {}).get("result") or []
+    if isinstance(rows, str):
+        rows = json.loads(rows)
+    return list(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -722,8 +839,7 @@ def yahoo_hk_fundamentals(symbol: str) -> List[Dict[str, Any]]:
     _throttle("yahoo", _YAHOO_MIN_INTERVAL_SECONDS)
     now = int(time.time())
     response = requests.get(
-        "https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/"
-        f"finance/timeseries/{code}",
+        f"https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/{code}",
         params={
             "type": ",".join(YAHOO_HK_FIELD_MAP),
             "period1": now - 20 * 365 * 86400,
@@ -748,10 +864,13 @@ def yahoo_hk_fundamentals(symbol: str) -> List[Dict[str, Any]]:
             value = (item.get("reportedValue") or {}).get("raw")
             if not as_of or value is None:
                 continue
-            row = merged.setdefault(as_of, {
-                "end_date": as_of.replace("-", ""),
-                "fp": "FY",
-                "currency": item.get("currencyCode"),
-            })
+            row = merged.setdefault(
+                as_of,
+                {
+                    "end_date": as_of.replace("-", ""),
+                    "fp": "FY",
+                    "currency": item.get("currencyCode"),
+                },
+            )
             row[field] = abs(value) if field in YAHOO_HK_MAGNITUDE_FIELDS else value
     return sorted(merged.values(), key=lambda r: r["end_date"], reverse=True)

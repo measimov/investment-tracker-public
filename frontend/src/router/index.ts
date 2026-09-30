@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { ElMessage } from 'element-plus'
+import { MARKETS } from '../utils/securities'
 
 // Route-level code splitting: each view is loaded on demand so the initial
 // bundle stays small (the Statistics view with its charts is the heaviest).
@@ -65,6 +66,12 @@ const routes: RouteRecordRaw[] = [
     path: '/securities/:market/:symbol',
     name: 'SecurityDetail',
     component: () => import('../views/SecurityDetail.vue'),
+    // 市场不认识（参数颠倒 /securities/00700/港股 之类）→ NotFound，而不是渲染一个标题为
+    // 「港股 00700」、又提示「该市场暂不支持」的自相矛盾页面（#286）
+    beforeEnter: (to) =>
+      (MARKETS as readonly string[]).includes(String(to.params.market))
+        ? true
+        : { name: 'NotFound', params: { pathMatch: to.path.slice(1).split('/') } },
     meta: {
       requiresAuth: true,
       // 详情页不在导航里：点亮「当前持仓」；标题带上代码，多开几个标的时可区分
@@ -142,7 +149,8 @@ router.beforeEach(async (to, from, next) => {
   // Check if route requires authentication
   if (to.meta.requiresAuth !== false) {
     if (!authStore.isAuthenticated) {
-      ElMessage.warning('请先登录')
+      // 服务不可用时拦截器已弹过全局通知并亮起连接横幅，不再误导成「请先登录」
+      if (authStore.lastAuthCheck !== 'unavailable') ElMessage.warning('请先登录')
       next({
         path: '/login',
         query: { redirect: to.fullPath }

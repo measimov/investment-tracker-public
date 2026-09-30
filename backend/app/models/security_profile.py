@@ -35,7 +35,10 @@ class SecurityProfileData(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "symbol", "market", "dataset", "period_key",
+            "symbol",
+            "market",
+            "dataset",
+            "period_key",
             name="uq_security_profile_identity",
         ),
         CheckConstraint(
@@ -76,6 +79,10 @@ class SecurityAnalysis(Base):
         JSONB,
         comment="风险等级按市场下限上调的记录 {from,to,reason}；未上调为 NULL",
     )
+    output_adjustments = Column(
+        JSONB,
+        comment="解析层对模型输出的调整记录（标签归一/丢弃/截断、补免责声明等）；无调整为 NULL",
+    )
     summary = Column(String(300), nullable=False, comment="一句话摘要")
     content = Column(Text, nullable=False, comment="Markdown 全文分析")
 
@@ -84,7 +91,9 @@ class SecurityAnalysis(Base):
     completion_tokens = Column(Integer)
     total_tokens = Column(Integer)
     input_payload = Column(JSON, nullable=False, comment="生成时的压缩输入（可复现）")
-    data_fetched_at = Column(Date, comment="输入数据抓取日（非数据截止日：数据本身的报告期见各数据集 period）")
+    data_fetched_at = Column(
+        Date, comment="输入数据抓取日（非数据截止日：数据本身的报告期见各数据集 period）"
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

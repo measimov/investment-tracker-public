@@ -39,7 +39,9 @@ def upgrade() -> None:
         "security_industries",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column(
-            "symbol", sa.String(length=20), nullable=False,
+            "symbol",
+            sa.String(length=20),
+            nullable=False,
             comment="账本口径代码（同 holdings.symbol）",
         ),
         sa.Column(
@@ -70,9 +72,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("symbol", "market", "source", name="uq_security_industries_key"),
     )
-    op.create_index(
-        op.f("ix_security_industries_id"), "security_industries", ["id"], unique=False
-    )
+    op.create_index(op.f("ix_security_industries_id"), "security_industries", ["id"], unique=False)
     _replace_rule_check(f"{_RULE_TYPES}, {_ADDED_RULE_TYPE}")
 
 

@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+
 class CollectorAuthorResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

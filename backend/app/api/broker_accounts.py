@@ -34,22 +34,28 @@ ACCOUNT_REFERENCE_FIELDS = (
 )
 
 
+def linked_account_ids(db: Session, user_id: int, account_ids: List[int]) -> set:
+    """account_ids 中被账本/审计记录引用的那些（ACCOUNT_REFERENCE_FIELDS 每个一次 IN 查询）。"""
+    referenced: set = set()
+    if not account_ids:
+        return referenced
+    for model, foreign_key in ACCOUNT_REFERENCE_FIELDS:
+        referenced.update(
+            row[0]
+            for row in db.query(foreign_key)
+            .filter(model.user_id == user_id, foreign_key.in_(account_ids))
+            .distinct()
+        )
+    return referenced
+
+
 def account_has_records(
     db: Session,
     *,
     user_id: int,
     account_id: int,
 ) -> bool:
-    return any(
-        db.query(model.id)
-        .filter(
-            model.user_id == user_id,
-            foreign_key == account_id,
-        )
-        .first()
-        is not None
-        for model, foreign_key in ACCOUNT_REFERENCE_FIELDS
-    )
+    return account_id in linked_account_ids(db, user_id, [account_id])
 
 
 @router.post("", response_model=BrokerAccountResponse, status_code=201)
@@ -79,12 +85,18 @@ def list_broker_accounts(
         query = query.filter(BrokerAccount.broker == broker)
     if is_active is not None:
         query = query.filter(BrokerAccount.is_active == is_active)
-    return (
+    accounts = (
         query.order_by(BrokerAccount.broker, BrokerAccount.account_name, BrokerAccount.id)
         .offset(skip)
         .limit(limit)
         .all()
     )
+    # 账户页据此禁用非空账户的「删除」（#286：此前每个账户都有可点的红色删除按钮）；
+    # 每个引用表一次 IN 查询，与删除端点 account_has_records 同一组引用
+    referenced = linked_account_ids(db, current_user.id, [account.id for account in accounts])
+    for account in accounts:
+        account.has_records = account.id in referenced
+    return accounts
 
 
 @router.get("/{account_id:int}", response_model=BrokerAccountResponse)
@@ -98,7 +110,7 @@ def get_broker_account(
         BrokerAccount,
         account_id,
         current_user.id,
-        "Broker account not found",
+        "券商账户不存在",
     )
 
 
@@ -114,7 +126,7 @@ def update_broker_account(
         BrokerAccount,
         account_id,
         current_user.id,
-        "Broker account not found",
+        "券商账户不存在",
     )
     updates = account_update.model_dump(exclude_unset=True)
     if (
@@ -128,7 +140,7 @@ def update_broker_account(
     ):
         raise HTTPException(
             status_code=409,
-            detail="Broker cannot be changed after ledger or audit records exist.",
+            detail="该账户已有账本或导入记录，不能更改券商",
         )
     for field, value in updates.items():
         setattr(db_account, field, value)
@@ -148,7 +160,7 @@ def delete_broker_account(
         BrokerAccount,
         account_id,
         current_user.id,
-        "Broker account not found",
+        "券商账户不存在",
     )
     if account_has_records(
         db,
@@ -157,10 +169,7 @@ def delete_broker_account(
     ):
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Broker account has ledger or audit records. "
-                "Deactivate it instead of deleting it."
-            ),
+            detail="该账户已有账本或导入记录，不能删除；请改为停用",
         )
     db.delete(db_account)
     db.commit()

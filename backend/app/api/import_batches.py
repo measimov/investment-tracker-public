@@ -50,5 +50,5 @@ def get_import_batch(
         ImportBatch,
         batch_id,
         current_user.id,
-        "Import batch not found",
+        "导入批次不存在",
     )

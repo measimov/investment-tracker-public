@@ -2,6 +2,7 @@
 汇率服务模块
 提供汇率查询和货币转换功能
 """
+
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, func
 from decimal import Decimal
@@ -32,9 +33,7 @@ def invalidate_rate_cache(db: Session) -> None:
 
 
 def get_latest_rate(
-    db: Session,
-    from_currency: str,
-    to_currency: str = BASE_CURRENCY
+    db: Session, from_currency: str, to_currency: str = BASE_CURRENCY
 ) -> Optional[Decimal]:
     """
     获取最新汇率
@@ -71,21 +70,31 @@ def _query_latest_rate(
     to_currency: str,
 ) -> Optional[Decimal]:
     # 查询最新的有效汇率
-    rate_record = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency == from_currency,
-        ExchangeRate.to_currency == to_currency,
-        ExchangeRate.is_active.is_(True),
-    ).order_by(desc(ExchangeRate.effective_date)).first()
+    rate_record = (
+        db.query(ExchangeRate)
+        .filter(
+            ExchangeRate.from_currency == from_currency,
+            ExchangeRate.to_currency == to_currency,
+            ExchangeRate.is_active.is_(True),
+        )
+        .order_by(desc(ExchangeRate.effective_date))
+        .first()
+    )
 
     if rate_record:
         return Decimal(str(rate_record.rate))
 
     # 尝试反向查询（如果有CNY->USD，可以计算USD->CNY）
-    reverse_rate = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency == to_currency,
-        ExchangeRate.to_currency == from_currency,
-        ExchangeRate.is_active.is_(True),
-    ).order_by(desc(ExchangeRate.effective_date)).first()
+    reverse_rate = (
+        db.query(ExchangeRate)
+        .filter(
+            ExchangeRate.from_currency == to_currency,
+            ExchangeRate.to_currency == from_currency,
+            ExchangeRate.is_active.is_(True),
+        )
+        .order_by(desc(ExchangeRate.effective_date))
+        .first()
+    )
 
     if reverse_rate and Decimal(str(reverse_rate.rate)) != 0:
         return Decimal("1") / Decimal(str(reverse_rate.rate))
@@ -93,9 +102,7 @@ def _query_latest_rate(
     return None
 
 
-def get_latest_rate_details(
-    db: Session, base_currency: str = BASE_CURRENCY
-) -> Dict[str, Dict]:
+def get_latest_rate_details(db: Session, base_currency: str = BASE_CURRENCY) -> Dict[str, Dict]:
     """各币种对基准货币的最新有效汇率，连同**各自的**生效日期与来源。
 
     返回 {currency: {'rate': Decimal, 'effective_date': date, 'source': str}}，
@@ -116,36 +123,16 @@ def get_latest_rate_details(
     for record in rate_records:
         # 升序遍历，后来者覆盖 = 每个币种留下最新的一条
         details[record.from_currency] = {
-            'rate': Decimal(str(record.rate)),
-            'effective_date': record.effective_date,
-            'source': record.source,
+            "rate": Decimal(str(record.rate)),
+            "effective_date": record.effective_date,
+            "source": record.source,
         }
     details.pop(base_currency, None)
     return details
 
 
-def get_all_latest_rates(db: Session, base_currency: str = BASE_CURRENCY) -> Dict[str, Decimal]:
-    """
-    获取所有币种对基准货币的最新汇率
-
-    Args:
-        db: 数据库会话
-        base_currency: 基准货币（默认CNY）
-
-    Returns:
-        {currency: rate} 字典
-    """
-    rates = {base_currency: Decimal("1.0")}
-    for currency, data in get_latest_rate_details(db, base_currency).items():
-        rates[currency] = data['rate']
-    return rates
-
-
 def convert_amount(
-    db: Session,
-    amount: Decimal,
-    from_currency: str,
-    to_currency: str = BASE_CURRENCY
+    db: Session, amount: Decimal, from_currency: str, to_currency: str = BASE_CURRENCY
 ) -> Decimal:
     """
     转换金额
@@ -196,13 +183,14 @@ def convert_to_usd(db: Session, amount_cny: Decimal) -> Decimal:
     # CNY转USD = CNY金额 / (USD对CNY的汇率)
     return amount_cny / usd_to_cny_rate
 
+
 def update_or_create_rate(
     db: Session,
     from_currency: str,
     to_currency: str,
     rate: Decimal,
     effective_date: date = None,
-    source: str = "manual"
+    source: str = "manual",
 ) -> ExchangeRate:
     """
     更新或创建汇率
@@ -219,16 +207,20 @@ def update_or_create_rate(
         ExchangeRate记录
     """
     if effective_date is None:
-        effective_date = date.today()
+        effective_date = local_today()
 
     invalidate_rate_cache(db)
 
     # 查找是否存在
-    existing = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency == from_currency,
-        ExchangeRate.to_currency == to_currency,
-        ExchangeRate.effective_date == effective_date
-    ).first()
+    existing = (
+        db.query(ExchangeRate)
+        .filter(
+            ExchangeRate.from_currency == from_currency,
+            ExchangeRate.to_currency == to_currency,
+            ExchangeRate.effective_date == effective_date,
+        )
+        .first()
+    )
 
     if existing:
         # 更新
@@ -247,7 +239,7 @@ def update_or_create_rate(
             rate=rate,
             effective_date=effective_date,
             source=source,
-            is_active=True
+            is_active=True,
         )
         db.add(new_rate)
         db.commit()
@@ -282,8 +274,8 @@ def expected_official_date(now: Optional[datetime] = None) -> date:
 
 @periodic_outcome_task
 def periodic_refresh_rates() -> PeriodicOutcome:
-    """任一必需币种缺最近一期汇率即刷新（job_worker 周期任务，main.py 以名字
-    refresh_rates_if_stale 注册；幂等）。
+    """任一必需币种缺最近一期汇率即刷新（周期任务，periodic_registry 以名字
+    refresh_rates_if_stale 注册——名字即告警键，保持不变；幂等）。
 
     「最近一期」按中间价发布节奏（工作日 9:15）判定，而不是「今天有一行」——周末与
     节假日没有官方新值，旧口径会让每个 tick 都去抓、再拿第三方当天值顶上。逐币种检查：
@@ -327,11 +319,6 @@ def periodic_refresh_rates() -> PeriodicOutcome:
         db.close()
 
 
-def refresh_rates_if_stale() -> int:
-    """兼容入口：返回本次刷新到的币种数（已是最新返回 0）。"""
-    return periodic_refresh_rates().count
-
-
 def _fetch_third_party_quotes() -> Tuple[str, Dict[str, Decimal]]:
     """第三方聚合报价 → (来源标签, {外币: 1 外币 = N CNY})；两家都失败抛 RuntimeError。
 
@@ -365,13 +352,20 @@ def _fetch_third_party_quotes() -> Tuple[str, Dict[str, Decimal]]:
 def _upsert_unless_manual(
     db: Session, currency: str, rate: Decimal, effective_date: date, source: str
 ) -> bool:
-    """写入 外币→CNY 汇率；同日已有手工录入的行不覆盖（用户的刻意输入优先）。"""
-    existing = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency == currency,
-        ExchangeRate.to_currency == BASE_CURRENCY,
-        ExchangeRate.effective_date == effective_date,
-    ).first()
-    if existing is not None and (existing.source or "manual") == "manual":
+    """写入 外币→CNY 汇率；同日已有**启用中**的手工行不覆盖（用户的刻意输入优先）。
+
+    停用的手工行不再保护（#277）：「删除」改为停用后，否则一条被删的手工汇率会永久挡住
+    该日的官方中间价。"""
+    existing = (
+        db.query(ExchangeRate)
+        .filter(
+            ExchangeRate.from_currency == currency,
+            ExchangeRate.to_currency == BASE_CURRENCY,
+            ExchangeRate.effective_date == effective_date,
+        )
+        .first()
+    )
+    if existing is not None and existing.is_active and (existing.source or "manual") == "manual":
         return False
     if (
         existing is not None
@@ -410,14 +404,18 @@ def apply_official_rows(db: Session, rows, window_start: date, window_end: date)
         # 就该沿用最近一期；官方已陈旧（降级期）时，之后的第三方行是合法兜底，保留
         fresh = latest_official >= window_end - timedelta(days=settings.fx_official_max_stale_days)
         cutoff = window_end if fresh else min(window_end, latest_official)
-        stale_rows = db.query(ExchangeRate).filter(
-            ExchangeRate.from_currency == currency,
-            ExchangeRate.to_currency == BASE_CURRENCY,
-            ExchangeRate.source.in_(THIRD_PARTY_SOURCES),
-            ExchangeRate.is_active.is_(True),
-            ExchangeRate.effective_date >= window_start,
-            ExchangeRate.effective_date <= cutoff,
-        ).all()
+        stale_rows = (
+            db.query(ExchangeRate)
+            .filter(
+                ExchangeRate.from_currency == currency,
+                ExchangeRate.to_currency == BASE_CURRENCY,
+                ExchangeRate.source.in_(THIRD_PARTY_SOURCES),
+                ExchangeRate.is_active.is_(True),
+                ExchangeRate.effective_date >= window_start,
+                ExchangeRate.effective_date <= cutoff,
+            )
+            .all()
+        )
         for stale in stale_rows:
             if stale.effective_date not in dates:
                 stale.is_active = False
@@ -431,12 +429,17 @@ def apply_official_rows(db: Session, rows, window_start: date, window_end: date)
 def _latest_official(db: Session) -> Dict[str, Tuple[date, Decimal]]:
     latest: Dict[str, Tuple[date, Decimal]] = {}
     for currency in REQUIRED_RATE_CURRENCIES:
-        row = db.query(ExchangeRate).filter(
-            ExchangeRate.from_currency == currency,
-            ExchangeRate.to_currency == BASE_CURRENCY,
-            ExchangeRate.source == OFFICIAL_SOURCE,
-            ExchangeRate.is_active.is_(True),
-        ).order_by(desc(ExchangeRate.effective_date)).first()
+        row = (
+            db.query(ExchangeRate)
+            .filter(
+                ExchangeRate.from_currency == currency,
+                ExchangeRate.to_currency == BASE_CURRENCY,
+                ExchangeRate.source == OFFICIAL_SOURCE,
+                ExchangeRate.is_active.is_(True),
+            )
+            .order_by(desc(ExchangeRate.effective_date))
+            .first()
+        )
         if row is not None:
             latest[currency] = (row.effective_date, Decimal(str(row.rate)))
     return latest
@@ -457,11 +460,15 @@ def record_rate_checks(
             continue
         diff_pct = ((reference_rate / official_rate) - 1) * 100
         diff_pct = diff_pct.quantize(Decimal("0.0001"))
-        check = db.query(ExchangeRateCheck).filter(
-            ExchangeRateCheck.from_currency == currency,
-            ExchangeRateCheck.to_currency == BASE_CURRENCY,
-            ExchangeRateCheck.check_date == check_date,
-        ).first()
+        check = (
+            db.query(ExchangeRateCheck)
+            .filter(
+                ExchangeRateCheck.from_currency == currency,
+                ExchangeRateCheck.to_currency == BASE_CURRENCY,
+                ExchangeRateCheck.check_date == check_date,
+            )
+            .first()
+        )
         if check is None:
             check = ExchangeRateCheck(
                 from_currency=currency, to_currency=BASE_CURRENCY, check_date=check_date
@@ -477,7 +484,12 @@ def record_rate_checks(
         if abs(diff_pct) > Decimal(str(settings.fx_check_warn_pct)):
             logger.warning(
                 "汇率比对差异超阈值: %s/CNY 第三方(%s)=%s 官方中间价(%s)=%s 差 %s%%",
-                currency, reference_source, reference_rate, official_date, official_rate, diff_pct,
+                currency,
+                reference_source,
+                reference_rate,
+                official_date,
+                official_rate,
+                diff_pct,
             )
     db.commit()
     return checks
@@ -501,9 +513,7 @@ def fetch_latest_rates_from_api(
         rows = chinamoney_source.fetch_ccpr_history(
             today - timedelta(days=OFFICIAL_LOOKBACK_DAYS), today, REQUIRED_RATE_CURRENCIES
         )
-        stats = apply_official_rows(
-            db, rows, today - timedelta(days=OFFICIAL_LOOKBACK_DAYS), today
-        )
+        stats = apply_official_rows(db, rows, today - timedelta(days=OFFICIAL_LOOKBACK_DAYS), today)
         logger.info(
             "人民币汇率中间价已同步: %s 行（最近一期 %s；停用第三方残留 %s 行）",
             stats["written"],
@@ -542,9 +552,7 @@ def fetch_latest_rates_from_api(
                 official_entry[0].isoformat() if official_entry else "无",
                 reference_source,
             )
-            _upsert_unless_manual(
-                db, currency, reference_rates[currency], today, reference_source
-            )
+            _upsert_unless_manual(db, currency, reference_rates[currency], today, reference_source)
             current[currency] = reference_rates[currency]
         elif official_entry is not None:
             current[currency] = official_entry[1]
@@ -564,9 +572,11 @@ def fx_source_warnings(db: Session) -> List[str]:
     latest_check_date = db.query(func.max(ExchangeRateCheck.check_date)).scalar()
     if latest_check_date is not None:
         threshold = Decimal(str(settings.fx_check_warn_pct))
-        for check in db.query(ExchangeRateCheck).filter(
-            ExchangeRateCheck.check_date == latest_check_date
-        ).order_by(ExchangeRateCheck.from_currency):
+        for check in (
+            db.query(ExchangeRateCheck)
+            .filter(ExchangeRateCheck.check_date == latest_check_date)
+            .order_by(ExchangeRateCheck.from_currency)
+        ):
             if abs(Decimal(str(check.diff_pct))) > threshold:
                 warnings.append(
                     f"{check.from_currency}/CNY 第三方报价（{check.reference_source}）与官方中间价"
@@ -586,17 +596,22 @@ def get_rate_info(db: Session, from_currency: str, to_currency: str = BASE_CURRE
             'source': str
         }
     """
-    rate_record = db.query(ExchangeRate).filter(
-        ExchangeRate.from_currency == from_currency,
-        ExchangeRate.to_currency == to_currency,
-        ExchangeRate.is_active.is_(True),
-    ).order_by(desc(ExchangeRate.effective_date)).first()
+    rate_record = (
+        db.query(ExchangeRate)
+        .filter(
+            ExchangeRate.from_currency == from_currency,
+            ExchangeRate.to_currency == to_currency,
+            ExchangeRate.is_active.is_(True),
+        )
+        .order_by(desc(ExchangeRate.effective_date))
+        .first()
+    )
 
     if rate_record:
         return {
-            'rate': Decimal(str(rate_record.rate)),
-            'effective_date': rate_record.effective_date,
-            'source': rate_record.source
+            "rate": Decimal(str(rate_record.rate)),
+            "effective_date": rate_record.effective_date,
+            "source": rate_record.source,
         }
 
     return None

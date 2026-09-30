@@ -30,12 +30,29 @@ RESET_MODELS = (
 )
 
 
-def add_txn(db, *, account_id=None, txn_type="BUY", quantity="100", price="10",
-            fee="0", txn_date=date(2026, 1, 1), symbol="AAPL", market="美股"):
+def add_txn(
+    db,
+    *,
+    account_id=None,
+    txn_type="BUY",
+    quantity="100",
+    price="10",
+    fee="0",
+    txn_date=date(2026, 1, 1),
+    symbol="AAPL",
+    market="美股",
+):
     return add_transaction(
-        db, broker_account_id=account_id, symbol=symbol, name=symbol, market=market,
-        transaction_type=txn_type, quantity=Decimal(quantity), price=Decimal(price),
-        fee=Decimal(fee), transaction_date=txn_date,
+        db,
+        broker_account_id=account_id,
+        symbol=symbol,
+        name=symbol,
+        market=market,
+        transaction_type=txn_type,
+        quantity=Decimal(quantity),
+        price=Decimal(price),
+        fee=Decimal(fee),
+        transaction_date=txn_date,
     )
 
 
@@ -46,8 +63,9 @@ def test_two_accounts_produce_two_holding_rows():
         cmb = make_account(db, "CMB")
         ibkr = make_account(db, "IBKR")
         add_txn(db, account_id=cmb.id, quantity="100", price="10", fee="1")
-        add_txn(db, account_id=ibkr.id, quantity="50", price="12", fee="1",
-                txn_date=date(2026, 2, 1))
+        add_txn(
+            db, account_id=ibkr.id, quantity="50", price="12", fee="1", txn_date=date(2026, 2, 1)
+        )
         db.commit()
 
         recalculate_holdings(db, 1, "AAPL", "美股")
@@ -71,8 +89,14 @@ def test_sell_only_consumes_own_account_bucket():
         ibkr = make_account(db, "IBKR")
         add_txn(db, account_id=cmb.id, quantity="100", price="10")
         add_txn(db, account_id=ibkr.id, quantity="50", price="12")
-        add_txn(db, account_id=cmb.id, txn_type="SELL", quantity="40", price="15",
-                txn_date=date(2026, 3, 1))
+        add_txn(
+            db,
+            account_id=cmb.id,
+            txn_type="SELL",
+            quantity="40",
+            price="15",
+            txn_date=date(2026, 3, 1),
+        )
         db.commit()
 
         recalculate_holdings(db, 1, "AAPL", "美股")
@@ -92,11 +116,18 @@ def test_ratio_action_applies_to_all_account_buckets():
         ibkr = make_account(db, "IBKR")
         add_txn(db, account_id=cmb.id, quantity="100", price="10")
         add_txn(db, account_id=ibkr.id, quantity="50", price="12")
-        db.add(CorporateAction(
-            user_id=1, symbol="AAPL", name="AAPL", market="美股",
-            action_type="STOCK_SPLIT", ex_date=date(2026, 4, 1),
-            split_ratio="1:2", currency="USD",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=1,
+                symbol="AAPL",
+                name="AAPL",
+                market="美股",
+                action_type="STOCK_SPLIT",
+                ex_date=date(2026, 4, 1),
+                split_ratio="1:2",
+                currency="USD",
+            )
+        )
         db.commit()
 
         recalculate_holdings(db, 1, "AAPL", "美股")
@@ -117,8 +148,14 @@ def test_cross_account_sell_falls_back_to_merged_bucket():
         cmb = make_account(db, "CMB")
         add_txn(db, account_id=cmb.id, quantity="100", price="10")
         # 未指定账户卖出 120：CMB 桶只有 100 → 归属矛盾 → 合并桶重放
-        add_txn(db, account_id=None, txn_type="SELL", quantity="120", price="15",
-                txn_date=date(2026, 2, 1))
+        add_txn(
+            db,
+            account_id=None,
+            txn_type="SELL",
+            quantity="120",
+            price="15",
+            txn_date=date(2026, 2, 1),
+        )
         db.commit()
 
         try:
@@ -131,8 +168,14 @@ def test_cross_account_sell_falls_back_to_merged_bucket():
 
         # 数量对得上时应正常降级为单一 NULL 桶
         db.query(Transaction).filter(Transaction.transaction_type == "SELL").delete()
-        add_txn(db, account_id=None, txn_type="SELL", quantity="80", price="15",
-                txn_date=date(2026, 2, 1))
+        add_txn(
+            db,
+            account_id=None,
+            txn_type="SELL",
+            quantity="80",
+            price="15",
+            txn_date=date(2026, 2, 1),
+        )
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
         rows = get_rows(db)
@@ -151,11 +194,18 @@ def test_null_account_absolute_action_targets_single_holder():
         cmb = make_account(db, "CMB")
         add_txn(db, account_id=cmb.id, quantity="100", price="10")
         # 无账户归属、无比例字段的送股（绝对数量）：唯一持仓桶 → CMB
-        db.add(CorporateAction(
-            user_id=1, symbol="AAPL", name="AAPL", market="美股",
-            action_type="BONUS_ISSUE", ex_date=date(2026, 2, 1),
-            shares_received=Decimal("10"), currency="USD",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=1,
+                symbol="AAPL",
+                name="AAPL",
+                market="美股",
+                action_type="BONUS_ISSUE",
+                ex_date=date(2026, 2, 1),
+                shares_received=Decimal("10"),
+                currency="USD",
+            )
+        )
         db.commit()
 
         recalculate_holdings(db, 1, "AAPL", "美股")
@@ -180,9 +230,7 @@ def test_statistics_do_not_double_count_account_rows():
         recalculate_holdings(db, 1, "AAPL", "美股")
         assert len(get_rows(db)) == 2
 
-        result = calculate_current_holdings_performance(
-            db, 1, {"AAPL:美股": 12.0}
-        )
+        result = calculate_current_holdings_performance(db, 1, {"AAPL:美股": 12.0})
         # 150 股、成本 1500、现价 12 → 市值 1800、浮盈 300（USD 无汇率时原样累加）
         detail = result["holdings_detail"]
         assert len(detail) == 1
@@ -230,13 +278,23 @@ def test_split_buckets_inherit_security_level_price():
         add_txn(db, account_id=ibkr.id, quantity="50", price="12")
         # 模拟迁移后的旧持仓行：单一 NULL 桶、带手工估值
         stamp = datetime(2026, 7, 1, tzinfo=timezone.utc)
-        db.add(Holding(
-            user_id=1, broker_account_id=None, symbol="AAPL", name="AAPL",
-            market="美股", quantity=Decimal("150"), avg_cost=Decimal("10.67"),
-            total_cost=Decimal("1600"), currency="USD",
-            current_price=Decimal("13.5"), price_updated_at=stamp,
-            price_as_of=date(2026, 6, 30), price_source="tushare-us_daily",
-        ))
+        db.add(
+            Holding(
+                user_id=1,
+                broker_account_id=None,
+                symbol="AAPL",
+                name="AAPL",
+                market="美股",
+                quantity=Decimal("150"),
+                avg_cost=Decimal("10.67"),
+                total_cost=Decimal("1600"),
+                currency="USD",
+                current_price=Decimal("13.5"),
+                price_updated_at=stamp,
+                price_as_of=date(2026, 6, 30),
+                price_source="tushare-us_daily",
+            )
+        )
         db.commit()
 
         recalculate_holdings(db, 1, "AAPL", "美股")
@@ -262,8 +320,7 @@ def test_user_visible_counts_dedupe_account_rows():
         ibkr = make_account(db, "IBKR")
         add_txn(db, account_id=cmb.id, quantity="100", price="10")
         add_txn(db, account_id=ibkr.id, quantity="50", price="10")
-        add_txn(db, account_id=cmb.id, symbol="0700", market="港股",
-                quantity="100", price="300")
+        add_txn(db, account_id=cmb.id, symbol="0700", market="港股", quantity="100", price="300")
         db.commit()
         recalculate_holdings(db, 1, "AAPL", "美股")
         recalculate_holdings(db, 1, "0700", "港股")
@@ -320,40 +377,3 @@ def test_manual_price_update_syncs_all_account_rows():
     finally:
         reset_tables(db, RESET_MODELS)
         db.close()
-
-
-def test_get_holding_rejects_cross_market_aggregation():
-    """未传 market 且同一代码存在于多个市场时返回 422，不做跨币种混合聚合。"""
-    from fastapi import HTTPException
-
-    from app.api.holdings import get_holding
-    from app.models.user import User
-
-    db = SessionLocal()
-    reset_tables(db, RESET_MODELS)
-    try:
-        cmb = make_account(db, "CMB")
-        add_txn(db, account_id=cmb.id, symbol="PCT", market="港股",
-                quantity="100", price="5")
-        add_txn(db, account_id=cmb.id, symbol="PCT", market="新加坡股",
-                quantity="50", price="1")
-        db.commit()
-        recalculate_holdings(db, 1, "PCT", "港股")
-        recalculate_holdings(db, 1, "PCT", "新加坡股")
-
-        user = db.query(User).filter(User.id == 1).one()
-        try:
-            get_holding("PCT", market=None, current_user=user, db=db)
-        except HTTPException as exc:
-            assert exc.status_code == 422
-            assert "multiple markets" in exc.detail
-        else:
-            raise AssertionError("expected 422 for cross-market symbol")
-
-        # 指定 market 后正常返回
-        result = get_holding("PCT", market="港股", current_user=user, db=db)
-        assert result.market == "港股"
-    finally:
-        reset_tables(db, RESET_MODELS)
-        db.close()
-

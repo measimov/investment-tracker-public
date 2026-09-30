@@ -6,11 +6,11 @@
  * 409（数据源未接入 / 互斥任务进行中）展示为 section 内信息条而非 toast。
  */
 
+import type { OpinionJob, OpinionSummaryDetail } from '@/types'
 import { reactive } from 'vue'
 import api from '@/api'
 import { pollJobUntilDone } from '@/utils/polling'
 import { getApiErrorMessage } from '@/utils/apiErrors'
-import type { OpinionJob, OpinionSummaryDetail } from './types'
 
 export const OPINION_POLL_INTERVAL_MS = 2000
 export const OPINION_POLL_MAX_ATTEMPTS = 150 // 单标的一次 LLM 调用，5 分钟兜底
@@ -54,7 +54,7 @@ export function useOpinionSummary({
     try {
       const response = await api.getOpinionSummary(market(), symbol())
       if (isStale(current)) return
-      state.summary = response.data as OpinionSummaryDetail
+      state.summary = response.data
     } catch (error: unknown) {
       if (isStale(current)) return
       state.summary = null
@@ -79,7 +79,7 @@ export function useOpinionSummary({
       const started = await api.startOpinionJob(market(), symbol())
       if (!owns()) return
       const jobId = started.data.id as string
-      state.job = started.data as OpinionJob
+      state.job = started.data
       const finished = await pollJobUntilDone(() => api.getOpinionJob(jobId), {
         intervalMs: OPINION_POLL_INTERVAL_MS,
         maxAttempts: OPINION_POLL_MAX_ATTEMPTS,

@@ -946,29 +946,69 @@ def test_excluded_security_archives_rows_and_passes_snapshot_gate(monkeypatch):
     reset_tables(db, RESET_MODELS)
     try:
         account = create_eastmoney_account(db)
-        db.add(SecurityRule(rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"))
+        db.add(
+            SecurityRule(
+                rule_type="EXCLUDE", user_id=1, symbol="511880", market="A股", note="货币基金"
+            )
+        )
         db.commit()
 
         rows = [
-            (1, flow_row("20260110", "证券买入", "600001", "合成股票甲",
-                         "200", "10.0000", "-2000.00", "0.00", "0.00", "0.00")),
-            (2, flow_row("20260111", "证券买入", "511880", "银华日利",
-                         "1000", "1.0000", "-1000.00", "0.00", "0.00", "0.00")),
+            (
+                1,
+                flow_row(
+                    "20260110",
+                    "证券买入",
+                    "600001",
+                    "合成股票甲",
+                    "200",
+                    "10.0000",
+                    "-2000.00",
+                    "0.00",
+                    "0.00",
+                    "0.00",
+                ),
+            ),
+            (
+                2,
+                flow_row(
+                    "20260111",
+                    "证券买入",
+                    "511880",
+                    "银华日利",
+                    "1000",
+                    "1.0000",
+                    "-1000.00",
+                    "0.00",
+                    "0.00",
+                    "0.00",
+                ),
+            ),
         ]
         context = statement_context(
             positions=[
                 EastmoneyStatementPosition(
-                    symbol="600001", name="合成股票甲", market="A股", quantity=Decimal("200"),
+                    symbol="600001",
+                    name="合成股票甲",
+                    market="A股",
+                    quantity=Decimal("200"),
                 ),
                 EastmoneyStatementPosition(
-                    symbol="511880", name="银华日利", market="A股", quantity=Decimal("1000"),
+                    symbol="511880",
+                    name="银华日利",
+                    market="A股",
+                    quantity=Decimal("1000"),
                 ),
             ]
         )
         patch_statement(monkeypatch, rows, context)
 
         result = import_eastmoney_statement(
-            db, 1, b"%PDF", "eastmoney.pdf", broker_account_id=account.id,
+            db,
+            1,
+            b"%PDF",
+            "eastmoney.pdf",
+            broker_account_id=account.id,
         )
 
         assert result["imported_transactions"] == 1
@@ -1041,9 +1081,7 @@ def test_eastmoney_unattributed_tax_is_recovered_on_reimport(monkeypatch):
         assert action.tax_withheld == Decimal("10.00000000")
         assert action.net_dividend == Decimal("90.00000000")
 
-        recovered = db.query(BrokerFundFlow).filter_by(
-            row_hash=orphan.row_hash
-        ).one()
+        recovered = db.query(BrokerFundFlow).filter_by(row_hash=orphan.row_hash).one()
         assert recovered.id == orphan_id, "必须就地转正，不得插新行"
         assert recovered.skip_reason is None
         assert recovered.corporate_action_id == action.id
@@ -1060,13 +1098,9 @@ def test_eastmoney_recovered_tax_is_not_applied_twice(monkeypatch):
         rows = sample_rows()
 
         patch_statement(monkeypatch, [rows[4]], statement_context(positions=[]))
-        import_eastmoney_statement(
-            db, 1, b"%PDF-1", "eastmoney.pdf", broker_account_id=account.id
-        )
+        import_eastmoney_statement(db, 1, b"%PDF-1", "eastmoney.pdf", broker_account_id=account.id)
         patch_statement(monkeypatch, [rows[3], rows[4]], statement_context(positions=[]))
-        import_eastmoney_statement(
-            db, 1, b"%PDF-2", "eastmoney.pdf", broker_account_id=account.id
-        )
+        import_eastmoney_statement(db, 1, b"%PDF-2", "eastmoney.pdf", broker_account_id=account.id)
 
         action = db.query(CorporateAction).one()
         assert action.tax_withheld == Decimal("10.00000000")
@@ -1109,11 +1143,14 @@ def test_eastmoney_legacy_hash_orphan_is_recovered_in_place(monkeypatch):
         legacy_hash = hashlib.sha256(b"legacy-form-of-this-tax-row").hexdigest()
 
         # 造"历史孤儿"：归档行以 legacy hash 存档，且已被迁移回填标记
-        db.execute(sa_text(
-            "UPDATE broker_fund_flows SET row_hash = :legacy, "
-            "skip_reason = 'unattributed_tax', corporate_action_id = NULL "
-            "WHERE row_hash = :current"
-        ), {"legacy": legacy_hash, "current": current_hash})
+        db.execute(
+            sa_text(
+                "UPDATE broker_fund_flows SET row_hash = :legacy, "
+                "skip_reason = 'unattributed_tax', corporate_action_id = NULL "
+                "WHERE row_hash = :current"
+            ),
+            {"legacy": legacy_hash, "current": current_hash},
+        )
         db.commit()
         orphan_id = db.query(BrokerFundFlow).one().id
 
@@ -1138,9 +1175,11 @@ def test_eastmoney_legacy_hash_orphan_is_recovered_in_place(monkeypatch):
         action = db.query(CorporateAction).one()
         assert action.tax_withheld == Decimal("10.00000000")
 
-        tax_sources = db.query(BrokerFundFlow).filter(
-            BrokerFundFlow.row_hash.in_([legacy_hash, current_hash])
-        ).all()
+        tax_sources = (
+            db.query(BrokerFundFlow)
+            .filter(BrokerFundFlow.row_hash.in_([legacy_hash, current_hash]))
+            .all()
+        )
         assert len(tax_sources) == 1, (
             f"两种 hash 合计只应有一条税来源，实际 {len(tax_sources)} 条（旧孤儿未被复用）"
         )
@@ -1168,11 +1207,15 @@ def test_eastmoney_preview_reports_the_missing_opening_position(monkeypatch):
         context = statement_context(
             positions=[
                 EastmoneyStatementPosition(
-                    symbol="600001", name="合成股票甲", market="A股",
+                    symbol="600001",
+                    name="合成股票甲",
+                    market="A股",
                     quantity=Decimal("200"),
                 ),
                 EastmoneyStatementPosition(
-                    symbol="510001", name="合成ETF", market="A股",
+                    symbol="510001",
+                    name="合成ETF",
+                    market="A股",
                     quantity=Decimal("1000"),
                 ),
             ]
@@ -1180,7 +1223,10 @@ def test_eastmoney_preview_reports_the_missing_opening_position(monkeypatch):
         patch_statement(monkeypatch, sample_rows(), context)
 
         preview = preview_eastmoney_statement(
-            db, 1, b"%PDF-missing-opening", "eastmoney-missing-opening.pdf",
+            db,
+            1,
+            b"%PDF-missing-opening",
+            "eastmoney-missing-opening.pdf",
             broker_account_id=account.id,
         )
         assert [error for error in preview["errors"] if "缺少期初持仓" in error]
@@ -1191,7 +1237,10 @@ def test_eastmoney_preview_reports_the_missing_opening_position(monkeypatch):
 
         with pytest.raises(ValueError, match="缺少期初持仓"):
             import_eastmoney_statement(
-                db, 1, b"%PDF-missing-opening", "eastmoney-missing-opening.pdf",
+                db,
+                1,
+                b"%PDF-missing-opening",
+                "eastmoney-missing-opening.pdf",
                 broker_account_id=account.id,
             )
     finally:
@@ -1211,7 +1260,9 @@ def test_eastmoney_preview_predicts_the_reconciliation_gate(monkeypatch):
         context = statement_context(
             positions=[
                 EastmoneyStatementPosition(
-                    symbol="600001", name="合成股票甲", market="A股",
+                    symbol="600001",
+                    name="合成股票甲",
+                    market="A股",
                     quantity=Decimal("100"),
                 )
             ]
@@ -1219,7 +1270,10 @@ def test_eastmoney_preview_predicts_the_reconciliation_gate(monkeypatch):
         patch_statement(monkeypatch, [sample_rows()[0]], context)
 
         preview = preview_eastmoney_statement(
-            db, 1, b"%PDF-mismatch", "eastmoney-mismatch.pdf",
+            db,
+            1,
+            b"%PDF-mismatch",
+            "eastmoney-mismatch.pdf",
             broker_account_id=account.id,
         )
         assert preview["reconciliation_status"] == "MISMATCHED"
@@ -1228,7 +1282,10 @@ def test_eastmoney_preview_predicts_the_reconciliation_gate(monkeypatch):
 
         with pytest.raises(ValueError, match="持仓与账户交易记录不一致"):
             import_eastmoney_statement(
-                db, 1, b"%PDF-mismatch", "eastmoney-mismatch.pdf",
+                db,
+                1,
+                b"%PDF-mismatch",
+                "eastmoney-mismatch.pdf",
                 broker_account_id=account.id,
             )
     finally:
@@ -1244,7 +1301,9 @@ def test_eastmoney_preview_is_clean_when_the_statement_reconciles(monkeypatch):
         context = statement_context(
             positions=[
                 EastmoneyStatementPosition(
-                    symbol="600001", name="合成股票甲", market="A股",
+                    symbol="600001",
+                    name="合成股票甲",
+                    market="A股",
                     quantity=Decimal("200"),
                 )
             ]
@@ -1252,13 +1311,21 @@ def test_eastmoney_preview_is_clean_when_the_statement_reconciles(monkeypatch):
         patch_statement(monkeypatch, [sample_rows()[0]], context)
 
         preview = preview_eastmoney_statement(
-            db, 1, b"%PDF-clean", "eastmoney-clean.pdf", broker_account_id=account.id,
+            db,
+            1,
+            b"%PDF-clean",
+            "eastmoney-clean.pdf",
+            broker_account_id=account.id,
         )
         assert preview["reconciliation_status"] == "MATCHED"
         assert not preview["errors"], preview["errors"]
 
         result = import_eastmoney_statement(
-            db, 1, b"%PDF-clean", "eastmoney-clean.pdf", broker_account_id=account.id,
+            db,
+            1,
+            b"%PDF-clean",
+            "eastmoney-clean.pdf",
+            broker_account_id=account.id,
         )
         assert result["reconciliation_status"] == "MATCHED"
     finally:
@@ -1282,35 +1349,61 @@ def test_eastmoney_preview_predicts_gate_for_a_dividend_only_batch(monkeypatch):
         other = create_eastmoney_account(db, "另一个账户")
 
         # X 在另一个账户上留下悬空转出腿 → 该证券的分账户重放必然矛盾
-        db.add(Transaction(
-            user_id=1, symbol="600001", name="合成股票甲", market="A股",
-            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-            fee=Decimal("0"), transaction_date=date(2026, 1, 1), currency="CNY",
-            broker_account_id=other.id,
-        ))
-        db.add(Transaction(
-            user_id=1, symbol="600001", name="合成股票甲", market="A股",
-            transaction_type="TRANSFER_OUT", quantity=Decimal("100"), price=Decimal("10"),
-            fee=Decimal("0"), transaction_date=date(2026, 1, 2), currency="CNY",
-            broker_account_id=other.id, linked_transaction_id=None,
-        ))
+        db.add(
+            Transaction(
+                user_id=1,
+                symbol="600001",
+                name="合成股票甲",
+                market="A股",
+                transaction_type="BUY",
+                quantity=Decimal("100"),
+                price=Decimal("10"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 1, 1),
+                currency="CNY",
+                broker_account_id=other.id,
+            )
+        )
+        db.add(
+            Transaction(
+                user_id=1,
+                symbol="600001",
+                name="合成股票甲",
+                market="A股",
+                transaction_type="TRANSFER_OUT",
+                quantity=Decimal("100"),
+                price=Decimal("10"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 1, 2),
+                currency="CNY",
+                broker_account_id=other.id,
+                linked_transaction_id=None,
+            )
+        )
         db.commit()
 
-        dividend_only = [(
-            1,
-            flow_row("20260210", "红利入账", "600001", "合成股票甲",
-                     "0", "0.0000", "50.00"),
-        )]
+        dividend_only = [
+            (
+                1,
+                flow_row("20260210", "红利入账", "600001", "合成股票甲", "0", "0.0000", "50.00"),
+            )
+        ]
         patch_statement(monkeypatch, dividend_only, statement_context(positions=[]))
 
         preview = preview_eastmoney_statement(
-            db, 1, b"%PDF-dividend-only", "eastmoney-dividend-only.pdf",
+            db,
+            1,
+            b"%PDF-dividend-only",
+            "eastmoney-dividend-only.pdf",
             broker_account_id=account.id,
         )
 
         with pytest.raises(ValueError, match="持仓与账户交易记录不一致"):
             import_eastmoney_statement(
-                db, 1, b"%PDF-dividend-only", "eastmoney-dividend-only.pdf",
+                db,
+                1,
+                b"%PDF-dividend-only",
+                "eastmoney-dividend-only.pdf",
                 broker_account_id=account.id,
             )
         assert preview["reconciliation_status"] == "MISMATCHED", (
@@ -1332,33 +1425,57 @@ def test_eastmoney_prospective_transaction_sorts_after_persisted_ones(monkeypatc
     try:
         account = create_eastmoney_account(db)
         # 已有：买 100，同日卖 30
-        db.add(Transaction(
-            user_id=1, symbol="600001", name="合成股票甲", market="A股",
-            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-            fee=Decimal("0"), transaction_date=date(2026, 2, 1), currency="CNY",
-            broker_account_id=account.id,
-        ))
-        db.add(Transaction(
-            user_id=1, symbol="600001", name="合成股票甲", market="A股",
-            transaction_type="SELL", quantity=Decimal("30"), price=Decimal("11"),
-            fee=Decimal("0"), transaction_date=date(2026, 2, 1), currency="CNY",
-            broker_account_id=account.id,
-        ))
+        db.add(
+            Transaction(
+                user_id=1,
+                symbol="600001",
+                name="合成股票甲",
+                market="A股",
+                transaction_type="BUY",
+                quantity=Decimal("100"),
+                price=Decimal("10"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 2, 1),
+                currency="CNY",
+                broker_account_id=account.id,
+            )
+        )
+        db.add(
+            Transaction(
+                user_id=1,
+                symbol="600001",
+                name="合成股票甲",
+                market="A股",
+                transaction_type="SELL",
+                quantity=Decimal("30"),
+                price=Decimal("11"),
+                fee=Decimal("0"),
+                transaction_date=date(2026, 2, 1),
+                currency="CNY",
+                broker_account_id=account.id,
+            )
+        )
         db.commit()
 
         # 本批：同日再卖 90。两种次序给出的是**不同的**首笔超卖与余量：
         #   替身排在后（正确，与 flush 后的真 id 一致）：100 −30 → 卖 90 撞 70
         #   替身排在前（用 0 的话）：            100 −90 → 既有的卖 30 撞 10
         # 二者的 needed/available 都不同，不是格式差异。
-        rows = [(
-            1,
-            flow_row("20260201", "证券卖出", "600001", "合成股票甲",
-                     "90", "12.0000", "1080.00"),
-        )]
+        rows = [
+            (
+                1,
+                flow_row(
+                    "20260201", "证券卖出", "600001", "合成股票甲", "90", "12.0000", "1080.00"
+                ),
+            )
+        ]
         patch_statement(monkeypatch, rows, statement_context(positions=[]))
 
         preview = preview_eastmoney_statement(
-            db, 1, b"%PDF-collision", "eastmoney-collision.pdf",
+            db,
+            1,
+            b"%PDF-collision",
+            "eastmoney-collision.pdf",
             broker_account_id=account.id,
         )
         oversell = [error for error in preview["errors"] if "缺少期初持仓" in error]
@@ -1368,7 +1485,10 @@ def test_eastmoney_prospective_transaction_sorts_after_persisted_ones(monkeypatc
 
         with pytest.raises(ValueError, match="缺少期初持仓") as excinfo:
             import_eastmoney_statement(
-                db, 1, b"%PDF-collision", "eastmoney-collision.pdf",
+                db,
+                1,
+                b"%PDF-collision",
+                "eastmoney-collision.pdf",
                 broker_account_id=account.id,
             )
         assert oversell[0] == str(excinfo.value), "预览与导入必须报同一条理由"
@@ -1384,8 +1504,19 @@ def test_eastmoney_identical_rows_get_distinct_hashes_on_both_schemes():
     只消歧一套的话，legacy 判重会把第二条当成第一条的重复而永久跳过。
     招商与 IBKR 早有同型覆盖，东财此前没有。
     """
-    row = flow_row("20260110", "证券买入", "600001", "合成股票甲",
-                   "200", "10.0000", "-2005.10", "5.00", "0.00", "0.10", "50000.00")
+    row = flow_row(
+        "20260110",
+        "证券买入",
+        "600001",
+        "合成股票甲",
+        "200",
+        "10.0000",
+        "-2005.10",
+        "5.00",
+        "0.00",
+        "0.10",
+        "50000.00",
+    )
     parsed, _, _, errors = parse_table_rows([(1, row), (2, dict(row))])
 
     assert not errors, errors

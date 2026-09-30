@@ -4,12 +4,14 @@
 "谁在观察什么"。用户域守卫按惯例在查询里直接带 user_id（非 _ownership）。
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..core.deps import get_current_active_user
-from ..database import get_db
+from ..core.logging import get_app_logger
+from ..database import SessionLocal, get_db
 from ..models.user import User
 from ..models.watchlist_item import WatchlistItem
 from ..schemas.watchlist import (
@@ -19,16 +21,31 @@ from ..schemas.watchlist import (
     WatchlistMembershipResponse,
 )
 from ..services.security_profile_service import graham_summaries_for, graham_summary_for
+from ..services.symbol_normalization import normalize_manual_symbol
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
+logger = get_app_logger(__name__)
+
+
+def _refresh_added_quote(user_id: int, symbol: str, market: str) -> None:
+    """加入自选后取一次报价（响应之后在后台跑，独立会话）：写入现价，并把这次报价记为
+    「加入以来涨跌幅」的基准价（口径 quote）。失败只记日志——之后由日线尾部同步按加入日
+    收盘补上基准价（口径 close_on_add，见 watchlist_price_service）。"""
+    from ..services.stock_price_service import refresh_quotes
+
+    db = SessionLocal()
+    try:
+        refresh_quotes(db, user_id=user_id, keys=[(symbol, market)])
+    except Exception:  # noqa: BLE001 - 后台补价失败不影响已完成的加入
+        logger.exception("加入自选后取报价失败 %s/%s", market, symbol)
+    finally:
+        db.close()
 
 
 def _item_response(db: Session, item: WatchlistItem) -> WatchlistItemResponse:
     response = WatchlistItemResponse.model_validate(item)
     # 用户域上下文：该用户的 ADS_RATIO 规则覆盖 20-F 封面解析值（美股估值两项）
-    response.graham_summary = graham_summary_for(
-        db, item.symbol, item.market, user_id=item.user_id
-    )
+    response.graham_summary = graham_summary_for(db, item.symbol, item.market, user_id=item.user_id)
     return response
 
 
@@ -63,8 +80,9 @@ def watchlist_contains(
     db: Session = Depends(get_db),
 ):
     """轻量 membership 查询：详情页只需知道"在不在"，不该为此拉整份
-    enriched 列表（评审 P2）。symbol 按写入口径规范化后比对。"""
-    normalized = symbol.strip().upper()
+    enriched 列表（评审 P2）。symbol 按写入口径（normalize_manual_symbol）规范化后比对。"""
+    market = market.strip()
+    normalized = normalize_manual_symbol(symbol, market)
     item = (
         db.query(WatchlistItem.id)
         .filter(
@@ -74,14 +92,13 @@ def watchlist_contains(
         )
         .first()
     )
-    return WatchlistMembershipResponse(
-        watching=item is not None, item_id=item[0] if item else None
-    )
+    return WatchlistMembershipResponse(watching=item is not None, item_id=item[0] if item else None)
 
 
 @router.post("", response_model=WatchlistItemResponse, status_code=201)
 def add_watchlist_item(
     payload: WatchlistItemCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -94,6 +111,8 @@ def add_watchlist_item(
         db.rollback()
         raise HTTPException(status_code=409, detail="该标的已在观察清单中")
     db.refresh(item)
+    if settings.quote_auto_refresh_enabled:
+        background_tasks.add_task(_refresh_added_quote, current_user.id, item.symbol, item.market)
     return _item_response(db, item)
 
 
@@ -119,7 +138,7 @@ def update_watchlist_item(
     return _item_response(db, item)
 
 
-@router.delete("/{item_id}")
+@router.delete("/{item_id}", status_code=204)
 def remove_watchlist_item(
     item_id: int,
     current_user: User = Depends(get_current_active_user),
@@ -134,4 +153,3 @@ def remove_watchlist_item(
         raise HTTPException(status_code=404, detail="观察条目不存在")
     db.delete(item)
     db.commit()
-    return {"message": "已移出观察清单"}

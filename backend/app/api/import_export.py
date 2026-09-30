@@ -5,7 +5,6 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 import pandas as pd
 import io
-from datetime import datetime
 
 
 from ..database import get_db
@@ -26,19 +25,26 @@ from ..services.standard_import import (
 )
 from ..core.deps import get_current_active_user
 from ..core.logging import get_app_logger
+from ..core.timeutil import local_today
 
 logger = get_app_logger(__name__)
 
 router = APIRouter()
 
-def validate_excel_filename(filename: str) -> None:
-    if not (filename.endswith(".xlsx") or filename.endswith(".xls")):
-        raise HTTPException(status_code=400, detail="File must be an Excel file")
+
+def _require_suffix(filename: str | None, suffixes: tuple[str, ...], detail: str) -> None:
+    """扩展名校验一律不区分大小写（TRADES.CSV、REPORT.XLSX 都是合法上传）；
+    UploadFile.filename 可能为 None，不能直接 .endswith 抛 AttributeError 成 500。"""
+    if not (filename or "").lower().endswith(suffixes):
+        raise HTTPException(status_code=422, detail=detail)
 
 
-def validate_csv_filename(filename: str) -> None:
-    if not filename.endswith(".csv"):
-        raise HTTPException(status_code=400, detail="File must be a CSV")
+def validate_excel_filename(filename: str | None) -> None:
+    _require_suffix(filename, (".xlsx", ".xls"), "请上传 Excel 文件（.xlsx / .xls）")
+
+
+def validate_csv_filename(filename: str | None) -> None:
+    _require_suffix(filename, (".csv",), "请上传 CSV 文件（.csv）")
 
 
 # 上传体积上限：券商年度对账单 PDF 实测在 1MB 量级，20MB 已是充裕余量。
@@ -48,14 +54,17 @@ def validate_csv_filename(filename: str) -> None:
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 
-async def read_upload(file: UploadFile) -> bytes:
+def read_upload(file: UploadFile) -> bytes:
     """读取上传内容，**读取本身就有上界**。
 
     此前是无参数 `await file.read()` 再检查 len——那只能阻止解析，阻止不了
     内存占用：任意大小的上传已经完整物化成 bytes 了。这里最多读
     MAX_UPLOAD_BYTES + 1 字节，多出的那一字节仅用于判定"是否超限"。
+
+    同步读取底层 SpooledTemporaryFile：导入端点都是普通 def（跑在线程池里），
+    解析 PDF/Excel 与写库都是同步调用，放在 async def 里会阻塞整个事件循环（#269）。
     """
-    contents = await file.read(MAX_UPLOAD_BYTES + 1)
+    contents = file.file.read(MAX_UPLOAD_BYTES + 1)
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
@@ -128,7 +137,7 @@ def as_user_data_error(exc: Exception, prefix: str) -> HTTPException:
     else:  # pragma: no cover - 端点只捕获上述两类
         detail = f"{prefix}：文件无法解析，请确认文件未损坏且格式正确。"
     logger.warning("%s [%s]: %s", prefix, type(exc).__name__, str(exc)[:300])
-    return HTTPException(status_code=400, detail=detail)
+    return HTTPException(status_code=422, detail=detail)
 
 
 def validate_standard_import_account(
@@ -146,33 +155,28 @@ def validate_standard_import_account(
         BrokerAccount,
         broker_account_id,
         user_id,
-        "Broker account not found",
+        "券商账户不存在",
     )
 
 
-def validate_ibkr_filename(filename: str) -> None:
-    if not (filename.endswith(".csv") or filename.lower().endswith(".xlsx")):
-        raise HTTPException(
-            status_code=400,
-            detail="IBKR file must be an Activity CSV or trade_history xlsx",
-        )
+def validate_ibkr_filename(filename: str | None) -> None:
+    _require_suffix(
+        filename,
+        (".csv", ".xlsx"),
+        "请上传 IBKR Activity CSV 或 trade_history 导出的 .xlsx 文件",
+    )
 
 
-def validate_pdf_filename(filename: str) -> None:
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="File must be a PDF")
+def validate_pdf_filename(filename: str | None) -> None:
+    _require_suffix(filename, (".pdf",), "请上传 PDF 格式的对账单")
 
 
-def validate_cmb_fund_flow_filename(filename: str) -> None:
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(
-            status_code=400,
-            detail="招商证券对账单 must be a PDF file",
-        )
+def validate_cmb_fund_flow_filename(filename: str | None) -> None:
+    _require_suffix(filename, (".pdf",), "请上传 PDF 格式的招商证券对账单")
 
 
 @router.post("/import/csv")
-async def import_csv(
+def import_csv(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     current_user: User = Depends(get_current_active_user),
@@ -182,7 +186,7 @@ async def import_csv(
     validate_csv_filename(file.filename)
     validate_standard_import_account(db, current_user.id, broker_account_id)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         df = pd.read_csv(io.BytesIO(contents), dtype={"symbol": str})
         return import_standard_transactions_dataframe(
@@ -193,7 +197,7 @@ async def import_csv(
 
 
 @router.post("/import/excel")
-async def import_excel(
+def import_excel(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     current_user: User = Depends(get_current_active_user),
@@ -203,7 +207,7 @@ async def import_excel(
     validate_excel_filename(file.filename)
     validate_standard_import_account(db, current_user.id, broker_account_id)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         df = pd.read_excel(io.BytesIO(contents))
         return import_standard_transactions_dataframe(
@@ -214,7 +218,7 @@ async def import_excel(
 
 
 @router.post("/import/corporate-actions/csv")
-async def import_corporate_actions_csv(
+def import_corporate_actions_csv(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     current_user: User = Depends(get_current_active_user),
@@ -224,7 +228,7 @@ async def import_corporate_actions_csv(
     validate_csv_filename(file.filename)
     validate_standard_import_account(db, current_user.id, broker_account_id)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         df = pd.read_csv(io.BytesIO(contents), dtype={"symbol": str})
         return import_standard_corporate_actions_dataframe(
@@ -235,7 +239,7 @@ async def import_corporate_actions_csv(
 
 
 @router.post("/import/corporate-actions/excel")
-async def import_corporate_actions_excel(
+def import_corporate_actions_excel(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     current_user: User = Depends(get_current_active_user),
@@ -245,7 +249,7 @@ async def import_corporate_actions_excel(
     validate_excel_filename(file.filename)
     validate_standard_import_account(db, current_user.id, broker_account_id)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         df = pd.read_excel(io.BytesIO(contents))
         return import_standard_corporate_actions_dataframe(
@@ -267,14 +271,14 @@ def parse_confirmed_row_hashes(raw: str | None) -> frozenset[str]:
     bad = sorted(token for token in hashes if not _ROW_HASH_RE.match(token))
     if bad:
         raise HTTPException(
-            status_code=400,
+            status_code=422,
             detail=f"confirm_suspected_row_hashes 含非法 row_hash: {bad[0][:20]}",
         )
     return frozenset(hashes)
 
 
 @router.post("/import/cmb-fund-flows/preview", response_model=BrokerImportResult)
-async def preview_cmb_fund_flows(
+def preview_cmb_fund_flows(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     confirm_suspected_row_hashes: str | None = Form(None),
@@ -285,7 +289,7 @@ async def preview_cmb_fund_flows(
     validate_cmb_fund_flow_filename(file.filename)
     confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         return preview_cmb_fund_flow(
             db,
@@ -300,7 +304,7 @@ async def preview_cmb_fund_flows(
 
 
 @router.post("/import/cmb-fund-flows", response_model=BrokerImportResult)
-async def import_cmb_fund_flows(
+def import_cmb_fund_flows(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     confirm_suspected_row_hashes: str | None = Form(None),
@@ -311,7 +315,7 @@ async def import_cmb_fund_flows(
     validate_cmb_fund_flow_filename(file.filename)
     confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         return import_cmb_fund_flow(
             db,
@@ -326,7 +330,7 @@ async def import_cmb_fund_flows(
 
 
 @router.post("/import/ibkr-activity/preview", response_model=BrokerImportResult)
-async def preview_ibkr_activity_statement(
+def preview_ibkr_activity_statement(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     confirm_suspected_row_hashes: str | None = Form(None),
@@ -337,7 +341,7 @@ async def preview_ibkr_activity_statement(
     validate_ibkr_filename(file.filename)
     confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         return preview_ibkr_activity(
             db,
@@ -352,7 +356,7 @@ async def preview_ibkr_activity_statement(
 
 
 @router.post("/import/ibkr-activity", response_model=BrokerImportResult)
-async def import_ibkr_activity_statement(
+def import_ibkr_activity_statement(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     confirm_suspected_row_hashes: str | None = Form(None),
@@ -363,7 +367,7 @@ async def import_ibkr_activity_statement(
     validate_ibkr_filename(file.filename)
     confirmed = parse_confirmed_row_hashes(confirm_suspected_row_hashes)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         return import_ibkr_activity(
             db,
@@ -378,7 +382,7 @@ async def import_ibkr_activity_statement(
 
 
 @router.post("/import/eastmoney-statement/preview", response_model=BrokerImportResult)
-async def preview_eastmoney_statement_pdf(
+def preview_eastmoney_statement_pdf(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     current_user: User = Depends(get_current_active_user),
@@ -387,7 +391,7 @@ async def preview_eastmoney_statement_pdf(
     """Preview 东方财富普通股票或港股通 PDF 对账单."""
     validate_pdf_filename(file.filename)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         return preview_eastmoney_statement(
             db,
@@ -401,7 +405,7 @@ async def preview_eastmoney_statement_pdf(
 
 
 @router.post("/import/eastmoney-statement", response_model=BrokerImportResult)
-async def import_eastmoney_statement_pdf(
+def import_eastmoney_statement_pdf(
     file: UploadFile = File(...),
     broker_account_id: int | None = Form(None),
     current_user: User = Depends(get_current_active_user),
@@ -410,7 +414,7 @@ async def import_eastmoney_statement_pdf(
     """Import 东方财富普通股票或港股通 PDF 对账单 into a selected account."""
     validate_pdf_filename(file.filename)
 
-    contents = await read_upload(file)
+    contents = read_upload(file)
     try:
         return import_eastmoney_statement(
             db,
@@ -421,52 +425,6 @@ async def import_eastmoney_statement_pdf(
         )
     except (*USER_DATA_ERRORS, *PARSER_ERRORS) as exc:
         raise as_user_data_error(exc, "Error importing 东方财富对账单") from exc
-
-
-@router.get("/export/csv")
-def export_csv(
-    current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)
-):
-    """Export all transactions to CSV file."""
-    transactions = (
-        db.query(Transaction)
-        .filter(Transaction.user_id == current_user.id)
-        .order_by(Transaction.transaction_date.desc())
-        .all()
-    )
-
-    data = []
-    for txn in transactions:
-        data.append(
-            {
-                "id": txn.id,
-                "symbol": txn.symbol,
-                "name": txn.name,
-                "market": txn.market,
-                "transaction_type": txn.transaction_type,
-                "quantity": float(txn.quantity),
-                "price": float(txn.price),
-                "fee": float(txn.fee),
-                "transaction_date": txn.transaction_date.isoformat(),
-                "currency": txn.currency,
-                "notes": txn.notes,
-            }
-        )
-
-    df = pd.DataFrame(data)
-
-    # Create CSV in memory
-    stream = io.StringIO()
-    df.to_csv(stream, index=False)
-    stream.seek(0)
-
-    return StreamingResponse(
-        iter([stream.getvalue()]),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f"attachment; filename=transactions_{datetime.now().strftime('%Y%m%d')}.csv"
-        },
-    )
 
 
 @router.get("/export/excel")
@@ -511,6 +469,6 @@ def export_excel(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={
-            "Content-Disposition": f"attachment; filename=transactions_{datetime.now().strftime('%Y%m%d')}.xlsx"
+            "Content-Disposition": f"attachment; filename=transactions_{local_today().strftime('%Y%m%d')}.xlsx"
         },
     )

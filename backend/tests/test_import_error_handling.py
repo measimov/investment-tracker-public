@@ -56,15 +56,11 @@ def cmb_account():
 
 
 def _client():
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver")
 
 
 async def _auth_headers(client, password):
-    response = await client.post(
-        "/api/auth/token", json={"username": "demo", "password": password}
-    )
+    response = await client.post("/api/auth/token", json={"username": "demo", "password": password})
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
@@ -91,8 +87,8 @@ async def test_oversized_upload_is_rejected_with_413(token_password, monkeypatch
 
 
 @pytest.mark.anyio
-async def test_malformed_csv_is_a_400_with_chinese_message(token_password):
-    """坏数据仍是 400，文案中文且不泄漏内部异常类型。"""
+async def test_malformed_csv_is_a_422_with_chinese_message(token_password):
+    """坏数据是 422（请求内容无效，#283 约定），文案中文且不泄漏内部异常类型。"""
     async with _client() as client:
         headers = await _auth_headers(client, token_password)
         response = await client.post(
@@ -101,7 +97,7 @@ async def test_malformed_csv_is_a_400_with_chinese_message(token_password):
             files={"file": ("bad.csv", io.BytesIO("不是,合法\n表头,内容\n".encode()), "text/csv")},
         )
 
-    assert response.status_code == 400
+    assert response.status_code == 422
     detail = response.json()["detail"]
     assert "导入失败" in detail
     assert "Traceback" not in detail
@@ -113,6 +109,7 @@ async def test_server_side_bug_is_not_disguised_as_400(token_password, monkeypat
 
     这是本次改动的核心：`except Exception` 会把 AttributeError 也吞成 400。
     """
+
     def boom(*args, **kwargs):
         raise AttributeError("内部缺陷：'NoneType' object has no attribute 'foo'")
 
@@ -134,8 +131,8 @@ async def test_server_side_bug_is_not_disguised_as_400(token_password, monkeypat
 
 
 @pytest.mark.anyio
-async def test_invalid_row_returns_400_naming_the_row(token_password):
-    """行级校验失败：400 + 指明行号与字段（不是 500，也不是静默入库）。"""
+async def test_invalid_row_returns_422_naming_the_row(token_password):
+    """行级校验失败：422 + 指明行号与字段（不是 500，也不是静默入库）。"""
     csv = (
         "symbol,market,transaction_type,quantity,price,transaction_date\n"
         "600000,A股,BUY,100,10,2026-01-01\n"
@@ -149,7 +146,7 @@ async def test_invalid_row_returns_400_naming_the_row(token_password):
             files={"file": ("x.csv", io.BytesIO(csv), "text/csv")},
         )
 
-    assert response.status_code == 400
+    assert response.status_code == 422
     detail = response.json()["detail"]
     assert "第 2 行" in detail
     assert "transaction_type" in detail
@@ -160,39 +157,44 @@ async def test_invalid_row_returns_400_naming_the_row(token_password):
 # ---------------------------------------------------------------------------
 
 
-class _RecordingUpload:
-    """记录 read() 调用参数的假 UploadFile。"""
+class _RecordingFile:
+    """记录 read() 调用参数的假底层文件（UploadFile.file 的同步读取面）。"""
 
     def __init__(self, payload: bytes):
         self._payload = payload
         self.read_calls: list = []
 
-    async def read(self, size: int = -1):
+    def read(self, size: int = -1):
         self.read_calls.append(size)
         return self._payload[:size] if size and size > 0 else self._payload
 
 
-@pytest.mark.anyio
-async def test_read_upload_bounds_the_read_itself(monkeypatch):
+class _RecordingUpload:
+    """只暴露 .file 的假 UploadFile：导入端点是普通 def，同步读底层文件（#269）。"""
+
+    def __init__(self, payload: bytes):
+        self.file = _RecordingFile(payload)
+
+
+def test_read_upload_bounds_the_read_itself(monkeypatch):
     """读取必须有上界——只在读完之后查 len 挡不住内存占用。"""
     monkeypatch.setattr(import_export, "MAX_UPLOAD_BYTES", 1024)
     upload = _RecordingUpload(b"x" * 8192)
 
     with pytest.raises(import_export.HTTPException) as excinfo:
-        await import_export.read_upload(upload)
+        import_export.read_upload(upload)
 
     assert excinfo.value.status_code == 413
     # 修复前是无参数 read()，这里会记到 -1（即"全部读入"）
-    assert upload.read_calls == [1025], f"read 调用未限长：{upload.read_calls}"
+    assert upload.file.read_calls == [1025], f"read 调用未限长：{upload.file.read_calls}"
 
 
-@pytest.mark.anyio
-async def test_read_upload_passes_through_within_limit(monkeypatch):
+def test_read_upload_passes_through_within_limit(monkeypatch):
     monkeypatch.setattr(import_export, "MAX_UPLOAD_BYTES", 1024)
     upload = _RecordingUpload(b"y" * 100)
 
-    assert await import_export.read_upload(upload) == b"y" * 100
-    assert upload.read_calls == [1025]
+    assert import_export.read_upload(upload) == b"y" * 100
+    assert upload.file.read_calls == [1025]
 
 
 @pytest.mark.parametrize(
@@ -204,15 +206,15 @@ async def test_read_upload_passes_through_within_limit(monkeypatch):
             "损坏 PDF",
         ),
         (
-            lambda: __import__(
-                "pdfplumber.utils.exceptions", fromlist=["x"]
-            ).PdfminerException("pdfminer"),
+            lambda: __import__("pdfplumber.utils.exceptions", fromlist=["x"]).PdfminerException(
+                "pdfminer"
+            ),
             "pdfminer 失败",
         ),
     ],
 )
 def test_parser_errors_are_classified_as_user_data(exc_factory, label):
-    """坏 PDF 必须是 400——这些异常都不是 ValueError 子类，漏掉就退化成 500。"""
+    """坏 PDF 必须是 422——这些异常都不是 ValueError 子类，漏掉就退化成 500。"""
     exc = exc_factory()
     assert isinstance(exc, import_export.PARSER_ERRORS), (
         f"{label} 未被纳入 PARSER_ERRORS，会退化成 500"
@@ -226,7 +228,7 @@ def test_parser_error_detail_does_not_leak_internals():
     leaky = PdfStreamError("/srv/app/secret/path.pdf: stream error at offset 0xDEAD")
     http_exc = import_export.as_user_data_error(leaky, "招商证券对账单导入失败")
 
-    assert http_exc.status_code == 400
+    assert http_exc.status_code == 422
     assert "/srv/app" not in http_exc.detail
     assert "0xDEAD" not in http_exc.detail
     assert "文件无法解析" in http_exc.detail
@@ -248,8 +250,8 @@ def test_key_error_is_not_treated_as_user_data():
 
 
 @pytest.mark.anyio
-async def test_corrupt_pdf_preview_is_a_stable_400(token_password, cmb_account):
-    """损坏 PDF 走真实端点：必须是稳定 400 中文文案，不是 500。
+async def test_corrupt_pdf_preview_is_a_stable_422(token_password, cmb_account):
+    """损坏 PDF 走真实端点：必须是稳定 422 中文文案，不是 500。
 
     复审指出 pypdf/pdfminer 的异常不是 ValueError 子类，此前会退化成 500。
     """
@@ -262,14 +264,14 @@ async def test_corrupt_pdf_preview_is_a_stable_400(token_password, cmb_account):
             data={"broker_account_id": str(cmb_account)},
         )
 
-    assert response.status_code == 400, f"坏 PDF 应为 400，实际 {response.status_code}"
+    assert response.status_code == 422, f"坏 PDF 应为 422，实际 {response.status_code}"
     detail = response.json()["detail"]
     assert "文件无法解析" in detail
     assert "b'not a" not in detail
 
 
 @pytest.mark.anyio
-async def test_empty_pdf_import_is_a_stable_400(token_password, cmb_account):
+async def test_empty_pdf_import_is_a_stable_422(token_password, cmb_account):
     async with _client() as client:
         headers = await _auth_headers(client, token_password)
         response = await client.post(
@@ -279,13 +281,16 @@ async def test_empty_pdf_import_is_a_stable_400(token_password, cmb_account):
             data={"broker_account_id": str(cmb_account)},
         )
 
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert "文件无法解析" in response.json()["detail"]
 
 
 @pytest.mark.anyio
-async def test_pdf_endpoint_still_surfaces_server_bugs_as_500(token_password, cmb_account, monkeypatch):
+async def test_pdf_endpoint_still_surfaces_server_bugs_as_500(
+    token_password, cmb_account, monkeypatch
+):
     """PDF 端点同样不得把编程缺陷伪装成 400。"""
+
     def boom(*args, **kwargs):
         raise AttributeError("内部缺陷")
 
@@ -355,7 +360,7 @@ def test_own_validation_message_still_visible_after_ordering_change():
 
 
 @pytest.mark.anyio
-async def test_malformed_confirm_list_is_a_400(token_password, cmb_account):
+async def test_malformed_confirm_list_is_a_422(token_password, cmb_account):
     """#190：confirm_suspected_row_hashes 是前端勾选回传的 64 位十六进制，形状不对直接 400。"""
     async with _client() as client:
         headers = await _auth_headers(client, token_password)
@@ -365,5 +370,5 @@ async def test_malformed_confirm_list_is_a_400(token_password, cmb_account):
             files={"file": ("cmb.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")},
             data={"broker_account_id": str(cmb_account), "confirm_suspected_row_hashes": "abc,DEF"},
         )
-    assert response.status_code == 400
+    assert response.status_code == 422
     assert "confirm_suspected_row_hashes" in response.json()["detail"]

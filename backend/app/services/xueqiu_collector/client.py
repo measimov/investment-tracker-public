@@ -25,6 +25,7 @@ import requests
 
 from ...config import settings
 from ...core.logging import get_app_logger
+from .cookie_health import effective_cookie_values
 from .signer import sign_url
 
 logger = get_app_logger(__name__)
@@ -84,13 +85,12 @@ def is_waf_challenge_text(text: str) -> bool:
 
 
 def _cookies_from_data(data: Any) -> Dict[str, str]:
-    if isinstance(data, dict) and "cookies" in data:
-        data = data["cookies"]
-    if isinstance(data, list):
-        return {str(item["name"]): str(item["value"]) for item in data}
-    if isinstance(data, dict):
-        return {str(key): str(value) for key, value in data.items()}
-    raise CollectorUnavailable("雪球 Cookie 结构无法识别（需 {name: value} 或 J2Team 导出）")
+    try:
+        return effective_cookie_values(data)
+    except ValueError as exc:
+        raise CollectorUnavailable(
+            f"雪球 Cookie 结构无法识别（需 {{name: value}} 或 J2Team 导出）：{exc}"
+        ) from None
 
 
 def load_collector_cookies() -> Dict[str, str]:
@@ -127,9 +127,13 @@ def load_collector_cookies() -> Dict[str, str]:
 class PoliteThrottle:
     """串行节流：两次请求之间随机停顿 [min_delay, max_delay] 秒。线程安全。"""
 
-    def __init__(self, *, sleep: Callable[[float], None] = time.sleep,
-                 monotonic: Callable[[], float] = time.monotonic,
-                 rng: Optional[random.Random] = None) -> None:
+    def __init__(
+        self,
+        *,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+        rng: Optional[random.Random] = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._next_at = 0.0
         self._sleep = sleep
@@ -226,7 +230,11 @@ def parse_json_payload(response: Any, context: str) -> Optional[Dict[str, Any]]:
         content_type = response.headers.get("content-type", "unknown")
         logger.warning(
             "%s 返回的不是 JSON，已跳过。状态码=%s，content-type=%s，错误=%s，响应片段=%r",
-            context, response.status_code, content_type, exc, snippet,
+            context,
+            response.status_code,
+            content_type,
+            exc,
+            snippet,
         )
         return None
     if not isinstance(payload, dict):

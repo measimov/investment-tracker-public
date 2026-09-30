@@ -11,7 +11,7 @@ from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.transaction import Transaction
 from app.services.holding_service import (
     recalculate_holdings,
-    validate_no_oversell,
+    validate_account_sequence,
 )
 from app.services.statistics import (
     calculate_performance_summary,
@@ -24,20 +24,22 @@ from tests.helpers import add_transaction, reset_tables
 RESET_MODELS = (BrokerFundFlow, IbkrActivityFlow, Holding, CorporateAction, Transaction)
 
 
-def test_validate_no_oversell_rejects_excess_sell():
+def test_validate_account_sequence_rejects_excess_sell():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        buy = add_transaction(db)
-        sell = add_transaction(
+        add_transaction(db)
+        add_transaction(
             db,
             transaction_type="SELL",
             quantity=Decimal("150"),
             price=Decimal("12"),
             transaction_date=date(2026, 1, 2),
         )
-        with pytest.raises(ValueError):
-            validate_no_oversell([buy, sell])
+        with pytest.raises(ValueError, match="卖出 150 超过可用数量 100"):
+            validate_account_sequence(
+                db, user_id=1, broker_account_id=None, symbol="AAPL", market="美股"
+            )
     finally:
         db.close()
 
@@ -104,9 +106,10 @@ def test_realized_pnl_ignores_oversell_rows_defensively():
         assert invalid_event["sell_quantity"] == 50.0
         assert invalid_event["available_quantity"] == 0.0
         assert realized_result["data_quality"]["invalid_sell_event_count"] == 1
-        assert realized_result["data_quality"]["invalid_sell_events"] == fifo_result[
-            "invalid_sell_events"
-        ]
+        assert (
+            realized_result["data_quality"]["invalid_sell_events"]
+            == fifo_result["invalid_sell_events"]
+        )
         assert realized_result["data_quality"]["warnings"]
     finally:
         db.close()

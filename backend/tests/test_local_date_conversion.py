@@ -98,12 +98,20 @@ def test_price_staleness_boundary_uses_business_dates(monkeypatch):
     db = SessionLocal()
     try:
         reset_tables(db, [Holding, CorporateAction, Transaction])
-        db.add(Holding(
-            user_id=1, symbol="PCT", name="柏能集团", market="新加坡股",
-            quantity=Decimal("100"), avg_cost=Decimal("1"), total_cost=Decimal("100"),
-            currency="SGD", current_price=Decimal("2"),
-            price_updated_at=boundary_utc,
-        ))
+        db.add(
+            Holding(
+                user_id=1,
+                symbol="PCT",
+                name="柏能集团",
+                market="新加坡股",
+                quantity=Decimal("100"),
+                avg_cost=Decimal("1"),
+                total_cost=Decimal("100"),
+                currency="SGD",
+                current_price=Decimal("2"),
+                price_updated_at=boundary_utc,
+            )
+        )
         db.commit()
 
         _, _, freshness = ss.resolve_server_prices(db, 1)
@@ -134,12 +142,20 @@ def test_price_staleness_flags_beyond_threshold(monkeypatch):
     db = SessionLocal()
     try:
         reset_tables(db, [Holding, CorporateAction, Transaction])
-        db.add(Holding(
-            user_id=1, symbol="PCT", name="柏能集团", market="新加坡股",
-            quantity=Decimal("100"), avg_cost=Decimal("1"), total_cost=Decimal("100"),
-            currency="SGD", current_price=Decimal("2"),
-            price_updated_at=stale_utc,
-        ))
+        db.add(
+            Holding(
+                user_id=1,
+                symbol="PCT",
+                name="柏能集团",
+                market="新加坡股",
+                quantity=Decimal("100"),
+                avg_cost=Decimal("1"),
+                total_cost=Decimal("100"),
+                currency="SGD",
+                current_price=Decimal("2"),
+                price_updated_at=stale_utc,
+            )
+        )
         db.commit()
 
         _, _, freshness = ss.resolve_server_prices(db, 1)

@@ -6,6 +6,8 @@ guardrail 与复盘报告同一哲学并更严格：分析对象是具体上市�
 """
 
 import json
+import re
+import unicodedata
 
 from typing import Any, Dict, List
 
@@ -14,15 +16,62 @@ from .prompt_guardrails import NO_PRIOR_KNOWLEDGE_CLAUSE
 
 ANALYSIS_DISCLAIMER = "本分析由 AI 基于公开结构化数据自动生成，仅供参考，不构成投资建议。"
 
+# report_markdown 的必需章节（名称，不含括号说明）：解析层按它校验完整性，
+# build_system_prompt 里的章节标题与它逐一对应（test_security_profile 守护）。
+# JSON mode 下正文里的英文双引号会被约束解码当成字符串结束、随即补 `}` 收尾——
+# 输出仍是合法 JSON，但报告停在半截（离线评测 qwen3.8-flash 20 份截断 12 份），
+# 只校验 JSON 结构拦不住（#287）。
+REPORT_SECTIONS = (
+    "商业模式与产业链",
+    "财务质量趋势",
+    "财报要点",
+    "利润质量与会计风险",
+    "格雷厄姆准则解读",
+    "非对称性与脆弱性",
+    "历史股东回报",
+    "风险信号盘点",
+    "未来事件提醒",
+    "待关注问题",
+)
+
+# 标签的近义写法 → 白名单写法（只收实测见过的；离线评测 DeepSeek Flash 官方/方舟托管与
+# Claude Haiku 各把「依赖非经常损益」写成过「依赖非经常性损益」，整份分析因此被拒）
+TAG_SYNONYMS: Dict[str, str] = {
+    "依赖非经常性损益": "依赖非经常损益",
+}
+
+
+class IncompleteReportError(ValueError):
+    """报告缺必需章节（通常是约束解码在正文英文引号处提前收尾）：同一输入重试可能成功，
+    调用方重试一次后按 error_kind=incomplete 记失败。"""
+
+
 ALLOWED_TAGS = [
-    "高股息", "分红连续", "分红中断", "业绩增长", "业绩下滑", "业绩预警",
-    "高质押", "大股东减持", "大股东增持", "解禁临近", "审计非标", "估值偏高",
-    "估值偏低", "数据不足",
+    "高股息",
+    "分红连续",
+    "分红中断",
+    "业绩增长",
+    "业绩下滑",
+    "业绩预警",
+    "高质押",
+    "大股东减持",
+    "大股东增持",
+    "解禁临近",
+    "审计非标",
+    "估值偏高",
+    "估值偏低",
+    "数据不足",
     # 利润质量层（触发语义见 earnings_quality.metric_semantics 红旗阈值）
-    "利润质量存疑", "现金流背离", "依赖非经常损益",
+    "利润质量存疑",
+    "现金流背离",
+    "依赖非经常损益",
     # 格雷厄姆×塔勒布框架层（依据 graham_screen 预计算结果，不得自行心算；
     # 估值准则 indeterminate 时禁用安全边际两标签——无估值数据谈不上边际）
-    "安全边际充足", "安全边际不足", "财务强度高", "高杠杆脆弱", "净现金充裕",
+    "安全边际充足",
+    "安全边际不足",
+    "财务强度高",
+    "高杠杆脆弱",
+    "净现金充裕",
     "尾部风险暴露",
 ]
 
@@ -93,8 +142,74 @@ REPORT_WORDING_RULE = (
 )
 
 
+def supplementary_rules(market: str) -> List[str]:
+    """补充约束（#288）：两轮离线评测（第二轮 10 只标的、第三轮 8 只留出标的，双评审）
+    针对各模型共性失分点整理的通用条款；DeepSeek Flash 在留出集上 19.5 → 21.6 分，
+    规则分 3.0 → 3.9。原文与评测记录见 #288。涉及计算的条目（股息对照、下半年推算、
+    ROE）待 #265 服务端预计算落地后改为引用预计算结果。"""
+    # 可选值由服务端下限派生（单一来源）：prompt 写了「不得为 low」而解析层没有下限时，
+    # 模型不遵守就原样入库、遵守了口径又没记录（PR #308 评审 P3-2）
+    floor = MARKET_MIN_RISK_LEVEL.get(market)
+    risk_choices = (
+        "、".join(level for level in _RISK_ORDER if _RISK_ORDER[level] >= _RISK_ORDER[floor])
+        + f"（不得为 {'、'.join(level for level in _RISK_ORDER if _RISK_ORDER[level] < _RISK_ORDER[floor])}）"
+        if floor
+        else None
+    )
+    rules = [
+        f"- risk_level 在本市场只能取 {risk_choices}。" if risk_choices else None,
+        "- 时点：以 meta.as_of_date（正文称「数据日」）为当前日期。events 中 status=past 的是已发生事件，"
+        "不得写进「未来事件提醒」；该章节只列 status=upcoming 的事件，没有就写「无」。",
+        "- 章节标题：只写上文 10 个章节的名称本身（如「## 商业模式与产业链」），"
+        "不得把括号里的写作说明、字段名或指令抄进标题或正文。",
+        "- 数字与方向：比较两期时先写出两期原值再写方向（上升/下降/持平），方向必须与原值一致；"
+        "能引用输入里预计算的比率就引用，不要心算新比率，确需计算时写出算式与结果。",
+        "- 数字格式：金额换算为亿元（或百万元、亿港元、亿美元）保留 2 位小数，比率保留 1–2 位小数；"
+        "不得照抄 4 位以上小数或以「元」为单位的长整数。",
+        "- 口径与单位：每股金额与股息按每股口径写（输入为「每 10 股」时折算为每股），不得改写为「每 10 股」；"
+        "注意币种与数量级，同一句内不要混用；港股/美股报表币种以行内 currency 为准。",
+        "- 口径与时期：每个数字写明所属期间（如 2025 年度、2026 上半年）；格雷厄姆准则与脆弱性信号是年度口径"
+        "（以其依据中的年份为准），不得写成中报期间。同一指标有多个口径时写明口径且不直接比较："
+        "加权/摊薄 ROE、归母/扣非净利润（两者的同比增速是不同字段，不得互换）、营业收入/营业总收入；"
+        "业绩快报与正式报告并存时以正式报告为准。",
+        "- ROE：输入给出 ROE 时直接引用并注明口径；未给出但有归母净利润与归母权益时写出算式估算，"
+        "不得写「数据不足」。",
+        "- 标签须与数据一致：「业绩增长」仅当最新财年营收与归母净利均同比增长；「业绩下滑」仅当最新财年"
+        "归母净利同比下降；「高股息」须有输入中的股息率，不得自行推算股息率；「净现金充裕」须净现金为正且"
+        "占总资产不低于 5%；「高杠杆脆弱」「尾部风险暴露」须有对应脆弱性信号触发。标签与正文结论冲突时，"
+        "按正文依据修正标签。",
+        "- 「利润质量存疑」须最新财年至少一项预计算指标触发且不是低基数失真（相关科目占总资产不足 1% 的"
+        "增速差不算），或 M-score 触发；只有历史年份触发时只在正文提示，不贴该标签。「现金流背离」只在"
+        "净利润为正且经营现金流/净利润低于阈值时成立；净利润为负时该比率是负除负，不作红旗解读。"
+        "两者都不得仅凭单个中报期推断。",
+        "- 分红标签：从未派息的公司不得用「分红中断」（也不用「分红连续」）；「分红中断」只用于曾经派息后停止。",
+        "- 安全边际：市盈率、市净率、流动比率、长期债务四项全部达标时不得使用「安全边际不足」"
+        "（满足估值数据充足条件时可用「安全边际充足」，否则两者都不用），其余准则不达标只在正文说明。",
+        "- 风险等级 high 只在出现硬信号时使用（审计非标、业绩预警、密集减持、质押比例高企）；"
+        "「高质押」须质押比例处于高位（如 30% 以上）或快速上升。",
+        "- 股东回报：输入里同时有股息与自由现金流时须对照两者；只有每股股息时用「每股股息 × 总股本」"
+        "写出算式估算股息总额（全年须含中期股息），不得以口径不同为由跳过。",
+        "- 有数据就要写到的信号：① 最新中报与上年同期对比，并由全年与上半年推算下半年变化；"
+        "② 最近季度的变化（有季度数据时）；③ 股息占自由现金流的比例；④ 净利润明显高于或低于营业利润时"
+        "指出非经营项目的影响（不推测具体原因）；⑤ 资本开支与自由现金流的变化；⑥ 货币资金与短期借款"
+        "同时偏高（存贷双高）。",
+        "- 先验知识：公司对自身行业地位的描述（龙头、领先等）只能以「公司自述」引用；输入没有提供的业务名称、"
+        "竞争格局、监管事件、市场观点一律不写；待关注问题只能基于输入中的数据提出，不得引入输入没有的业务"
+        "假设（如备货、监管、客户名称）。",
+        "- 引号：正文引号一律用中文引号「」，不得使用英文双引号。",
+        "- 篇幅：report_markdown 控制在 2500–5000 个汉字，宁可精炼，不堆砌数字。",
+    ]
+    return [rule for rule in rules if rule]
+
+
 def build_system_prompt(market: str) -> str:
-    """按市场组装 system prompt：共享守则骨架 + 市场差异段。"""
+    """按市场组装 system prompt：共享守则骨架 + 市场差异段 + 补充约束。"""
+    rules = "\n".join(supplementary_rules(market))
+    return _base_system_prompt(market) + "\n\n补充约束（优先于上文的一般表述）：\n" + rules
+
+
+def _base_system_prompt(market: str) -> str:
+    """守则骨架 + 市场差异段（#288 前的原文，章节标题与 REPORT_SECTIONS 对应）。"""
     risk_sources = _MARKET_RISK_SOURCES.get(market, _MARKET_RISK_SOURCES["A股"])
     risk_section = _MARKET_RISK_SECTION.get(market, _MARKET_RISK_SECTION["A股"])
     return f"""你是一个家庭投资组合的标的档案分析助手，只基于用户提供的公开结构化数据分析一只{market}标的。
@@ -193,9 +308,7 @@ def graham_for_llm(graham: Dict[str, Any] | None) -> Dict[str, Any] | None:
 
 
 def build_analysis_messages(input_payload: Dict[str, Any]) -> List[Dict[str, str]]:
-    serialized = json.dumps(
-        input_payload, ensure_ascii=False, separators=(",", ":"), default=str
-    )
+    serialized = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"), default=str)
     market = str((input_payload.get("meta") or {}).get("market") or "A股")
     user_content = (
         "请基于下方 JSON 数据生成该标的的档案分析（严格按 system 约定输出 JSON）：\n\n"
@@ -210,9 +323,7 @@ def build_analysis_messages(input_payload: Dict[str, Any]) -> List[Dict[str, str
 # 市场级硬约束（解析层强制执行——prompt 只是请求，JSON mode 不保证遵守）：
 # 没有对应数据源的市场，模型给出语法合法的标签也必须确定性拒绝，否则会被
 # 持久化并展示在持仓页标签列上。
-_A_SHARE_ONLY_TAGS = frozenset(
-    {"高质押", "大股东减持", "大股东增持", "解禁临近", "审计非标"}
-)
+_A_SHARE_ONLY_TAGS = frozenset({"高质押", "大股东减持", "大股东增持", "解禁临近", "审计非标"})
 # 美股/港股没有审计意见/质押/增减持/解禁数据源，这些标签在解析层确定性拒绝。
 # 「安全边际充足」不再整体禁用（PR #232，用户确认「数据充足即可放开」）：估值两项已由
 # 行情价 ÷ 报表推算可判定，是否放行交给 margin_of_safety_allowed——四项 pass 之外，
@@ -233,9 +344,10 @@ VALUATION_MAX_FY_AGE_DAYS = 460
 # 低于下限时**上调而不是拒绝**（2026-09-27 生产：02313 连续两次因 low 被整份丢弃，重试
 # 结果相同）：下限表达的是数据边界而不是模型看错了数据，其余内容仍然有效。上调记录落
 # `risk_level_adjusted` 并在全文末尾加注，前端风险标签旁提示——不静默改写模型的判断。
-MARKET_MIN_RISK_LEVEL: Dict[str, str] = {"港股": "medium"}
+MARKET_MIN_RISK_LEVEL: Dict[str, str] = {"港股": "medium", "美股": "medium"}
 MARKET_RISK_FLOOR_REASON: Dict[str, str] = {
     "港股": "港股数据边界：无审计意见/质押/增减持等客观风险信号源，「无明显风险信号」不成立",
+    "美股": "美股数据边界：无审计意见/质押/增减持等客观风险信号源，「无明显风险信号」不成立",
 }
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 _RISK_LABELS = {"low": "低", "medium": "中", "high": "高"}
@@ -250,7 +362,10 @@ MARGIN_OF_SAFETY_TAG = "安全边际充足"
 # 任一 fail/indeterminate 均不放行（评审 P1 三轮：漏掉债务准则时，负债超出
 # 净流动资产的标的仍会被贴上安全边际充足）
 _MARGIN_OF_SAFETY_CRITERIA = (
-    "pe", "pb_or_product", "current_ratio", "lt_debt_vs_net_current_assets",
+    "pe",
+    "pb_or_product",
+    "current_ratio",
+    "lt_debt_vs_net_current_assets",
 )
 
 
@@ -259,7 +374,9 @@ _MARGIN_OF_SAFETY_CRITERIA = (
 # （调用方没传 market）时才用它。PR #232 评审：此前按「basis 有没有 price」区分，而 A股
 # 快照的 basis 也带 price（快照收盘价），A股 的安全边际充足被全部误拒
 VALUATION_METHOD_BY_MARKET: Dict[str, str] = {
-    "A股": "snapshot", "港股": "estimated", "美股": "estimated",
+    "A股": "snapshot",
+    "港股": "estimated",
+    "美股": "estimated",
 }
 
 
@@ -275,9 +392,7 @@ def valuation_method(criterion: Dict[str, Any] | None, market: str | None = None
     return "snapshot"  # 无 basis 的旧结果只可能来自 A股 快照（港股/美股此前恒为 indeterminate）
 
 
-def valuation_data_sufficient(
-    criterion: Dict[str, Any] | None, market: str | None = None
-) -> bool:
+def valuation_data_sufficient(criterion: Dict[str, Any] | None, market: str | None = None) -> bool:
     """估值准则的输入是否足以支撑「安全边际充足」这个结论。
 
     A股 的 pe/pb 来自 Tushare 估值快照，视为充足（原准入逻辑）。港股/美股是行情价 ÷
@@ -318,14 +433,12 @@ def margin_of_safety_allowed(
     无 graham 结果视为不允许。market 决定估值方法（A股 快照 / 港股美股 估算）。"""
     if not graham_screen or graham_screen.get("status") != "ok":
         return False
-    items = {
-        item.get("criterion"): item for item in graham_screen.get("criteria") or []
-    }
-    if not all((items.get(key) or {}).get("verdict") == "pass" for key in _MARGIN_OF_SAFETY_CRITERIA):
+    items = {item.get("criterion"): item for item in graham_screen.get("criteria") or []}
+    if not all(
+        (items.get(key) or {}).get("verdict") == "pass" for key in _MARGIN_OF_SAFETY_CRITERIA
+    ):
         return False
-    return all(
-        valuation_data_sufficient(items.get(key), market) for key in ("pe", "pb_or_product")
-    )
+    return all(valuation_data_sufficient(items.get(key), market) for key in ("pe", "pb_or_product"))
 
 
 def parse_analysis_output(
@@ -352,17 +465,10 @@ def parse_analysis_output(
     report = data.get("report_markdown")
     if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
         raise ValueError("tags 必须是字符串数组")
-    # 白名单契约在解析层强制执行：JSON mode 只保证语法不保证遵守 prompt，
-    # 模型自造标签会污染持仓页的结构化标签列
-    if not 1 <= len(tags) <= 4:
-        raise ValueError(f"tags 数量必须为 1-4 个，收到 {len(tags)} 个")
-    unknown_tags = [tag for tag in tags if tag not in ALLOWED_TAGS]
-    if unknown_tags:
-        raise ValueError(f"tags 含白名单外标签: {unknown_tags}")
-    banned = MARKET_BANNED_TAGS.get(str(market or ""), frozenset())
-    used_banned = [tag for tag in tags if tag in banned]
-    if used_banned:
-        raise ValueError(f"{market} 无对应数据源，禁用标签: {used_banned}")
+    # 白名单契约在解析层强制执行：JSON mode 只保证语法不保证遵守 prompt，模型自造标签会
+    # 污染持仓页的结构化标签列。越界标签**丢弃并记录**而非整份拒绝（#287）：此前一个近义
+    # 写法或第 5 个标签就让整份分析作废、白烧一次 token，而正文本身无问题
+    tags, adjustments = _normalize_tags(tags, market)
     if MARGIN_OF_SAFETY_TAG in tags and not margin_of_safety_allowed(graham_screen, market):
         raise ValueError(
             f"'{MARGIN_OF_SAFETY_TAG}' 要求 graham_screen 的 pe/pb_or_product/"
@@ -374,7 +480,8 @@ def parse_analysis_output(
         raise ValueError("summary 缺失")
     if not isinstance(report, str) or not report.strip():
         raise ValueError("report_markdown 缺失")
-    report_markdown = report.strip()
+    report_markdown, section_adjustments = _check_report_completeness(report.strip())
+    adjustments.extend(section_adjustments)
     adjusted = None
     floor = MARKET_MIN_RISK_LEVEL.get(str(market or ""))
     if floor and _RISK_ORDER[risk_level] < _RISK_ORDER[floor]:
@@ -398,4 +505,73 @@ def parse_analysis_output(
         "risk_level_adjusted": adjusted,
         "summary": summary.strip()[:300],
         "report_markdown": report_markdown,
+        "adjustments": adjustments,
     }
+
+
+MAX_TAGS = 4
+
+
+def _normalize_tags(tags: List[str], market: str | None) -> tuple[List[str], List[Dict[str, Any]]]:
+    """近义归一 → 丢弃白名单外/本市场禁用 → 截到 4 个；返回 (标签, 调整记录)。
+    丢完一个不剩才算确定性失败。"""
+    adjustments: List[Dict[str, Any]] = []
+    banned = MARKET_BANNED_TAGS.get(str(market or ""), frozenset())
+    kept: List[str] = []
+    for raw in tags:
+        tag = unicodedata.normalize("NFKC", raw).strip().replace(" ", "")
+        tag = TAG_SYNONYMS.get(tag, tag)
+        if tag != raw:
+            adjustments.append({"type": "tag_normalized", "from": raw, "to": tag})
+        if tag not in ALLOWED_TAGS:
+            adjustments.append({"type": "tag_dropped", "tag": raw, "reason": "not_allowed"})
+            continue
+        if tag in banned:
+            adjustments.append({"type": "tag_dropped", "tag": tag, "reason": "market_banned"})
+            continue
+        if tag not in kept:
+            kept.append(tag)
+    if len(kept) > MAX_TAGS:
+        adjustments.append({"type": "tags_truncated", "dropped": kept[MAX_TAGS:]})
+        kept = kept[:MAX_TAGS]
+    if not kept:
+        raise ValueError(f"tags 无可用标签（原始：{tags}）")
+    return kept, adjustments
+
+
+# 章节级标题（# 或 ##；### 是章节内的小标题，不参与判定）
+_HEADING_RE = re.compile(r"^#{1,2}(?!#)\s*(.+?)\s*$", re.M)
+_HEADING_NUMBER_RE = re.compile(r"^(?:[0-9一二三四五六七八九十]+[、.．)）]\s*)")
+# 句末标点：缺免责声明时，末尾不是完整句子就视为截断（半截报告不能靠补一行声明冒充完整）
+_SENTENCE_END = tuple("。！？!?）)」”』…%")
+
+
+def _heading_name(text: str) -> str:
+    name = _HEADING_NUMBER_RE.sub("", text.strip())
+    return re.split(r"[（(]", name, maxsplit=1)[0].strip()
+
+
+def _check_report_completeness(report_markdown: str) -> tuple[str, List[Dict[str, Any]]]:
+    """必需章节齐全；缺免责声明时补上（末尾须是完整句子）。缺章节抛 IncompleteReportError。"""
+    headings = [_heading_name(match) for match in _HEADING_RE.findall(report_markdown)]
+    missing = [
+        section
+        for section in REPORT_SECTIONS
+        if not any(section in heading for heading in headings)
+    ]
+    if missing:
+        raise IncompleteReportError(f"报告不完整，缺少章节：{'、'.join(missing)}")
+    adjustments: List[Dict[str, Any]] = []
+    extra = [
+        heading
+        for heading in headings
+        if heading and not any(section in heading for section in REPORT_SECTIONS)
+    ]
+    if extra:
+        adjustments.append({"type": "extra_sections", "sections": extra[:5]})
+    if "不构成投资建议" not in report_markdown[-200:]:
+        if not report_markdown.rstrip("*_ \n").endswith(_SENTENCE_END):
+            raise IncompleteReportError("报告在末尾章节中途结束（缺免责声明且末句不完整）")
+        report_markdown = f"{report_markdown}\n\n{ANALYSIS_DISCLAIMER}"
+        adjustments.append({"type": "disclaimer_appended"})
+    return report_markdown, adjustments

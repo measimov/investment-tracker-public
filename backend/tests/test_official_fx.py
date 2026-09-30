@@ -28,11 +28,17 @@ def _payload():
 def test_parse_ccpr_history_maps_values_by_searchlist_and_sorts():
     rows = chinamoney_source.parse_ccpr_history(_payload())
     assert [r.rate_date for r in rows] == [
-        date(2026, 9, 17), date(2026, 9, 18), date(2026, 9, 21),
-        date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24),
+        date(2026, 9, 17),
+        date(2026, 9, 18),
+        date(2026, 9, 21),
+        date(2026, 9, 22),
+        date(2026, 9, 23),
+        date(2026, 9, 24),
     ]
     assert rows[-1].rates == {
-        "USD": Decimal("6.7489"), "HKD": Decimal("0.86054"), "SGD": Decimal("5.2598"),
+        "USD": Decimal("6.7489"),
+        "HKD": Decimal("0.86054"),
+        "SGD": Decimal("5.2598"),
     }
 
 
@@ -51,7 +57,10 @@ def test_parse_ccpr_history_uses_searchlist_order_not_request_order():
         lambda p: p["head"].update(rep_code="500", rep_message="系统繁忙"),
         lambda p: p.pop("records"),
         # 区间超过一年：上游拒绝而不是没有中间价
-        lambda p: (p.update(records=[]), p["data"].update(flagMessage="只提供一年历史数据查询及下载")),
+        lambda p: (
+            p.update(records=[]),
+            p["data"].update(flagMessage="只提供一年历史数据查询及下载"),
+        ),
         lambda p: p["data"].update(searchlist=["EUR/CNY"]),
     ],
 )
@@ -98,10 +107,16 @@ def db():
 
 
 def _rate(db, currency, day, rate, source):
-    db.add(ExchangeRate(
-        from_currency=currency, to_currency="CNY", rate=Decimal(rate),
-        effective_date=day, source=source, is_active=True,
-    ))
+    db.add(
+        ExchangeRate(
+            from_currency=currency,
+            to_currency="CNY",
+            rate=Decimal(rate),
+            effective_date=day,
+            source=source,
+            is_active=True,
+        )
+    )
     db.commit()
 
 
@@ -114,9 +129,14 @@ def _rows(db, currency="USD"):
 
 @pytest.fixture
 def patched(monkeypatch):
-    state = {"official": chinamoney_source.parse_ccpr_history(_payload()), "official_error": None,
-             "third": ("api-ecb", {"USD": Decimal("6.7600"), "HKD": Decimal("0.8610"),
-                                   "SGD": Decimal("5.2700")})}
+    state = {
+        "official": chinamoney_source.parse_ccpr_history(_payload()),
+        "official_error": None,
+        "third": (
+            "api-ecb",
+            {"USD": Decimal("6.7600"), "HKD": Decimal("0.8610"), "SGD": Decimal("5.2700")},
+        ),
+    }
 
     def fake_ccpr(start, end, currencies=None):
         if state["official_error"]:
@@ -144,7 +164,11 @@ def test_refresh_writes_official_and_retires_third_party_weekend_rows(db, patche
 
     current = fx.fetch_latest_rates_from_api(db)
 
-    assert current == {"USD": Decimal("6.7489"), "HKD": Decimal("0.86054"), "SGD": Decimal("5.2598")}
+    assert current == {
+        "USD": Decimal("6.7489"),
+        "HKD": Decimal("0.86054"),
+        "SGD": Decimal("5.2598"),
+    }
     usd = _rows(db)
     assert usd[date(2026, 9, 24)] == ("cfets-ccpr", Decimal("6.7489"), True)
     assert usd[date(2026, 9, 26)][2] is False and usd[date(2026, 9, 25)][2] is False
@@ -157,7 +181,9 @@ def test_refresh_writes_official_and_retires_third_party_weekend_rows(db, patche
     assert set(checks) == {"USD", "HKD", "SGD"}
     usd_check = checks["USD"]
     assert usd_check.check_date == TODAY and usd_check.official_date == date(2026, 9, 24)
-    assert Decimal(str(usd_check.diff_pct)) == ((Decimal("6.7600") / Decimal("6.7489") - 1) * 100).quantize(Decimal("0.0001"))
+    assert Decimal(str(usd_check.diff_pct)) == (
+        (Decimal("6.7600") / Decimal("6.7489") - 1) * 100
+    ).quantize(Decimal("0.0001"))
     # 第三方报价只进比对表，不写 exchange_rates
     assert TODAY not in usd
 
@@ -211,5 +237,7 @@ def test_large_diff_surfaces_as_data_quality_warning(db, patched):
     patched["third"] = ("api-ecb", {"USD": Decimal("6.9000")})  # +2.24%
     fx.fetch_latest_rates_from_api(db)
     warnings = fx.fx_source_warnings(db)
-    assert any("USD/CNY 第三方报价（api-ecb）与官方中间价（2026-09-24）相差 +2.24%" in w for w in warnings)
+    assert any(
+        "USD/CNY 第三方报价（api-ecb）与官方中间价（2026-09-24）相差 +2.24%" in w for w in warnings
+    )
     assert not any("HKD" in w for w in warnings)

@@ -66,10 +66,10 @@ const EMPTY_DIVIDEND = {
 }
 
 const EMPTY_CURRENT = {
-  unrealized_pnl: 0,
-  current_holdings_cost: 0,
+  unrealized_pnl_cny: 0,
+  current_holdings_cost_cny: 0,
   unrealized_pnl_rate: 0,
-  current_market_value: 0,
+  current_market_value_cny: 0,
   holdings_detail: [],
   missing_rate_currencies: [],
   data_quality: { warnings: [] }

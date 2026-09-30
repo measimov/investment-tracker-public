@@ -32,9 +32,11 @@ from .background_job_store import (
 )
 from .job_runtime import (
     batch_execution,
+    initial_batch_data,
     is_cancel_requested,
     make_batch_progress,
     request_job_cancel,
+    rotate_by_market,
     run_job_inline,
 )
 from .job_worker import register_runner
@@ -99,35 +101,24 @@ def get_batch_analysis_targets(db: Session, user_id: int) -> List[Dict[str, str]
     excluded = get_excluded_keys(db, user_id)
     cash_symbols = get_cash_management_symbols(db, user_id)
 
-    by_market: Dict[str, List[Dict[str, str]]] = {}
-    for symbol, market in rows:
-        if market not in SUPPORTED_MARKETS:
-            continue
-        if (symbol, market) in excluded or symbol in cash_symbols:
-            continue
-        by_market.setdefault(market, []).append({"symbol": symbol, "market": market})
-
-    for items in by_market.values():
-        items.sort(key=lambda item: item["symbol"])
-    ordered: List[Dict[str, str]] = []
-    markets = [market for market in SUPPORTED_MARKETS if market in by_market]
-    index = 0
-    while any(by_market.get(market) for market in markets):
-        market = markets[index % len(markets)]
-        bucket = by_market.get(market)
-        if bucket:
-            ordered.append(bucket.pop(0))
-        index += 1
-    return ordered
+    targets = [
+        {"symbol": symbol, "market": market}
+        for symbol, market in rows
+        if (symbol, market) not in excluded and symbol not in cash_symbols
+    ]
+    return rotate_by_market(
+        targets,
+        SUPPORTED_MARKETS,
+        market_of=lambda item: item["market"],
+        symbol_of=lambda item: item["symbol"],
+    )
 
 
 def _target_key(target: Dict[str, str]) -> str:
     return f"{target['market']}|{target['symbol']}"
 
 
-def _recent_analysis_keys(
-    db: Session, targets: List[Dict[str, str]], freshness_hours: int
-) -> set:
+def _recent_analysis_keys(db: Session, targets: List[Dict[str, str]], freshness_hours: int) -> set:
     """窗口内已分析过的标的键集合（一次分组查询，不要 N 次单查）。"""
     if freshness_hours <= 0 or not targets:
         return set()
@@ -163,8 +154,7 @@ def start_batch_analysis_job(
     targets = get_batch_analysis_targets(db, user_id)
     if not targets:
         raise NoBatchTargetsError(
-            "当前没有可分析的持仓标的（需持仓数量>0 且市场为 "
-            f"{'/'.join(SUPPORTED_MARKETS)}）。"
+            f"当前没有可分析的持仓标的（需持仓数量>0 且市场为 {'/'.join(SUPPORTED_MARKETS)}）。"
         )
     if include_report_digests and len(targets) > FULL_MODE_MAX_SYMBOLS:
         raise NoBatchTargetsError(
@@ -175,37 +165,22 @@ def start_batch_analysis_job(
     return create_or_get_active_job(
         JOB_TYPE,
         user_id,
-        {
-            "mode": "full" if include_report_digests else "fast",
-            "force": bool(force),
-            "freshness_hours": (
-                0 if force
+        initial_batch_data(
+            targets,
+            mode="full" if include_report_digests else "fast",
+            force=bool(force),
+            freshness_hours=(
+                0
+                if force
                 else (
                     freshness_hours
                     if freshness_hours is not None
                     else settings.security_analysis_freshness_hours
                 )
             ),
-            # 目标固化：批量要跑几十分钟，期间用户可能导入新交易；不固化会让
-            # 重试/接管时的范围漂移，进度条倒退
-            "targets": targets,
-            # 已完成键：接管/重试时精确续跑，不重复烧 LLM
-            "completed_keys": [],
-            "total": len(targets),
-            "completed": 0,
-            "progress_percent": 0,
-            "success_count": 0,
-            "failed_count": 0,
-            "skipped_count": 0,
-            "current_symbol": None,
-            "current_market": None,
-            "current_stage": None,
-            "results": [],
-            "cancel_requested": False,
-            "cancelled": False,
-            # 不能叫 error：_serialize 展平后会盖掉 BackgroundJob.error 列
-            "abort_reason": None,
-        },
+            skipped_count=0,
+            current_stage=None,
+        ),
     )
 
 
@@ -218,7 +193,7 @@ def _is_cancel_requested(job_id: str, user_id: int) -> bool:
 
 
 def _classify_batch_failure(exc: Exception) -> str:
-    """"abort"（整批等价的确定性失败）/ "symbol"（本标的失败，继续下一只）。"""
+    """ "abort"（整批等价的确定性失败）/ "symbol"（本标的失败，继续下一只）。"""
     if isinstance(exc, LLMNotConfiguredError):
         return "abort"
     if isinstance(exc, LLMClientError) and exc.status_code in (401, 402, 403, 429):
@@ -240,9 +215,12 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
 
     progress = make_batch_progress(job_id, JOB_TYPE, attempt)
     with batch_execution(
-        job_id, JOB_TYPE, attempt=attempt,
+        job_id,
+        JOB_TYPE,
+        attempt=attempt,
         max_seconds=settings.security_analysis_batch_max_seconds,
-        logger=logger, label="批量分析",
+        logger=logger,
+        label="批量分析",
     ) as db:
         fresh = _recent_analysis_keys(db, targets, int(data.get("freshness_hours") or 0))
         counters = {
@@ -260,8 +238,11 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
 
             if _is_cancel_requested(job_id, user_id):
                 progress(
-                    status="interrupted", cancelled=True,
-                    current_symbol=None, current_market=None, current_stage=None,
+                    status="interrupted",
+                    cancelled=True,
+                    current_symbol=None,
+                    current_market=None,
+                    current_stage=None,
                     abort_reason="用户终止；已生成的分析已保留，未开始的标的未分析。",
                     **counters,
                 )
@@ -272,19 +253,26 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
                 done.add(key)
                 results.append({**target, "status": "skipped", "reason": "近期已分析"})
                 progress(
-                    completed=len(done), results=results[-RESULTS_KEPT:],
-                    completed_keys=sorted(done), **counters,
+                    completed=len(done),
+                    results=results[-RESULTS_KEPT:],
+                    completed_keys=sorted(done),
+                    **counters,
                 )
                 continue
 
             progress(
-                current_symbol=target["symbol"], current_market=target["market"],
-                current_stage=None, completed=len(done), **counters,
+                current_symbol=target["symbol"],
+                current_market=target["market"],
+                current_stage=None,
+                completed=len(done),
+                **counters,
             )
             started = time.monotonic()
             try:
                 outcome = analyze_one(
-                    db, target["symbol"], target["market"],
+                    db,
+                    target["symbol"],
+                    target["market"],
                     digest_max_new=digest_max_new,
                     user_id=user_id,
                     on_stage=lambda stage, extra: progress(
@@ -302,16 +290,24 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
                 if _classify_batch_failure(exc) == "abort":
                     logger.warning("批量分析中止（确定性失败）: %s", str(exc)[:200])
                     progress(
-                        status="failed", error=str(exc)[:300],
+                        status="failed",
+                        error=str(exc)[:300],
                         abort_reason=f"遇到无法继续的错误：{str(exc)[:150]}",
-                        current_symbol=None, current_market=None, current_stage=None,
-                        completed=len(done), results=results[-RESULTS_KEPT:],
-                        completed_keys=sorted(done), **counters,
+                        current_symbol=None,
+                        current_market=None,
+                        current_stage=None,
+                        completed=len(done),
+                        results=results[-RESULTS_KEPT:],
+                        completed_keys=sorted(done),
+                        **counters,
                     )
                     return
                 outcome = {
-                    **target, "status": "failed", "analysis_id": None,
-                    "error": str(exc)[:200], "degraded": [],
+                    **target,
+                    "status": "failed",
+                    "analysis_id": None,
+                    "error": str(exc)[:200],
+                    "degraded": [],
                 }
 
             # 致命错误主要走 **outcome** 而非异常：analyze_one 把 LLM 4xx 与
@@ -319,15 +315,24 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
             # 401 会一直请求到连续 3 只才停，Tushare 致命错误则永远不中止。
             if outcome.get("error_kind") in FATAL_ANALYSIS_ERROR_KINDS:
                 counters["failed_count"] += 1
-                results.append({
-                    **target, "status": "failed", "error": outcome.get("error"),
-                })
+                results.append(
+                    {
+                        **target,
+                        "status": "failed",
+                        "error": outcome.get("error"),
+                    }
+                )
                 progress(
-                    status="failed", error=outcome.get("error"),
+                    status="failed",
+                    error=outcome.get("error"),
                     abort_reason=f"遇到无法继续的错误：{str(outcome.get('error'))[:150]}",
-                    current_symbol=None, current_market=None, current_stage=None,
-                    completed=len(done), results=results[-RESULTS_KEPT:],
-                    completed_keys=sorted(done), **counters,
+                    current_symbol=None,
+                    current_market=None,
+                    current_stage=None,
+                    completed=len(done),
+                    results=results[-RESULTS_KEPT:],
+                    completed_keys=sorted(done),
+                    **counters,
                 )
                 return
 
@@ -336,23 +341,32 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
             if outcome["status"] == "succeeded":
                 counters["success_count"] += 1
                 consecutive = 0
-                results.append({
-                    **target, "status": "succeeded",
-                    "analysis_id": outcome.get("analysis_id"),
-                    "degraded": outcome.get("degraded") or [],
-                    "elapsed_seconds": elapsed,
-                })
+                results.append(
+                    {
+                        **target,
+                        "status": "succeeded",
+                        "analysis_id": outcome.get("analysis_id"),
+                        "degraded": outcome.get("degraded") or [],
+                        "elapsed_seconds": elapsed,
+                    }
+                )
             else:
                 counters["failed_count"] += 1
                 consecutive += 1
-                results.append({
-                    **target, "status": "failed",
-                    "error": outcome.get("error"), "elapsed_seconds": elapsed,
-                })
+                results.append(
+                    {
+                        **target,
+                        "status": "failed",
+                        "error": outcome.get("error"),
+                        "elapsed_seconds": elapsed,
+                    }
+                )
 
             progress(
-                completed=len(done), results=results[-RESULTS_KEPT:],
-                completed_keys=sorted(done), **counters,
+                completed=len(done),
+                results=results[-RESULTS_KEPT:],
+                completed_keys=sorted(done),
+                **counters,
             )
 
             if consecutive >= MAX_CONSECUTIVE_FAILURES:
@@ -360,7 +374,9 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
                     status="failed",
                     error=f"连续 {consecutive} 只标的分析失败，已停止批量分析。",
                     abort_reason=f"连续 {consecutive} 只失败，停止以免继续消耗配额。",
-                    current_symbol=None, current_market=None, current_stage=None,
+                    current_symbol=None,
+                    current_market=None,
+                    current_stage=None,
                     **counters,
                 )
                 return
@@ -369,14 +385,22 @@ def execute_batch_analysis_job(claimed: Dict[str, Any]) -> None:
                 time.sleep(pause)
 
         progress(
-            status="succeeded", completed=len(done),
-            current_symbol=None, current_market=None, current_stage=None,
-            results=results[-RESULTS_KEPT:], completed_keys=sorted(done), **counters,
+            status="succeeded",
+            completed=len(done),
+            current_symbol=None,
+            current_market=None,
+            current_stage=None,
+            results=results[-RESULTS_KEPT:],
+            completed_keys=sorted(done),
+            **counters,
         )
 
 
 def run_batch_analysis_job(job_id: str) -> None:
-    run_job_inline(job_id, JOB_TYPE, execute_batch_analysis_job, label="Batch analysis", logger=logger)
+    run_job_inline(
+        job_id, JOB_TYPE, execute_batch_analysis_job, label="Batch analysis", logger=logger
+    )
+
 
 def get_batch_analysis_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)
@@ -387,7 +411,9 @@ def get_batch_analysis_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]
 _ANALYSIS_GUARD_LOCK_KEY = 0x414E_4C59  # b"ANLY"
 
 
-def ensure_no_conflicting_analysis_job(db: Session, user_id: int, current_job_type: str) -> None:
+def ensure_no_conflicting_analysis_job(
+    db: Session, user_id: int, current_job_type: Optional[str]
+) -> None:
     """分析类任务跨类型互斥：冲突时抛 AnalysisBusyError（API 映射 409）。
 
     check-then-create 跨 session 的残余竞态（两个**不同类型**的并发请求都通过
@@ -396,6 +422,9 @@ def ensure_no_conflicting_analysis_job(db: Session, user_id: int, current_job_ty
     而建 job 的 store session 在返回前已各自 commit——第二个并发请求在锁上
     排队，拿到锁时必能看到先者已提交的活跃 job，从而 409。四类任务动辄数十
     分钟且直接烧钱，双倍打外部 API 不可接受。
+
+    current_job_type=None：同类型的活跃任务也算冲突（周期任务入队前用——同类型
+    活跃时 create_or_get_active_job 会直接返回那个任务，而不是入队新的）。
     """
     from sqlalchemy import text as sa_text
 
@@ -410,18 +439,11 @@ def ensure_no_conflicting_analysis_job(db: Session, user_id: int, current_job_ty
     )
     if not active:
         return
-    labels = {
-        "security_analysis": "标的分析",
-        "security_analysis_batch": "批量分析",
-        "report_digest_backfill": "财报摘要回填",
-        "report_digest_batch": "批量财报摘要回填",
-        "opinion_summary": "观点摘要",
-        "opinion_summary_batch": "批量观点摘要",
-    }
-    label = labels.get(active.get("type"), active.get("type"))
+    from .job_labels import job_type_label
+
+    label = job_type_label(active.get("type"))
     raise AnalysisBusyError(
-        f"已有{label}任务进行中，请等待其完成后再发起——"
-        "同时运行会对数据源产生双倍请求。",
+        f"已有{label}任务进行中，请等待其完成后再发起——同时运行会对数据源产生双倍请求。",
         active_job=active,
     )
 

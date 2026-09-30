@@ -1,9 +1,9 @@
 <script setup lang="ts">
+import { accountOptionLabel } from '@/utils/labels'
 import { computed, ref, watch } from 'vue'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { BrokerAccount, BrokerImportResult, SuspectedDuplicateSample } from '@/types'
 import {
   downloadFile,
@@ -12,7 +12,13 @@ import {
   formatQuantity,
   todayLocalISODate
 } from '@/utils/helpers'
-import { brokerAccountLabel } from './shared'
+import {
+  BROKER_IMPORTS,
+  brokerImportHasIssues,
+  brokerImportSummary,
+  isBrokerImportMode,
+  type BrokerImportMode
+} from './brokerImports'
 import { importAccountChoice } from './importAccounts'
 import {
   isSuspectedCashRow,
@@ -22,6 +28,13 @@ import {
   suspectedExistingSource,
   suspectedRowTypeLabel
 } from './suspectedDuplicates'
+import { showApiError } from '@/utils/showApiError'
+
+// 扩展名不区分大小写：REPORT.XLSX 以前会被当成 CSV 发到 CSV 接口（#269）
+function isExcelFile(name: string): boolean {
+  const lower = name.toLowerCase()
+  return lower.endsWith('.xlsx') || lower.endsWith('.xls')
+}
 
 // 预览/导入响应以后端 BrokerImportResult 为准（生成类型；此前手写副本已漂移：
 // statement_scope 的 null、诊断报告新增字段都没跟上）
@@ -68,17 +81,14 @@ async function confirmSelectedSuspected() {
   await handleImportPreview()
 }
 
-const importAccept = computed(() => {
-  // IBKR：规范格式为 trade_history.xlsx；Activity CSV 保留供历史回填
-  if (importMode.value === 'ibkr') return '.csv,.xlsx'
-  if (importMode.value === 'eastmoney') return '.pdf'
-  if (importMode.value === 'cmb') return '.pdf'
-  return '.csv,.xlsx,.xls'
-})
-const isBrokerImportMode = computed(() => ['cmb', 'ibkr', 'eastmoney'].includes(importMode.value))
-const requiresAccountScopedPreview = computed(() =>
-  ['cmb', 'ibkr', 'eastmoney'].includes(importMode.value)
+// 券商差异（API、文案、诊断文件名、accept）在 brokerImports 表里（#284）
+const brokerMode = computed<BrokerImportMode | null>(() =>
+  isBrokerImportMode(importMode.value) ? importMode.value : null
 )
+const importAccept = computed(() =>
+  brokerMode.value ? BROKER_IMPORTS[brokerMode.value].accept : '.csv,.xlsx,.xls'
+)
+const brokerModeActive = computed(() => brokerMode.value !== null)
 const brokerPreviewHasBlockingErrors = computed(
   () =>
     Boolean(brokerPreview.value?.errors?.length) ||
@@ -110,7 +120,7 @@ const handleCopyDiagnostics = async () => {
 const handleDownloadDiagnostics = () => {
   downloadFile(
     new Blob([diagnosticsText.value], { type: 'application/json' }),
-    `cmb-import-diagnostics-${todayLocalISODate()}.json`
+    `${brokerMode.value ? BROKER_IMPORTS[brokerMode.value].diagnosticsPrefix : 'import-diagnostics'}-${todayLocalISODate()}.json`
   )
 }
 const brokerImportChoice = computed(() =>
@@ -164,38 +174,27 @@ async function handleImportPreview() {
     ElMessage.warning('请选择文件')
     return
   }
-  if (!isBrokerImportMode.value) {
+  if (!brokerModeActive.value) {
     return
   }
-  if (requiresAccountScopedPreview.value && !importBrokerAccountId.value) {
+  if (brokerModeActive.value && !importBrokerAccountId.value) {
     ElMessage.warning('请选择匹配账户后再预览')
     return
   }
 
   importing.value = true
   try {
-    let response
-    if (importMode.value === 'ibkr') {
-      response = await api.previewIbkrActivity(
-        uploadFile.value,
-        importBrokerAccountId.value,
-        confirmedSuspectedHashes.value
-      )
-    } else if (importMode.value === 'eastmoney') {
-      response = await api.previewEastmoneyStatement(uploadFile.value, importBrokerAccountId.value)
-    } else {
-      response = await api.previewCmbFundFlows(
-        uploadFile.value,
-        importBrokerAccountId.value,
-        confirmedSuspectedHashes.value
-      )
-    }
+    const response = await BROKER_IMPORTS[brokerMode.value as BrokerImportMode].preview(
+      uploadFile.value,
+      importBrokerAccountId.value as number,
+      confirmedSuspectedHashes.value
+    )
     brokerPreview.value = response.data
     importDone.value = false
     selectedSuspectedRows.value = []
     ElMessage.success('预览完成')
   } catch (error) {
-    ElMessage.error('预览失败：' + getApiErrorMessage(error))
+    showApiError(error, { prefix: '预览失败' })
   } finally {
     importing.value = false
   }
@@ -206,81 +205,39 @@ async function handleImport() {
     ElMessage.warning('请选择文件')
     return
   }
-  if (isBrokerImportMode.value && !importBrokerAccountId.value) {
+  if (brokerModeActive.value && !importBrokerAccountId.value) {
     ElMessage.warning('正式券商导入必须选择匹配账户')
     return
   }
   importing.value = true
   try {
-    let response
-    let successMessage
-    // 券商导入结果单独持有：response 是跨模式联合类型，isBrokerImportMode
-    // 标志收窄不了它；三个券商分支内的赋值经流程分析拿到精确类型
-    let brokerResult: BrokerImportResult | null = null
-    if (importMode.value === 'cmb') {
-      response = await api.importCmbFundFlows(
+    let successMessage: string
+    if (brokerMode.value) {
+      const response = await BROKER_IMPORTS[brokerMode.value].commit(
         uploadFile.value,
-        importBrokerAccountId.value,
+        importBrokerAccountId.value as number,
         confirmedSuspectedHashes.value
       )
-      brokerResult = response.data
-      successMessage =
-        `导入交易 ${response.data.imported_transactions} 条，` +
-        `公司行动 ${response.data.imported_corporate_actions} 条，` +
-        `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
-        `现金事件 ${response.data.imported_cash_events || 0} 条，` +
-        `跳过重复 ${response.data.duplicate_rows} 条`
-    } else if (importMode.value === 'ibkr') {
-      response = await api.importIbkrActivity(
-        uploadFile.value,
-        importBrokerAccountId.value,
-        confirmedSuspectedHashes.value
-      )
-      brokerResult = response.data
-      successMessage =
-        `导入交易 ${response.data.imported_transactions} 条，` +
-        `公司行动 ${response.data.imported_corporate_actions} 条，` +
-        `预扣税调整 ${response.data.imported_tax_adjustments} 条，` +
-        `现金事件 ${response.data.imported_cash_events || 0} 条，` +
-        `跳过重复 ${response.data.duplicate_rows} 条`
-    } else if (importMode.value === 'eastmoney') {
-      response = await api.importEastmoneyStatement(uploadFile.value, importBrokerAccountId.value)
-      brokerResult = response.data
-      successMessage =
-        `导入交易 ${response.data.imported_transactions} 条，` +
-        `公司行动 ${response.data.imported_corporate_actions} 条，` +
-        `红利税调整 ${response.data.imported_tax_adjustments} 条，` +
-        `组合费 ${response.data.imported_cash_events || 0} 条，` +
-        `跳过重复 ${response.data.duplicate_rows} 条`
-    } else if (importMode.value === 'corporate_actions') {
-      const isExcel =
-        uploadFile.value.name.endsWith('.xlsx') || uploadFile.value.name.endsWith('.xls')
-      response = isExcel
-        ? await api.importCorporateActionsExcel(uploadFile.value, importBrokerAccountId.value)
-        : await api.importCorporateActionsCSV(uploadFile.value, importBrokerAccountId.value)
-      successMessage = response.data.message
-    } else {
-      const isExcel =
-        uploadFile.value.name.endsWith('.xlsx') || uploadFile.value.name.endsWith('.xls')
-      response = isExcel
-        ? await api.importExcel(uploadFile.value, importBrokerAccountId.value)
-        : await api.importCSV(uploadFile.value, importBrokerAccountId.value)
-      successMessage = response.data.message
-    }
-
-    if (isBrokerImportMode.value && brokerResult) {
-      const hasIssues =
-        brokerResult.batch_status === 'PARTIAL' ||
-        brokerResult.batch_status === 'FAILED' ||
-        brokerResult.reconciliation_status === 'MISMATCHED' ||
-        Boolean(brokerResult.errors?.length)
-      if (hasIssues) {
-        brokerPreview.value = brokerResult
+      if (brokerImportHasIssues(response.data)) {
+        brokerPreview.value = response.data
         importDone.value = true
         ElMessage.warning('导入未达到完整入账标准，请按页面提示处理后再导入')
         emit('imported', { force: true })
         return
       }
+      successMessage = brokerImportSummary(brokerMode.value, response.data)
+    } else {
+      const isExcel = isExcelFile(uploadFile.value.name)
+      const accountId = importBrokerAccountId.value
+      const response =
+        importMode.value === 'corporate_actions'
+          ? isExcel
+            ? await api.importCorporateActionsExcel(uploadFile.value, accountId)
+            : await api.importCorporateActionsCSV(uploadFile.value, accountId)
+          : isExcel
+            ? await api.importExcel(uploadFile.value, accountId)
+            : await api.importCSV(uploadFile.value, accountId)
+      successMessage = response.data.message
     }
 
     ElMessage.success(successMessage)
@@ -291,7 +248,7 @@ async function handleImport() {
     resetConfirmedSuspected()
     emit('imported', { force: false })
   } catch (error) {
-    ElMessage.error('导入失败：' + getApiErrorMessage(error))
+    showApiError(error, { prefix: '导入失败' })
   } finally {
     importing.value = false
   }
@@ -309,7 +266,7 @@ defineExpose({ open })
       <el-tab-pane label="IBKR 活动报表" name="ibkr" />
       <el-tab-pane label="东方财富对账单" name="eastmoney" />
     </el-tabs>
-    <div v-if="isBrokerImportMode" class="import-account-field">
+    <div v-if="brokerModeActive" class="import-account-field">
       <span>导入到</span>
       <el-select
         v-model="importBrokerAccountId"
@@ -320,7 +277,7 @@ defineExpose({ open })
         <el-option
           v-for="account in brokerImportAccountOptions"
           :key="account.id"
-          :label="brokerAccountLabel(account)"
+          :label="accountOptionLabel(account)"
           :value="account.id"
         />
       </el-select>
@@ -344,7 +301,7 @@ defineExpose({ open })
         <el-option
           v-for="account in brokerAccounts"
           :key="account.id"
-          :label="brokerAccountLabel(account)"
+          :label="accountOptionLabel(account)"
           :value="account.id"
         />
       </el-select>
@@ -670,11 +627,11 @@ defineExpose({ open })
       <div class="mobile-dialog-footer">
         <el-button @click="visible = false">取消</el-button>
         <el-button
-          v-if="isBrokerImportMode && !brokerPreview"
+          v-if="brokerModeActive && !brokerPreview"
           type="primary"
           @click="handleImportPreview"
           :loading="importing"
-          :disabled="requiresAccountScopedPreview && !importBrokerAccountId"
+          :disabled="!importBrokerAccountId"
         >
           预览
         </el-button>
@@ -684,7 +641,7 @@ defineExpose({ open })
           @click="handleImport"
           :loading="importing"
           :disabled="
-            (isBrokerImportMode && !importBrokerAccountId) ||
+            (brokerModeActive && !importBrokerAccountId) ||
             brokerPreviewHasBlockingErrors ||
             importDone
           "

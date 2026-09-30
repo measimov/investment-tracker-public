@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
+from ..core.timeutil import local_today
 from ..database import SessionLocal
 from ..models.holding import Holding
 from ..models.transaction import Transaction
@@ -17,49 +18,24 @@ from .background_job_store import (
     JobOwnershipLostError,
     create_or_get_active_job,
     get_job,
-    set_job_progress,
 )
-from .job_runtime import run_job_inline
+from .job_runtime import make_batch_progress, run_job_inline
 from .job_worker import register_runner
+from .stock_price_service import is_tushare_quota_failure
 
 
 logger = get_app_logger(__name__)
 MAX_CONSECUTIVE_FAILURES = 5
 
 # 配额/权限类错误对整批标的等价：命中即中止整个 job（确定性失败，不再逐标的
-# 烧配额），与 llm_report_jobs 的"4xx 不烧重试"同一先例。
-QUOTA_ERROR_SIGNATURES = ("每分钟最多访问", "权限", "积分不足", "抱歉，您")
-
-
-def _is_quota_error(error) -> bool:
-    text = str(error or "")
-    return any(signature in text for signature in QUOTA_ERROR_SIGNATURES)
+# 烧配额），与 llm_report_jobs 的"4xx 不烧重试"同一先例。判定统一走
+# stock_price_service.is_tushare_quota_failure（#275）。
 JOB_TYPE = "performance_history_sync"
 
 
-def _set_job_progress_with_attempt(
-    job_id: str, *, attempt: Optional[int] = None, **updates
-) -> None:
-    """本地薄封装（保留 finished_at 兼容剔除）；实现见 background_job_store。
-
-    attempt 必传（execute 路径用闭包注入）：接管者的状态同样是 running，
-    只校验 required_status 挡不住僵尸线程续接管者的租约、或用自己的终态
-    覆盖接管者的结果。
-
-    回写返回 None 即本次执行已失权（行不存在／已非 running／attempt 已变=
-    被接管），抛 JobOwnershipLostError 中断整个同步循环——只把写入拦掉是
-    不够的：僵尸线程会接着对剩余标的调 Tushare 并写 security_prices，
-    与接管者重复请求、重复入库。
-    """
-    updates.pop("finished_at", None)
-    if set_job_progress(
-        job_id, JOB_TYPE, required_attempt_count=attempt, **updates
-    ) is None:
-        raise JobOwnershipLostError(job_id)
-
-
 def _default_history_sync_end_date() -> date:
-    return date.today() - timedelta(days=1)
+    # 业务时区的昨天：UTC 容器里北京 0–8 点 date.today() 还是前一天，会少同步一天
+    return local_today() - timedelta(days=1)
 
 
 def get_history_sync_targets(
@@ -206,9 +182,13 @@ def execute_performance_history_sync_job(claimed: Dict[str, Any]) -> None:
     user_id = claimed["user_id"]
     attempt = claimed.get("attempt_count")
 
-    # 闭包注入 attempt：7 个调用点保持原样，避免逐处传参漏改
+    # 失权即抛 JobOwnershipLostError 中断整个同步循环（make_batch_progress）：只把写入拦掉
+    # 不够，僵尸线程会接着对剩余标的调 Tushare 并写 security_prices，与接管者重复请求
+    progress = make_batch_progress(job_id, JOB_TYPE, attempt)
+
     def _set_job_progress(job_id: str, **updates) -> None:
-        _set_job_progress_with_attempt(job_id, attempt=attempt, **updates)
+        updates.pop("finished_at", None)
+        progress(**updates)
 
     requested_start = (
         date.fromisoformat(job_data["start_date"]) if job_data.get("start_date") else None
@@ -265,7 +245,7 @@ def execute_performance_history_sync_job(claimed: Dict[str, Any]) -> None:
             else:
                 failed_count += 1
                 consecutive_failures += 1
-                if _is_quota_error(result.get("error")):
+                if is_tushare_quota_failure(result):
                     _set_job_progress(
                         job_id,
                         completed=index,
@@ -320,7 +300,14 @@ def execute_performance_history_sync_job(claimed: Dict[str, Any]) -> None:
 
 
 def run_performance_history_sync_job(job_id: str) -> None:
-    run_job_inline(job_id, JOB_TYPE, execute_performance_history_sync_job, label="Performance history", logger=logger)
+    run_job_inline(
+        job_id,
+        JOB_TYPE,
+        execute_performance_history_sync_job,
+        label="Performance history",
+        logger=logger,
+    )
+
 
 def get_performance_history_sync_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

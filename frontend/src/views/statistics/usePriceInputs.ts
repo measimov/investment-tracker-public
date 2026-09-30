@@ -10,7 +10,6 @@
 import { reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useHoldingsStore } from '@/stores/holdings'
-import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { PriceInputRow } from './types'
 import { showApiError } from '@/utils/showApiError'
 import { collectPrices, fillMissingPrices, mergePriceRows } from './priceRows'
@@ -76,7 +75,7 @@ export function usePriceInputs() {
         console.error('保存失败的项:', result.failed_list)
       }
     } catch (error) {
-      ElMessage.error('保存失败：' + getApiErrorMessage(error))
+      showApiError(error, { prefix: '保存失败' })
     } finally {
       state.saving = false
     }

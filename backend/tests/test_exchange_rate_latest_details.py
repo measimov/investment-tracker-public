@@ -29,31 +29,62 @@ def db():
 
 
 def test_latest_details_are_per_currency(db):
-    db.add_all([
-        ExchangeRate(from_currency="ZZA", to_currency="CNY", rate=Decimal("7.1"),
-                     effective_date=date(2026, 6, 1), source="details-test-manual"),
-        ExchangeRate(from_currency="ZZA", to_currency="CNY", rate=Decimal("7.2"),
-                     effective_date=date(2026, 9, 1), source="details-test-api"),
-        ExchangeRate(from_currency="ZZB", to_currency="CNY", rate=Decimal("5.3"),
-                     effective_date=date(2026, 3, 1), source="details-test-manual"),
-        # 停用行不参与
-        ExchangeRate(from_currency="ZZB", to_currency="CNY", rate=Decimal("9.9"),
-                     effective_date=date(2026, 9, 20), source="details-test-api",
-                     is_active=False),
-    ])
+    db.add_all(
+        [
+            ExchangeRate(
+                from_currency="ZZA",
+                to_currency="CNY",
+                rate=Decimal("7.1"),
+                effective_date=date(2026, 6, 1),
+                source="details-test-manual",
+            ),
+            ExchangeRate(
+                from_currency="ZZA",
+                to_currency="CNY",
+                rate=Decimal("7.2"),
+                effective_date=date(2026, 9, 1),
+                source="details-test-api",
+            ),
+            ExchangeRate(
+                from_currency="ZZB",
+                to_currency="CNY",
+                rate=Decimal("5.3"),
+                effective_date=date(2026, 3, 1),
+                source="details-test-manual",
+            ),
+            # 停用行不参与
+            ExchangeRate(
+                from_currency="ZZB",
+                to_currency="CNY",
+                rate=Decimal("9.9"),
+                effective_date=date(2026, 9, 20),
+                source="details-test-api",
+                is_active=False,
+            ),
+        ]
+    )
     db.commit()
 
     details = exchange_rate_service.get_latest_rate_details(db, "CNY")
     assert details["ZZA"] == {
-        "rate": Decimal("7.2"), "effective_date": date(2026, 9, 1), "source": "details-test-api",
+        "rate": Decimal("7.2"),
+        "effective_date": date(2026, 9, 1),
+        "source": "details-test-api",
     }
     assert details["ZZB"] == {
-        "rate": Decimal("5.3"), "effective_date": date(2026, 3, 1),
+        "rate": Decimal("5.3"),
+        "effective_date": date(2026, 3, 1),
         "source": "details-test-manual",
     }
     assert "CNY" not in details
 
-    rates = exchange_rate_service.get_all_latest_rates(db, "CNY")
+    rates = {
+        "CNY": 1,
+        **{
+            c: d["rate"]
+            for c, d in exchange_rate_service.get_latest_rate_details(db, "CNY").items()
+        },
+    }
     assert rates["CNY"] == Decimal("1.0")
     assert rates["ZZA"] == Decimal("7.2") and rates["ZZB"] == Decimal("5.3")
 

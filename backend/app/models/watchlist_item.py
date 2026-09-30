@@ -1,5 +1,6 @@
 from sqlalchemy import (
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -38,11 +39,20 @@ class WatchlistItem(Base):
 
     current_price = Column(Numeric(20, 8), comment="最近刷新价（与 Holding 同语义）")
     price_updated_at = Column(DateTime(timezone=True), comment="价格刷新时间")
+    price_as_of = Column(Date, comment="行情所属交易日（报价源拿不到日期时为空）")
+    price_source = Column(String(40), comment="报价来源")
+
+    # 「加入以来涨跌幅」的基准价：加入时的报价；存量条目按加入日收盘补；
+    # 加入时报价失败则取加入后的首次报价。口径记在 added_price_basis。
+    added_price = Column(Numeric(20, 8), comment="加入时价格（涨跌幅基准）")
+    added_price_date = Column(Date, comment="基准价所属交易日")
+    added_price_basis = Column(
+        String(20),
+        comment="quote 加入时报价 / close_on_add 加入日收盘 / first_quote 加入后首次报价",
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         UniqueConstraint("user_id", "symbol", "market", name="uq_watchlist_user_symbol"),

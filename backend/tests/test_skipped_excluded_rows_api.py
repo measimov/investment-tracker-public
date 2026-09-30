@@ -1,4 +1,4 @@
-"""排除清单 API：CRUD、唯一约束与所有权隔离。"""
+"""排除规则在券商导入预览 API 的序列化结果里可见。"""
 
 import httpx
 import pytest
@@ -8,7 +8,6 @@ from app.database import SessionLocal
 from app.main import app
 from app.models.security_rule import SecurityRule
 from app.models.user import User
-
 
 
 @pytest.fixture
@@ -41,56 +40,6 @@ async def _token(client, username):
 
 
 @pytest.mark.anyio
-async def test_excluded_securities_crud_and_ownership(api_users):
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        user_auth = {"Authorization": f"Bearer {await _token(client, 'demo')}"}
-        admin_auth = {"Authorization": f"Bearer {await _token(client, 'admin')}"}
-
-        created = await client.post(
-            "/api/excluded-securities",
-            json={"symbol": "511880", "market": "A股", "note": "货币基金"},
-            headers=user_auth,
-        )
-        assert created.status_code == 201
-        record = created.json()
-        assert record["symbol"] == "511880"
-
-        # 重复：409
-        duplicate = await client.post(
-            "/api/excluded-securities",
-            json={"symbol": "511880", "market": "A股"},
-            headers=user_auth,
-        )
-        assert duplicate.status_code == 409
-
-        # 未知市场：422
-        bad_market = await client.post(
-            "/api/excluded-securities",
-            json={"symbol": "511880", "market": "火星"},
-            headers=user_auth,
-        )
-        assert bad_market.status_code == 422
-
-        listed = await client.get("/api/excluded-securities", headers=user_auth)
-        assert [row["symbol"] for row in listed.json()] == ["511880"]
-
-        # 所有权隔离：admin 看不到、删不掉 demo 的记录
-        other_list = await client.get("/api/excluded-securities", headers=admin_auth)
-        assert other_list.json() == []
-        stolen_delete = await client.delete(
-            f"/api/excluded-securities/{record['id']}", headers=admin_auth
-        )
-        assert stolen_delete.status_code == 404
-
-        deleted = await client.delete(
-            f"/api/excluded-securities/{record['id']}", headers=user_auth
-        )
-        assert deleted.status_code == 204
-        assert (await client.get("/api/excluded-securities", headers=user_auth)).json() == []
-
-
-@pytest.mark.anyio
 async def test_preview_response_serializes_skipped_excluded_rows(api_users, monkeypatch):
     """API 层回归：skipped_excluded_rows 必须进 BrokerImportResult 序列化结果，
     否则预览 UI 看不到排除生效情况（Pydantic 会静默丢弃未声明字段）。"""
@@ -103,9 +52,7 @@ async def test_preview_response_serializes_skipped_excluded_rows(api_users, monk
     db = SessionLocal()
     try:
         demo = db.query(User).filter(User.username == "demo").one()
-        db.query(BrokerAccount).filter(
-            BrokerAccount.account_name == "排除清单预览测试"
-        ).delete()
+        db.query(BrokerAccount).filter(BrokerAccount.account_name == "排除清单预览测试").delete()
         account = BrokerAccount(
             user_id=demo.id,
             broker="招商证券",
@@ -175,20 +122,3 @@ async def test_preview_response_serializes_skipped_excluded_rows(api_users, monk
         cleanup.commit()
     finally:
         cleanup.close()
-
-
-@pytest.mark.anyio
-async def test_whitespace_only_symbol_is_rejected(api_users):
-    """min_length 在 strip 前校验：全空格 symbol 必须被 schema validator 拦下。"""
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        auth = {"Authorization": f"Bearer {await _token(client, 'demo')}"}
-        for payload in (
-            {"symbol": "   ", "market": "A股"},
-            {"symbol": "511880", "market": "  "},
-        ):
-            response = await client.post(
-                "/api/excluded-securities", json=payload, headers=auth
-            )
-            assert response.status_code == 422, payload
-        assert (await client.get("/api/excluded-securities", headers=auth)).json() == []

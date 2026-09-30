@@ -45,8 +45,7 @@ def make_account(db) -> BrokerAccount:
 
 CASH_ROWS = (
     # 存款 +50,000 USD
-    "Transaction History,Data,2025-01-22,U***67968,电子资金转账,存款,-,-,-,-,"
-    "50000.0,-,50000.0",
+    "Transaction History,Data,2025-01-22,U***67968,电子资金转账,存款,-,-,-,-,50000.0,-,50000.0",
     # 贷方利息 +5.14（基础货币等值，原币种在说明里）
     "Transaction History,Data,2026-05-05,U***67968,USD 贷方利息- 四月-2026,贷方利息,"
     "-,-,-,-,5.14,-,5.14",
@@ -63,9 +62,7 @@ CASH_ROWS = (
 
 
 def import_cash_statement(db, account, filename="ibkr-cash.csv"):
-    return import_ibkr_activity(
-        db, 1, ibkr_csv(*CASH_ROWS), filename, broker_account_id=account.id
-    )
+    return import_ibkr_activity(db, 1, ibkr_csv(*CASH_ROWS), filename, broker_account_id=account.id)
 
 
 def events_by_type(db):
@@ -104,9 +101,7 @@ def test_import_books_cash_and_fx_rows_as_events(monkeypatch):
 
         # 调整行归档但不产生事件
         adjustment = (
-            db.query(IbkrActivityFlow)
-            .filter(IbkrActivityFlow.activity_type == "调整")
-            .one()
+            db.query(IbkrActivityFlow).filter(IbkrActivityFlow.activity_type == "调整").one()
         )
         assert adjustment.cash_event_id is None
         assert adjustment.skip_reason == "cash"
@@ -224,7 +219,7 @@ def test_imported_ibkr_cash_events_are_read_only_via_api(monkeypatch):
         listed = client.get("/api/cash-events", params={"limit": 100})
         assert listed.status_code == 200
         by_id = {item["id"]: item for item in listed.json()}
-        assert by_id[quote_event_id]["imported"] is True
+        assert by_id[quote_event_id]["read_only"] is True
 
         deleted = client.delete(
             f"/api/cash-events/{quote_event_id}", headers={"X-CSRF-Token": csrf}

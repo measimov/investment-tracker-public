@@ -61,16 +61,28 @@ def test_ttwr_chain_neutralizes_mid_period_flows():
     try:
         add_txn(db, transaction_date=date(2026, 1, 1), quantity=Decimal("100"), price=Decimal("10"))
         add_txn(db, transaction_date=date(2026, 1, 3), quantity=Decimal("100"), price=Decimal("11"))
-        add_txn(db, transaction_date=date(2026, 1, 4), transaction_type="SELL",
-                quantity=Decimal("100"), price=Decimal("12"))
-        for d, p in ((date(2026, 1, 1), Decimal("10")), (date(2026, 1, 2), Decimal("11")),
-                     (date(2026, 1, 3), Decimal("12")), (date(2026, 1, 4), Decimal("12"))):
+        add_txn(
+            db,
+            transaction_date=date(2026, 1, 4),
+            transaction_type="SELL",
+            quantity=Decimal("100"),
+            price=Decimal("12"),
+        )
+        for d, p in (
+            (date(2026, 1, 1), Decimal("10")),
+            (date(2026, 1, 2), Decimal("11")),
+            (date(2026, 1, 3), Decimal("12")),
+            (date(2026, 1, 4), Decimal("12")),
+        ):
             add_price(db, d, p)
         db.commit()
 
         result = calculate_performance_analytics(
-            db, 1, {"600000": 12},
-            start_date=date(2026, 1, 1), end_date=date(2026, 1, 4),
+            db,
+            1,
+            {"600000": 12},
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 4),
         )
         curve = result["curve"]
         by_date = {point["date"]: point for point in curve}
@@ -124,8 +136,8 @@ def test_risk_metrics_match_hand_computed_definitions():
     metrics = calculate_risk_metrics(curve, Decimal("0"), "daily_price_history")
 
     mean = 0.005
-    std = (0.0013 / 3) ** 0.5              # 样本方差（n−1）
-    annual_factor = 365.25 ** 0.5          # periods/year = 365.25×4样本/4天 = 365.25
+    std = (0.0013 / 3) ** 0.5  # 样本方差（n−1）
+    annual_factor = 365.25**0.5  # periods/year = 365.25×4样本/4天 = 365.25
     assert metrics["observation_span_days"] == 4
     assert metrics["risk_sample_count"] == 4
     assert metrics["total_return_rate"] == pytest.approx(1.949394)
@@ -139,7 +151,7 @@ def test_risk_metrics_match_hand_computed_definitions():
     assert metrics["sortino_ratio"] == pytest.approx(mean / 0.01 * annual_factor, rel=1e-9)
     assert metrics["max_drawdown_rate"] == pytest.approx(-2.0)
     assert metrics["calmar_ratio"] == pytest.approx(
-        ((1.01949394 ** (365.25 / 4) - 1)) / 0.02, rel=1e-6
+        (1.01949394 ** (365.25 / 4) - 1) / 0.02, rel=1e-6
     )
 
 
@@ -172,10 +184,22 @@ def test_fifo_realized_pnl_includes_fees_hand_computed():
     from types import SimpleNamespace
 
     transactions = [
-        SimpleNamespace(id=1, transaction_type="BUY", transaction_date=date(2026, 1, 1),
-                        quantity=Decimal("100"), price=Decimal("10"), fee=Decimal("5")),
-        SimpleNamespace(id=2, transaction_type="SELL", transaction_date=date(2026, 1, 5),
-                        quantity=Decimal("50"), price=Decimal("12"), fee=Decimal("3")),
+        SimpleNamespace(
+            id=1,
+            transaction_type="BUY",
+            transaction_date=date(2026, 1, 1),
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            fee=Decimal("5"),
+        ),
+        SimpleNamespace(
+            id=2,
+            transaction_type="SELL",
+            transaction_date=date(2026, 1, 5),
+            quantity=Decimal("50"),
+            price=Decimal("12"),
+            fee=Decimal("3"),
+        ),
     ]
     result = calculate_fifo_pnl("600000", "A股", transactions, [])
     assert float(result["realized_pnl"]) == pytest.approx(94.5)
@@ -202,17 +226,34 @@ def test_performance_summary_composition_hand_computed():
     reset_tables(db, RESET_MODELS)
     try:
         add_txn(db)
-        db.add(CorporateAction(
-            user_id=1, symbol="600000", name="审计标的", market="A股",
-            action_type="CASH_DIVIDEND", ex_date=date(2026, 2, 1),
-            payment_date=date(2026, 2, 1), total_dividend=Decimal("30"),
-            tax_withheld=Decimal("0"), net_dividend=Decimal("30"), currency="CNY",
-        ))
-        db.add(Holding(
-            user_id=1, broker_account_id=None, symbol="600000", name="审计标的",
-            market="A股", quantity=Decimal("100"), avg_cost=Decimal("10"),
-            total_cost=Decimal("1000"), currency="CNY",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=1,
+                symbol="600000",
+                name="审计标的",
+                market="A股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 2, 1),
+                payment_date=date(2026, 2, 1),
+                total_dividend=Decimal("30"),
+                tax_withheld=Decimal("0"),
+                net_dividend=Decimal("30"),
+                currency="CNY",
+            )
+        )
+        db.add(
+            Holding(
+                user_id=1,
+                broker_account_id=None,
+                symbol="600000",
+                name="审计标的",
+                market="A股",
+                quantity=Decimal("100"),
+                avg_cost=Decimal("10"),
+                total_cost=Decimal("1000"),
+                currency="CNY",
+            )
+        )
         db.commit()
 
         summary = calculate_performance_summary(db, 1, {"600000:A股": 12})
@@ -245,12 +286,20 @@ def test_dividend_summary_gross_tax_net_hand_computed():
     reset_tables(db, RESET_MODELS)
     try:
         add_txn(db)
-        db.add(CorporateAction(
-            user_id=1, symbol="600000", name="审计标的", market="A股",
-            action_type="CASH_DIVIDEND", ex_date=date(2026, 3, 1),
-            total_dividend=Decimal("100"), tax_withheld=Decimal("20"),
-            net_dividend=None, currency="CNY",  # net 缺省 → gross − tax
-        ))
+        db.add(
+            CorporateAction(
+                user_id=1,
+                symbol="600000",
+                name="审计标的",
+                market="A股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 3, 1),
+                total_dividend=Decimal("100"),
+                tax_withheld=Decimal("20"),
+                net_dividend=None,
+                currency="CNY",  # net 缺省 → gross − tax
+            )
+        )
         db.commit()
 
         summary = calculate_performance_summary(db, 1, {"600000:A股": 10})

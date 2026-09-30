@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.timeutil import local_today
 from app.database import SessionLocal
 from app.models.broker_fund_flow import BrokerFundFlow
 from app.models.corporate_action import CorporateAction
@@ -40,34 +41,38 @@ RESET_MODELS = (
 
 
 def test_exchange_rate_lookup_matches_historical_fallback_behavior():
-    lookup = DbExchangeRateLookup([
-        ExchangeRate(
-            from_currency="USD",
-            to_currency="CNY",
-            rate=Decimal("7.0"),
-            effective_date=date(2026, 1, 1),
-            is_active=True,
-        ),
-        ExchangeRate(
-            from_currency="USD",
-            to_currency="CNY",
-            rate=Decimal("7.2"),
-            effective_date=date(2026, 2, 1),
-            is_active=True,
-        ),
-        ExchangeRate(
-            from_currency="CNY",
-            to_currency="HKD",
-            rate=Decimal("1.1"),
-            effective_date=date(2026, 1, 1),
-            is_active=True,
-        ),
-    ])
+    lookup = DbExchangeRateLookup(
+        [
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("7.0"),
+                effective_date=date(2026, 1, 1),
+                is_active=True,
+            ),
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("7.2"),
+                effective_date=date(2026, 2, 1),
+                is_active=True,
+            ),
+            ExchangeRate(
+                from_currency="CNY",
+                to_currency="HKD",
+                rate=Decimal("1.1"),
+                effective_date=date(2026, 1, 1),
+                is_active=True,
+            ),
+        ]
+    )
 
     assert lookup.get_rate_on_or_before("USD", "CNY", date(2026, 1, 15)) == Decimal("7.0")
     assert lookup.get_rate_on_or_before("USD", "CNY", date(2026, 3, 1)) == Decimal("7.2")
     assert lookup.get_rate_on_or_before("USD", "CNY", date(2025, 12, 1)) == Decimal("7.2")
-    assert lookup.get_rate_on_or_before("HKD", "CNY", date(2026, 1, 15)) == Decimal("1") / Decimal("1.1")
+    assert lookup.get_rate_on_or_before("HKD", "CNY", date(2026, 1, 15)) == Decimal("1") / Decimal(
+        "1.1"
+    )
 
 
 def test_fifo_pnl_tracks_partial_lot_cost_and_remaining_cost():
@@ -434,7 +439,10 @@ def test_performance_analytics_ttwr_is_distinct_from_money_weighted_summary():
         assert summary["account_return"]["calculation_scope"] == "invested_securities_only"
         assert analytics["curve"][-1]["net_invested_principal_cny"] == 250.0
         assert analytics["curve"][-1]["cumulative_return_rate"] == 50.0
-        assert analytics["metrics"]["total_return_rate"] != summary["account_return"]["total_return_rate"]
+        assert (
+            analytics["metrics"]["total_return_rate"]
+            != summary["account_return"]["total_return_rate"]
+        )
         assert analytics["data_quality"]["return_method"] == "ttwr"
     finally:
         db.close()
@@ -446,16 +454,44 @@ def test_account_xirr_uses_transaction_date_fx():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        db.add(ExchangeRate(from_currency="USD", to_currency="CNY", rate=Decimal("6"),
-                            effective_date=date(2020, 1, 1), is_active=True))
-        db.add(ExchangeRate(from_currency="USD", to_currency="CNY", rate=Decimal("8"),
-                            effective_date=date(2026, 1, 1), is_active=True))
-        add_transaction(db, symbol="AAPL", market="美股", transaction_type="BUY",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2020, 1, 1), currency="USD")
-        add_transaction(db, symbol="AAPL", market="美股", transaction_type="SELL",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 1, 1), currency="USD")
+        db.add(
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("6"),
+                effective_date=date(2020, 1, 1),
+                is_active=True,
+            )
+        )
+        db.add(
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("8"),
+                effective_date=date(2026, 1, 1),
+                is_active=True,
+            )
+        )
+        add_transaction(
+            db,
+            symbol="AAPL",
+            market="美股",
+            transaction_type="BUY",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2020, 1, 1),
+            currency="USD",
+        )
+        add_transaction(
+            db,
+            symbol="AAPL",
+            market="美股",
+            transaction_type="SELL",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 1, 1),
+            currency="USD",
+        )
         db.commit()
 
         account = calculate_performance_summary(db, 1, {})["account_return"]
@@ -482,28 +518,56 @@ def test_trade_skill_metrics_are_per_closing_trade():
     try:
         d = 1
         for _ in range(10):  # 10 winning round-trips on ONE symbol
-            add_transaction(db, symbol="600000", market="A股", transaction_type="BUY",
-                            quantity=Decimal("10"), price=Decimal("10"),
-                            transaction_date=date(2026, 1, d), currency="CNY")
+            add_transaction(
+                db,
+                symbol="600000",
+                market="A股",
+                transaction_type="BUY",
+                quantity=Decimal("10"),
+                price=Decimal("10"),
+                transaction_date=date(2026, 1, d),
+                currency="CNY",
+            )
             d += 1
-            add_transaction(db, symbol="600000", market="A股", transaction_type="SELL",
-                            quantity=Decimal("10"), price=Decimal("11"),
-                            transaction_date=date(2026, 1, d), currency="CNY")
+            add_transaction(
+                db,
+                symbol="600000",
+                market="A股",
+                transaction_type="SELL",
+                quantity=Decimal("10"),
+                price=Decimal("11"),
+                transaction_date=date(2026, 1, d),
+                currency="CNY",
+            )
             d += 1
         # one big losing round-trip -> symbol net is negative
-        add_transaction(db, symbol="600000", market="A股", transaction_type="BUY",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 2, 1), currency="CNY")
-        add_transaction(db, symbol="600000", market="A股", transaction_type="SELL",
-                        quantity=Decimal("100"), price=Decimal("7"),
-                        transaction_date=date(2026, 2, 2), currency="CNY")
+        add_transaction(
+            db,
+            symbol="600000",
+            market="A股",
+            transaction_type="BUY",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 2, 1),
+            currency="CNY",
+        )
+        add_transaction(
+            db,
+            symbol="600000",
+            market="A股",
+            transaction_type="SELL",
+            quantity=Decimal("100"),
+            price=Decimal("7"),
+            transaction_date=date(2026, 2, 2),
+            currency="CNY",
+        )
         db.commit()
 
         realized = calculate_realized_pnl_fifo(db, 1)
         skill = _calculate_trade_skill_metrics(realized)
 
         assert skill["sample_unit"] == "closed_trade"
-        assert skill["sample_count"] == 11          # 11 closing trades, not 1 symbol
+        assert skill["sample_count"] == 11  # 11 closing trades, not 1 symbol
         assert skill["winning_count"] == 10
         assert skill["losing_count"] == 1
         assert round(skill["win_rate"], 2) == round(1000 / 11, 2)  # ~90.91%
@@ -518,10 +582,14 @@ def test_trade_skill_profit_factor_none_without_losses():
         calculate_trade_skill_metrics as _calculate_trade_skill_metrics,
     )
 
-    only_wins = _calculate_trade_skill_metrics({"closed_trades": [
-        {"realized_pnl_cny": 100.0, "matched_cost_cny": 500.0},
-        {"realized_pnl_cny": 50.0, "matched_cost_cny": 300.0},
-    ]})
+    only_wins = _calculate_trade_skill_metrics(
+        {
+            "closed_trades": [
+                {"realized_pnl_cny": 100.0, "matched_cost_cny": 500.0},
+                {"realized_pnl_cny": 50.0, "matched_cost_cny": 300.0},
+            ]
+        }
+    )
     assert only_wins["profit_factor"] is None
     assert only_wins["has_losses"] is False
     assert only_wins["sample_count"] == 2
@@ -546,12 +614,24 @@ def test_build_price_maps_uses_constant_query_count():
         for i in range(8):
             symbol = f"60000{i}"
             symbols.append((symbol, "A股", "CNY"))
-            db.add(SecurityPrice(symbol=symbol, market="A股",
-                                 price_date=date(2025, 12, 20),
-                                 close_price=Decimal("9"), currency="CNY"))
-            db.add(SecurityPrice(symbol=symbol, market="A股",
-                                 price_date=date(2026, 1, 5),
-                                 close_price=Decimal("10"), currency="CNY"))
+            db.add(
+                SecurityPrice(
+                    symbol=symbol,
+                    market="A股",
+                    price_date=date(2025, 12, 20),
+                    close_price=Decimal("9"),
+                    currency="CNY",
+                )
+            )
+            db.add(
+                SecurityPrice(
+                    symbol=symbol,
+                    market="A股",
+                    price_date=date(2026, 1, 5),
+                    close_price=Decimal("10"),
+                    currency="CNY",
+                )
+            )
         db.commit()
 
         statements = []
@@ -562,9 +642,7 @@ def test_build_price_maps_uses_constant_query_count():
 
         event.listen(engine, "before_cursor_execute", _track)
         try:
-            price_maps, counts = build_price_maps(
-                db, symbols, date(2026, 1, 1), date(2026, 1, 31)
-            )
+            price_maps, counts = build_price_maps(db, symbols, date(2026, 1, 1), date(2026, 1, 31))
         finally:
             event.remove(engine, "before_cursor_execute", _track)
 
@@ -583,20 +661,50 @@ def test_resolve_server_prices_prefers_holding_then_history():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        db.add(Holding(user_id=1, symbol="AAPL", name="Apple", market="美股",
-                       quantity=Decimal("10"), avg_cost=Decimal("10"),
-                       total_cost=Decimal("100"), currency="USD",
-                       current_price=Decimal("15")))
-        db.add(Holding(user_id=1, symbol="00700", name="Tencent", market="港股",
-                       quantity=Decimal("5"), avg_cost=Decimal("20"),
-                       total_cost=Decimal("100"), currency="HKD",
-                       current_price=None))
-        db.add(SecurityPrice(symbol="00700", market="港股",
-                             price_date=date(2026, 1, 10),
-                             close_price=Decimal("21"), currency="HKD"))
-        db.add(SecurityPrice(symbol="00700", market="港股",
-                             price_date=date(2026, 1, 12),
-                             close_price=Decimal("22"), currency="HKD"))
+        db.add(
+            Holding(
+                user_id=1,
+                symbol="AAPL",
+                name="Apple",
+                market="美股",
+                quantity=Decimal("10"),
+                avg_cost=Decimal("10"),
+                total_cost=Decimal("100"),
+                currency="USD",
+                current_price=Decimal("15"),
+            )
+        )
+        db.add(
+            Holding(
+                user_id=1,
+                symbol="00700",
+                name="Tencent",
+                market="港股",
+                quantity=Decimal("5"),
+                avg_cost=Decimal("20"),
+                total_cost=Decimal("100"),
+                currency="HKD",
+                current_price=None,
+            )
+        )
+        db.add(
+            SecurityPrice(
+                symbol="00700",
+                market="港股",
+                price_date=date(2026, 1, 10),
+                close_price=Decimal("21"),
+                currency="HKD",
+            )
+        )
+        db.add(
+            SecurityPrice(
+                symbol="00700",
+                market="港股",
+                price_date=date(2026, 1, 12),
+                close_price=Decimal("22"),
+                currency="HKD",
+            )
+        )
         db.commit()
 
         prices, sources, freshness = resolve_server_prices(db, 1)
@@ -616,18 +724,50 @@ def test_current_holdings_unpriced_positions_surfaced():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        add_transaction(db, symbol="AAPL", market="美股", transaction_type="BUY",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 1, 1), currency="CNY")
-        db.add(Holding(user_id=1, symbol="AAPL", name="Apple", market="美股",
-                       quantity=Decimal("100"), avg_cost=Decimal("10"),
-                       total_cost=Decimal("1000"), currency="CNY"))
-        add_transaction(db, symbol="00700", market="港股", transaction_type="BUY",
-                        quantity=Decimal("50"), price=Decimal("20"),
-                        transaction_date=date(2026, 1, 1), currency="CNY")
-        db.add(Holding(user_id=1, symbol="00700", name="Tencent", market="港股",
-                       quantity=Decimal("50"), avg_cost=Decimal("20"),
-                       total_cost=Decimal("1000"), currency="CNY"))
+        add_transaction(
+            db,
+            symbol="AAPL",
+            market="美股",
+            transaction_type="BUY",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 1, 1),
+            currency="CNY",
+        )
+        db.add(
+            Holding(
+                user_id=1,
+                symbol="AAPL",
+                name="Apple",
+                market="美股",
+                quantity=Decimal("100"),
+                avg_cost=Decimal("10"),
+                total_cost=Decimal("1000"),
+                currency="CNY",
+            )
+        )
+        add_transaction(
+            db,
+            symbol="00700",
+            market="港股",
+            transaction_type="BUY",
+            quantity=Decimal("50"),
+            price=Decimal("20"),
+            transaction_date=date(2026, 1, 1),
+            currency="CNY",
+        )
+        db.add(
+            Holding(
+                user_id=1,
+                symbol="00700",
+                name="Tencent",
+                market="港股",
+                quantity=Decimal("50"),
+                avg_cost=Decimal("20"),
+                total_cost=Decimal("1000"),
+                currency="CNY",
+            )
+        )
         db.commit()
 
         # Price supplied only for AAPL, via the market-qualified key form.
@@ -650,24 +790,57 @@ def test_statistics_by_time_year_and_cny_conversion():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        db.add(ExchangeRate(
-            from_currency="USD", to_currency="CNY", rate=Decimal("7"),
-            effective_date=date(2025, 1, 1), is_active=True,
-        ))
+        db.add(
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("7"),
+                effective_date=date(2025, 1, 1),
+                is_active=True,
+            )
+        )
         # 2025: one CNY buy (100*10=1000) and one USD buy (10*20=200 USD -> 1400 CNY)
-        add_transaction(db, symbol="600000", market="A股", transaction_type="BUY",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2025, 3, 1), currency="CNY")
-        add_transaction(db, symbol="AAPL", market="美股", transaction_type="BUY",
-                        quantity=Decimal("10"), price=Decimal("20"),
-                        transaction_date=date(2025, 6, 1), currency="USD")
+        add_transaction(
+            db,
+            symbol="600000",
+            market="A股",
+            transaction_type="BUY",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2025, 3, 1),
+            currency="CNY",
+        )
+        add_transaction(
+            db,
+            symbol="AAPL",
+            market="美股",
+            transaction_type="BUY",
+            quantity=Decimal("10"),
+            price=Decimal("20"),
+            transaction_date=date(2025, 6, 1),
+            currency="USD",
+        )
         # 2026: two sells same year -> counts must accumulate, not overwrite
-        add_transaction(db, symbol="600000", market="A股", transaction_type="SELL",
-                        quantity=Decimal("50"), price=Decimal("12"),
-                        transaction_date=date(2026, 2, 1), currency="CNY")
-        add_transaction(db, symbol="600000", market="A股", transaction_type="SELL",
-                        quantity=Decimal("50"), price=Decimal("13"),
-                        transaction_date=date(2026, 4, 1), currency="CNY")
+        add_transaction(
+            db,
+            symbol="600000",
+            market="A股",
+            transaction_type="SELL",
+            quantity=Decimal("50"),
+            price=Decimal("12"),
+            transaction_date=date(2026, 2, 1),
+            currency="CNY",
+        )
+        add_transaction(
+            db,
+            symbol="600000",
+            market="A股",
+            transaction_type="SELL",
+            quantity=Decimal("50"),
+            price=Decimal("13"),
+            transaction_date=date(2026, 4, 1),
+            currency="CNY",
+        )
         db.commit()
 
         by_year = get_statistics_by_time(db, 1, group_by="year")
@@ -691,9 +864,24 @@ def test_statistics_by_time_year_and_cny_conversion():
 def test_risk_metrics_annualize_by_calendar_time_not_sample_count():
     """Issue #40: annualization uses elapsed calendar days, not a fixed 252/N."""
     curve = [
-        {"date": "2025-01-01", "daily_return_rate": None, "cumulative_return_rate": 0.0, "drawdown_rate": 0.0},
-        {"date": "2025-07-02", "daily_return_rate": 5.0, "cumulative_return_rate": 5.0, "drawdown_rate": 0.0},
-        {"date": "2026-01-01", "daily_return_rate": 4.7619, "cumulative_return_rate": 10.0, "drawdown_rate": 0.0},
+        {
+            "date": "2025-01-01",
+            "daily_return_rate": None,
+            "cumulative_return_rate": 0.0,
+            "drawdown_rate": 0.0,
+        },
+        {
+            "date": "2025-07-02",
+            "daily_return_rate": 5.0,
+            "cumulative_return_rate": 5.0,
+            "drawdown_rate": 0.0,
+        },
+        {
+            "date": "2026-01-01",
+            "daily_return_rate": 4.7619,
+            "cumulative_return_rate": 10.0,
+            "drawdown_rate": 0.0,
+        },
     ]
     metrics = _calculate_risk_metrics(curve, Decimal("0"), "daily_price_history")
 
@@ -708,9 +896,24 @@ def test_risk_metrics_annualize_by_calendar_time_not_sample_count():
 def test_risk_metrics_event_level_omits_annualized_figures():
     """Issue #40: event-level curves report only cumulative return and drawdown."""
     curve = [
-        {"date": "2025-01-01", "daily_return_rate": None, "cumulative_return_rate": 0.0, "drawdown_rate": 0.0},
-        {"date": "2025-06-01", "daily_return_rate": 3.0, "cumulative_return_rate": 3.0, "drawdown_rate": 0.0},
-        {"date": "2026-01-01", "daily_return_rate": 3.0, "cumulative_return_rate": 6.09, "drawdown_rate": 0.0},
+        {
+            "date": "2025-01-01",
+            "daily_return_rate": None,
+            "cumulative_return_rate": 0.0,
+            "drawdown_rate": 0.0,
+        },
+        {
+            "date": "2025-06-01",
+            "daily_return_rate": 3.0,
+            "cumulative_return_rate": 3.0,
+            "drawdown_rate": 0.0,
+        },
+        {
+            "date": "2026-01-01",
+            "daily_return_rate": 3.0,
+            "cumulative_return_rate": 6.09,
+            "drawdown_rate": 0.0,
+        },
     ]
     metrics = _calculate_risk_metrics(curve, Decimal("0"), "event_level")
 
@@ -725,22 +928,31 @@ def test_risk_metrics_sortino_downside_denominator_is_total_n():
     """Issue #41: downside deviation divides by N (all obs), not the downside count."""
     # 5 daily observations over 5 calendar days; risk-free 0.
     rets = [2.0, -1.0, 3.0, -2.0, 4.0]
-    curve = [{"date": "2026-01-01", "daily_return_rate": None,
-              "cumulative_return_rate": 0.0, "drawdown_rate": 0.0}]
+    curve = [
+        {
+            "date": "2026-01-01",
+            "daily_return_rate": None,
+            "cumulative_return_rate": 0.0,
+            "drawdown_rate": 0.0,
+        }
+    ]
     cum = Decimal("1")
     for i, r in enumerate(rets):
         cum *= Decimal("1") + Decimal(str(r)) / Decimal("100")
-        curve.append({
-            "date": f"2026-01-0{i + 2}",
-            "daily_return_rate": r,
-            "cumulative_return_rate": float((cum - 1) * 100),
-            "drawdown_rate": 0.0,
-        })
+        curve.append(
+            {
+                "date": f"2026-01-0{i + 2}",
+                "daily_return_rate": r,
+                "cumulative_return_rate": float((cum - 1) * 100),
+                "drawdown_rate": 0.0,
+            }
+        )
     metrics = _calculate_risk_metrics(curve, Decimal("0"), "daily_price_history")
 
     # mean excess = 0.012; downside sum-of-squares = 0.0005; /N=5 -> dd = 0.01
     # period sortino = 1.2; annual factor = sqrt(365*5/5) = sqrt(365)
     import math
+
     expected = 1.2 * math.sqrt(365)
     assert round(metrics["sortino_ratio"], 2) == round(expected, 2)
 
@@ -923,10 +1135,16 @@ def test_performance_analytics_applies_reverse_split_to_curve_positions():
         # 必须显式给 USD 汇率：本用例测的是拆股因子，不是缺汇率兜底。
         # 此前没有这一行也能过，靠的正是"缺汇率就按 1:1 当成 CNY"的静默兜底
         # ——该兜底已按 issue #129 改为剔除并记录。
-        db.add(ExchangeRate(
-            from_currency="USD", to_currency="CNY", rate=Decimal("1"),
-            effective_date=date(2024, 1, 1), source="test", is_active=True,
-        ))
+        db.add(
+            ExchangeRate(
+                from_currency="USD",
+                to_currency="CNY",
+                rate=Decimal("1"),
+                effective_date=date(2024, 1, 1),
+                source="test",
+                is_active=True,
+            )
+        )
         add_transaction(
             db,
             symbol="FFIE",
@@ -989,7 +1207,10 @@ def test_performance_analytics_applies_reverse_split_to_curve_positions():
         assert summary["current_performance"]["current_market_value_cny"] == 50.0
         assert analytics["curve"][-1]["market_value_cny"] == 50.0
         assert analytics["curve"][-1]["cumulative_return_rate"] == -95.0
-        assert analytics["metrics"]["total_return_rate"] == summary["account_return"]["total_return_rate"]
+        assert (
+            analytics["metrics"]["total_return_rate"]
+            == summary["account_return"]["total_return_rate"]
+        )
     finally:
         db.close()
 
@@ -998,7 +1219,7 @@ def test_performance_analytics_terminal_point_uses_latest_history_when_current_p
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        today = date.today()
+        today = local_today()
         add_transaction(
             db,
             symbol="01093",
@@ -1045,9 +1266,15 @@ def test_performance_analytics_terminal_point_uses_latest_history_when_current_p
 
         assert result["calculation_level"] == "daily_price_history"
         assert result["curve"][-1]["market_value_cny"] == 750.0
-        assert result["curve"][-1]["stale_price_positions"] == [{"symbol": "01093", "market": "港股"}]
-        assert result["data_quality"]["terminal_stale_price_positions"] == [{"symbol": "01093", "market": "港股"}]
-        assert any("当前持仓缺少当前价格" in warning for warning in result["data_quality"]["warnings"])
+        assert result["curve"][-1]["stale_price_positions"] == [
+            {"symbol": "01093", "market": "港股"}
+        ]
+        assert result["data_quality"]["terminal_stale_price_positions"] == [
+            {"symbol": "01093", "market": "港股"}
+        ]
+        assert any(
+            "当前持仓缺少当前价格" in warning for warning in result["data_quality"]["warnings"]
+        )
     finally:
         db.close()
 
@@ -1097,7 +1324,7 @@ def test_performance_analytics_uses_record_currency_for_market_value():
             1,
             current_prices,
             start_date=date(2026, 1, 2),
-            end_date=date.today(),
+            end_date=local_today(),
         )
 
         assert summary["current_performance"]["current_market_value_cny"] == 700.0
@@ -1153,7 +1380,7 @@ def test_performance_analytics_clips_oversell_cash_flow_for_ttwr():
             1,
             current_prices,
             start_date=date(2026, 1, 1),
-            end_date=date.today(),
+            end_date=local_today(),
         )
 
         assert summary["account_return"]["total_return_rate"] == 0.0
@@ -1174,11 +1401,6 @@ def test_performance_analytics_clips_oversell_cash_flow_for_ttwr():
 
 
 def test_history_sync_default_end_date_uses_previous_day(monkeypatch):
-    class FakeDate(date):
-        @classmethod
-        def today(cls):
-            return cls(2026, 6, 3)
-
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
@@ -1190,7 +1412,8 @@ def test_history_sync_default_end_date_uses_previous_day(monkeypatch):
             currency="CNY",
         )
         db.commit()
-        monkeypatch.setattr(performance_history_jobs, "date", FakeDate)
+        # 默认截止日 = 业务时区的昨天（local_today，#275）
+        monkeypatch.setattr(performance_history_jobs, "local_today", lambda: date(2026, 6, 3))
 
         result = get_history_sync_targets(db, 1)
 
@@ -1328,6 +1551,7 @@ def test_incremental_history_sync_uses_yahoo_for_singapore_stock(monkeypatch):
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
+
         def fake_fetch_yahoo_chart(symbol, start_date, end_date):
             assert symbol == "PCT.SI"
             assert start_date == date(2026, 1, 1)
@@ -1338,12 +1562,14 @@ def test_incremental_history_sync_uses_yahoo_for_singapore_stock(monkeypatch):
                     int(datetime(2026, 1, 3, tzinfo=timezone.utc).timestamp()),
                 ],
                 "indicators": {
-                    "quote": [{
-                        "open": [1.0, 1.1],
-                        "high": [1.2, 1.3],
-                        "low": [0.9, 1.0],
-                        "close": [1.05, 1.15],
-                    }],
+                    "quote": [
+                        {
+                            "open": [1.0, 1.1],
+                            "high": [1.2, 1.3],
+                            "low": [0.9, 1.0],
+                            "close": [1.05, 1.15],
+                        }
+                    ],
                     "adjclose": [{"adjclose": [1.04, 1.14]}],
                 },
             }
@@ -1358,10 +1584,15 @@ def test_incremental_history_sync_uses_yahoo_for_singapore_stock(monkeypatch):
             end_date=date(2026, 1, 3),
             currency="SGD",
         )
-        rows = db.query(SecurityPrice).filter(
-            SecurityPrice.symbol == "PCT",
-            SecurityPrice.market == "新加坡股",
-        ).order_by(SecurityPrice.price_date).all()
+        rows = (
+            db.query(SecurityPrice)
+            .filter(
+                SecurityPrice.symbol == "PCT",
+                SecurityPrice.market == "新加坡股",
+            )
+            .order_by(SecurityPrice.price_date)
+            .all()
+        )
 
         assert result["success"] is True
         assert result["rows"] == 2
@@ -1384,6 +1615,7 @@ def test_incremental_history_sync_falls_back_to_stockanalysis(monkeypatch):
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
+
         def fake_fetch_yahoo_chart(symbol, start_date, end_date):
             raise RuntimeError("Yahoo rate limited")
 
@@ -1417,10 +1649,15 @@ def test_incremental_history_sync_falls_back_to_stockanalysis(monkeypatch):
             end_date=date(2026, 1, 3),
             currency="SGD",
         )
-        rows = db.query(SecurityPrice).filter(
-            SecurityPrice.symbol == "PCT",
-            SecurityPrice.market == "新加坡股",
-        ).order_by(SecurityPrice.price_date).all()
+        rows = (
+            db.query(SecurityPrice)
+            .filter(
+                SecurityPrice.symbol == "PCT",
+                SecurityPrice.market == "新加坡股",
+            )
+            .order_by(SecurityPrice.price_date)
+            .all()
+        )
 
         assert result["success"] is True
         assert result["rows"] == 2
@@ -1454,29 +1691,68 @@ def test_trade_skill_and_range_summary_respect_selected_range():
     reset_tables(db, RESET_MODELS)
     try:
         # 第一笔平仓（盈利）：1/2 买 → 1/5 卖
-        add_transaction(db, symbol="600000", name="甲", market="A股",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 1, 2), currency="CNY")
-        add_transaction(db, symbol="600000", name="甲", market="A股",
-                        transaction_type="SELL", quantity=Decimal("100"),
-                        price=Decimal("12"), fee=Decimal("0"),
-                        transaction_date=date(2026, 1, 5), currency="CNY")
+        add_transaction(
+            db,
+            symbol="600000",
+            name="甲",
+            market="A股",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 1, 2),
+            currency="CNY",
+        )
+        add_transaction(
+            db,
+            symbol="600000",
+            name="甲",
+            market="A股",
+            transaction_type="SELL",
+            quantity=Decimal("100"),
+            price=Decimal("12"),
+            fee=Decimal("0"),
+            transaction_date=date(2026, 1, 5),
+            currency="CNY",
+        )
         # 第二笔平仓（亏损）：2/2 买 → 2/5 卖
-        add_transaction(db, symbol="000001", name="乙", market="A股",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 2, 2), currency="CNY")
-        add_transaction(db, symbol="000001", name="乙", market="A股",
-                        transaction_type="SELL", quantity=Decimal("100"),
-                        price=Decimal("9"), fee=Decimal("0"),
-                        transaction_date=date(2026, 2, 5), currency="CNY")
+        add_transaction(
+            db,
+            symbol="000001",
+            name="乙",
+            market="A股",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 2, 2),
+            currency="CNY",
+        )
+        add_transaction(
+            db,
+            symbol="000001",
+            name="乙",
+            market="A股",
+            transaction_type="SELL",
+            quantity=Decimal("100"),
+            price=Decimal("9"),
+            fee=Decimal("0"),
+            transaction_date=date(2026, 2, 5),
+            currency="CNY",
+        )
         # 股息：一笔在 2 月区间内、一笔在 1 月
         for pay_date, sym in ((date(2026, 1, 20), "600000"), (date(2026, 2, 3), "000001")):
-            db.add(CorporateAction(
-                user_id=1, symbol=sym, name=sym, market="A股",
-                action_type="CASH_DIVIDEND", ex_date=pay_date, payment_date=pay_date,
-                total_dividend=Decimal("30"), tax_withheld=Decimal("0"),
-                net_dividend=Decimal("30"), currency="CNY",
-            ))
+            db.add(
+                CorporateAction(
+                    user_id=1,
+                    symbol=sym,
+                    name=sym,
+                    market="A股",
+                    action_type="CASH_DIVIDEND",
+                    ex_date=pay_date,
+                    payment_date=pay_date,
+                    total_dividend=Decimal("30"),
+                    tax_withheld=Decimal("0"),
+                    net_dividend=Decimal("30"),
+                    currency="CNY",
+                )
+            )
         for d, p1, p2 in (
             (date(2026, 2, 1), Decimal("12"), Decimal("10")),
             (date(2026, 2, 5), Decimal("12"), Decimal("9")),
@@ -1487,8 +1763,11 @@ def test_trade_skill_and_range_summary_respect_selected_range():
 
         # 只选 2 月：仅第二笔平仓与第二笔股息计入
         february = calculate_performance_analytics(
-            db, 1, {"000001": 9},
-            start_date=date(2026, 2, 1), end_date=date(2026, 2, 5),
+            db,
+            1,
+            {"000001": 9},
+            start_date=date(2026, 2, 1),
+            end_date=date(2026, 2, 5),
         )
         assert february["trade_skill"]["sample_count"] == 1
         assert february["trade_skill"]["win_rate"] == 0.0
@@ -1515,14 +1794,24 @@ def test_range_is_clamped_to_history_and_echoed():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        add_transaction(db, symbol="600000", name="甲", market="A股",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 1, 2), currency="CNY")
+        add_transaction(
+            db,
+            symbol="600000",
+            name="甲",
+            market="A股",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 1, 2),
+            currency="CNY",
+        )
         db.commit()
 
         result = calculate_performance_analytics(
-            db, 1, {"600000": 10},
-            start_date=date(2010, 1, 1), end_date=date(2026, 1, 3),
+            db,
+            1,
+            {"600000": 10},
+            start_date=date(2010, 1, 1),
+            end_date=date(2026, 1, 3),
         )
         assert result["date_range"]["start_date"] == "2026-01-02"
         assert result["date_range"]["requested_start_date"] == "2010-01-01"
@@ -1540,19 +1829,31 @@ def test_range_xirr_uses_opening_and_closing_market_values():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        add_transaction(db, symbol="600000", name="甲", market="A股",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 1, 2), currency="CNY")
-        for d, p in ((date(2026, 1, 2), Decimal("10")),
-                     (date(2026, 2, 1), Decimal("11")),
-                     (date(2026, 2, 10), Decimal("12"))):
+        add_transaction(
+            db,
+            symbol="600000",
+            name="甲",
+            market="A股",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 1, 2),
+            currency="CNY",
+        )
+        for d, p in (
+            (date(2026, 1, 2), Decimal("10")),
+            (date(2026, 2, 1), Decimal("11")),
+            (date(2026, 2, 10), Decimal("12")),
+        ):
             _add_price(db, "600000", d, p)
         db.commit()
 
         # 区间 2/1-2/10：期初市值 1100（2/1 前最近收盘 = 1/2? 应取 2/1 当日前）
         result = calculate_performance_analytics(
-            db, 1, {"600000": 12},
-            start_date=date(2026, 2, 1), end_date=date(2026, 2, 10),
+            db,
+            1,
+            {"600000": 12},
+            start_date=date(2026, 2, 1),
+            end_date=date(2026, 2, 10),
         )
         summary = result["range_summary"]
         assert summary["opening_market_value_cny"] > 0
@@ -1571,15 +1872,25 @@ def test_disjoint_range_clamps_to_nearest_boundary_day():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
-        add_transaction(db, symbol="600000", name="甲", market="A股",
-                        quantity=Decimal("100"), price=Decimal("10"),
-                        transaction_date=date(2026, 1, 2), currency="CNY")
+        add_transaction(
+            db,
+            symbol="600000",
+            name="甲",
+            market="A股",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 1, 2),
+            currency="CNY",
+        )
         db.commit()
 
         # 全部早于首笔交易
         before = calculate_performance_analytics(
-            db, 1, {"600000": 10},
-            start_date=date(2020, 1, 1), end_date=date(2020, 12, 31),
+            db,
+            1,
+            {"600000": 10},
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 12, 31),
         )
         assert before["date_range"]["start_date"] == "2026-01-02"
         assert before["date_range"]["end_date"] == "2026-01-02"
@@ -1588,8 +1899,11 @@ def test_disjoint_range_clamps_to_nearest_boundary_day():
 
         # 全部晚于最后事件（last_event_date 含今天，取遥远未来）
         after = calculate_performance_analytics(
-            db, 1, {"600000": 10},
-            start_date=date(2100, 1, 1), end_date=date(2100, 12, 31),
+            db,
+            1,
+            {"600000": 10},
+            start_date=date(2100, 1, 1),
+            end_date=date(2100, 12, 31),
         )
         assert after["date_range"]["start_date"] == after["date_range"]["end_date"]
         assert after["date_range"]["clamped"] is True

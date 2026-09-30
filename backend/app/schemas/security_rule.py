@@ -13,7 +13,9 @@ from pydantic import (
     model_validator,
 )
 
-VALID_MARKETS = {"A股", "B股", "港股", "美股", "新加坡股", "加密货币"}
+from ..core.markets import MANUAL_MARKET_SET
+from ..services.symbol_normalization import normalize_manual_symbol
+
 VALID_RULE_TYPES = {
     "EXCLUDE",
     "CASH_MANAGEMENT",
@@ -63,7 +65,7 @@ class _RelistingPayload(BaseModel):
     @classmethod
     def _known_market(cls, value: str) -> str:
         value = value.strip()
-        if value not in VALID_MARKETS:
+        if value not in MANUAL_MARKET_SET:
             raise ValueError(f"未知市场: {value}")
         return value
 
@@ -73,6 +75,12 @@ class _RelistingPayload(BaseModel):
         if value is None:
             return None
         return value.strip() or None
+
+    @model_validator(mode="after")
+    def _normalize_new_symbol(self) -> "_RelistingPayload":
+        # 新代码按新市场归一（港股「700」→「00700」），与导入器与持仓口径一致（#278）
+        self.new_symbol = normalize_manual_symbol(self.new_symbol, self.new_market)
+        return self
 
 
 class _NameOverridePayload(BaseModel):
@@ -170,7 +178,7 @@ class SecurityRuleCreate(BaseModel):
         if self.rule_type in MARKET_REQUIRED_TYPES:
             if not self.market:
                 raise ValueError(f"{self.rule_type} 规则必须指定市场")
-            if self.market not in VALID_MARKETS:
+            if self.market not in MANUAL_MARKET_SET:
                 raise ValueError(f"未知市场: {self.market}")
             only = MARKET_RESTRICTED_TYPES.get(self.rule_type)
             if only and self.market != only:
@@ -179,6 +187,11 @@ class SecurityRuleCreate(BaseModel):
             # 唯一键含 market：放行非空市场会让同一业务名靠不同 market
             # 绕过唯一性，读取端折字典时事件类型不确定
             raise ValueError("CMB_CASH_BUSINESS 规则不接受市场字段")
+        if self.rule_type in MARKET_REQUIRED_TYPES:
+            # 证券代码按手工入口口径归一：此前只 upper()，港股填「700」存成「700」，
+            # 读取端（除 INDUSTRY 外）按原样匹配，规则静默失效（#278）。
+            # CMB 的 symbol 是中文业务名，保留原样。
+            self.symbol = normalize_manual_symbol(self.symbol, self.market)
 
         model = _PAYLOAD_MODELS.get(self.rule_type)
         if model is None:

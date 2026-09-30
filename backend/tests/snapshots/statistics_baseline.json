@@ -513,7 +513,8 @@
       "opening_market_value_cny": 0.0,
       "realized_pnl_cny": 7485.636667,
       "status": "experimental",
-      "xirr_annualized_rate": 39.43748
+      "xirr_annualized_rate": 30.339797,
+      "xirr_unknown_cost_positions": []
     },
     "risk_free": {
       "average": 0.0,
@@ -545,32 +546,31 @@
       "base_currency": "CNY",
       "calculation_scope": "invested_securities_only",
       "calculation_status": "exact",
-      "cash_flow_count": 8,
+      "cash_flow_count": 9,
       "current_market_value_cny": 99554.0,
       "current_market_value_usd": 13826.944444,
       "fx_basis": "transaction_date",
       "methodology_notes": [
         "权益仓口径：仅统计投入证券的资金，口径内精确；账户闲置现金与外部出入金按设计不计入、不稀释收益率。",
-        "XIRR 现金流为证券买卖与股息（按各自日期汇率折算）。"
+        "XIRR 现金流为证券买卖、股息，以及期初建仓（按成本）与配股（按认购成本）的投入（按各自日期汇率折算）。"
       ],
       "net_dividend_income_cny": 324.0,
       "net_invested_principal_cny": 68103.8,
       "net_invested_principal_usd": 9458.861111,
-      "peak_invested_principal_cny": 80228.0,
+      "peak_invested_principal_cny": 84728.0,
       "rate_denominator": "net_invested_principal_cny",
       "realized_trading_pnl_cny": 7485.636667,
       "total_return": 31450.2,
       "total_return_cny": 31450.2,
       "total_return_rate": 46.179802,
       "total_return_usd": 4368.083333,
-      "unrealized_pnl_cny": 23640.563333
+      "unrealized_pnl_cny": 23640.563333,
+      "xirr_unknown_cost_count": 0
     },
     "current_performance": {
       "base_currency": "CNY",
-      "current_holdings_cost": 75913.436667,
       "current_holdings_cost_cny": 75913.436667,
       "current_holdings_cost_usd": 10543.53287,
-      "current_market_value": 99554.0,
       "current_market_value_cny": 99554.0,
       "current_market_value_usd": 13826.944444,
       "data_quality": {
@@ -632,7 +632,6 @@
       ],
       "missing_rate_currencies": [],
       "unpriced_positions": [],
-      "unrealized_pnl": 23640.563333,
       "unrealized_pnl_cny": 23640.563333,
       "unrealized_pnl_rate": 31.141474,
       "unrealized_pnl_usd": 3283.411574

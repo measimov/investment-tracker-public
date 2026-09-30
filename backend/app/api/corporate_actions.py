@@ -9,8 +9,6 @@ from ..database import get_db
 from ..models.corporate_action import CorporateAction
 from ..models.corporate_action_suggestion import CorporateActionSuggestion
 from ..models.broker_account import BrokerAccount
-from ..models.broker_fund_flow import BrokerFundFlow
-from ..models.ibkr_activity_flow import IbkrActivityFlow
 from ..models.holding import Holding
 from ..models.security_event import SecurityEvent
 from ..models.user import User
@@ -20,10 +18,10 @@ from ..schemas.corporate_action import (
     CorporateActionResponse,
     CashDividendCreate,
     OpeningPositionCostUpdate,
-    StockDividendCreate,
     derive_tax_withheld,
     validate_cash_dividend_total,
     validate_opening_position_fields,
+    validate_quantity_action_fields,
 )
 from ..services.portfolio.semantics import OPENING_POSITION, QUANTITY_ACTION_TYPES
 from ..schemas.corporate_action_suggestion import (
@@ -45,14 +43,18 @@ from ..services.dividend_sync_service import (
 )
 from ..services.holding_service import lock_record, lock_security_timeline, recalculate_holdings
 from ..core.deps import get_current_active_user
-from ._ownership import ensure_record_is_mutable, get_owned_record, validate_owned_references
+from ..core.timeutil import local_today
+from ._ownership import (
+    annotate_read_only,
+    ensure_record_is_mutable,
+    get_owned_record,
+    validate_owned_references,
+)
 
 router = APIRouter()
 
 
-IMMUTABLE_IMPORTED_ACTION_DETAIL = (
-    "Imported corporate actions cannot be modified or deleted; correct the source import instead."
-)
+IMMUTABLE_IMPORTED_ACTION_DETAIL = "导入的公司行动不能修改或删除；请更正来源对账单后重新导入"
 
 
 def _ensure_corporate_action_is_mutable(db: Session, user_id: int, action: CorporateAction) -> None:
@@ -60,29 +62,9 @@ def _ensure_corporate_action_is_mutable(db: Session, user_id: int, action: Corpo
         db,
         user_id,
         action,
-        source_link_field="corporate_action_id",
+        kind="corporate_action",
         detail=IMMUTABLE_IMPORTED_ACTION_DETAIL,
     )
-
-
-def _annotate_read_only(db: Session, user_id: int, actions: List[CorporateAction]):
-    """给响应补 `read_only` 展示字段：与 ensure_record_is_mutable 同一判据
-    （带批次，或被券商来源流水引用）。此前前端只看 import_batch_id，被来源流水
-    链接但无批次的记录会显示「编辑」然后 409。批量两次 IN 查询，不逐行查。"""
-    ids = [action.id for action in actions if action.import_batch_id is None]
-    linked: set[int] = set()
-    if ids:
-        for model in (BrokerFundFlow, IbkrActivityFlow):
-            linked.update(
-                row[0]
-                for row in db.query(model.corporate_action_id)
-                .filter(model.user_id == user_id, model.corporate_action_id.in_(ids))
-                .distinct()
-                .all()
-            )
-    for action in actions:
-        action.read_only = action.import_batch_id is not None or action.id in linked
-    return actions
 
 
 def _apply_cash_dividend_update_rules(db_action: CorporateAction, update_data: dict) -> None:
@@ -160,7 +142,7 @@ def _build_corporate_action_query(
 def create_corporate_action(
     action: CorporateActionCreate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     创建公司行动记录
@@ -203,27 +185,12 @@ def create_corporate_action(
 def create_cash_dividend(
     dividend: CashDividendCreate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     快捷创建现金股息记录
 
     自动计算税后金额
-    """
-    action = dividend.to_corporate_action()
-    return create_corporate_action(action, current_user, db)
-
-
-@router.post("/stock-dividend", response_model=CorporateActionResponse, status_code=201)
-def create_stock_dividend(
-    dividend: StockDividendCreate,
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """
-    快捷创建红股/股票股息记录
-
-    会自动重新计算持仓成本
     """
     action = dividend.to_corporate_action()
     return create_corporate_action(action, current_user, db)
@@ -241,7 +208,7 @@ def list_corporate_actions(
     broker_account_id: Optional[int] = Query(None, description="按券商账户筛选"),
     unassigned_account: bool = Query(False, description="仅显示未分配账户的记录"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     获取公司行动列表
@@ -266,7 +233,7 @@ def list_corporate_actions(
         .limit(limit)
         .all()
     )
-    return _annotate_read_only(db, current_user.id, actions)
+    return annotate_read_only(db, current_user.id, "corporate_action", actions)
 
 
 @router.get("/count")
@@ -279,7 +246,7 @@ def get_corporate_actions_count(
     broker_account_id: Optional[int] = Query(None, description="按券商账户筛选"),
     unassigned_account: bool = Query(False, description="仅显示未分配账户的记录"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """获取公司行动总数。"""
     total = _build_corporate_action_query(
@@ -305,7 +272,7 @@ def get_corporate_actions_summary(
     broker_account_id: Optional[int] = Query(None, description="按券商账户筛选"),
     unassigned_account: bool = Query(False, description="仅显示未分配账户的记录"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     获取公司行动统计摘要
@@ -330,16 +297,17 @@ def get_corporate_actions_summary(
 def get_corporate_action(
     action_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """获取单个公司行动记录"""
-    action = db.query(CorporateAction).filter(
-        CorporateAction.id == action_id,
-        CorporateAction.user_id == current_user.id
-    ).first()
+    action = (
+        db.query(CorporateAction)
+        .filter(CorporateAction.id == action_id, CorporateAction.user_id == current_user.id)
+        .first()
+    )
     if not action:
         raise HTTPException(status_code=404, detail="公司行动记录不存在")
-    return _annotate_read_only(db, current_user.id, [action])[0]
+    return annotate_read_only(db, current_user.id, "corporate_action", [action])[0]
 
 
 @router.put("/{action_id:int}", response_model=CorporateActionResponse)
@@ -347,7 +315,7 @@ def update_corporate_action(
     action_id: int,
     action_update: CorporateActionUpdate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """更新公司行动记录
 
@@ -358,10 +326,11 @@ def update_corporate_action(
     try:
         lock_record(db, "corporate-action-record", action_id)
 
-        db_action = db.query(CorporateAction).filter(
-            CorporateAction.id == action_id,
-            CorporateAction.user_id == current_user.id
-        ).first()
+        db_action = (
+            db.query(CorporateAction)
+            .filter(CorporateAction.id == action_id, CorporateAction.user_id == current_user.id)
+            .first()
+        )
         if not db_action:
             raise HTTPException(status_code=404, detail="公司行动记录不存在")
         db.refresh(db_action)
@@ -385,20 +354,34 @@ def update_corporate_action(
         new_symbol = update_data.get("symbol", old_symbol)
         new_market = update_data.get("market", old_market)
         # 锁旧、新两条时间线（排序取锁避免死锁）
-        for lock_symbol, lock_market in sorted({(old_symbol, old_market), (new_symbol, new_market)}):
+        for lock_symbol, lock_market in sorted(
+            {(old_symbol, old_market), (new_symbol, new_market)}
+        ):
             lock_security_timeline(db, current_user.id, lock_symbol, lock_market)
         validate_owned_references(db, current_user.id, update_data)
         if update_data.get("action_type", old_action_type) == "CASH_DIVIDEND":
             _apply_cash_dividend_update_rules(db_action, update_data)
         for field, value in update_data.items():
             setattr(db_action, field, value)
+        # 合并后的有效记录与创建入口同一套数量字段校验（#270）：此前 PATCH 可以清空
+        # split_ratio 或写入不可解析的比例，重放静默 no-op
+        try:
+            validate_quantity_action_fields(db_action)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         db.flush()
 
-        # 如果是会影响持仓的公司行动，重新计算持仓
-        if old_action_type in QUANTITY_ACTION_TYPES:
+        # 新旧类型任一会影响持仓就重算：把现金股息改成拆股/期初建仓时，旧类型不在其列、
+        # 新类型在，此前持仓停在旧值直到下一次别的写入（#270）
+        if (
+            old_action_type in QUANTITY_ACTION_TYPES
+            or db_action.action_type in QUANTITY_ACTION_TYPES
+        ):
             recalculate_holdings(db, current_user.id, old_symbol, old_market, commit=False)
             if db_action.symbol != old_symbol or db_action.market != old_market:
-                recalculate_holdings(db, current_user.id, db_action.symbol, db_action.market, commit=False)
+                recalculate_holdings(
+                    db, current_user.id, db_action.symbol, db_action.market, commit=False
+                )
         db.commit()
     except ValueError as exc:
         db.rollback()
@@ -427,19 +410,27 @@ def update_opening_position_cost(
     update_data = payload.model_dump(exclude_unset=True)
     try:
         lock_record(db, "corporate-action-record", action_id)
-        db_action = db.query(CorporateAction).filter(
-            CorporateAction.id == action_id,
-            CorporateAction.user_id == current_user.id,
-        ).first()
+        db_action = (
+            db.query(CorporateAction)
+            .filter(
+                CorporateAction.id == action_id,
+                CorporateAction.user_id == current_user.id,
+            )
+            .first()
+        )
         if not db_action:
             raise HTTPException(status_code=404, detail="公司行动记录不存在")
         db.refresh(db_action)
         if db_action.action_type != OPENING_POSITION:
             raise HTTPException(status_code=422, detail="只有期初建仓可以补录成本")
-        cost_per_share = update_data.get("adjusted_cost_per_share", db_action.adjusted_cost_per_share)
+        cost_per_share = update_data.get(
+            "adjusted_cost_per_share", db_action.adjusted_cost_per_share
+        )
         total_cost = update_data.get("cost_basis_adjustment", db_action.cost_basis_adjustment)
         try:
-            validate_opening_position_fields(db_action.adjusted_quantity, cost_per_share, total_cost)
+            validate_opening_position_fields(
+                db_action.adjusted_quantity, cost_per_share, total_cost
+            )
         except ValueError as exc:
             # 字段自身不一致是 422（与 Create 的校验同口径），不是重放失败
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -456,14 +447,14 @@ def update_opening_position_cost(
         db.rollback()
         raise
     db.refresh(db_action)
-    return _annotate_read_only(db, current_user.id, [db_action])[0]
+    return annotate_read_only(db, current_user.id, "corporate_action", [db_action])[0]
 
 
 @router.delete("/{action_id:int}", status_code=204)
 def delete_corporate_action(
     action_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """删除公司行动记录
 
@@ -472,10 +463,11 @@ def delete_corporate_action(
     try:
         lock_record(db, "corporate-action-record", action_id)
 
-        db_action = db.query(CorporateAction).filter(
-            CorporateAction.id == action_id,
-            CorporateAction.user_id == current_user.id
-        ).first()
+        db_action = (
+            db.query(CorporateAction)
+            .filter(CorporateAction.id == action_id, CorporateAction.user_id == current_user.id)
+            .first()
+        )
         if not db_action:
             raise HTTPException(status_code=404, detail="公司行动记录不存在")
         db.refresh(db_action)
@@ -496,31 +488,14 @@ def delete_corporate_action(
         db.commit()
     except ValueError as exc:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"删除该公司行动会使持仓重放失败：{exc}") from exc
+        raise HTTPException(
+            status_code=409, detail=f"删除该公司行动会使持仓重放失败：{exc}"
+        ) from exc
     except Exception:
         db.rollback()
         raise
 
     return None
-
-
-@router.get("/symbol/{symbol}", response_model=List[CorporateActionResponse])
-def get_actions_by_symbol(
-    symbol: str,
-    market: Optional[str] = Query(None, description="市场筛选"),
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
-):
-    """获取特定股票的所有公司行动记录。兼容保留：外部 API 客户端可能依赖。"""
-    query = db.query(CorporateAction).filter(
-        CorporateAction.symbol.ilike(f"%{symbol.strip()}%"),
-        CorporateAction.user_id == current_user.id
-    )
-    if market:
-        query = query.filter(CorporateAction.market == market)
-    return _annotate_read_only(
-        db, current_user.id, query.order_by(CorporateAction.ex_date.desc()).all()
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -576,12 +551,7 @@ def list_suggestions(
         query = query.filter(CorporateActionSuggestion.symbol == symbol.strip())
     if market:
         query = query.filter(CorporateActionSuggestion.market == market)
-    return (
-        query.order_by(CorporateActionSuggestion.ex_date.desc())
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
+    return query.order_by(CorporateActionSuggestion.ex_date.desc()).offset(skip).limit(limit).all()
 
 
 @router.get("/suggestions/count")
@@ -590,10 +560,14 @@ def count_suggestions(
     db: Session = Depends(get_db),
 ) -> Dict[str, int]:
     """待处理建议计数（NEW 徽标）。"""
-    total = db.query(CorporateActionSuggestion).filter(
-        CorporateActionSuggestion.user_id == current_user.id,
-        CorporateActionSuggestion.status == "NEW",
-    ).count()
+    total = (
+        db.query(CorporateActionSuggestion)
+        .filter(
+            CorporateActionSuggestion.user_id == current_user.id,
+            CorporateActionSuggestion.status == "NEW",
+        )
+        .count()
+    )
     return {"total": total}
 
 
@@ -611,8 +585,11 @@ def accept_dividend_suggestion(
     overrides = payload.model_dump(exclude_unset=True)
     if overrides.get("broker_account_id") is not None:
         get_owned_record(
-            db, BrokerAccount, overrides["broker_account_id"], current_user.id,
-            "Broker account not found",
+            db,
+            BrokerAccount,
+            overrides["broker_account_id"],
+            current_user.id,
+            "券商账户不存在",
         )
     try:
         return accept_suggestion(db, current_user, suggestion_id, overrides)
@@ -680,7 +657,7 @@ def list_security_events(
     （组合视角），显式传 symbol 时按请求标的返回（单标的视角，允许查未持仓
     标的——与 /{market}/{symbol}/profile 同口径）。
     """
-    today = date.today()
+    today = local_today()
     query = db.query(SecurityEvent).filter(
         SecurityEvent.event_date >= today - timedelta(days=days_back),
         SecurityEvent.event_date <= today + timedelta(days=days_ahead),
@@ -700,8 +677,6 @@ def list_security_events(
             return []
         # 持仓键下推为 SQL IN：此前把窗口内全部事件 load 进 Python 再过滤
         query = query.filter(
-            tuple_(SecurityEvent.symbol, SecurityEvent.market).in_(
-                [(s, m) for s, m in held]
-            )
+            tuple_(SecurityEvent.symbol, SecurityEvent.market).in_([(s, m) for s, m in held])
         )
     return query.order_by(SecurityEvent.event_date.asc()).all()

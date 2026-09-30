@@ -1,4 +1,14 @@
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.sql import func
 
 from ..database import Base
@@ -11,13 +21,23 @@ class IbkrActivityFlow(Base):
     user_id = Column(
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    transaction_id = Column(Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True)
-    corporate_action_id = Column(Integer, ForeignKey("corporate_actions.id", ondelete="SET NULL"), nullable=True, index=True)
+    transaction_id = Column(
+        Integer, ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    corporate_action_id = Column(
+        Integer, ForeignKey("corporate_actions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # 现金入账链接：现金业务行只用 cash_event_id；外汇兑换行一行两条现金腿
     # （基础币 cash_event_id + 对价币 fx_quote_cash_event_id），佣金另计一条。
-    cash_event_id = Column(Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True)
-    fx_quote_cash_event_id = Column(Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True)
-    fx_fee_cash_event_id = Column(Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    cash_event_id = Column(
+        Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    fx_quote_cash_event_id = Column(
+        Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    fx_fee_cash_event_id = Column(
+        Integer, ForeignKey("cash_events.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     broker_account_id = Column(
         Integer,
         ForeignKey("broker_accounts.id", ondelete="SET NULL"),
@@ -58,6 +78,4 @@ class IbkrActivityFlow(Base):
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "row_hash", name="uix_ibkr_activity_user_hash"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "row_hash", name="uix_ibkr_activity_user_hash"),)

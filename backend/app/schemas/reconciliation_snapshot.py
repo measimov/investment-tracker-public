@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from .read_models import read_model
 
 
 ReconciliationStatus = Literal["PENDING", "MATCHED", "MISMATCHED"]
@@ -36,7 +37,16 @@ class ReconciliationSnapshotUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-class ReconciliationSnapshotResponse(ReconciliationSnapshotBase):
+class ReconciliationPositionRead(read_model(ReconciliationPosition)):
+    pass
+
+
+class ReconciliationSnapshotResponse(
+    read_model(
+        ReconciliationSnapshotBase,
+        positions=(List[ReconciliationPositionRead], Field(default_factory=list)),
+    )
+):
     model_config = ConfigDict(from_attributes=True)
 
     id: int

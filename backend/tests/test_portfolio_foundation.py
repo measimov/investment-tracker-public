@@ -19,7 +19,6 @@ from app.models.reconciliation_snapshot import ReconciliationSnapshot
 from app.models.transaction import Transaction
 
 
-
 def _headers(username: str) -> dict[str, str]:
     # Tokens must be backed by a server-side session since issue #36.
     db = SessionLocal()
@@ -42,33 +41,31 @@ def foundation_tag():
 
     db = SessionLocal()
     try:
-        db.query(BrokerFundFlow).filter(
-            BrokerFundFlow.source_filename == tag
-        ).delete(synchronize_session=False)
-        db.query(IbkrActivityFlow).filter(
-            IbkrActivityFlow.source_filename == tag
-        ).delete(synchronize_session=False)
-        db.query(CorporateAction).filter(
-            CorporateAction.notes.like(f"{tag}%")
-        ).delete(synchronize_session=False)
-        db.query(Transaction).filter(
-            Transaction.notes.like(f"{tag}%")
-        ).delete(synchronize_session=False)
-        db.query(Holding).filter(
-            Holding.symbol.like("FD%")
-        ).delete(synchronize_session=False)
-        db.query(CashEvent).filter(
-            CashEvent.notes.like(f"{tag}%")
-        ).delete(synchronize_session=False)
+        db.query(BrokerFundFlow).filter(BrokerFundFlow.source_filename == tag).delete(
+            synchronize_session=False
+        )
+        db.query(IbkrActivityFlow).filter(IbkrActivityFlow.source_filename == tag).delete(
+            synchronize_session=False
+        )
+        db.query(CorporateAction).filter(CorporateAction.notes.like(f"{tag}%")).delete(
+            synchronize_session=False
+        )
+        db.query(Transaction).filter(Transaction.notes.like(f"{tag}%")).delete(
+            synchronize_session=False
+        )
+        db.query(Holding).filter(Holding.symbol.like("FD%")).delete(synchronize_session=False)
+        db.query(CashEvent).filter(CashEvent.notes.like(f"{tag}%")).delete(
+            synchronize_session=False
+        )
         db.query(ReconciliationSnapshot).filter(
             ReconciliationSnapshot.notes.like(f"{tag}%")
         ).delete(synchronize_session=False)
-        db.query(ImportBatch).filter(
-            ImportBatch.source_filename == tag
-        ).delete(synchronize_session=False)
-        db.query(BrokerAccount).filter(
-            BrokerAccount.notes.like(f"{tag}%")
-        ).delete(synchronize_session=False)
+        db.query(ImportBatch).filter(ImportBatch.source_filename == tag).delete(
+            synchronize_session=False
+        )
+        db.query(BrokerAccount).filter(BrokerAccount.notes.like(f"{tag}%")).delete(
+            synchronize_session=False
+        )
         db.commit()
     finally:
         db.close()
@@ -83,10 +80,7 @@ def test_broker_flow_metadata_declares_unassigned_partial_unique_index():
 
     assert index.unique is True
     assert [column.name for column in index.columns] == ["user_id", "row_hash"]
-    assert (
-        str(index.dialect_options["postgresql"]["where"])
-        == "broker_account_id IS NULL"
-    )
+    assert str(index.dialect_options["postgresql"]["where"]) == "broker_account_id IS NULL"
 
 
 @pytest.mark.anyio
@@ -245,10 +239,10 @@ async def test_account_cash_and_reconciliation_crud_are_user_isolated_and_audita
             headers=user_headers,
         )
         assert deleted_account.status_code == 409
-        assert "Deactivate" in deleted_account.json()["detail"]
-        assert (
-            await client.get(f"/api/cash-events/{cash_id}", headers=user_headers)
-        ).json()["broker_account_id"] == account_id
+        assert "请改为停用" in deleted_account.json()["detail"]
+        assert (await client.get(f"/api/cash-events/{cash_id}", headers=user_headers)).json()[
+            "broker_account_id"
+        ] == account_id
         assert (
             await client.get(
                 f"/api/reconciliation-snapshots/{snapshot_id}",
@@ -334,8 +328,8 @@ async def test_manual_sell_validation_does_not_borrow_another_accounts_position(
                 "notes": foundation_tag,
             },
         )
-        assert cross_account_sell.status_code == 400
-        assert "available quantity 0" in cross_account_sell.json()["detail"]
+        assert cross_account_sell.status_code == 409
+        assert "超过可用数量 0" in cross_account_sell.json()["detail"]
 
 
 @pytest.mark.anyio
@@ -622,14 +616,14 @@ async def test_import_audit_fields_and_imported_records_are_read_only(
                 json=update_payload,
             )
             assert updated.status_code == 409
-            assert "Imported" in updated.json()["detail"]
+            assert "不能修改或删除" in updated.json()["detail"]
 
             deleted = await client.delete(
                 endpoint,
                 headers=_headers("demo"),
             )
             assert deleted.status_code == 409
-            assert "Imported" in deleted.json()["detail"]
+            assert "不能修改或删除" in deleted.json()["detail"]
 
     db = SessionLocal()
     try:
@@ -762,9 +756,7 @@ async def test_import_audit_fields_and_imported_records_are_read_only(
             headers=user_headers,
             params={"broker_account_id": user_account_id, "symbol": symbol},
         )
-        assert [item["id"] for item in assigned_list.json()] == [
-            assigned_action.json()["id"]
-        ]
+        assert [item["id"] for item in assigned_list.json()] == [assigned_action.json()["id"]]
         unassigned_count = await client.get(
             "/api/corporate-actions/count",
             headers=user_headers,

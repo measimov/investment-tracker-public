@@ -174,6 +174,7 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `BACKGROUND_WORKER_ENABLED` | `true` | 进程内 worker 与周期任务总开关；关闭后只剩 API 内联快路径，周期任务全部停止 |
 | `BACKGROUND_JOB_RETENTION_HOURS` | `168` | 已结束任务的保留时长 |
 | `BACKGROUND_JOB_STALE_MINUTES` | `60` | 启动时把超过该时长仍 running 的任务判为中断 |
+| `BACKGROUND_JOB_QUEUED_TTL_HOURS` | `24` | 从未开始执行的排队任务超过该时长判为中断（退避重排的任务不受影响） |
 | `BACKGROUND_JOB_POLL_SECONDS` | `5` | worker 轮询间隔 |
 | `BACKGROUND_JOB_LEASE_SECONDS` | `300` | 任务租约；长任务靠回写进度续租，过期会被接管重跑 |
 | `BACKGROUND_JOB_MAX_ATTEMPTS` | `3` | 意外失败的最大尝试次数 |
@@ -190,6 +191,10 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `DIVIDEND_SYNC_LOOKBACK_DAYS` | `365` | 分红公告同步回看天数 |
 | `DIVIDEND_SYNC_MATCH_WINDOW_DAYS` | `30` | 分红建议与已入账股息的判重窗口 |
 | `DIVIDEND_SYNC_PERIODIC_ENABLED` | `false` | 分红公告每周自动同步；开启前确认 Tushare 积分配额充足 |
+| `QUOTE_AUTO_REFRESH_ENABLED` | `true` | 交易时段每 15 分钟刷新持仓与自选实时价 |
+| `PRICE_TAIL_SYNC_ENABLED` | `true` | A股/B股/美股日线尾部每小时检查、落后才补 |
+| `DAILY_BASIC_REFRESH_ENABLED` | `true` | A股估值快照每个交易日 18:00 后刷新 |
+| `WEEKLY_DATA_REFRESH_ENABLED` | `true` | 每周凌晨入队：档案 + 最新财报摘要/港股报表 + 观点摘要 |
 
 ### 雪球采集器
 
@@ -237,6 +242,10 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `NOTIFY_REMINDER_HOURS` | `24` | 未恢复的告警每隔多少小时再提醒一次 |
 | `NOTIFY_COLLECTOR_STALE_HOURS` | `3` | 采集器启用时，超过多少小时没有一次成功的作者采集即告警 |
 | `ALERT_CHECK_ENABLED` | `true` | 告警检查周期任务（每 10 分钟）总开关 |
+| `EVENT_NOTIFICATIONS_ENABLED` | `true` | 事件提醒总开关：新分红建议待确认、除净日临近、持仓价格异动、重大公告（一个事件只推一次） |
+| `NOTIFY_PRICE_MOVE_PCT` | `7` | 持仓单日涨跌幅（相对昨收，百分比）达到该值即推送，同一标的每个行情日一次 |
+| `NOTIFY_EX_DATE_DAYS_AHEAD` | `3` | 除净日在今天起多少天内的持仓分红提前提醒（每天 09:00 后合并推送） |
+| `ANNOUNCEMENT_NOTIFY_ENABLED` | `true` | 持仓/自选标的重大公告推送（只在事件提醒总开关打开时生效；公告同步本身由 `ANNOUNCEMENT_SYNC_ENABLED` 管） |
 
 ### 只给宿主脚本用的变量
 
@@ -297,8 +306,31 @@ multipart 开销）；普通 API 代理超时 300s。
   | 港交所每日行情报表（港股官方收盘价） | 6 小时 | `HKEX_DAYQUOT_SYNC_ENABLED` |
   | 标的全集 | 6 小时检查，按 `SECURITY_CATALOG_SYNC_INTERVAL_HOURS` 判新鲜 | `SECURITY_CATALOG_SYNC_ENABLED` |
   | AI 复盘定期计划调度 | 1 小时 | 需 `LLM_REPORT_API_KEY` |
-  | 分红公告同步 | 7 天 | `DIVIDEND_SYNC_PERIODIC_ENABLED`（默认关） |
+  | 分红公告同步 | 1 小时检查，距上次入队满 7 天才入队（记在库里，重启不重跑） | `DIVIDEND_SYNC_PERIODIC_ENABLED`（默认关） |
   | 告警检查（推送见[第 10 节](#10-告警通知)） | 10 分钟 | `ALERT_CHECK_ENABLED`；推送需 `NOTIFY_URLS` |
+  | 持仓与自选实时价 | 15 分钟，只刷处于交易时段的市场 | `QUOTE_AUTO_REFRESH_ENABLED` |
+  | A股/B股/美股日线尾部 | 1 小时检查，落后于最近已完成交易日才补 | `PRICE_TAIL_SYNC_ENABLED`；需 `TUSHARE_TOKEN`（美股可退 Tiingo/腾讯） |
+  | A股估值快照（daily_basic） | 1 小时检查，业务时区 18:00 后每个交易日一次 | `DAILY_BASIC_REFRESH_ENABLED`；需 `TUSHARE_TOKEN` |
+  | 每周数据刷新（档案 + 最新财报摘要/港股报表 + 观点摘要） | 1 小时检查，满 7 天且业务时区 02:00–06:00 才入队后台任务 | `WEEKLY_DATA_REFRESH_ENABLED`；摘要需 LLM |
+  | 事件提醒（新分红建议、除净日临近、重大公告、失败重试） | 10 分钟 | `EVENT_NOTIFICATIONS_ENABLED`；推送需 `NOTIFY_URLS` |
+
+  各项的数据范围、存储位置与成本见下方「自动刷新一览」。
+
+#### 自动刷新一览
+
+  | 数据 | 频次 | 范围 | 存储 | 外部成本 |
+  | --- | --- | --- | --- | --- |
+  | 实时价 | 交易时段每 15 分钟；各市场收盘后约 30 分钟内再补一次（周期刷新不看新鲜度窗口） | 活跃用户持仓（数量>0）∪ 自选，同一标的只请求一次 | `holdings` / `watchlist_items` 的现价、行情日期、来源（只存最新，不存盘中序列） | A/B/港股走腾讯；美股盘中优先 Tiingo IEX（免费档约 50 次/小时） |
+  | 日线收盘 | 每小时检查，只补落后的标的 | A股/B股/美股的持仓 ∪ 自选（港股走港交所日报） | `security_prices` | Tushare，每标的一次增量请求 |
+  | A股估值快照 | 每个交易日 18:00 后一次 | A股持仓 ∪ 自选 | `security_profile_data`（daily_basic，保留 30 行） | Tushare 一次全市场请求 |
+  | 分红公告 | 每周 | 持仓 ∪ 近一年交易过的标的 | `corporate_action_suggestions`（只生成建议） | Tushare / 披露易 |
+  | 档案 + 最新财报摘要 | 每周凌晨 | 持仓 ∪ 自选；档案 6 天内同步过的跳过；摘要只补最新一期年报/中报 | `security_profile_data` | Tushare/EDGAR/雅虎；每只每年约 2 次 LLM |
+  | 观点摘要 | 每周凌晨 | 持仓 ∪ 自选中有雪球发言的标的，无新发言跳过 | `security_opinion_summaries` | LLM |
+  | AI 分析 | 不自动 | 有更新的财报数据时持仓页标「可能过期」 | — | — |
+  | 官方公告 | 每 30 分钟增量（回看 2 天）；首次回溯 `ANNOUNCEMENT_BACKFILL_DAYS`（365）天，单 tick 最多 5 只，建议上线后先跑 `manage.py sync-announcements` | 持仓 ∪ 自选（A/B/港/美；B 股按 orgId 对应的 A 股代码检索，ETF 无官方源跳过） | `security_announcements`（一份文件一行，同日同类合并成事件） | 巨潮/披露易限速 1 秒/请求，EDGAR 每只一次；无 LLM |
+
+  盘中不落盘分钟级价格：没有读取方，持仓与自选行上的最新价就是唯一消费点。前端持仓页、仪表盘、
+  观察清单在页面可见时每 5 分钟重读一次数据库（不触发外部请求）。
 
   以上全部依赖 `BACKGROUND_WORKER_ENABLED=true`。周期任务在一条线程上串行执行，一个任务慢
   （如标的全集首次同步约 1 分钟）只推迟其余任务，不会并发。
@@ -329,8 +361,8 @@ multipart 开销）；普通 API 代理超时 300s。
 - **按标的轮次**（每天业务时区 `XUEQIU_COLLECTOR_SYMBOLS_RUN_AFTER`=07:30 之后）：范围 = 全体用户
   持仓 ∪ 自选中 A/B/港/美股、扣除排除与现金管理规则；每个标的取最新一页公告与讨论，外加管理员维护
   的组合调仓名单，幂等写入 `xueqiu_symbol_posts / xueqiu_cube_rebalancing`。**市场热帖（今日热帖）
-  的采集已于 2026-09-28 下线**（与持仓无关，少打一类雪球请求）：`xueqiu_hot_posts` 表与存量行保留、
-  旧 Markdown 导入仍会写入，但采集器不再请求、观点页不再展示，`XUEQIU_COLLECTOR_HOTS_SCOPE` 已删除
+  的采集已于 2026-09-28 下线**（与持仓无关，少打一类雪球请求）：`xueqiu_hot_posts` 表连同存量快照已由
+  迁移 `20260929_0035` 删除，旧 Markdown 导入跳过热帖文件，`XUEQIU_COLLECTOR_HOTS_SCOPE` 已删除
   （`.env` 里残留的这一行会被忽略，可顺手删掉）；下线前留在 `symbols_pending` 里的热帖待重试项在重试时
   静默丢弃。每一项的响应都按端点校验结构——错误对象（`error_code`、`success=false`）、
   未知结构、非 JSON、HTTP/网络错误都记为该项失败，不会被当成「没有新帖」。**业务日语义**：一轮
@@ -712,6 +744,8 @@ docker compose up -d --remove-orphans
 | `STATEMENT_BUILD_VERSION` | `report_statement_prompts.py` | `scripts/rebuild_report_statements.py --all --report`（可先加 `--dry-run`） | 零下载零 LLM，分钟级；`--report` 按标的输出前后对比 |
 | `STATEMENT_VALIDATION_VERSION` | `report_statement_checks.py` | `scripts/revalidate_report_statements.py --all` | 零下载零 LLM，分钟级 |
 | `SECTION_EXTRACTOR_VERSION` 或 `DIGEST_PROMPT_VERSION` | `report_sections.py` / `report_digest_prompts.py` | 先确认 `scripts/report_extraction_audit.py --fixtures` 的 boilerplate 归零（在开发检出里跑：固件在 `backend/tests/fixtures/`，镜像不带 tests；容器里可用 `--live` 抽查库内节选），再 `scripts/rerun_report_digests.py --all`（先 `--dry-run`） | 最贵：A股/港股/美股年报重下载 + 每份一次 LLM。商业画像按输入指纹自动重算，不用单独跑 |
+| 迁移 `20260928_0034`（自选加入价列） | `watchlist_price_service.py` | 可选：`manage.py backfill-watchlist-added-price --dry-run` 看能补几条，再去掉 `--dry-run`；不跑也行，日线尾部同步每轮都会顺带回填（历史补到加入日之前后自动补上） | 纯查库，秒级；加入超过 3 天的存量条目按加入日收盘补；加入日前后确实没有行情时退到加入后首个收盘，再没有就用下一次报价，不会永久为空 |
+| 迁移 `20260929_0038`（官方公告表）首次部署，或 `ANNOUNCEMENT_CLASSIFIER_VERSION` | `announcement_sync.py` / `announcement_classifier.py` | 首次部署：`manage.py sync-announcements`（按水位首次回溯 365 天；`--days N` 忽略水位、`--symbol S --market M` 只跑一只）。分类器升版：`manage.py reclassify-announcements`（`--all` 全部重算） | 首次回溯约 50 只标的 5–15 分钟（巨潮每只约 3–10 页、披露易每只 7 个 60 天窗口、EDGAR 每只一次），无 LLM；重分类零外呼、秒级 |
 | `EDGAR_PIVOT_VERSION` | `earnings_quality.py` | 重新同步美股档案（下方命令） | 只打 EDGAR，无 LLM；每只几秒 |
 | `ADS_PARSER_VERSION`，或新增 ADS 换算比的迁移（`…_0023_ads_ratio`） | `ads_ratio_service.py` | `scripts/sync_ads_ratios.py --all`（`--force` 忽略缓存重解析） | 每只 20-F 发行人下载一次年报主文档，无 LLM |
 | 标的全集加载逻辑 | `security_catalog_service.py` | 周期任务自动跑；要立即生效：`manage.py sync-security-catalog` | 约 1 分钟 |
@@ -719,6 +753,12 @@ docker compose up -d --remove-orphans
 | `HKEX_DIVIDEND_PARSER_VERSION`，或新增港股分红同步的迁移（`…_0032_hk_dividend_forms`） | `hkex_dividend_source.py` / `hk_adjustment_factors.py` | 不需要立即跑：用户在公司行动页点「同步分红公告」时下载缺失的表格，解析器升版在下次同步时从缓存原文重解析并写回（清单窗口外的旧行也写回），零下载；港股复权因子要立即刷新：`manage.py recompute-hk-adj-factors`（只用已缓存的表格，零网络；旧版本缓存行在内存里按原文重解析，不必先同步）。v2（EF002/EF003、報告期末「不適用」、撤回股息公告）按 2026-09-28 生产缓存离线重放：18 份未解析 → 0，被挂起的 10 只标的只剩 00878（无期间特別股息的撤回公告，按设计整标的挂起，需人工忽略旧建议） | 首次同步每只港股下载其 2021 年起的全部现金股息表格（每份约 100KB、披露易限速 1 秒/份，常见 5–20 份/只），之后只下新表格；复权重算秒级 |
 | 港交所日报解析 / 需要补历史 | `hkex_dayquot_source.py` | 周期任务自动推进；补跑：`manage.py sync-hkex-dayquot --days N`（站点只存约一个月） | 每份约 25MB |
 | 持仓重放口径（公司行动语义、持仓计算） | `holding_service.py`、`portfolio/semantics.py` | `manage.py rebuild-holdings` | 分钟级；输出 Failures = 真实超卖数据 |
+| 行情币种解析（#276：`security_prices.currency` 统一由 `resolve_price_currency` 决定） | `market_data_service.py` | `scripts/repair_price_currency.py --dry-run` 看会改哪些，再去掉 `--dry-run` 执行；可重复运行（幂等） | 纯查库，秒级。只改 A股/B股/港股/美股行的 currency（开发账本实测：两只 B 股 361 行 CNY → USD/HKD）。统计按交易币种折算、不读这一列，metrics 快照零变化；受影响的是格雷厄姆估值的价格币种与港股复权。**若修正了港股行（人民币柜台 HKD → CNY），再跑 `manage.py recompute-hk-adj-factors`**：已写入的复权因子是按旧币种折算的股息，要等下一次分红同步才会重算 |
+| 超卖校验计入公司行动、公司行动数量字段校验（#270：`validate_account_sequence`、`validate_quantity_action_fields`、`rights_issue_lot`） | `holding_service.py`、`schemas/corporate_action.py`、`portfolio/semantics.py` | **部署前**先跑只读扫描 `scripts/scan_account_sequences.py`：列出的「新口径下超卖的账户桶」会让该桶此后的无关编辑被拒，「数量字段不可用的公司行动」会变得不可 PATCH，先修数据；部署后 `manage.py rebuild-holdings`（录了认购金额的配股，持仓均价改为金额优先，与 FIFO 同口径） | 扫描只读、秒级，有问题时退出码 1；重建分钟级 |
+| 迁移 `20260929_0035`（删除 `xueqiu_hot_posts`，#282） | `xueqiu_collector/feed_store.py` | 不用跑任务。**不可逆**：存量热帖快照随表删除（热帖自 2026-09-28 起既不采集也不展示）；想留档就在迁移前 `pg_dump -t xueqiu_hot_posts` | 迁移秒级 |
+| 迁移 `20260929_0036`（特例规则代码归一，#278） | `schemas/security_rule.py`、`symbol_normalization.py` | 不用跑任务。迁移把存量规则的证券代码按手工入口口径归一（港股纯数字补零到 5 位、大写；RELISTING 的新代码按新市场归一；CMB 业务名不动），此前「700」这类港股规则静默不生效，迁移后开始生效。**看迁移输出**：归一后与已有规则撞键的行不改不删、逐条列出，到「账户数据 → 特例规则」删掉重复的一条 | 秒级 |
+| 迁移 `20260929_0039`（RELISTING payload 归一补丁，#312 复审） | `security_rules` | 不用跑任务。跑过旧版 0036 的库里，撞键 RELISTING 行的 `payload.new_symbol` 没有补零，这里补上；已归一的行原样不动（在新库上是空操作） | 秒级 |
+| 迁移 `20260930_0040`（导入备注清理，#286） | `broker_import_common.import_note` | 不用跑任务。交易/公司行动/现金事件备注里的机器前缀（`scope=…; row=…`、`业务=…`、`hash=…` 这类键值段）去掉，只留「招商对账单导入 · 业务名 · 说明」形式；IBKR 转板合成交易的标记备注不动（重导判重靠它）。只改展示文本，不影响 row_hash 与判重 | 秒级 |
 | 收益/统计口径 | `services/statistics/`、`services/portfolio/` | 5.3 / 5.7 的 metrics 快照对比 | 只读 |
 | 无风险利率（参考利率表，迁移 `…_0030_reference_rates` 首次部署） | `reference_rate_service.py` | 周期任务（12 小时）首次按最早交易日自动回填 SHIBOR 3M 与美国国库券 3M；要立即生效：`manage.py sync-reference-rates`。夏普/索提诺从此按 SHIBOR 3M 逐期扣除（此前为 0），metrics 快照对比时这两项与 `risk_free_rate` 的变化是预期的 | 中国货币网与美国财政部每年各一次请求 |
 | 汇率历史（官方中间价回填，迁移 `…_0027_exchange_rate_checks` 首次部署） | `exchange_rate_service.py`、`chinamoney_source.py` | 先取 metrics 快照 → `scripts/backfill_official_fx.py --start <最早交易日> --dry-run` 看将改写/新写/停用的行数 → 去掉 `--dry-run` 执行 → 再取快照对比（差异应全部来自汇率变化）。日常刷新由周期任务完成，只回看 15 天 | 中国货币网每年一次请求；**会改变历史人民币折算**（此前早于首条汇率的日期按最新汇率折算） |
@@ -1003,9 +1043,9 @@ PY
      xueqiu-collector python manage.py xueqiu-import-archive-exports --dir /import
    ```
 
-   只插入不覆盖（已有行保留）、可重复执行；公告/讨论与热帖快照会导入，组合调仓 Markdown 没有调仓 ID
-   不导入；导入的行没有作者昵称与附件链接。热帖快照只是留档进 `xueqiu_hot_posts`——热帖展示已于
-   2026-09-28 下线，页面上看不到。
+   只插入不覆盖（已有行保留）、可重复执行；只导入公告/讨论。组合调仓 Markdown 没有调仓 ID 不导入；
+   市场热帖快照（`market-hots-*`）已下线、表已删除，列在输出的 skipped 里不导入；导入的行没有作者昵称
+   与附件链接。
 6. **启用内置采集器**：`.env` 设 `XUEQIU_COLLECTOR_ENABLED=true`（旧程序用过 Uptime Kuma 的话，把
    push 地址填进 `XUEQIU_COLLECTOR_PUSH_URL`），然后 `docker compose up -d backend xueqiu-collector`。
    在采集器卡片里对照旧程序的作者名单与组合名单文件核对（迁移可能已预置一份作者名单），第一轮作者
@@ -1087,8 +1127,10 @@ BACKUP_MODE=postgres ./backup.sh --prune --keep 2                        # 备�
 
 ```cron
 PATH=/usr/local/bin:/usr/bin:/bin
-30 3 * * * cd /path/to/investment-tracker && BACKUP_MODE=postgres ./backup.sh --prune --keep 7 >> backups/backup.log 2>&1
+30 3 * * * cd /path/to/investment-tracker && BACKUP_MODE=postgres BACKUP_NOTIFY=1 ./backup.sh --prune --keep 7 >> backups/backup.log 2>&1
 ```
+
+`BACKUP_NOTIFY=1` 让失败经 `manage.py notify` 推送告警、成功时发恢复（见 [10.4](#104-外部信号managepy-notify)）。
 
 不要用后台重定向后立即宣告成功；以脚本退出码作为成败依据。
 
@@ -1217,6 +1259,20 @@ backend 每 10 分钟跑一轮告警检查（周期任务 `run_alert_checks`，�
 「恢复」按检查器判定：某个检查器本轮不再报出的告警即恢复；检查器自己抛异常时，它名下的告警
 **保持原状**（查不了不等于好了），同时报一条 `checker:<名字>` 告警。状态落 `alert_states` 表
 （每个告警键一行）。
+
+**事件提醒**与告警分开记录（`notification_events` 表）：它们是「发生过一次」的事，一个事件键只推送
+一次，不做定期再提醒、也没有「已恢复」。
+
+| 事件 | 触发 | 去重 |
+| --- | --- | --- |
+| 新分红建议待确认 | 分红同步生成状态为「新」的建议；同一用户同一轮合并成一条 | 每条建议一次 |
+| 除净日临近 | 持有中的标的，未忽略的分红建议除净日在 `NOTIFY_EX_DATE_DAYS_AHEAD` 天内；每天 09:00 后合并 | 每只标的每个除净日一次 |
+| 持仓价格异动 | 自动刷新实时价时，相对昨收涨跌幅 ≥ `NOTIFY_PRICE_MOVE_PCT`%；同一轮合并 | 每只标的每个行情日一次 |
+| 重大公告 | 持仓（数量>0）或自选标的出现重要级别的官方公告组，且公告日与首次入库都在近 2 天内（首次回溯入库的旧公告不推）；同一轮合并 | 每个用户每组（标的+公告日+类别）一次，同组后续补发的文件不再推 |
+
+业务时区 23:00–08:00 为免打扰时段：期间只记录，08:00 之后的第一轮合并补发（美股盘中的异动
+不会在凌晨推送）。未配置 `NOTIFY_URLS` 时事件记为「跳过」；发送失败下一轮重试，最多 3 次。「系统告警」页的
+「最近提醒」列出最近的事件与发送结果。
 
 ### 10.3 告警目录
 

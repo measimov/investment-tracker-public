@@ -51,15 +51,48 @@ def assess_opening_basis(
         symbol, _, market = key.partition(":")
         basis_date = date.fromisoformat(basis["date"])
         if basis_date < cutoff or basis.get("source") == "transaction":
-            stale.append({
-                "symbol": symbol, "market": market, "basis_date": basis["date"],
-                "basis_source": basis.get("source") or "",
-            })
+            stale.append(
+                {
+                    "symbol": symbol,
+                    "market": market,
+                    "basis_date": basis["date"],
+                    "basis_source": basis.get("source") or "",
+                }
+            )
     if unpriced:
         return "unavailable", unpriced, stale
     if stale:
         return "estimated", unpriced, stale
     return "exact", unpriced, stale
+
+
+def assess_closing_prices(
+    quality: Dict[str, Any], price_dates: Dict[str, Optional[str]]
+) -> List[Dict[str, Any]]:
+    """期末估值价早于该持仓期初基准的错配（#267）。
+
+    期初按起点前最近收盘估值，期末按服务端现价估值；现价停在旧日期（错过收盘后刷新）而日线
+    已推进时，期末价反而比期初价还旧，两者之差会被当成区间损益。只看区间开始前就持有的持仓
+    （有期初基准）；比较的是同一标的两个价格的日期，不设天数阈值——手工价与停牌标的日期虽旧，
+    只要不早于期初基准就不算错配。"""
+    basis_by_key = quality.get("opening_price_basis") or {}
+    mismatched: List[Dict[str, Any]] = []
+    for position in quality.get("terminal_positions") or []:
+        key = f"{position['symbol']}:{position['market']}"
+        basis = basis_by_key.get(key)
+        price_date = price_dates.get(key)
+        if not basis or not price_date:
+            continue
+        if date.fromisoformat(price_date) < date.fromisoformat(basis["date"]):
+            mismatched.append(
+                {
+                    "symbol": position["symbol"],
+                    "market": position["market"],
+                    "price_date": price_date,
+                    "basis_date": basis["date"],
+                }
+            )
+    return mismatched
 
 
 def period_start(period: str, today: date) -> date:
@@ -76,9 +109,15 @@ def summarize_curve(curve: List[Dict[str, Any]], quality: Dict[str, Any]) -> Dic
     """一段曲线 → 区间损益摘要（纯函数，便于单测）。"""
     if not curve:
         return {
-            "pnl_cny": 0.0, "return_rate": None, "opening_market_value_cny": 0.0,
-            "closing_market_value_cny": 0.0, "cash_in_cny": 0.0, "cash_out_cny": 0.0,
-            "dividend_income_cny": 0.0, "points": 0, "unpriced_positions": [],
+            "pnl_cny": 0.0,
+            "return_rate": None,
+            "opening_market_value_cny": 0.0,
+            "closing_market_value_cny": 0.0,
+            "cash_in_cny": 0.0,
+            "cash_out_cny": 0.0,
+            "dividend_income_cny": 0.0,
+            "points": 0,
+            "unpriced_positions": [],
             "stale_price_positions": [],
         }
     last = curve[-1]
@@ -87,7 +126,9 @@ def summarize_curve(curve: List[Dict[str, Any]], quality: Dict[str, Any]) -> Dic
         "pnl_cny": round(sum(float(point.get("total_return_cny") or 0) for point in curve), 2),
         # 曲线从区间起点开始复利，末点的累计收益率就是区间 TTWR；没有任何有效点（期初无仓、
         # 当天也没买入）时返回 None 而不是 0%，免得把「无从计算」显示成「持平」
-        "return_rate": round(float(last.get("cumulative_return_rate") or 0), 4) if has_return else None,
+        "return_rate": round(float(last.get("cumulative_return_rate") or 0), 4)
+        if has_return
+        else None,
         "opening_market_value_cny": round(float(quality.get("opening_market_value_cny") or 0), 2),
         "closing_market_value_cny": round(float(last.get("market_value_cny") or 0), 2),
         "cash_in_cny": round(sum(float(point.get("cash_in_cny") or 0) for point in curve), 2),
@@ -105,8 +146,14 @@ def calculate_period_pnl(
     current_prices: Dict[str, float],
     *,
     today: Optional[date] = None,
+    price_freshness: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    """price_freshness：resolve_server_prices 的新鲜度映射；给出时用其中的 price_date 识别
+    期末价早于期初基准的错配（POST 手工价口径不传，不做该判定）。"""
     today = today or local_today()
+    price_dates = {
+        key: (entry or {}).get("price_date") for key, entry in (price_freshness or {}).items()
+    }
     response: Dict[str, Any] = {
         "base_currency": "CNY",
         "as_of": today.isoformat(),
@@ -141,8 +188,11 @@ def calculate_period_pnl(
     if not transactions and not corporate_actions and not holdings:
         for key, label in PERIODS:
             response["periods"][key] = {
-                "label": label, "start_date": period_start(key, today).isoformat(),
-                "end_date": today.isoformat(), "status": "exact",
+                "label": label,
+                "start_date": period_start(key, today).isoformat(),
+                "end_date": today.isoformat(),
+                "status": "exact",
+                "stale_closing_prices": [],
                 **summarize_curve([], {}),
             }
         return response
@@ -155,7 +205,8 @@ def calculate_period_pnl(
         )
     for holding in holdings:
         symbols_by_key.setdefault(
-            (holding.symbol, holding.market), holding.currency or infer_price_currency(holding.market)
+            (holding.symbol, holding.market),
+            holding.currency or infer_price_currency(holding.market),
         )
     symbols = [(symbol, market, currency) for (symbol, market), currency in symbols_by_key.items()]
     rate_lookup = DbExchangeRateLookup.from_db(db)
@@ -168,8 +219,15 @@ def calculate_period_pnl(
     for key, label in PERIODS:
         start = period_start(key, today)
         curve, _level, quality = build_return_curve(
-            transactions, corporate_actions, price_maps, symbols_by_key, current_prices,
-            start, today, rate_lookup=rate_lookup, fallback_currency=infer_price_currency,
+            transactions,
+            corporate_actions,
+            price_maps,
+            symbols_by_key,
+            current_prices,
+            start,
+            today,
+            rate_lookup=rate_lookup,
+            fallback_currency=infer_price_currency,
             today=today,
             # 期初 = 起点前一日收盘时点的本币价值：起点当天的汇率变动属于本区间的汇兑损益
             opening_fx_date=start - timedelta(days=1),
@@ -181,6 +239,10 @@ def calculate_period_pnl(
         summary["status"] = status
         summary["opening_unpriced_positions"] = opening_unpriced
         summary["stale_opening_basis"] = stale_basis
+        stale_closing = assess_closing_prices(quality, price_dates)
+        summary["stale_closing_prices"] = stale_closing
+        if stale_closing and status == "exact":
+            status = summary["status"] = "estimated"
         if status == "unavailable":
             # 不给数：此时的 pnl 会把缺价持仓的整笔市值当成收益
             summary["pnl_cny"] = None
@@ -191,22 +253,39 @@ def calculate_period_pnl(
                 f"（{names}），期初市值无从估值"
             )
         elif status == "estimated":
-            names = "、".join(
-                f"{p['symbol']}（{p['basis_date']}{'成交价' if p['basis_source'] == 'transaction' else '收盘'}）"
-                for p in stale_basis[:5]
-            )
-            warnings.append(
-                f"{label}损益为估算：{len(stale_basis)} 只持仓的期初价早于 {start.isoformat()}，"
-                f"区间损益含此前累积涨跌：{names}"
-            )
+            if stale_basis:
+                names = "、".join(
+                    f"{p['symbol']}（{p['basis_date']}{'成交价' if p['basis_source'] == 'transaction' else '收盘'}）"
+                    for p in stale_basis[:5]
+                )
+                warnings.append(
+                    f"{label}损益为估算：{len(stale_basis)} 只持仓的期初价早于 {start.isoformat()}，"
+                    f"区间损益含此前累积涨跌：{names}"
+                )
+            if stale_closing:
+                names = "、".join(
+                    f"{p['symbol']}（现价 {p['price_date']}，期初 {p['basis_date']}）"
+                    for p in stale_closing[:5]
+                )
+                warnings.append(
+                    f"{label}损益为估算：{len(stale_closing)} 只持仓的估值价早于期初基准，"
+                    f"期末按旧价计：{names}"
+                )
         response["periods"][key] = {
-            "label": label, "start_date": start.isoformat(), "end_date": today.isoformat(), **summary,
+            "label": label,
+            "start_date": start.isoformat(),
+            "end_date": today.isoformat(),
+            **summary,
         }
         if summary["unpriced_positions"] and key == "daily":
             names = "、".join(p["symbol"] for p in summary["unpriced_positions"][:5])
-            warnings.append(f"{len(summary['unpriced_positions'])} 只持仓无可用价格，未计入市值：{names}")
+            warnings.append(
+                f"{len(summary['unpriced_positions'])} 只持仓无可用价格，未计入市值：{names}"
+            )
         if summary["stale_price_positions"] and key == "daily":
             names = "、".join(p["symbol"] for p in summary["stale_price_positions"][:5])
-            warnings.append(f"{len(summary['stale_price_positions'])} 只持仓今日无最新价，按最近收盘估值：{names}")
+            warnings.append(
+                f"{len(summary['stale_price_positions'])} 只持仓今日无最新价，按最近收盘估值：{names}"
+            )
     response["data_quality"]["warnings"] = warnings
     return response

@@ -29,9 +29,7 @@ _ADDED = "'report_target_plan'"
 
 
 def upgrade() -> None:
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",
@@ -40,12 +38,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        f"DELETE FROM security_profile_data WHERE dataset IN ({_ADDED})"
-    )
-    op.drop_constraint(
-        "ck_security_profile_dataset", "security_profile_data", type_="check"
-    )
+    op.execute(f"DELETE FROM security_profile_data WHERE dataset IN ({_ADDED})")
+    op.drop_constraint("ck_security_profile_dataset", "security_profile_data", type_="check")
     op.create_check_constraint(
         "ck_security_profile_dataset",
         "security_profile_data",

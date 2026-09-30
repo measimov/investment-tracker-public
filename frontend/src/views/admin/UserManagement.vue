@@ -120,8 +120,9 @@
 </template>
 
 <script setup lang="ts">
+import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { ref, reactive, onMounted } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 import api from '../../api'
 import type { User } from '../../types'
@@ -303,25 +304,15 @@ async function handleResetPasswordSubmit() {
   }
 }
 
-function handleDelete(row: UserRow) {
-  ElMessageBox.confirm(`确定要删除用户 "${row.username}" 吗？`, '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  })
-    .then(async () => {
-      try {
-        await api.deleteUser(row.id)
-        ElMessage.success('删除用户成功')
-        loadUsers()
-      } catch (error) {
-        showApiError(error, '删除用户失败')
-      }
-    })
-    .catch(() => {
-      // User cancelled
-    })
-}
+const handleDelete = makeConfirmedAction<UserRow>({
+  title: '删除用户',
+  message: (row) => `确定要删除用户 "${row.username}" 吗？`,
+  confirmText: '删除',
+  request: (row) => api.deleteUser(row.id),
+  successMessage: '删除用户成功',
+  failureMessage: '删除用户失败',
+  reload: () => loadUsers()
+})
 
 function resetForm() {
   // 清掉 id：否则编辑过某个用户后再点「添加」，表单还带着那个用户的 id

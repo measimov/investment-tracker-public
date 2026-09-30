@@ -1,53 +1,17 @@
 /**
  * 统计页顶部警告的合成（#218，纯函数）。
  *
- * 来源：已实现盈亏与持仓表现的 data_quality.warnings、四块数据的缺汇率币种、
- * GET 业绩摘要附带的 price_freshness（陈价/缺价）。此前只取已实现那一块，
- * 仪表盘对同一份数据会报警、统计页却一声不吭。
+ * 来源：已实现盈亏与持仓表现的 data_quality.warnings、四块数据的缺汇率币种。此前只取已实现
+ * 那一块，仪表盘对同一份数据会报警、统计页却一声不吭。陈价/缺价由 PriceIssuesAlert 以摘要
+ * 展示（#286），这里只用 price_freshness 判断「有没有具体缺价清单」。
  */
 
-export interface PriceFreshnessInfo {
-  source?: string
-  price_as_of?: string | null
-  stale?: boolean
-}
+import type { PriceFreshnessEntry } from '@/utils/priceIssues'
 
-// 与后端 pricing.PRICE_STALE_DAYS 同值；freshness.stale 已由后端判定，这里只用于文案
-export const PRICE_STALE_DAYS = 7
+export type { PriceFreshnessEntry as PriceFreshnessInfo } from '@/utils/priceIssues'
 
 // 后端 aggregates.UNPRICED_POSITIONS_WARNING：有具体缺价清单时它是同一批标的的泛泛重述
 export const UNPRICED_POSITIONS_WARNING = '部分当前持仓缺少可用估值价格，其成本与市值未计入汇总。'
-
-/** "600000:A股" → "600000（A股）" */
-export function describePriceKey(key: string): string {
-  const index = key.indexOf(':')
-  if (index <= 0) return key
-  return `${key.slice(0, index)}（${key.slice(index + 1)}）`
-}
-
-export function freshnessWarnings(
-  freshness: Record<string, PriceFreshnessInfo> | null | undefined
-): string[] {
-  if (!freshness) return []
-  const stale: string[] = []
-  const missing: string[] = []
-  for (const [key, info] of Object.entries(freshness)) {
-    if (info?.source === 'missing') missing.push(key)
-    else if (info?.stale) stale.push(key)
-  }
-  const warnings: string[] = []
-  if (stale.length) {
-    warnings.push(
-      `以下标的估值价格超过 ${PRICE_STALE_DAYS} 天未更新：${stale.sort().map(describePriceKey).join('、')}`
-    )
-  }
-  if (missing.length) {
-    warnings.push(
-      `以下标的缺少可用估值价格，未计入市值：${missing.sort().map(describePriceKey).join('、')}`
-    )
-  }
-  return warnings
-}
 
 export function missingRateWarning(currencies: string[]): string {
   return (
@@ -68,10 +32,11 @@ export function buildSummaryWarnings(input: {
   realizedWarnings?: string[] | null
   currentWarnings?: string[] | null
   missingRateCurrencies?: string[] | null
-  priceFreshness?: Record<string, PriceFreshnessInfo> | null
+  priceFreshness?: Record<string, PriceFreshnessEntry> | null
 }): string[] {
-  const priceWarnings = freshnessWarnings(input.priceFreshness)
-  const hasMissingPriceList = priceWarnings.some((text) => text.includes('缺少可用估值价格'))
+  const hasMissingPriceList = Object.values(input.priceFreshness || {}).some(
+    (entry) => entry?.source === 'missing'
+  )
 
   const warnings: string[] = []
   const push = (text: string) => {
@@ -94,6 +59,5 @@ export function buildSummaryWarnings(input: {
   }
   if (currencies.size) push(missingRateWarning(Array.from(currencies).sort()))
 
-  for (const text of priceWarnings) push(text)
   return warnings
 }

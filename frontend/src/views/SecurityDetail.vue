@@ -70,7 +70,7 @@
           </div>
         </div>
 
-        <!-- 按「分析 / 基本面 / 报表 / 观点」分 tab，懒渲染：未打开的 tab 不建表格、观点不取数 -->
+        <!-- 按「分析 / 基本面 / 报表 / 公告 / 观点」分 tab，懒渲染：未打开的 tab 不建表格、观点不取数 -->
         <el-tabs v-model="activeTab" class="detail-tabs">
           <el-tab-pane label="分析" name="analysis" lazy>
             <AnalysisTab :state="state" :market="market" />
@@ -80,6 +80,9 @@
           </el-tab-pane>
           <el-tab-pane label="报表" name="statements" lazy>
             <StatementsTab :state="state" :market="market" @backfill="backfillDigests" />
+          </el-tab-pane>
+          <el-tab-pane label="公告" name="announcements" lazy>
+            <AnnouncementsTab :symbol="symbol" :market="market" />
           </el-tab-pane>
           <el-tab-pane label="观点" name="opinions" lazy>
             <OpinionSection :symbol="symbol" :market="market" />
@@ -93,13 +96,14 @@
 <script setup lang="ts">
 /**
  * 标的详情页（父 view 只做布局与编排，issue #140）：数据层在 security-detail/useSecurityProfile，
- * 四个 tab 各自一个子组件，区块样式统一在 security-detail/detail.css。
+ * 五个 tab 各自一个子组件，区块样式统一在 security-detail/detail.css。
  */
 import { ArrowLeft, View } from '@element-plus/icons-vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAliveGuard } from '../composables/useAliveGuard'
 import AnalysisTab from './security-detail/AnalysisTab.vue'
+import AnnouncementsTab from './security-detail/AnnouncementsTab.vue'
 import FundamentalsTab from './security-detail/FundamentalsTab.vue'
 import OpinionSection from './security-detail/OpinionSection.vue'
 import StatementsTab from './security-detail/StatementsTab.vue'

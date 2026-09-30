@@ -10,12 +10,13 @@ from decimal import Decimal
 from typing import Any, Dict, List, Sequence, Tuple
 
 from .semantics import (
-    OPENING_POSITION,
-    QUANTITY_ACTION_TYPES,
     action_has_ratio,
     bonus_share_factor,
+    OPENING_POSITION,
     opening_position_bucket,
     opening_position_lot,
+    QUANTITY_ACTION_TYPES,
+    rights_issue_lot,
     split_share_factor,
 )
 
@@ -34,16 +35,16 @@ def _as_decimal(value: Any) -> Decimal:
 
 def empty_fifo_result(symbol: str, market: str) -> Dict[str, Any]:
     return {
-        'symbol': symbol,
-        'market': market,
-        'realized_pnl': 0.0,
-        'sold_cost': 0.0,
-        'current_holdings_cost': 0.0,
-        'closed_trades': [],
-        'buy_queue': [],
-        'invalid_sell_events': [],
+        "symbol": symbol,
+        "market": market,
+        "realized_pnl": 0.0,
+        "sold_cost": 0.0,
+        "current_holdings_cost": 0.0,
+        "closed_trades": [],
+        "buy_queue": [],
+        "invalid_sell_events": [],
         # 匹配到成本未知批次（期初建仓/转托管转入）的平仓笔数：其已实现盈亏是估计值
-        'estimated_cost_trade_count': 0,
+        "estimated_cost_trade_count": 0,
     }
 
 
@@ -56,11 +57,11 @@ def _opening_lot(action):
     known = total_cost is not None
     total = total_cost if known else Decimal("0")
     return {
-        'price': total / quantity,
-        'quantity': quantity,
-        'total_cost': total,
-        'date': action.ex_date,
-        'cost_known': known,
+        "price": total / quantity,
+        "quantity": quantity,
+        "total_cost": total,
+        "date": action.ex_date,
+        "cost_known": known,
     }
 
 
@@ -73,31 +74,35 @@ def calculate_fifo_pnl(
     events = []
 
     for txn in transactions:
-        priority = 1 if txn.transaction_type == 'BUY' else 2
-        events.append({
-            'type': txn.transaction_type,
-            'date': txn.transaction_date,
-            # 直接存 Decimal：此前是 float(...) 再 Decimal(str(...)) 转回，
-            # 多一次 float 往返；而多账户路径（replay_fifo_multi_account）
-            # 一直是直接从 ORM 取 Decimal——同一证券在"单账户无转仓"与
-            # "多账户"两个分支间切换时，数字会在小数位上漂移。
-            'price': Decimal(str(txn.price)),
-            'quantity': Decimal(str(txn.quantity)),
-            'fee': Decimal(str(txn.fee or 0)),
-            'priority': priority,
-            'id': txn.id
-        })
+        priority = 1 if txn.transaction_type == "BUY" else 2
+        events.append(
+            {
+                "type": txn.transaction_type,
+                "date": txn.transaction_date,
+                # 直接存 Decimal：此前是 float(...) 再 Decimal(str(...)) 转回，
+                # 多一次 float 往返；而多账户路径（replay_fifo_multi_account）
+                # 一直是直接从 ORM 取 Decimal——同一证券在"单账户无转仓"与
+                # "多账户"两个分支间切换时，数字会在小数位上漂移。
+                "price": Decimal(str(txn.price)),
+                "quantity": Decimal(str(txn.quantity)),
+                "fee": Decimal(str(txn.fee or 0)),
+                "priority": priority,
+                "id": txn.id,
+            }
+        )
 
     for action in corporate_actions:
-        events.append({
-            'type': action.action_type,
-            'date': action.ex_date,
-            'data': action,
-            'priority': 0,
-            'id': action.id
-        })
+        events.append(
+            {
+                "type": action.action_type,
+                "date": action.ex_date,
+                "data": action,
+                "priority": 0,
+                "id": action.id,
+            }
+        )
 
-    events.sort(key=lambda x: (x['date'], x['priority'], x['id']))
+    events.sort(key=lambda x: (x["date"], x["priority"], x["id"]))
 
     buy_queue = deque()
     realized_pnl = Decimal(0)
@@ -107,42 +112,44 @@ def calculate_fifo_pnl(
     estimated_cost_trade_count = 0
 
     for event in events:
-        event_type = event['type']
+        event_type = event["type"]
 
-        if event_type == 'BUY':
-            total_cost = event['price'] * event['quantity'] + event['fee']
-            cost_per_share = total_cost / event['quantity']
+        if event_type == "BUY":
+            total_cost = event["price"] * event["quantity"] + event["fee"]
+            cost_per_share = total_cost / event["quantity"]
 
-            buy_queue.append({
-                'price': cost_per_share,
-                'quantity': event['quantity'],
-                'total_cost': total_cost,
-                'date': event['date'],
-                'cost_known': True,
-            })
+            buy_queue.append(
+                {
+                    "price": cost_per_share,
+                    "quantity": event["quantity"],
+                    "total_cost": total_cost,
+                    "date": event["date"],
+                    "cost_known": True,
+                }
+            )
 
         elif event_type == OPENING_POSITION:
-            lot = _opening_lot(event['data'])
+            lot = _opening_lot(event["data"])
             if lot is not None:
                 buy_queue.append(lot)
 
-        elif event_type == 'SELL':
-            sell_qty = event['quantity']
-            available_qty = sum(record['quantity'] for record in buy_queue)
+        elif event_type == "SELL":
+            sell_qty = event["quantity"]
+            available_qty = sum(record["quantity"] for record in buy_queue)
             if sell_qty > available_qty:
                 invalid_event = {
-                    'transaction_id': event['id'],
-                    'date': event['date'].isoformat(),
-                    'symbol': symbol,
-                    'market': market,
-                    'sell_quantity': float(sell_qty),
-                    'available_quantity': float(available_qty),
+                    "transaction_id": event["id"],
+                    "date": event["date"].isoformat(),
+                    "symbol": symbol,
+                    "market": market,
+                    "sell_quantity": float(sell_qty),
+                    "available_quantity": float(available_qty),
                 }
                 invalid_sell_events.append(invalid_event)
                 logger.warning(
                     "Skipping oversold FIFO transaction id=%s symbol=%s market=%s "
                     "sell_quantity=%s available_quantity=%s",
-                    event['id'],
+                    event["id"],
                     symbol,
                     market,
                     sell_qty,
@@ -150,7 +157,7 @@ def calculate_fifo_pnl(
                 )
                 continue
             original_sell_qty = sell_qty
-            sell_proceeds = event['price'] * sell_qty - event['fee']
+            sell_proceeds = event["price"] * sell_qty - event["fee"]
             matched_cost = Decimal(0)
             earliest_buy_date = None
             cost_estimated = False
@@ -158,22 +165,22 @@ def calculate_fifo_pnl(
             while sell_qty > 0 and buy_queue:
                 buy_record = buy_queue[0]
                 if earliest_buy_date is None:
-                    earliest_buy_date = buy_record['date']
-                if not buy_record.get('cost_known', True):
+                    earliest_buy_date = buy_record["date"]
+                if not buy_record.get("cost_known", True):
                     cost_estimated = True
 
-                if buy_record['quantity'] <= sell_qty:
-                    matched_qty = buy_record['quantity']
-                    matched_cost += buy_record['total_cost']
+                if buy_record["quantity"] <= sell_qty:
+                    matched_qty = buy_record["quantity"]
+                    matched_cost += buy_record["total_cost"]
                     buy_queue.popleft()
                 else:
                     matched_qty = sell_qty
-                    ratio = matched_qty / buy_record['quantity']
-                    batch_cost = buy_record['total_cost'] * ratio
+                    ratio = matched_qty / buy_record["quantity"]
+                    batch_cost = buy_record["total_cost"] * ratio
                     matched_cost += batch_cost
 
-                    buy_record['quantity'] -= matched_qty
-                    buy_record['total_cost'] -= batch_cost
+                    buy_record["quantity"] -= matched_qty
+                    buy_record["total_cost"] -= batch_cost
 
                 sell_qty -= matched_qty
 
@@ -186,87 +193,82 @@ def calculate_fifo_pnl(
             # than per symbol (issue #43).
             holding_days = None
             if earliest_buy_date is not None:
-                holding_days = (event['date'] - earliest_buy_date).days
-            closed_trades.append({
-                'symbol': symbol,
-                'market': market,
-                'date': event['date'].isoformat(),
-                'quantity': float(original_sell_qty),
-                'proceeds': float(sell_proceeds),
-                'matched_cost': float(matched_cost),
-                'realized_pnl': float(batch_pnl),
-                'holding_days': holding_days,
-                'cost_estimated': cost_estimated,
-            })
+                holding_days = (event["date"] - earliest_buy_date).days
+            closed_trades.append(
+                {
+                    "symbol": symbol,
+                    "market": market,
+                    "date": event["date"].isoformat(),
+                    "quantity": float(original_sell_qty),
+                    "proceeds": float(sell_proceeds),
+                    "matched_cost": float(matched_cost),
+                    "realized_pnl": float(batch_pnl),
+                    "holding_days": holding_days,
+                    "cost_estimated": cost_estimated,
+                }
+            )
             if cost_estimated:
                 estimated_cost_trade_count += 1
 
-        elif event_type in ['STOCK_DIVIDEND', 'BONUS_ISSUE']:
-            action = event['data']
-            queue_quantity = sum(record['quantity'] for record in buy_queue)
+        elif event_type in ["STOCK_DIVIDEND", "BONUS_ISSUE"]:
+            action = event["data"]
+            queue_quantity = sum(record["quantity"] for record in buy_queue)
             factor = bonus_share_factor(action, queue_quantity)
             if factor is not None:
                 for buy_record in buy_queue:
-                    buy_record['quantity'] *= factor
-                    buy_record['price'] = buy_record['total_cost'] / buy_record['quantity']
+                    buy_record["quantity"] *= factor
+                    buy_record["price"] = buy_record["total_cost"] / buy_record["quantity"]
 
-        elif event_type == 'RIGHTS_ISSUE':
-            action = event['data']
-            if action.subscription_quantity and action.subscription_price:
-                qty = Decimal(str(action.subscription_quantity))
-                price = Decimal(str(action.subscription_price))
-                total_cost = price * qty
+        elif event_type == "RIGHTS_ISSUE":
+            action = event["data"]
+            lot = rights_issue_lot(action)
+            if lot is not None:
+                qty, total_cost = lot
+                buy_queue.append(
+                    {
+                        "price": total_cost / qty,
+                        "quantity": qty,
+                        "total_cost": total_cost,
+                        "date": action.ex_date,
+                    }
+                )
 
-                if action.subscription_amount:
-                    total_cost = Decimal(str(action.subscription_amount))
-
-                buy_queue.append({
-                    'price': total_cost / qty,
-                    'quantity': qty,
-                    'total_cost': total_cost,
-                    'date': action.ex_date
-                })
-
-        elif event_type in ['STOCK_SPLIT', 'REVERSE_SPLIT']:
-            action = event['data']
-            queue_quantity = sum(record['quantity'] for record in buy_queue)
+        elif event_type in ["STOCK_SPLIT", "REVERSE_SPLIT"]:
+            action = event["data"]
+            queue_quantity = sum(record["quantity"] for record in buy_queue)
             factor = split_share_factor(action, queue_quantity)
             if factor is not None:
                 for buy_record in buy_queue:
-                    buy_record['quantity'] *= factor
-                    buy_record['price'] /= factor
+                    buy_record["quantity"] *= factor
+                    buy_record["price"] /= factor
 
-    current_holdings_cost = sum(b['total_cost'] for b in buy_queue)
+    current_holdings_cost = sum(b["total_cost"] for b in buy_queue)
 
     return {
-        'symbol': symbol,
-        'market': market,
-        'realized_pnl': float(realized_pnl),
-        'sold_cost': float(sold_cost),
-        'current_holdings_cost': float(current_holdings_cost),
-        'closed_trades': closed_trades,
-        'buy_queue': [
+        "symbol": symbol,
+        "market": market,
+        "realized_pnl": float(realized_pnl),
+        "sold_cost": float(sold_cost),
+        "current_holdings_cost": float(current_holdings_cost),
+        "closed_trades": closed_trades,
+        "buy_queue": [
             {
-                'price': float(b['price']),
-                'quantity': float(b['quantity']),
-                'total_cost': float(b['total_cost']),
-                'date': str(b['date']),
-                'cost_known': b.get('cost_known', True),
+                "price": float(b["price"]),
+                "quantity": float(b["quantity"]),
+                "total_cost": float(b["total_cost"]),
+                "date": str(b["date"]),
+                "cost_known": b.get("cost_known", True),
             }
             for b in buy_queue
         ],
-        'invalid_sell_events': invalid_sell_events,
-        'estimated_cost_trade_count': estimated_cost_trade_count,
+        "invalid_sell_events": invalid_sell_events,
+        "estimated_cost_trade_count": estimated_cost_trade_count,
     }
 
 
-def fifo_data_quality(
-    fifo_results: Dict[Tuple[str, str], Dict[str, Any]]
-) -> Dict[str, Any]:
+def fifo_data_quality(fifo_results: Dict[Tuple[str, str], Dict[str, Any]]) -> Dict[str, Any]:
     invalid_sell_events = [
-        event
-        for result in fifo_results.values()
-        for event in result.get('invalid_sell_events', [])
+        event for result in fifo_results.values() for event in result.get("invalid_sell_events", [])
     ]
     warnings: List[str] = []
     if invalid_sell_events:
@@ -277,11 +279,11 @@ def fifo_data_quality(
     unknown_cost_lot_count = sum(
         1
         for result in fifo_results.values()
-        for lot in result.get('buy_queue', [])
-        if not lot.get('cost_known', True)
+        for lot in result.get("buy_queue", [])
+        if not lot.get("cost_known", True)
     )
     estimated_cost_trade_count = sum(
-        int(result.get('estimated_cost_trade_count') or 0) for result in fifo_results.values()
+        int(result.get("estimated_cost_trade_count") or 0) for result in fifo_results.values()
     )
     if unknown_cost_lot_count or estimated_cost_trade_count:
         warnings.append(
@@ -289,11 +291,11 @@ def fifo_data_quality(
             "请在公司行动页补录成本。"
         )
     return {
-        'warnings': warnings,
-        'invalid_sell_event_count': len(invalid_sell_events),
-        'invalid_sell_events': invalid_sell_events[:50],
-        'unknown_cost_lot_count': unknown_cost_lot_count,
-        'estimated_cost_trade_count': estimated_cost_trade_count,
+        "warnings": warnings,
+        "invalid_sell_event_count": len(invalid_sell_events),
+        "invalid_sell_events": invalid_sell_events[:50],
+        "unknown_cost_lot_count": unknown_cost_lot_count,
+        "estimated_cost_trade_count": estimated_cost_trade_count,
     }
 
 
@@ -329,7 +331,7 @@ def _multi_txn_order(txn) -> Tuple[int, int, int]:
 
 
 def _queue_quantity(queue) -> Decimal:
-    return sum((lot['quantity'] for lot in queue), Decimal("0"))
+    return sum((lot["quantity"] for lot in queue), Decimal("0"))
 
 
 def _pop_lots(queue, quantity: Decimal):
@@ -338,22 +340,24 @@ def _pop_lots(queue, quantity: Decimal):
     remaining = quantity
     while remaining > 0 and queue:
         lot = queue[0]
-        if lot['quantity'] <= remaining:
+        if lot["quantity"] <= remaining:
             popped.append(lot)
             queue.popleft()
-            remaining -= lot['quantity']
+            remaining -= lot["quantity"]
         else:
-            ratio = remaining / lot['quantity']
-            split_cost = lot['total_cost'] * ratio
-            popped.append({
-                'price': lot['price'],
-                'quantity': remaining,
-                'total_cost': split_cost,
-                'date': lot['date'],
-                'cost_known': lot.get('cost_known', True),
-            })
-            lot['quantity'] -= remaining
-            lot['total_cost'] -= split_cost
+            ratio = remaining / lot["quantity"]
+            split_cost = lot["total_cost"] * ratio
+            popped.append(
+                {
+                    "price": lot["price"],
+                    "quantity": remaining,
+                    "total_cost": split_cost,
+                    "date": lot["date"],
+                    "cost_known": lot.get("cost_known", True),
+                }
+            )
+            lot["quantity"] -= remaining
+            lot["total_cost"] -= split_cost
             remaining = Decimal("0")
     return popped
 
@@ -374,20 +378,24 @@ def replay_fifo_multi_account(
     for txn in transactions:
         if txn.transaction_type not in _MULTI_TXN_TYPES:
             continue
-        events.append({
-            'kind': 'txn',
-            'date': txn.transaction_date,
-            'order': _multi_txn_order(txn),
-            'data': txn,
-        })
+        events.append(
+            {
+                "kind": "txn",
+                "date": txn.transaction_date,
+                "order": _multi_txn_order(txn),
+                "data": txn,
+            }
+        )
     for action in corporate_actions:
-        events.append({
-            'kind': 'action',
-            'date': action.ex_date,
-            'order': (0, action.id, 0),
-            'data': action,
-        })
-    events.sort(key=lambda e: (e['date'],) + e['order'])
+        events.append(
+            {
+                "kind": "action",
+                "date": action.ex_date,
+                "order": (0, action.id, 0),
+                "data": action,
+            }
+        )
+    events.sort(key=lambda e: (e["date"],) + e["order"])
 
     queues: Dict[Any, deque] = {}
     realized: Dict[Any, Decimal] = {}
@@ -420,8 +428,8 @@ def replay_fifo_multi_account(
         )
 
     for event in events:
-        data = event['data']
-        if event['kind'] == 'txn':
+        data = event["data"]
+        if event["kind"] == "txn":
             txn_type = data.transaction_type
             account_id = data.broker_account_id
 
@@ -429,13 +437,15 @@ def replay_fifo_multi_account(
                 queue = queue_of(account_id)
                 quantity = Decimal(str(data.quantity))
                 total_cost = quantity * Decimal(str(data.price)) + Decimal(str(data.fee or 0))
-                queue.append({
-                    'price': total_cost / quantity,
-                    'quantity': quantity,
-                    'total_cost': total_cost,
-                    'date': data.transaction_date,
-                    'cost_known': True,
-                })
+                queue.append(
+                    {
+                        "price": total_cost / quantity,
+                        "quantity": quantity,
+                        "total_cost": total_cost,
+                        "date": data.transaction_date,
+                        "cost_known": True,
+                    }
+                )
 
             elif txn_type == "SELL":
                 queue = queue_of(account_id)
@@ -446,12 +456,12 @@ def replay_fifo_multi_account(
                         f"{_queue_quantity(queue)} for {symbol} ({market})"
                     )
                 proceeds = sell_qty * Decimal(str(data.price)) - Decimal(str(data.fee or 0))
-                earliest = queue[0]['date'] if queue else None
+                earliest = queue[0]["date"] if queue else None
                 lots = _pop_lots(queue, sell_qty)
-                cost_estimated = any(not lot.get('cost_known', True) for lot in lots)
+                cost_estimated = any(not lot.get("cost_known", True) for lot in lots)
                 if cost_estimated:
                     estimated_trades[account_id] += 1
-                matched_cost = sum((lot['total_cost'] for lot in lots), Decimal("0"))
+                matched_cost = sum((lot["total_cost"] for lot in lots), Decimal("0"))
                 pnl = proceeds - matched_cost
                 realized[account_id] += pnl
                 sold_cost[account_id] += matched_cost
@@ -459,17 +469,19 @@ def replay_fifo_multi_account(
                     (data.transaction_date - earliest).days if earliest is not None else None
                 )
                 # 保持 Decimal：float 化统一在 merge_account_fifo_results 出口
-                closed_trades[account_id].append({
-                    'symbol': symbol,
-                    'market': market,
-                    'date': data.transaction_date.isoformat(),
-                    'quantity': sell_qty,
-                    'proceeds': proceeds,
-                    'matched_cost': matched_cost,
-                    'realized_pnl': pnl,
-                    'holding_days': holding_days,
-                    'cost_estimated': cost_estimated,
-                })
+                closed_trades[account_id].append(
+                    {
+                        "symbol": symbol,
+                        "market": market,
+                        "date": data.transaction_date.isoformat(),
+                        "quantity": sell_qty,
+                        "proceeds": proceeds,
+                        "matched_cost": matched_cost,
+                        "realized_pnl": pnl,
+                        "holding_days": holding_days,
+                        "cost_estimated": cost_estimated,
+                    }
+                )
 
             elif txn_type == "TRANSFER_OUT":
                 queue = queue_of(account_id)
@@ -490,7 +502,7 @@ def replay_fifo_multi_account(
                 queue = queue_of(account_id)
                 queue.extend(lots)
                 # 目标队列保持按买入日期的 FIFO 顺序（迁移批次保留原始日期）。
-                ordered = sorted(queue, key=lambda lot: lot['date'])
+                ordered = sorted(queue, key=lambda lot: lot["date"])
                 queue.clear()
                 queue.extend(ordered)
 
@@ -503,9 +515,7 @@ def replay_fifo_multi_account(
                 else:
                     target = resolve_action_account(action)
                     targets = (
-                        [target]
-                        if target in queues and _queue_quantity(queues[target]) > 0
-                        else []
+                        [target] if target in queues and _queue_quantity(queues[target]) > 0 else []
                     )
                 for aid in targets:
                     queue = queues[aid]
@@ -516,8 +526,8 @@ def replay_fifo_multi_account(
                         factor = split_share_factor(action, quantity)
                     if factor is not None:
                         for lot in queue:
-                            lot['quantity'] *= factor
-                            lot['price'] = lot['total_cost'] / lot['quantity']
+                            lot["quantity"] *= factor
+                            lot["price"] = lot["total_cost"] / lot["quantity"]
 
             elif action_type == OPENING_POSITION:
                 lot = _opening_lot(action)
@@ -525,32 +535,27 @@ def replay_fifo_multi_account(
                     # 期初建仓落自己账户的队列（NULL = 未指定账户），不"挂到唯一持有人"
                     queue = queue_of(opening_position_bucket(action, True))
                     queue.append(lot)
-                    ordered = sorted(queue, key=lambda entry: entry['date'])
+                    ordered = sorted(queue, key=lambda entry: entry["date"])
                     queue.clear()
                     queue.extend(ordered)
 
             elif action_type == "RIGHTS_ISSUE":
-                if action.subscription_quantity and action.subscription_price:
-                    target = resolve_action_account(action)
-                    queue = queue_of(target)
-                    qty = Decimal(str(action.subscription_quantity))
-                    price = Decimal(str(action.subscription_price))
-                    total_cost = (
-                        Decimal(str(action.subscription_amount))
-                        if action.subscription_amount
-                        else price * qty
+                lot = rights_issue_lot(action)
+                if lot is not None:
+                    qty, total_cost = lot
+                    queue = queue_of(resolve_action_account(action))
+                    queue.append(
+                        {
+                            "price": total_cost / qty,
+                            "quantity": qty,
+                            "total_cost": total_cost,
+                            "date": action.ex_date,
+                        }
                     )
-                    queue.append({
-                        'price': total_cost / qty,
-                        'quantity': qty,
-                        'total_cost': total_cost,
-                        'date': action.ex_date,
-                    })
 
     if pending_transfers:
         raise AccountFifoFallback(
-            f"unmatched transfer-out legs for {symbol} ({market}): "
-            f"ids={sorted(pending_transfers)}"
+            f"unmatched transfer-out legs for {symbol} ({market}): ids={sorted(pending_transfers)}"
         )
 
     # 账户级结果**保持 Decimal**：它们只是 merge_account_fifo_results 的中间量，
@@ -561,27 +566,25 @@ def replay_fifo_multi_account(
     results: Dict[Any, Dict[str, Any]] = {}
     for account_id, queue in queues.items():
         results[account_id] = {
-            'symbol': symbol,
-            'market': market,
-            'broker_account_id': account_id,
-            'realized_pnl': realized[account_id],
-            'sold_cost': sold_cost[account_id],
-            'current_holdings_cost': sum(
-                (lot['total_cost'] for lot in queue), Decimal("0")
-            ),
-            'closed_trades': closed_trades[account_id],
-            'buy_queue': [
+            "symbol": symbol,
+            "market": market,
+            "broker_account_id": account_id,
+            "realized_pnl": realized[account_id],
+            "sold_cost": sold_cost[account_id],
+            "current_holdings_cost": sum((lot["total_cost"] for lot in queue), Decimal("0")),
+            "closed_trades": closed_trades[account_id],
+            "buy_queue": [
                 {
-                    'price': lot['price'],
-                    'quantity': lot['quantity'],
-                    'total_cost': lot['total_cost'],
-                    'date': str(lot['date']),
-                    'cost_known': lot.get('cost_known', True),
+                    "price": lot["price"],
+                    "quantity": lot["quantity"],
+                    "total_cost": lot["total_cost"],
+                    "date": str(lot["date"]),
+                    "cost_known": lot.get("cost_known", True),
                 }
                 for lot in queue
             ],
-            'invalid_sell_events': [],
-            'estimated_cost_trade_count': estimated_trades[account_id],
+            "invalid_sell_events": [],
+            "estimated_cost_trade_count": estimated_trades[account_id],
         }
     return results
 
@@ -602,32 +605,38 @@ def merge_account_fifo_results(
     closed = []
     lots = []
     totals = {
-        'realized_pnl': Decimal("0"),
-        'sold_cost': Decimal("0"),
-        'current_holdings_cost': Decimal("0"),
+        "realized_pnl": Decimal("0"),
+        "sold_cost": Decimal("0"),
+        "current_holdings_cost": Decimal("0"),
     }
     for result in account_results.values():
         for field in totals:
             totals[field] += _as_decimal(result[field])
-        closed.extend(result['closed_trades'])
-        lots.extend(result['buy_queue'])
-        merged['estimated_cost_trade_count'] += int(result.get('estimated_cost_trade_count') or 0)
+        closed.extend(result["closed_trades"])
+        lots.extend(result["buy_queue"])
+        merged["estimated_cost_trade_count"] += int(result.get("estimated_cost_trade_count") or 0)
     for field, value in totals.items():
         merged[field] = float(value)
-    merged['closed_trades'] = [
-        {**trade, **{
-            key: float(_as_decimal(trade[key]))
-            for key in ('proceeds', 'matched_cost', 'realized_pnl', 'quantity')
-            if key in trade
-        }}
-        for trade in sorted(closed, key=lambda t: t['date'])
+    merged["closed_trades"] = [
+        {
+            **trade,
+            **{
+                key: float(_as_decimal(trade[key]))
+                for key in ("proceeds", "matched_cost", "realized_pnl", "quantity")
+                if key in trade
+            },
+        }
+        for trade in sorted(closed, key=lambda t: t["date"])
     ]
-    merged['buy_queue'] = [
-        {**lot, **{
-            key: float(_as_decimal(lot[key]))
-            for key in ('price', 'quantity', 'total_cost')
-            if key in lot
-        }}
-        for lot in sorted(lots, key=lambda lot: lot['date'])
+    merged["buy_queue"] = [
+        {
+            **lot,
+            **{
+                key: float(_as_decimal(lot[key]))
+                for key in ("price", "quantity", "total_cost")
+                if key in lot
+            },
+        }
+        for lot in sorted(lots, key=lambda lot: lot["date"])
     ]
     return merged

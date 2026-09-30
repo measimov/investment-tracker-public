@@ -27,7 +27,8 @@ class SecurityOpinionSummary(Base):
 
     tags = Column(JSONB, nullable=False, comment="观点标签数组（白名单）")
     author_stances = Column(
-        JSONB, nullable=False,
+        JSONB,
+        nullable=False,
         comment="逐作者立场 [{author, stance, recent_change, evidence}]",
     )
     summary = Column(String(300), nullable=False, comment="一句话观点概括")

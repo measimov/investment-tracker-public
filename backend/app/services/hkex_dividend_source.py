@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
 from . import report_fetchers
+from .payload_versions import versions_current
 
 logger = get_app_logger(__name__)
 
@@ -156,7 +157,9 @@ _NOT_APPLICABLE = "不適用"
 # 首份公告常只定了宣派金额：派发金额/汇率/除淨日写「有待公佈」，后续以更新公告补齐
 _PENDING = "有待公佈"
 _SCRIP_RE = re.compile(r"以股代息")
-_CURRENCY_ELECTION_RE = re.compile(r"(選擇|選取)[^。\n]{0,20}(貨幣|幣種|幣值)|(貨幣|幣種)[^。\n]{0,10}選擇")
+_CURRENCY_ELECTION_RE = re.compile(
+    r"(選擇|選取)[^。\n]{0,20}(貨幣|幣種|幣值)|(貨幣|幣種)[^。\n]{0,10}選擇"
+)
 # 表格里的类型/性质值偶有简体字（00878「其他 / 特别」）：身份比较前统一成繁体
 _TYPE_CHAR_MAP = str.maketrans({"别": "別"})
 
@@ -277,7 +280,7 @@ def _label_value(line: str, label: str) -> Optional[str]:
     """行首是完整标签（其后是空白或行尾）→ 返回标签后的值（可能为空串）。"""
     if not line.startswith(label):
         return None
-    rest = line[len(label):]
+    rest = line[len(label) :]
     if rest and not rest[0].isspace():
         return None  # 「宣派股息的報告期末」不是「宣派股息」
     return rest.strip()
@@ -335,17 +338,20 @@ def parse_withholding(text: str) -> Dict[str, Any]:
     lines = _clean_lines(text)
     start = next((i for i, line in enumerate(lines) if line == "代扣所得稅信息"), None)
     if start is None:
-        return {"applicable": None, "rates_percent": [], "note": None,
-                "non_resident_enterprise_percent": None, "southbound_individual_percent": None}
+        return {
+            "applicable": None,
+            "rates_percent": [],
+            "note": None,
+            "non_resident_enterprise_percent": None,
+            "southbound_individual_percent": None,
+        }
     block: List[str] = []
-    for line in lines[start + 1:]:
+    for line in lines[start + 1 :]:
         if any(line.startswith(header) for header in _WITHHOLDING_END_HEADERS):
             break
         block.append(line)
     label = "股息所涉及的代扣所得稅"
-    body = " ".join(
-        line.replace(label, "").strip() for line in block
-    ).strip()
+    body = " ".join(line.replace(label, "").strip() for line in block).strip()
     table_start = body.find("有關代預扣所得稅之更多補充")
     table = body[table_start:] if table_start >= 0 else body
     rates = sorted({_parse_decimal(m) for m in _PERCENT_RE.findall(table)} - {None})
@@ -422,15 +428,17 @@ def parse_currency_options(fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
             continue
         amount = parse_per_share_amount(amount_text)
         leading = _LEADING_CURRENCY_RE.match(amount_text)
-        options.append({
-            "currency": amount["currency"] if amount else (
-                normalize_currency(leading.group(1)) if leading else None
-            ),
-            "amount": format(amount["amount"].normalize(), "f") if amount else None,
-            "exchange_rate": _rate_json(fields.get(f"currency_option_{index}_rate")),
-            # 「RMB， 金額有待公佈」：选项已定、金额待定（预设货币金额不受影响）
-            "pending": amount is None and _PENDING in amount_text,
-        })
+        options.append(
+            {
+                "currency": amount["currency"]
+                if amount
+                else (normalize_currency(leading.group(1)) if leading else None),
+                "amount": format(amount["amount"].normalize(), "f") if amount else None,
+                "exchange_rate": _rate_json(fields.get(f"currency_option_{index}_rate")),
+                # 「RMB， 金額有待公佈」：选项已定、金额待定（预设货币金额不受影响）
+                "pending": amount is None and _PENDING in amount_text,
+            }
+        )
     if not options:
         return None
     return {
@@ -471,9 +479,9 @@ def parse_scrip_option(fields: Dict[str, str]) -> Dict[str, Any]:
     }
 
 
-def resolve_period(fields: Dict[str, str]) -> Tuple[
-    Optional[str], Optional[date], Optional[date], Optional[str]
-]:
+def resolve_period(
+    fields: Dict[str, str],
+) -> Tuple[Optional[str], Optional[date], Optional[date], Optional[str]]:
     """「宣派股息的報告期末」/「財政年末」→ (period_basis, period_end, financial_year_end, 原因)。
 
     - 報告期末是日期 → basis=period_end；
@@ -491,9 +499,15 @@ def resolve_period(fields: Dict[str, str]) -> Tuple[
     if period_end is not None:
         return PERIOD_BASIS_PERIOD_END, period_end, financial_year_end, None
     if period_text != _NOT_APPLICABLE:
-        return None, None, financial_year_end, (
-            f"缺少宣派股息的報告期末（無法識別: {period_text[:20]}）" if period_text
-            else "缺少宣派股息的報告期末"
+        return (
+            None,
+            None,
+            financial_year_end,
+            (
+                f"缺少宣派股息的報告期末（無法識別: {period_text[:20]}）"
+                if period_text
+                else "缺少宣派股息的報告期末"
+            ),
         )
     if financial_year_end is not None:
         return PERIOD_BASIS_FINANCIAL_YEAR, None, financial_year_end, None
@@ -731,9 +745,8 @@ def _entry_meta(entry: Dict[str, Any]) -> Dict[str, Any]:
         identity = entry.get("identity")
         return {
             "identity": identity,
-            "basis": entry.get("period_basis") or (
-                PERIOD_BASIS_PERIOD_END if identity is not None else None
-            ),
+            "basis": entry.get("period_basis")
+            or (PERIOD_BASIS_PERIOD_END if identity is not None else None),
             # 状态认不出按「可能是更新/撤回」处理（更保守）
             "kind": entry.get("status_kind"),
             "financial_year_end": entry.get("financial_year_end"),
@@ -791,8 +804,10 @@ def _loose_anchor_conflicts(metas: List[Dict[str, Any]]) -> Dict[int, str]:
                         "更新/撤回公告的報告期末與同類股息的更早公告寫法不同，無法確定對應哪一筆"
                     )
                     break
-            elif other["kind"] == "new" and other_identity == identity and (
-                meta["ex_date"] is None or meta["ex_date"] != other["ex_date"]
+            elif (
+                other["kind"] == "new"
+                and other_identity == identity
+                and (meta["ex_date"] is None or meta["ex_date"] != other["ex_date"])
             ):
                 conflicts[index] = "兩份新公告的報告期末均不適用且除淨日不同，無法確定是否同一筆"
                 break
@@ -825,14 +840,17 @@ def resolve_dividend_resolution(entries: Iterable[Dict[str, Any]]) -> DividendRe
             if not identity_complete(key):
                 # 撤回/更新（或身份字段不全的公告）对应哪一笔认不出：按其中一两项去匹配会
                 # 生成一个对不上的新身份，被撤回/被更新的股息照样现行——整标的挂起
-                resolution.unscoped.append({
-                    **entry,
-                    "reason": entry.get("reason") or (
-                        "更新/撤回公告的報告期末與財政年末均不適用，無法確定對應哪一筆股息"
-                        if meta["basis"] == PERIOD_BASIS_NONE
-                        else "公告未載明可對應的報告期末或股息類型/性質"
-                    ),
-                })
+                resolution.unscoped.append(
+                    {
+                        **entry,
+                        "reason": entry.get("reason")
+                        or (
+                            "更新/撤回公告的報告期末與財政年末均不適用，無法確定對應哪一筆股息"
+                            if meta["basis"] == PERIOD_BASIS_NONE
+                            else "公告未載明可對應的報告期末或股息類型/性質"
+                        ),
+                    }
+                )
                 continue
             if entry["form"].get("ex_date"):
                 seen_ex_dates.setdefault(key, set()).add(entry["form"]["ex_date"])
@@ -842,12 +860,14 @@ def resolve_dividend_resolution(entries: Iterable[Dict[str, Any]]) -> DividendRe
 
     for key, (entry, meta) in latest.items():
         if entry.get("unresolved"):
-            resolution.blocked.append({
-                "identity": key,
-                "period_basis": meta["basis"],
-                "entry": entry,
-                "ex_dates": sorted(seen_ex_dates.get(key, set())),
-            })
+            resolution.blocked.append(
+                {
+                    "identity": key,
+                    "period_basis": meta["basis"],
+                    "entry": entry,
+                    "ex_dates": sorted(seen_ex_dates.get(key, set())),
+                }
+            )
             continue
         form = entry["form"]
         if form["status_kind"] == "withdrawal":
@@ -877,8 +897,13 @@ def resolve_current_dividends(entries: Iterable[Dict[str, Any]]) -> List[Dict[st
 # ---------------------------------------------------------------------------
 
 _DATE_FIELDS = (
-    "announcement_date", "financial_year_end", "period_end", "approval_date",
-    "ex_date", "record_date", "pay_date",
+    "announcement_date",
+    "financial_year_end",
+    "period_end",
+    "approval_date",
+    "ex_date",
+    "record_date",
+    "pay_date",
 )
 
 
@@ -910,8 +935,10 @@ def form_from_json(payload: Dict[str, Any]) -> Dict[str, Any]:
         if form.get(field):
             form[field] = {**form[field], "amount": Decimal(form[field]["amount"])}
     if form.get("exchange_rate"):
-        form["exchange_rate"] = {**form["exchange_rate"],
-                                 "rate": Decimal(form["exchange_rate"]["rate"])}
+        form["exchange_rate"] = {
+            **form["exchange_rate"],
+            "rate": Decimal(form["exchange_rate"]["rate"]),
+        }
     withholding = form.get("withholding") or {}
     if withholding:
         form["withholding"] = {
@@ -956,12 +983,14 @@ def list_dividend_forms(symbol: str, from_date: date, to_date: date) -> List[Dic
     forms = []
     for document in documents:
         listed_at = _list_datetime(document.get("ann_date") or "")
-        forms.append({
-            "doc_id": document_id(document["url"]),
-            "title": document.get("title") or "",
-            "listed_at": listed_at.isoformat() if listed_at else None,
-            "url": document["url"],
-        })
+        forms.append(
+            {
+                "doc_id": document_id(document["url"]),
+                "title": document.get("title") or "",
+                "listed_at": listed_at.isoformat() if listed_at else None,
+                "url": document["url"],
+            }
+        )
     return forms
 
 
@@ -984,16 +1013,20 @@ def download_form_text(url: str) -> str:
 def _load_cached(db: Session, symbol: str, market: str) -> Dict[str, Dict[str, Any]]:
     from ..models.security_profile import SecurityProfileData
 
-    rows = db.query(SecurityProfileData).filter(
-        SecurityProfileData.symbol == symbol,
-        SecurityProfileData.market == market,
-        SecurityProfileData.dataset == DATASET,
-    ).all()
+    rows = (
+        db.query(SecurityProfileData)
+        .filter(
+            SecurityProfileData.symbol == symbol,
+            SecurityProfileData.market == market,
+            SecurityProfileData.dataset == DATASET,
+        )
+        .all()
+    )
     return {row.period_key: dict(row.payload or {}) for row in rows}
 
 
 def _store(db: Session, symbol: str, market: str, doc_id: str, payload: Dict[str, Any]) -> None:
-    from .security_profile_service import upsert_profile_row
+    from .profile_store import upsert_profile_row
 
     upsert_profile_row(db, symbol, market, DATASET, doc_id, payload)
 
@@ -1035,7 +1068,7 @@ def ensure_dividend_forms(
     for item in listing:
         existing = cached.get(item["doc_id"])
         if existing and existing.get("text") is not None:
-            if existing.get("parser_version") != HKEX_DIVIDEND_PARSER_VERSION:
+            if not versions_current(existing, parser_version=HKEX_DIVIDEND_PARSER_VERSION):
                 payload = _build_payload({**existing, **item}, existing["text"])
                 _store(db, symbol, market, item["doc_id"], payload)
                 cached[item["doc_id"]] = payload
@@ -1049,7 +1082,7 @@ def ensure_dividend_forms(
             on_download()
     # 清单外的缓存行（更早窗口）若解析器升版也顺带重解析
     for doc_id, payload in list(cached.items()):
-        stale = payload.get("parser_version") != HKEX_DIVIDEND_PARSER_VERSION
+        stale = not versions_current(payload, parser_version=HKEX_DIVIDEND_PARSER_VERSION)
         if stale and payload.get("text") is not None:
             refreshed = _build_payload(payload, payload["text"])
             _store(db, symbol, market, doc_id, refreshed)
@@ -1058,8 +1091,12 @@ def ensure_dividend_forms(
         "entries": cached_entries(cached.values()),
         "downloaded": downloaded,
         "unparsed": [
-            {"doc_id": p.get("doc_id"), "url": p.get("url"), "reason": p.get("reason"),
-             "listed_at": p.get("listed_at")}
+            {
+                "doc_id": p.get("doc_id"),
+                "url": p.get("url"),
+                "reason": p.get("reason"),
+                "listed_at": p.get("listed_at"),
+            }
             for p in cached.values()
             if p.get("status") != "ok"
         ],
@@ -1077,7 +1114,7 @@ def cached_entries(payloads: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     entries = []
     for payload in payloads:
-        if payload.get("parser_version") != HKEX_DIVIDEND_PARSER_VERSION and (
+        if not versions_current(payload, parser_version=HKEX_DIVIDEND_PARSER_VERSION) and (
             payload.get("text") is not None
         ):
             payload = _build_payload(payload, payload["text"])
@@ -1085,33 +1122,37 @@ def cached_entries(payloads: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
             text = payload.get("text") or ""
             info = partial_identity_info(text) or {}
             announced = _parse_date(extract_fields(text).get("announcement_date")) if text else None
-            entries.append({
-                "unresolved": True,
-                "identity": info.get("identity"),
-                "period_basis": info.get("period_basis"),
-                "status_kind": info.get("status_kind"),
-                "financial_year_end": info.get("financial_year_end"),
-                "reason": payload.get("reason"),
-                "doc_id": payload.get("doc_id"),
-                "url": payload.get("url"),
-                # 与已解析表格同一排序口径；清单时间缺失时用原文里的公告日期
-                "sort_key": (
-                    payload.get("listed_at") or (announced.isoformat() if announced else ""),
-                    payload.get("doc_id") or "",
-                ),
-            })
+            entries.append(
+                {
+                    "unresolved": True,
+                    "identity": info.get("identity"),
+                    "period_basis": info.get("period_basis"),
+                    "status_kind": info.get("status_kind"),
+                    "financial_year_end": info.get("financial_year_end"),
+                    "reason": payload.get("reason"),
+                    "doc_id": payload.get("doc_id"),
+                    "url": payload.get("url"),
+                    # 与已解析表格同一排序口径；清单时间缺失时用原文里的公告日期
+                    "sort_key": (
+                        payload.get("listed_at") or (announced.isoformat() if announced else ""),
+                        payload.get("doc_id") or "",
+                    ),
+                }
+            )
             continue
         form = form_from_json(payload["form"])
-        entries.append({
-            "form": form,
-            "doc_id": payload.get("doc_id"),
-            "url": payload.get("url"),
-            # 清单时间（精确到分）优先，其次公告日期；同一分钟内按文档号
-            "sort_key": (
-                payload.get("listed_at") or form["announcement_date"].isoformat(),
-                payload.get("doc_id") or "",
-            ),
-        })
+        entries.append(
+            {
+                "form": form,
+                "doc_id": payload.get("doc_id"),
+                "url": payload.get("url"),
+                # 清单时间（精确到分）优先，其次公告日期；同一分钟内按文档号
+                "sort_key": (
+                    payload.get("listed_at") or form["announcement_date"].isoformat(),
+                    payload.get("doc_id") or "",
+                ),
+            }
+        )
     return entries
 
 

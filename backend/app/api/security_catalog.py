@@ -11,13 +11,12 @@ from ..core.deps import get_current_active_user, get_current_admin_user
 from ..database import get_db
 from ..models.user import User
 from ..schemas.security_catalog import (
-    CatalogStatusResponse,
     CatalogSyncAccepted,
     SecurityResolveResponse,
     SecuritySearchResponse,
 )
 from ..schemas.security_industry import SecurityIndustryItem
-from ..schemas.security_rule import VALID_MARKETS
+from ..core.markets import MANUAL_MARKET_SET
 from ..services import security_catalog_service as catalog
 from ..services import security_industry_service as industries
 
@@ -27,8 +26,10 @@ router = APIRouter()
 def _validate_market(market: Optional[str]) -> Optional[str]:
     if market is None or market == "":
         return None
-    if market not in VALID_MARKETS:
-        raise HTTPException(status_code=422, detail=f"market 必须是 {sorted(VALID_MARKETS)} 之一")
+    if market not in MANUAL_MARKET_SET:
+        raise HTTPException(
+            status_code=422, detail=f"market 必须是 {sorted(MANUAL_MARKET_SET)} 之一"
+        )
     return market
 
 
@@ -58,17 +59,11 @@ def resolve_security(
 ) -> SecurityResolveResponse:
     """输入了目录里没有的代码时按需解析名称/币种（腾讯行情）并沉淀进目录；
     解析不到显式返回 name=null + error。"""
-    if market not in VALID_MARKETS:
-        raise HTTPException(status_code=422, detail=f"market 必须是 {sorted(VALID_MARKETS)} 之一")
+    if market not in MANUAL_MARKET_SET:
+        raise HTTPException(
+            status_code=422, detail=f"market 必须是 {sorted(MANUAL_MARKET_SET)} 之一"
+        )
     return SecurityResolveResponse(**catalog.resolve_security(db, symbol=symbol, market=market))
-
-
-@router.get("/catalog-status", response_model=CatalogStatusResponse)
-def get_catalog_status(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db),
-) -> CatalogStatusResponse:
-    return CatalogStatusResponse(**catalog.catalog_status(db))
 
 
 @router.post("/catalog-sync", response_model=CatalogSyncAccepted, status_code=202)

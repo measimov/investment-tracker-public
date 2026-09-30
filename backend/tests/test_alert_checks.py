@@ -48,7 +48,9 @@ def db(monkeypatch):
     }.items():
         monkeypatch.setattr(checks.settings, name, value)
     session = SessionLocal()
-    session.execute(text("INSERT INTO xueqiu_collector_state (id) VALUES (1) ON CONFLICT DO NOTHING"))
+    session.execute(
+        text("INSERT INTO xueqiu_collector_state (id) VALUES (1) ON CONFLICT DO NOTHING")
+    )
     session.commit()
     state = session.get(XueqiuCollectorState, 1)
     saved_state = {name: getattr(state, name) for name in STATE_COLUMNS}
@@ -56,7 +58,9 @@ def db(monkeypatch):
     session.execute(text("TRUNCATE xueqiu_archiver_scan_runs RESTART IDENTITY"))
     session.query(XueqiuCollectorAuthor).update({"enabled": False})
     for author_id in (A1, A2):
-        session.add(XueqiuCollectorAuthor(xueqiu_user_id=author_id, display_name=f"作者{author_id[-1]}"))
+        session.add(
+            XueqiuCollectorAuthor(xueqiu_user_id=author_id, display_name=f"作者{author_id[-1]}")
+        )
     for name in ("heartbeat_at", "last_waf_at", "symbols_last_business_date", "symbols_pending"):
         setattr(state, name, None)
     state.last_cycle_status = ""
@@ -80,20 +84,25 @@ def db(monkeypatch):
         for name, value in saved_state.items():
             setattr(state, name, value)
         session.query(AlertState).delete()
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.like("alert_test_%")
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.like("alert_test_%")).delete(
+            synchronize_session=False
+        )
         session.commit()
         session.close()
 
 
 def _run(db, author_id, status, finished_ago, *, started_ago=None, error=""):
     now = _now()
-    db.add(XueqiuArchiverScanRun(
-        target_user_id=author_id, author_user_id=author_id, status=status,
-        started_at=now - (started_ago or finished_ago + timedelta(minutes=1)),
-        finished_at=now - finished_ago, error_message=error,
-    ))
+    db.add(
+        XueqiuArchiverScanRun(
+            target_user_id=author_id,
+            author_user_id=author_id,
+            status=status,
+            started_at=now - (started_ago or finished_ago + timedelta(minutes=1)),
+            finished_at=now - finished_ago,
+            error_message=error,
+        )
+    )
     db.commit()
 
 
@@ -226,9 +235,11 @@ def test_symbols_round_exhausted_and_pending_retry(db):
 def _cookie_file(tmp_path, days_left, names=("xq_a_token", "xqat")):
     expires = _now().timestamp() + days_left * 86400
     path = tmp_path / "xueqiu.json"
-    path.write_text(json.dumps({"cookies": [
-        {"name": name, "value": "v", "expirationDate": expires} for name in names
-    ]}))
+    path.write_text(
+        json.dumps(
+            {"cookies": [{"name": name, "value": "v", "expirationDate": expires} for name in names]}
+        )
+    )
     return str(path)
 
 
@@ -238,8 +249,12 @@ def test_cookie_unconfigured_is_not_an_alert(db):
 
 @pytest.mark.parametrize(
     "days_left,expected",
-    [(30, {}), (5, {"xueqiu:cookie": "warning"}), (2, {"xueqiu:cookie": "critical"}),
-     (-1, {"xueqiu:cookie": "critical"})],
+    [
+        (30, {}),
+        (5, {"xueqiu:cookie": "warning"}),
+        (2, {"xueqiu:cookie": "critical"}),
+        (-1, {"xueqiu:cookie": "critical"}),
+    ],
 )
 def test_cookie_expiry_thresholds(db, monkeypatch, tmp_path, days_left, expected):
     monkeypatch.setattr(checks.settings, "xueqiu_cookie_file", _cookie_file(tmp_path, days_left))
@@ -264,11 +279,17 @@ def test_cookie_file_missing_primary_credential_or_file(db, monkeypatch, tmp_pat
 def test_cookie_file_empty_primary_value_is_critical(db, monkeypatch, tmp_path):
     expires = _now().timestamp() + 30 * 86400
     path = tmp_path / "xueqiu.json"
-    path.write_text(json.dumps({"cookies": [
-        {"name": "xq_a_token", "value": "v", "expirationDate": expires},
-        {"name": "xqat", "value": "v", "expirationDate": expires},
-        {"name": "xqat", "value": "", "expirationDate": expires},  # 后者覆盖前者
-    ]}))
+    path.write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {"name": "xq_a_token", "value": "v", "expirationDate": expires},
+                    {"name": "xqat", "value": "v", "expirationDate": expires},
+                    {"name": "xqat", "value": "", "expirationDate": expires},  # 后者覆盖前者
+                ]
+            }
+        )
+    )
     monkeypatch.setattr(checks.settings, "xueqiu_cookie_file", str(path))
     alerts = checks.check_xueqiu_cookie(db, _now())
     assert _keys(alerts) == {"xueqiu:cookie": "critical"} and "xqat" in alerts[0].message
@@ -285,15 +306,25 @@ def test_cookie_file_empty_primary_value_is_critical(db, monkeypatch, tmp_path):
         ('{"xq_a_token": "", "xqat": ""}', {"xueqiu:cookie": "critical"}),
         ('{"xq_a_token": "a", "xqat": "   "}', {"xueqiu:cookie": "critical"}),
         ('{"xq_a_token": "a", "xqat": null}', {"xueqiu:cookie": "critical"}),
-        ('[{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": ""}]',
-         {"xueqiu:cookie": "critical"}),
-        ('{"cookies": [{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": ""}]}',
-         {"xueqiu:cookie": "critical"}),
+        (
+            '[{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": ""}]',
+            {"xueqiu:cookie": "critical"},
+        ),
+        (
+            '{"cookies": [{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": ""}]}',
+            {"xueqiu:cookie": "critical"},
+        ),
         # 同名后者覆盖前者（与加载器一致）
-        ('[{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": "b"},'
-         ' {"name": "xqat", "value": ""}]', {"xueqiu:cookie": "critical"}),
-        ('[{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": ""},'
-         ' {"name": "xqat", "value": "b"}]', {}),
+        (
+            '[{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": "b"},'
+            ' {"name": "xqat", "value": ""}]',
+            {"xueqiu:cookie": "critical"},
+        ),
+        (
+            '[{"name": "xq_a_token", "value": "a"}, {"name": "xqat", "value": ""},'
+            ' {"name": "xqat", "value": "b"}]',
+            {},
+        ),
         ('[{"name": "xq_a_token", "value": "a"}, "junk"]', {"xueqiu:cookie": "critical"}),
     ],
 )
@@ -349,7 +380,8 @@ def test_periodic_alert_survives_restart_until_the_task_succeeds(db, monkeypatch
     """重启清零了进程内计数：还没跑到的任务不能被判成「已恢复」。"""
     name = "alert_test_restarted"
     alert_service.evaluate_alerts(
-        db, checks.SOURCE_PERIODIC,
+        db,
+        checks.SOURCE_PERIODIC,
         [Alert(f"periodic:{name}", "warning", f"周期任务 {name} 连续失败 3 次", "最近一次：x")],
         sender=lambda *a, **k: {"ok": True, "status": "sent", "message": ""},
     )
@@ -371,38 +403,50 @@ def test_worker_counts_periodic_task_exceptions(monkeypatch):
         if calls["n"] <= 3:
             raise ValueError("boom")
 
-    monkeypatch.setattr(job_worker, "_periodic_tasks", [[alert_test_flaky, 0, 0.0, "alert_test_flaky"]])
+    monkeypatch.setattr(
+        job_worker, "_periodic_tasks", [[alert_test_flaky, 0, 0.0, "alert_test_flaky"]]
+    )
     worker = job_worker.JobWorker(poll_seconds=1)
     try:
         for _ in range(3):
             worker._run_due_periodic_tasks()
-        assert job_worker.periodic_task_failures()["alert_test_flaky"][
-            "consecutive_failures"] == 3
+        assert job_worker.periodic_task_failures()["alert_test_flaky"]["consecutive_failures"] == 3
         worker._run_due_periodic_tasks()
         assert "alert_test_flaky" not in job_worker.periodic_task_failures()
     finally:
         job_worker.record_periodic_result("alert_test_flaky")
 
 
-def _job(db, job_type, status, finished_ago, error=None):
+def _job(db, job_type, status, finished_ago, error=None, data=None, user_id=1):
     import uuid
 
-    db.add(BackgroundJob(
-        id=uuid.uuid4().hex, user_id=1, job_type=job_type, status=status,
-        finished_at=_now() - finished_ago, error=error,
-    ))
+    db.add(
+        BackgroundJob(
+            id=uuid.uuid4().hex,
+            user_id=user_id,
+            job_type=job_type,
+            status=status,
+            finished_at=_now() - finished_ago,
+            error=error,
+            data=data or {},
+        )
+    )
     db.commit()
 
 
 def _job_alerts(db):
-    return {a.key: a for a in checks.check_background_jobs(db, _now())
-            if a.key.startswith("job_failed:alert_test_")}
+    return {
+        a.key: a
+        for a in checks.check_background_jobs(db, _now())
+        if a.key.startswith("job_failed:alert_test_")
+    }
 
 
 def test_background_job_failures(db):
     _job(db, "alert_test_a", "failed", timedelta(hours=2), "Tushare 超时")
     assert {k: a.severity for k, a in _job_alerts(db).items()} == {
-        "job_failed:alert_test_a": "info"}
+        "job_failed:alert_test_a": "info"
+    }
     _job(db, "alert_test_a", "failed", timedelta(hours=1))
     _job(db, "alert_test_a", "failed", timedelta(minutes=30), "最近的错误")
     alert = _job_alerts(db)["job_failed:alert_test_a"]
@@ -417,6 +461,29 @@ def test_background_job_failures(db):
     assert _job_alerts(db) == {}
 
 
+def test_interrupted_jobs_alert_unless_the_user_cancelled(db):
+    """#272：执行进程失联、排队过久被中断的任务同样没做完；用户主动终止不算。"""
+    _job(
+        db,
+        "alert_test_c",
+        "interrupted",
+        timedelta(hours=1),
+        "任务排队过久仍未开始执行",
+        data={"cancelled": False},
+    )
+    _job(db, "alert_test_d", "interrupted", timedelta(hours=1), data={"cancelled": True})
+    _job(
+        db,
+        "alert_test_e",
+        "interrupted",
+        timedelta(hours=1),
+        data={"cancelled": False, "cancel_requested": True},
+    )
+    alerts = _job_alerts(db)
+    assert set(alerts) == {"job_failed:alert_test_c"}
+    assert "排队过久" in alerts["job_failed:alert_test_c"].message
+
+
 # --------------------------------------------------------------------------- #
 # 编排
 # --------------------------------------------------------------------------- #
@@ -427,8 +494,9 @@ def test_raising_checker_is_reported_and_keeps_its_alerts(db):
         sent.append(title)
         return {"ok": True, "status": "sent", "message": ""}
 
-    alert_service.evaluate_alerts(db, "boom_src", [Alert("boom:real", "warning", "真实告警")],
-                                  sender=sender)
+    alert_service.evaluate_alerts(
+        db, "boom_src", [Alert("boom:real", "warning", "真实告警")], sender=sender
+    )
 
     def broken(_db, _now):
         raise RuntimeError("查询失败")
@@ -446,8 +514,11 @@ def test_raising_checker_is_reported_and_keeps_its_alerts(db):
     assert rows["fine:x"].status == "active"
     assert rows["checker:boom"].status == "active" and "查询失败" in rows["checker:boom"].message
     # 检查器恢复正常 → checker:boom 恢复，且它名下告警按新结果判定
-    checks.run_checks(db, checkers=[("boom", "boom_src", lambda *_: []),
-                                    ("fine", "fine_src", fine)], sender=sender)
+    checks.run_checks(
+        db,
+        checkers=[("boom", "boom_src", lambda *_: []), ("fine", "fine_src", fine)],
+        sender=sender,
+    )
     db.expire_all()
     rows = {row.alert_key: row for row in db.query(AlertState)}
     assert rows["checker:boom"].status == "resolved"
@@ -458,3 +529,101 @@ def test_raising_checker_is_reported_and_keeps_its_alerts(db):
 def test_run_alert_checks_honours_switch(monkeypatch):
     monkeypatch.setattr(checks.settings, "alert_check_enabled", False)
     assert checks.run_alert_checks() is None
+
+
+# --------------------------------------------------------------------------- #
+# 调度线程心跳（#273）
+# --------------------------------------------------------------------------- #
+def test_scheduler_heartbeat_is_written_and_stall_alerts(db, monkeypatch):
+    from datetime import timedelta as _td
+
+    from app.models.scheduled_task_state import ScheduledTaskState
+
+    def probe():
+        return None
+
+    monkeypatch.setattr(job_worker, "_periodic_tasks", [[probe, 0, 0.0, "hb_probe", "hbtest"]])
+    monkeypatch.setattr(checks.settings, "periodic_tasks_enabled", True)
+    monkeypatch.setattr(checks.settings, "background_worker_enabled", True)
+    db.query(ScheduledTaskState).filter(ScheduledTaskState.name == "scheduler:hbtest").delete()
+    db.commit()
+
+    job_worker.JobWorker(poll_seconds=1)._run_due_periodic_tasks(group="hbtest")
+    db.expire_all()
+    state = db.get(ScheduledTaskState, "scheduler:hbtest")
+    assert state is not None and state.detail.get("current_task") is None
+    assert "hb_probe" in job_worker.periodic_task_durations()
+
+    fresh = checks.check_scheduler_heartbeats(db, state.last_run_at + _td(minutes=5))
+    assert fresh == []
+
+    # 卡在某个任务里：心跳停在「开跑前」那一次
+    state.detail = {"current_task": "hb_probe", "current_task_started_at": "2026-09-29T00:00:00"}
+    db.commit()
+    later = state.last_run_at + checks.SCHEDULER_STALL_AFTER + _td(minutes=1)
+    monkeypatch.setattr(checks, "PROCESS_STARTED_AT", state.last_run_at - _td(hours=1))
+    alerts = {a.key: a for a in checks.check_scheduler_heartbeats(db, later)}
+    assert "scheduler:hbtest" in alerts
+    assert "hb_probe" in alerts["scheduler:hbtest"].message
+    db.query(ScheduledTaskState).filter(ScheduledTaskState.name == "scheduler:hbtest").delete()
+    db.commit()
+
+
+def test_another_users_success_does_not_resolve_this_users_failure(db):
+    """#273：之后成功按 (job_type, user) 判断，别人同类任务成功不能把这里的失败判成恢复。"""
+    _job(db, "alert_test_e", "failed", timedelta(hours=2), "只有用户 1 失败", user_id=1)
+    _job(db, "alert_test_e", "succeeded", timedelta(hours=1), user_id=2)
+    alerts = _job_alerts(db)
+    assert "job_failed:alert_test_e" in alerts
+    assert alerts["job_failed:alert_test_e"].payload["user_ids"] == [1]
+    _job(db, "alert_test_e", "succeeded", timedelta(minutes=30), user_id=1)
+    assert "job_failed:alert_test_e" not in _job_alerts(db)
+
+
+def test_alert_titles_use_chinese_labels(db, monkeypatch):
+    _job(db, "report_digest_batch", "failed", timedelta(minutes=10), "boom")
+    alerts = {a.key: a for a in checks.check_background_jobs(db, _now())}
+    assert alerts["job_failed:report_digest_batch"].title == "后台任务「批量财报摘要回填」失败"
+
+    monkeypatch.setattr(
+        job_worker,
+        "_periodic_failures",
+        {"enqueue_periodic_dividend_sync": {"consecutive_failures": 3, "last_error": "x"}},
+    )
+    periodic = {a.key: a for a in checks.check_periodic_tasks(db, _now())}
+    assert periodic["periodic:enqueue_periodic_dividend_sync"].title == (
+        "周期任务「分红公告定期同步」连续失败 3 次"
+    )
+    db.query(BackgroundJob).filter(BackgroundJob.job_type == "report_digest_batch").delete()
+    db.commit()
+
+
+def test_push_happens_outside_the_alert_lock(db):
+    """#273：推送时不持有告警 advisory lock——渠道慢时 manage.py notify、立即检查不被阻塞。"""
+    from sqlalchemy import text as sa_text
+
+    from app.database import SessionLocal
+
+    observed = []
+
+    def sender(title, body, *, severity, kind):
+        other = SessionLocal()
+        try:
+            got = other.execute(
+                sa_text("SELECT pg_try_advisory_xact_lock(:key)"),
+                {"key": alert_service.ALERT_LOCK_KEY},
+            ).scalar()
+            observed.append(got)
+            other.rollback()
+        finally:
+            other.close()
+        return {"ok": True, "status": "sent", "message": ""}
+
+    alert_service.evaluate_alerts(
+        db, "lock_test_src", [Alert("lock_test:one", "warning", "测试告警")], sender=sender
+    )
+    assert observed == [True]
+    row = db.query(AlertState).filter(AlertState.alert_key == "lock_test:one").one()
+    assert row.notify_count == 1 and row.last_notified_at is not None
+    db.delete(row)
+    db.commit()

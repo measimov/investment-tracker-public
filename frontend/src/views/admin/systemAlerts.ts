@@ -1,4 +1,10 @@
-import type { AlertItem, NotifyChannelSummary, NotifyResult } from '../../types'
+import type {
+  AlertItem,
+  NotificationEventItem,
+  NotificationEventList,
+  NotifyChannelSummary,
+  NotifyResult
+} from '../../types'
 
 /** 「系统告警」页的纯展示逻辑（有 spec）：严重度/来源文案、渠道状态、推送结果。 */
 
@@ -118,4 +124,45 @@ export function durationText(
   const days = Math.floor(hours / 24)
   const restHours = hours % 24
   return restHours ? `${days} 天 ${restHours} 小时` : `${days} 天`
+}
+
+// ---- 事件提醒（新分红建议、除净日临近、价格异动、重大公告；与后端 event_notifications.KIND_* 对应）----
+
+const EVENT_KIND_LABELS: Record<string, string> = {
+  dividend_suggestion: '新分红建议',
+  ex_date: '除净日临近',
+  price_move: '价格异动',
+  announcement: '重大公告'
+}
+
+export function eventKindLabel(kind: string): string {
+  return EVENT_KIND_LABELS[kind] ?? kind
+}
+
+/** 单条事件提醒的发送状态 */
+export function eventStatus(item: NotificationEventItem): StatusLine {
+  switch (item.status) {
+    case 'sent':
+      return { type: 'success', text: '已推送' }
+    case 'skipped':
+      return { type: 'info', text: '未推送（未配置渠道）' }
+    case 'failed':
+      return { type: 'danger', text: `推送失败（已重试 ${item.attempts} 次）` }
+    default:
+      return item.attempts > 0
+        ? { type: 'warning', text: `推送失败，下一轮重试（已试 ${item.attempts} 次）` }
+        : { type: 'warning', text: '待推送' }
+  }
+}
+
+/** 「最近提醒」区块的说明：开关与阈值 */
+export function eventSettingsText(list: NotificationEventList): string {
+  if (!list.enabled) {
+    return '事件提醒已关闭（EVENT_NOTIFICATIONS_ENABLED=false）：不收集也不推送'
+  }
+  const announcement = list.announcement_notify_enabled ? '持仓/自选标的发布重大公告、' : ''
+  return (
+    `新分红建议待确认、持仓除净日在 ${list.ex_date_days_ahead} 天内、` +
+    `${announcement}持仓单日涨跌达 ${list.price_move_pct}% 时推送；同一事件只推一次，同一轮合并成一条`
+  )
 }

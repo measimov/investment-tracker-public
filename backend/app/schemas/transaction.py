@@ -3,6 +3,9 @@ from decimal import Decimal
 from datetime import date, datetime
 from typing import Optional
 
+from ..core.markets import require_manual_market
+from .read_models import read_model
+
 
 # 交易的**业务必填**字段：更新时显式传 null 一律拒绝。
 #
@@ -68,8 +71,12 @@ class TransactionBase(BaseModel):
     # ""，而 " " 这样的值也不该算有效标的。下面的 validator 按 strip 后判空。
     symbol: str = Field(..., min_length=1, max_length=20, description="Stock/Asset symbol")
     name: Optional[str] = Field(None, max_length=100, description="Asset name")
-    market: str = Field(..., min_length=1, max_length=20, description="Market (A股, 港股, 美股, 加密货币, etc.)")
-    transaction_type: str = Field(..., pattern="^(BUY|SELL)$", description="Transaction type: BUY or SELL")
+    market: str = Field(
+        ..., min_length=1, max_length=20, description="Market (A股, 港股, 美股, 加密货币, etc.)"
+    )
+    transaction_type: str = Field(
+        ..., pattern="^(BUY|SELL)$", description="Transaction type: BUY or SELL"
+    )
     quantity: Decimal = Field(..., gt=0, description="Quantity")
     price: Decimal = Field(..., gt=0, description="Price per unit")
     fee: Decimal = Field(default=Decimal("0"), ge=0, description="Transaction fee")
@@ -82,6 +89,12 @@ class TransactionBase(BaseModel):
 
 class TransactionCreate(TransactionBase):
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("market")
+    @classmethod
+    def _manual_market(cls, value):
+        # 只接受手工市场：任意字符串（如「HK」）会入库成新的身份键（#278）
+        return require_manual_market(value)
 
     # 归一化只在创建入口做（放 TransactionBase 会连 Response 一起跑：库里的
     # 脏 symbol 会被"显示时修复"，掩盖真实数据问题）。更新路径在 API 层
@@ -109,6 +122,12 @@ class TransactionUpdate(BaseModel):
     currency: Optional[str] = Field(None, min_length=1, max_length=10)
     notes: Optional[str] = None
 
+    @field_validator("market")
+    @classmethod
+    def _manual_market(cls, value):
+        # 只接受手工市场：任意字符串（如「HK」）会入库成新的身份键（#278）
+        return require_manual_market(value)
+
     # 与创建路径共用同一判据：不复用的话，PUT 的空白字段会先落库，
     # 直到响应序列化才报错（500 + 脏数据）
     _reject_blank = field_validator("symbol", "market", "currency")(_require_non_blank)
@@ -134,8 +153,25 @@ class TransferCreate(BaseModel):
     transfer_date: date = Field(...)
     notes: Optional[str] = None
 
+    @field_validator("market")
+    @classmethod
+    def _manual_market(cls, value):
+        # 只接受手工市场：任意字符串（如「HK」）会入库成新的身份键（#278）
+        return require_manual_market(value)
 
-class TransactionResponse(TransactionBase):
+    @model_validator(mode="after")
+    def _normalize_symbol(self):
+        # 与交易创建同口径（港股「700」→「00700」）；不归一的话持仓查不到，
+        # 用户只会看到误导性的「转出账户当前无该证券持仓」（#278）
+        from ..services.symbol_normalization import normalize_manual_symbol
+
+        self.symbol = normalize_manual_symbol(self.symbol, self.market)
+        return self
+
+
+class TransactionResponse(read_model(TransactionBase)):
+    """读模型：不带输入约束与 validator（落库的任何行都能如实列出，#283）。"""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -145,5 +181,7 @@ class TransactionResponse(TransactionBase):
         None, description="转仓对的另一腿 id；普通交易为 null"
     )
     import_batch_id: Optional[int] = None
+    # 导入产物（带批次或被来源流水引用）不可编辑/删除；判据见 api/_ownership.annotate_read_only
+    read_only: bool = False
     created_at: datetime
     updated_at: datetime

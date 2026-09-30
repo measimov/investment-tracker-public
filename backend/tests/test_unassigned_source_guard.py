@@ -94,7 +94,9 @@ def test_cmb_preview_and_import_reject_unassigned_sources(monkeypatch):
         account = _account(db, "招商证券", "****A123")
         _seed_unassigned_source(db, "招商证券")
         monkeypatch.setattr(
-            cmb, "parse_rows_with_warnings", lambda contents, filename, **kwargs: ([], {}, 0, [], [])
+            cmb,
+            "parse_rows_with_warnings",
+            lambda contents, filename, **kwargs: ([], {}, 0, [], []),
         )
         monkeypatch.setattr(cmb, "validate_cmb_statement_filename", lambda filename: None)
         before = _counts(db)

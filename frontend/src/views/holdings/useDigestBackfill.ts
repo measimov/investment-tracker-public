@@ -4,12 +4,12 @@
  * 这里只留回填特有的：预览确认框与完成汇总文案。
  */
 
+import type { DigestBatchJob } from '@/types'
 import { reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { useBatchJobProgress } from '@/composables/useBatchJobProgress'
 import { BATCH_POLL_INTERVAL_MS, BATCH_POLL_MAX_ATTEMPTS } from './useBatchAnalysis'
-import type { DigestBatchJob } from './types'
 import { showApiError } from '@/utils/showApiError'
 
 const DIGEST_STATUS_LABELS: Record<string, string> = {
@@ -112,7 +112,7 @@ export function useDigestBackfill({ isUnmounted }: { isUnmounted: () => boolean 
     try {
       const response = await api.startDigestBackfillJob()
       if (isUnmounted()) return
-      adopt(response.data as DigestBatchJob)
+      adopt(response.data)
       starting.value = false
       await watchJob(response.data.id)
     } catch (error) {

@@ -77,7 +77,7 @@ export function collectorHealth(status: CollectorStatus | null | undefined): Col
     return {
       type: 'info',
       label: '未启用',
-      hint: '采集器未启用（XUEQIU_COLLECTOR_ENABLED=false）；启用后由 xueqiu-collector 服务每小时采集一轮。'
+      hint: '采集器未启用（需管理员在部署配置中开启）；启用后每小时采集一轮。'
     }
   }
   if (!status.alive) {

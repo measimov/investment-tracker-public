@@ -6,11 +6,11 @@
 
     # 1) 在改动前的代码上生成基准
     git stash            # 或 git worktree add /tmp/old <改动前的 commit>
-    python scripts/metrics_parity_report.py --out /tmp/metrics_old.json
+    python scripts/metrics_parity_report.py --today 2026-09-29 --out /tmp/metrics_old.json
 
     # 2) 在改动后的代码上生成对照
     git stash pop
-    python scripts/metrics_parity_report.py --out /tmp/metrics_new.json
+    python scripts/metrics_parity_report.py --today 2026-09-29 --out /tmp/metrics_new.json
 
     # 3) 比对
     python scripts/metrics_parity_report.py --compare /tmp/metrics_old.json /tmp/metrics_new.json
@@ -22,6 +22,16 @@
 列表顺序不构成契约的字段（closed_trades / trades_detail / holdings_detail /
 by_symbol / statistics_by_market …）会先按内容规范化排序再比对：去重键一变
 遍历顺序就变，不规范化的话会淹没在上万条"差异"里。
+
+估值输入两种口径（`--prices`）：
+
+- `holding`（默认）：只用持仓表上的现价，两次运行输入完全一致，隔离出「计算口径」的变化；
+- `server`：走 GET 端点同一条 `resolve_server_prices`（持仓现价 / 最新收盘择优），用来比对
+  「取价口径」本身的改动（如 #267）。快照里带上实际选用的价格与来源（price_inputs），
+  取价变化会作为数值变化显式列出。
+
+「今天」由 `--today YYYY-MM-DD` 固定（默认业务时区的今天）：区间终点与当日/本月/本年损益
+都依赖它，前后两次快照必须用同一个值，否则跨过零点就会凭空多出一批差异。
 
 只读，不写任何表；analytics 的 refresh_history 保持默认 False，不外呼。
 建议指向一份**可丢弃的**账本副本，而不是生产库。与其他脚本一样需要 app 的
@@ -56,6 +66,9 @@ ORDER_INSENSITIVE_KEYS = {
     "statistics_by_market",
     "unpriced_positions",
     "missing_price_history",
+    "stale_price_positions",
+    "opening_unpriced_positions",
+    "stale_opening_basis",
 }
 
 
@@ -86,30 +99,48 @@ def _canonicalize(value: Any, key: str = None) -> Any:
     return value
 
 
-def build_snapshot(user_id: int) -> Dict[str, Any]:
-    from app.database import SessionLocal
+def _holding_prices(db, user_id: int) -> Dict[str, float]:
     from app.models.holding import Holding
+
+    return {
+        f"{h.symbol}:{h.market}": float(h.current_price)
+        for h in db.query(Holding).filter(Holding.user_id == user_id).all()
+        if h.current_price is not None
+    }
+
+
+def build_snapshot(user_id: int, *, prices_mode: str = "holding", today: date) -> Dict[str, Any]:
+    from app.database import SessionLocal
     from app.services import statistics as ss
 
     db = SessionLocal()
     try:
-        # 估值输入取自持仓表的现价，保证两次运行输入完全一致（不依赖外部行情）
-        prices = {
-            f"{h.symbol}:{h.market}": float(h.current_price)
-            for h in db.query(Holding).filter(Holding.user_id == user_id).all()
-            if h.current_price is not None
-        }
+        if prices_mode == "server":
+            prices, sources, _freshness = ss.resolve_server_prices(db, user_id)
+        else:
+            # 只用持仓表的现价，保证两次运行输入完全一致（不依赖外部行情与取价逻辑）
+            prices = _holding_prices(db, user_id)
+            sources = {key: "holding" for key in prices}
         snapshot = {
+            # 估值输入本身也参与比对：server 口径下取价变化会显式列为数值变化
+            "price_inputs": {"mode": prices_mode, "prices": prices, "sources": sources},
             "summary_statistics": ss.get_summary_statistics(db, user_id),
             "statistics_by_market": ss.get_statistics_by_market(db, user_id),
             "realized_pnl": ss.calculate_realized_pnl_fifo(db, user_id),
             "dividend_summary": ss.get_dividend_summary(db, user_id),
             "current_performance": ss.calculate_current_holdings_performance(db, user_id, prices),
-            "performance_summary": ss.calculate_performance_summary(db, user_id, prices),
-            "performance_analytics": ss.calculate_performance_analytics(
-                db, user_id, prices,
-                start_date=date(2000, 1, 1), end_date=date.today(),
+            "performance_summary": ss.calculate_performance_summary(
+                db, user_id, prices, today=today
             ),
+            "performance_analytics": ss.calculate_performance_analytics(
+                db,
+                user_id,
+                prices,
+                start_date=date(2000, 1, 1),
+                end_date=today,
+                today=today,
+            ),
+            "period_pnl": ss.calculate_period_pnl(db, user_id, prices, today=today),
         }
     finally:
         db.close()
@@ -185,6 +216,17 @@ def main() -> int:
     parser.add_argument("--out", help="生成快照到该路径")
     parser.add_argument("--user-id", type=int, default=2, help="账本所属用户（默认 2 = demo）")
     parser.add_argument("--compare", nargs=2, metavar=("OLD", "NEW"), help="比对两份快照")
+    parser.add_argument(
+        "--prices",
+        choices=("holding", "server"),
+        default="holding",
+        help="估值输入：holding=只用持仓现价（默认）；server=走 resolve_server_prices",
+    )
+    parser.add_argument(
+        "--today",
+        type=date.fromisoformat,
+        help="固定「今天」（YYYY-MM-DD，默认业务时区今天）；前后两次快照必须一致",
+    )
     args = parser.parse_args()
 
     if args.compare:
@@ -192,10 +234,13 @@ def main() -> int:
     if not args.out:
         parser.error("需要 --out 或 --compare")
 
-    snapshot = build_snapshot(args.user_id)
+    from app.core.timeutil import local_today
+
+    today = args.today or local_today()
+    snapshot = build_snapshot(args.user_id, prices_mode=args.prices, today=today)
     with open(args.out, "w") as fh:
         json.dump(snapshot, fh, ensure_ascii=False, indent=2, sort_keys=True, default=str)
-    print(f"snapshot written: {args.out}")
+    print(f"snapshot written: {args.out}（prices={args.prices}, today={today.isoformat()}）")
     return 0
 
 

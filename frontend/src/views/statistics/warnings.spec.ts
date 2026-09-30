@@ -2,41 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   UNPRICED_POSITIONS_WARNING,
   buildSummaryWarnings,
-  describePriceKey,
-  freshnessWarnings,
   parseRateWarningCurrencies
 } from './warnings'
 
 const BACKEND_RATE_WARNING = (currencies: string) =>
   `缺少 ${currencies} 对 CNY 的汇率，这些币种的金额未计入 CNY 汇总（不会按原值混入）。`
-
-describe('freshnessWarnings', () => {
-  it('陈价与缺价各一条，列出具体标的', () => {
-    const warnings = freshnessWarnings({
-      '600000:A股': { source: 'holding', stale: false },
-      'PCT:新加坡股': { source: 'holding', stale: true },
-      'OLD:A股': { source: 'latest_history', stale: true },
-      'NOPX:A股': { source: 'missing', stale: true }
-    })
-    expect(warnings).toHaveLength(2)
-    expect(warnings[0]).toContain('超过 7 天未更新')
-    expect(warnings[0]).toContain('OLD（A股）')
-    expect(warnings[0]).toContain('PCT（新加坡股）')
-    expect(warnings[1]).toContain('缺少可用估值价格')
-    expect(warnings[1]).toContain('NOPX（A股）')
-    expect(warnings[1]).not.toContain('PCT')
-  })
-
-  it('无 freshness（试算 POST）时不报', () => {
-    expect(freshnessWarnings(null)).toEqual([])
-    expect(freshnessWarnings({ 'A:A股': { source: 'holding', stale: false } })).toEqual([])
-  })
-
-  it('describePriceKey', () => {
-    expect(describePriceKey('0700:港股')).toBe('0700（港股）')
-    expect(describePriceKey('RAW')).toBe('RAW')
-  })
-})
 
 describe('parseRateWarningCurrencies', () => {
   it('解析后端缺汇率提示里的币种', () => {
@@ -85,8 +55,8 @@ describe('buildSummaryWarnings', () => {
       currentWarnings: [UNPRICED_POSITIONS_WARNING],
       priceFreshness: { 'NOPX:A股': { source: 'missing', stale: true } }
     })
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('NOPX（A股）')
+    // 缺价清单由 PriceIssuesAlert 展示（#286），这里只去掉重复的泛泛提示
+    expect(warnings).toEqual([])
 
     // 没有清单（试算路径）时保留泛泛那条，不能把缺价信号吞掉
     expect(buildSummaryWarnings({ currentWarnings: [UNPRICED_POSITIONS_WARNING] })).toEqual([

@@ -186,7 +186,9 @@ def scan_post(
             if logger.isEnabledFor(logging.INFO):
                 logger.info(
                     "  命中(%s)：%s %s - %s",
-                    "新增" if inserted else "已存在", reply.created_at, reply.author_name,
+                    "新增" if inserted else "已存在",
+                    reply.created_at,
+                    reply.author_name,
                     reply.text[:60],
                 )
 

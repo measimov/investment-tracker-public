@@ -187,7 +187,5 @@ def test_declared_server_defaults_match_the_database():
             if actual is None:
                 mismatches.append(f"{table.name}.{column.name}: 模型声明了默认值，库里没有")
             elif _comparable(actual, column) != _comparable(declared, column):
-                mismatches.append(
-                    f"{table.name}.{column.name}: 模型={declared!r} 库里={actual!r}"
-                )
+                mismatches.append(f"{table.name}.{column.name}: 模型={declared!r} 库里={actual!r}")
     assert not mismatches, "server_default 模型与库不一致：\n" + "\n".join(mismatches)

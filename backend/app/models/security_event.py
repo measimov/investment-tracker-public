@@ -43,7 +43,10 @@ class SecurityEvent(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "symbol", "market", "event_type", "event_date",
+            "symbol",
+            "market",
+            "event_type",
+            "event_date",
             name="uq_security_events_identity",
         ),
         CheckConstraint(

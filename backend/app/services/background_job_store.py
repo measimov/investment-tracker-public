@@ -92,25 +92,55 @@ def interrupt_stale_jobs(
     *,
     now: Optional[datetime] = None,
     stale_after: Optional[timedelta] = None,
+    queued_ttl: Optional[timedelta] = None,
 ) -> int:
+    """中断失联的任务，返回中断条数。
+
+    - running：心跳（租约续期）超过 stale_after 没更新 = 执行进程已死；
+    - queued：**不看心跳**——排队期间没有任何代码刷新它，慢车道跨用户串行，每周刷新一次
+      给每个用户各排一个 4 小时级的批量任务，第二个用户的任务排队超过 60 分钟就会被当成
+      失联中断、当周数据刷新静默丢失（#272）。排队只按 created_at 设一个宽得多的上限
+      （queued_ttl，默认 BACKGROUND_JOB_QUEUED_TTL_HOURS），防止 worker 关闭时永远挂着。
+    """
     current_time = now or _utcnow()
     timeout = stale_after or timedelta(minutes=settings.background_job_stale_minutes)
-    cutoff = current_time - timeout
+    queued_timeout = queued_ttl or timedelta(hours=settings.background_job_queued_ttl_hours)
+    terminal = {
+        BackgroundJob.finished_at: current_time,
+        BackgroundJob.heartbeat_at: current_time,
+        BackgroundJob.updated_at: current_time,
+    }
     db = SessionLocal()
     try:
         interrupted = (
             db.query(BackgroundJob)
             .filter(
-                BackgroundJob.status.in_(ACTIVE_STATUSES),
-                BackgroundJob.heartbeat_at < cutoff,
+                BackgroundJob.status == "running",
+                BackgroundJob.heartbeat_at < current_time - timeout,
             )
             .update(
                 {
                     BackgroundJob.status: "interrupted",
                     BackgroundJob.error: "任务执行进程已中断，请重新启动任务。",
-                    BackgroundJob.finished_at: current_time,
-                    BackgroundJob.heartbeat_at: current_time,
-                    BackgroundJob.updated_at: current_time,
+                    **terminal,
+                },
+                synchronize_session=False,
+            )
+        )
+        interrupted += (
+            db.query(BackgroundJob)
+            .filter(
+                BackgroundJob.status == "queued",
+                # 只管从没开始过的任务：意外失败后退避重排的任务 created_at 不变，按它计时
+                # 会把本应自动重试的那次误判成「排队过久」（PR #297 评审）
+                BackgroundJob.started_at.is_(None),
+                BackgroundJob.created_at < current_time - queued_timeout,
+            )
+            .update(
+                {
+                    BackgroundJob.status: "interrupted",
+                    BackgroundJob.error: "任务排队过久仍未开始执行，已放弃，请重新启动任务。",
+                    **terminal,
                 },
                 synchronize_session=False,
             )
@@ -497,9 +527,7 @@ def job_heartbeat(
     lease = settings.background_job_lease_seconds
     interval = interval_seconds or max(lease / 3, 5)
     deadline_seconds = (
-        max_seconds
-        if max_seconds is not None
-        else settings.background_job_stale_minutes * 60
+        max_seconds if max_seconds is not None else settings.background_job_stale_minutes * 60
     )
     stop_event = threading.Event()
 
@@ -509,7 +537,9 @@ def job_heartbeat(
             elapsed += interval
             if elapsed >= deadline_seconds:
                 logger.warning(
-                    "任务 %s(%s) 心跳超过 %.0fs 上限，停止续租", job_id, job_type,
+                    "任务 %s(%s) 心跳超过 %.0fs 上限，停止续租",
+                    job_id,
+                    job_type,
                     deadline_seconds,
                 )
                 return
@@ -525,9 +555,7 @@ def job_heartbeat(
             except Exception as exc:  # 心跳失败不得影响业务执行
                 logger.warning("任务 %s 心跳续租失败: %s", job_id, str(exc)[:150])
 
-    thread = threading.Thread(
-        target=beat, name=f"job-heartbeat-{job_id[:8]}", daemon=True
-    )
+    thread = threading.Thread(target=beat, name=f"job-heartbeat-{job_id[:8]}", daemon=True)
     thread.start()
     try:
         yield

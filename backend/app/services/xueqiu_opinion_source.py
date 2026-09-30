@@ -1,13 +1,12 @@
 """雪球观点数据源：读取本仓采集器（`services/xueqiu_collector/`）写入的关注作者发言。
 
 `xueqiu_archiver_utterances` 原由独立仓库 xueqiu-timeline-archiver 的 cron 写入，
-2026-09 收纳进本仓（迁移 20260927_0024 纳入 Alembic，表**总是存在**）。这里仍一律
-raw SQL（`sqlalchemy.text()`），只依赖用到的列名。
+2026-09 收纳进本仓（迁移 20260927_0024 纳入 Alembic，表**总是存在**），读取走 ORM
+（`models/xueqiu_collector.py`），不再探测表是否存在（#280）。
 
 「数据源未接入」的含义随之改变：不再是"表不存在"，而是**采集器从未成功运行且库里
 没有任何发言**（未启用 / 刚部署 / Cookie 一直无效）。入口显式抛
 `OpinionSourceUnavailable`（API 层映射 409"数据源未接入"），绝不静默返回空冒充"无观点"。
-表缺失（未迁移的库）仍按同一语义降级。
 
 实测过的表事实（2026-08-31，appdb）：
 - `created_at` 列是 **TEXT** 不是 timestamptz——时间一律用 `created_at_ms`
@@ -30,18 +29,16 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import text
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..core.logging import get_app_logger
+from ..models.xueqiu_collector import XueqiuArchiverScanRun as ScanRun
+from ..models.xueqiu_collector import XueqiuArchiverUtterance as Utterance
+from .xueqiu_collector.state import LIVE_RUN_STATUSES
 
 logger = get_app_logger(__name__)
-
-UTTERANCE_TABLE = "xueqiu_archiver_utterances"
-SCAN_RUN_TABLE = "xueqiu_archiver_scan_runs"
-# 与 xueqiu_collector.state.LIVE_RUN_STATUSES 同口径（这里不 import 采集器包，reader 保持轻量）
-LIVE_SCAN_STATUSES = "('ok', 'partial')"
 
 # cashtag：$名称(SH600519)$ / $腾讯控股(00700)$ / $苹果(AAPL)$。
 # 内码宽容 [A-Za-z0-9.\-]（覆盖 BRK.A 类 ticker）；精确性由 wanted 集合过滤。
@@ -68,11 +65,12 @@ UNAVAILABLE_MESSAGE = (
 )
 
 
-def _table_exists(db: Session, name: str) -> bool:
-    return bool(
-        db.execute(text("SELECT to_regclass(:name) IS NOT NULL"), {"name": f"public.{name}"})
-        .scalar()
-    )
+def _from_epoch_ms(value: Optional[int]) -> Optional[datetime]:
+    """created_at_ms → aware UTC datetime（整数运算，不经浮点除法丢毫秒）。"""
+    if value is None:
+        return None
+    seconds, millis = divmod(int(value), 1000)
+    return datetime.fromtimestamp(seconds, tz=timezone.utc) + timedelta(milliseconds=millis)
 
 
 def is_opinion_source_available(db: Session) -> bool:
@@ -82,18 +80,11 @@ def is_opinion_source_available(db: Session) -> bool:
     已接入的数据源继续报 409；两条 EXISTS 走主键/小表，<1ms。
     """
     with db.begin_nested():
-        if not _table_exists(db, UTTERANCE_TABLE):
-            return False
-        if db.execute(text(f"SELECT EXISTS (SELECT 1 FROM {UTTERANCE_TABLE})")).scalar():
+        if db.query(db.query(Utterance.utterance_key).exists()).scalar():
             return True
-        if not _table_exists(db, SCAN_RUN_TABLE):
-            return False
         return bool(
-            db.execute(
-                text(
-                    f"SELECT EXISTS (SELECT 1 FROM {SCAN_RUN_TABLE} "
-                    f"WHERE status IN {LIVE_SCAN_STATUSES})"
-                )
+            db.query(
+                db.query(ScanRun.run_id).filter(ScanRun.status.in_(LIVE_RUN_STATUSES)).exists()
             ).scalar()
         )
 
@@ -106,14 +97,11 @@ def ensure_opinion_source(db: Session) -> None:
 def latest_successful_scan_at(db: Session) -> Optional[datetime]:
     """最近一次成功采集的结束时间；无记录返回 None（调用方退回 last_seen_at）。"""
     with db.begin_nested():
-        if not _table_exists(db, SCAN_RUN_TABLE):
-            return None
-        return db.execute(
-            text(
-                f"SELECT max(finished_at) FROM {SCAN_RUN_TABLE} "
-                f"WHERE status IN {LIVE_SCAN_STATUSES}"
-            )
-        ).scalar()
+        return (
+            db.query(func.max(ScanRun.finished_at))
+            .filter(ScanRun.status.in_(LIVE_RUN_STATUSES))
+            .scalar()
+        )
 
 
 def source_freshness(db: Session) -> Dict[str, Any]:
@@ -125,8 +113,10 @@ def source_freshness(db: Session) -> Dict[str, Any]:
     故障不配拖垮整个看板。
     """
     unavailable = {
-        "available": False, "latest_scan_at": None,
-        "latest_utterance_at": None, "stale": False,
+        "available": False,
+        "latest_scan_at": None,
+        "latest_utterance_at": None,
+        "stale": False,
     }
     try:
         if not is_opinion_source_available(db):
@@ -136,18 +126,15 @@ def source_freshness(db: Session) -> Dict[str, Any]:
         # InFailedSqlTransaction，"降级"承诺变成 500（评审 P2）。嵌套事务失败
         # 只回滚到 SAVEPOINT，外层事务照常可用。
         with db.begin_nested():
-            row = db.execute(
-                text(
-                    f"SELECT max(last_seen_at) AS latest_scan_at, "
-                    f"       to_timestamp(max(created_at_ms) / 1000.0) AS latest_utterance_at "
-                    f"FROM {UTTERANCE_TABLE}"
-                )
+            last_seen_at, latest_ms = db.query(
+                func.max(Utterance.last_seen_at), func.max(Utterance.created_at_ms)
             ).one()
         successful_scan_at = latest_successful_scan_at(db)
     except Exception as exc:
         logger.warning("雪球观点数据源新鲜度探测失败: %s", str(exc)[:150])
         return unavailable
-    latest_scan_at = successful_scan_at or row.latest_scan_at
+    latest_scan_at = successful_scan_at or last_seen_at
+    latest_utterance_at = _from_epoch_ms(latest_ms)
     stale = False
     if latest_scan_at is not None:
         age = datetime.now(timezone.utc) - latest_scan_at
@@ -155,9 +142,7 @@ def source_freshness(db: Session) -> Dict[str, Any]:
     return {
         "available": True,
         "latest_scan_at": latest_scan_at.isoformat() if latest_scan_at else None,
-        "latest_utterance_at": (
-            row.latest_utterance_at.isoformat() if row.latest_utterance_at else None
-        ),
+        "latest_utterance_at": (latest_utterance_at.isoformat() if latest_utterance_at else None),
         "stale": stale,
     }
 
@@ -198,7 +183,7 @@ def scan_matched_utterances(
 
     单标的 job（wanted 单元素）、角标端点（wanted=全部目标）、观点页 feed
     共用本函数——一条匹配代码路径，只测一次。一行可引用多只标的，会出现在
-    多个键下。返回值内每个列表按时间升序；不存在的表在此处抛
+    多个键下。返回值内每个列表按时间升序；数据源未接入时抛
     OpinionSourceUnavailable。
 
     量级：180 天窗口内几千行、均长 80 字符，LIKE 预筛后单次全扫 <100ms，
@@ -207,37 +192,47 @@ def scan_matched_utterances(
     ensure_opinion_source(db)
     since_ms = int(since.timestamp() * 1000)
     with db.begin_nested():
-        rows = db.execute(
-            text(
-            f"SELECT utterance_key, kind, author_name, text AS body, context_text, "
-            f"       context_author_name, post_url, context_url, "
-            f"       to_timestamp(created_at_ms / 1000.0) AS created_at "
-            f"FROM {UTTERANCE_TABLE} "
-            f"WHERE created_at_ms >= :since_ms "
-            f"  AND (text LIKE '%$%' OR context_text LIKE '%$%' "
-            f"       OR post_url LIKE '%/S/%' OR context_url LIKE '%/S/%') "
-            f"ORDER BY created_at_ms ASC"
-            ),
-            {"since_ms": since_ms},
-        ).mappings().all()
+        # 只取列元组：批量 job 的长会话里几千个 ORM 实体会一直挂在 identity map 上
+        rows = (
+            db.query(
+                Utterance.utterance_key,
+                Utterance.kind,
+                Utterance.author_name,
+                Utterance.text,
+                Utterance.context_text,
+                Utterance.context_author_name,
+                Utterance.post_url,
+                Utterance.context_url,
+                Utterance.created_at_ms,
+            )
+            .filter(
+                Utterance.created_at_ms >= since_ms,
+                or_(
+                    Utterance.text.like("%$%"),
+                    Utterance.context_text.like("%$%"),
+                    Utterance.post_url.like("%/S/%"),
+                    Utterance.context_url.like("%/S/%"),
+                ),
+            )
+            .order_by(Utterance.created_at_ms.asc())
+            .all()
+        )
 
     matched: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
-        refs = extract_symbol_refs(
-            row["body"], row["context_text"], row["post_url"], row["context_url"]
-        )
+        refs = extract_symbol_refs(row.text, row.context_text, row.post_url, row.context_url)
         hits = refs & wanted
         if not hits:
             continue
         item = {
-            "utterance_key": row["utterance_key"],
-            "kind": row["kind"],
-            "author_name": row["author_name"],
-            "text": row["body"],
-            "context_text": row["context_text"],
-            "context_author_name": row["context_author_name"],
-            "post_url": row["post_url"],
-            "created_at": row["created_at"],
+            "utterance_key": row.utterance_key,
+            "kind": row.kind,
+            "author_name": row.author_name,
+            "text": row.text,
+            "context_text": row.context_text,
+            "context_author_name": row.context_author_name,
+            "post_url": row.post_url,
+            "created_at": _from_epoch_ms(row.created_at_ms),
         }
         for key in hits:
             matched.setdefault(key, []).append(item)

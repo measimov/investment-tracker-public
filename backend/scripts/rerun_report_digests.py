@@ -25,12 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def _stale_rows(db, symbol: str | None, market: str | None):
     from app.models.security_profile import SecurityProfileData
-    from app.services.report_digest_prompts import DIGEST_PROMPT_VERSION
-    from app.services.report_sections import SECTION_EXTRACTOR_VERSION
+    from app.services.report_digest_service import digest_versions_current
 
-    query = db.query(SecurityProfileData).filter(
-        SecurityProfileData.dataset == "report_digest"
-    )
+    query = db.query(SecurityProfileData).filter(SecurityProfileData.dataset == "report_digest")
     if symbol:
         query = query.filter(SecurityProfileData.symbol == symbol)
     if market:
@@ -38,10 +35,7 @@ def _stale_rows(db, symbol: str | None, market: str | None):
     stale = []
     for row in query.all():
         payload = row.payload or {}
-        if (
-            int(payload.get("extractor_version") or 1) != SECTION_EXTRACTOR_VERSION
-            or int(payload.get("prompt_version") or 1) != DIGEST_PROMPT_VERSION
-        ):
+        if not digest_versions_current(payload):
             stale.append(row)
     return stale
 
@@ -51,8 +45,9 @@ def main() -> int:
     parser.add_argument("--symbol")
     parser.add_argument("--market")
     parser.add_argument("--all", action="store_true", help="重跑全部过期摘要")
-    parser.add_argument("--max-new", type=int, default=12,
-                        help="每个标的单次最多生成多少份（成本护栏）")
+    parser.add_argument(
+        "--max-new", type=int, default=12, help="每个标的单次最多生成多少份（成本护栏）"
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     if not args.all and not args.symbol:

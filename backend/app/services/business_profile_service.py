@@ -25,8 +25,10 @@ from .business_profile_prompts import (
     PROFILE_PROMPT_VERSION,
 )
 from .llm_client import chat_completion
+from .payload_versions import versions_current
 from .report_digest_service import load_report_digests
-from .security_profile_service import load_symbol_profile, upsert_profile_row
+from .profile_store import upsert_profile_row
+from .security_profile_service import load_symbol_profile
 
 logger = get_app_logger(__name__)
 
@@ -49,7 +51,6 @@ PROFILE_ARRAY_SPECS = (
     ("下游需求", 1, 4, ("客群或场景", "需求驱动")),
     ("估值观察因子", 2, 5, ("因子", "方向", "传导")),
 )
-
 
 
 def build_business_profile_input(db: Session, symbol: str, market: str) -> Dict[str, Any]:
@@ -86,7 +87,9 @@ def build_business_profile_input(db: Session, symbol: str, market: str) -> Dict[
             break
 
     profile = load_symbol_profile(
-        db, symbol, market,
+        db,
+        symbol,
+        market,
         caps={"income": 3, "fina_indicator": 3, "daily_basic": 1},
     )
     return {
@@ -118,9 +121,7 @@ def parse_business_profile_output(content: str) -> Dict[str, Any]:
         if not isinstance(items, list):
             raise ValueError(f"商业画像 {field} 必须是数组")
         if len(items) < min_items:
-            raise ValueError(
-                f"商业画像 {field} 至少需要 {min_items} 项，收到 {len(items)} 项"
-            )
+            raise ValueError(f"商业画像 {field} 至少需要 {min_items} 项，收到 {len(items)} 项")
         for index, item in enumerate(items[:max_items]):
             if not isinstance(item, dict):
                 raise ValueError(f"商业画像 {field}[{index}] 必须是对象")
@@ -129,10 +130,7 @@ def parse_business_profile_output(content: str) -> Dict[str, Any]:
                 if not isinstance(value, str) or not value.strip():
                     raise ValueError(f"商业画像 {field}[{index}] 缺少字段: {key}")
         data[field] = items[:max_items]
-    return {
-        key: data[key]
-        for key in (*PROFILE_FIELDS, *(spec[0] for spec in PROFILE_ARRAY_SPECS))
-    }
+    return {key: data[key] for key in (*PROFILE_FIELDS, *(spec[0] for spec in PROFILE_ARRAY_SPECS))}
 
 
 def input_fingerprint(payload_input: Dict[str, Any]) -> str:
@@ -171,10 +169,9 @@ def ensure_business_profile(db: Session, symbol: str, market: str) -> Optional[D
     if stored and stored.get("status") == "ok":
         # 命中要求输入指纹与 prompt 版本同时匹配（issue #145）：只比输入会让
         # prompt/输出 schema 变更后，输入未变的标的永远命中旧缓存。缺字段当 v1。
-        stored_prompt_version = stored.get("prompt_version") or "1"
-        if (
-            stored.get("input_fingerprint") == fingerprint
-            and stored_prompt_version == PROFILE_PROMPT_VERSION
+        # （PROFILE_PROMPT_VERSION 历史上存成字符串 "2"，按整数比较与原字符串比较等价）
+        if stored.get("input_fingerprint") == fingerprint and versions_current(
+            stored, prompt_version=int(PROFILE_PROMPT_VERSION)
         ):
             return stored.get("profile")  # 缓存命中（输入与 prompt 版本均未变）
 
@@ -182,26 +179,37 @@ def ensure_business_profile(db: Session, symbol: str, market: str) -> Optional[D
         completion = chat_completion(
             [
                 {"role": "system", "content": BUSINESS_PROFILE_SYSTEM_PROMPT},
-                {"role": "user", "content": (
-                    "请基于下方 JSON 数据生成商业画像（严格按 system 约定输出 JSON）：\n\n"
-                    "```json\n"
-                    + json.dumps(payload_input, ensure_ascii=False, separators=(",", ":"),
-                                 default=str)
-                    + "\n```"
-                )},
+                {
+                    "role": "user",
+                    "content": (
+                        "请基于下方 JSON 数据生成商业画像（严格按 system 约定输出 JSON）：\n\n"
+                        "```json\n"
+                        + json.dumps(
+                            payload_input, ensure_ascii=False, separators=(",", ":"), default=str
+                        )
+                        + "\n```"
+                    ),
+                },
             ],
             response_format={"type": "json_object"},
         )
         profile = parse_business_profile_output(completion["content"])
-        upsert_profile_row(db, symbol, market, "business_profile", "current", {
-            "status": "ok",
-            "profile": profile,
-            "source_end_date": payload_input["source_end_date"],
-            "input_fingerprint": fingerprint,
-            "prompt_version": PROFILE_PROMPT_VERSION,
-            "model": completion.get("model"),
-            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        })
+        upsert_profile_row(
+            db,
+            symbol,
+            market,
+            "business_profile",
+            "current",
+            {
+                "status": "ok",
+                "profile": profile,
+                "source_end_date": payload_input["source_end_date"],
+                "input_fingerprint": fingerprint,
+                "prompt_version": PROFILE_PROMPT_VERSION,
+                "model": completion.get("model"),
+                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            },
+        )
         db.commit()
         return profile
     except Exception as exc:  # 商业画像失败不阻断主分析
@@ -220,16 +228,17 @@ _stock_basic_lock = threading.Lock()
 _STOCK_BASIC_TTL_SECONDS = 24 * 3600
 
 
-def _load_stock_basic() -> List[Dict[str, Any]]:
+def load_stock_basic() -> List[Dict[str, Any]]:
     global _stock_basic_loaded_at
     with _stock_basic_lock:
-        if _stock_basic_cache and time.monotonic() - _stock_basic_loaded_at < _STOCK_BASIC_TTL_SECONDS:
+        if (
+            _stock_basic_cache
+            and time.monotonic() - _stock_basic_loaded_at < _STOCK_BASIC_TTL_SECONDS
+        ):
             return _stock_basic_cache
         from .stock_price_service import tushare_query
 
-        df = tushare_query(
-            "stock_basic", list_status="L", fields="ts_code,symbol,name,industry"
-        )
+        df = tushare_query("stock_basic", list_status="L", fields="ts_code,symbol,name,industry")
         _stock_basic_cache.clear()
         _stock_basic_cache.extend(df.to_dict("records"))
         _stock_basic_loaded_at = time.monotonic()
@@ -261,11 +270,13 @@ def _us_peers_by_sic(symbol: str) -> List[Dict[str, Any]]:
         listed = edgar_reverse_lookup(company["cik"])
         if not listed:
             continue  # 有 10-K 但无 ticker 的 filer，对同业比较无意义
-        peers.append({
-            "symbol": listed["symbol"],
-            "name": listed["title"],
-            "industry": f"SIC {sic}",
-        })
+        peers.append(
+            {
+                "symbol": listed["symbol"],
+                "name": listed["title"],
+                "industry": f"SIC {sic}",
+            }
+        )
         if len(peers) >= PEER_LIST_CAP:
             break
     return peers
@@ -315,9 +326,17 @@ def ensure_peer_list(db: Session, symbol: str, market: str) -> List[Dict[str, An
         try:
             peers = _us_peers_by_sic(symbol)
             if peers:
-                upsert_profile_row(db, symbol, market, "peer_list", "current", {
-                    "industry": peers[0]["industry"], "peers": peers,
-                })
+                upsert_profile_row(
+                    db,
+                    symbol,
+                    market,
+                    "peer_list",
+                    "current",
+                    {
+                        "industry": peers[0]["industry"],
+                        "peers": peers,
+                    },
+                )
                 db.commit()
             return peers
         except Exception as exc:
@@ -331,24 +350,33 @@ def ensure_peer_list(db: Session, symbol: str, market: str) -> List[Dict[str, An
     if cached is not None:
         return cached
     try:
-        listing = _load_stock_basic()
+        listing = load_stock_basic()
         industry = next(
-            (str(entry.get("industry") or "")
-             for entry in listing if str(entry.get("symbol")) == symbol),
+            (
+                str(entry.get("industry") or "")
+                for entry in listing
+                if str(entry.get("symbol")) == symbol
+            ),
             "",
         )
         if not industry:
             return (row.payload or {}).get("peers", []) if row else []
         peers = [
-            {"symbol": str(entry.get("symbol")), "name": entry.get("name"),
-             "industry": industry}
+            {"symbol": str(entry.get("symbol")), "name": entry.get("name"), "industry": industry}
             for entry in listing
-            if str(entry.get("industry") or "") == industry
-            and str(entry.get("symbol")) != symbol
+            if str(entry.get("industry") or "") == industry and str(entry.get("symbol")) != symbol
         ][:PEER_LIST_CAP]
-        upsert_profile_row(db, symbol, market, "peer_list", "current", {
-            "industry": industry, "peers": peers,
-        })
+        upsert_profile_row(
+            db,
+            symbol,
+            market,
+            "peer_list",
+            "current",
+            {
+                "industry": industry,
+                "peers": peers,
+            },
+        )
         db.commit()
         return peers
     except Exception as exc:

@@ -119,7 +119,7 @@ onMounted(load)
       <el-collapse-item name="detail" title="运行详情、关注作者、跟踪组合与最近运行">
         <el-descriptions :column="2" size="small" border>
           <el-descriptions-item label="启用">
-            {{ state.status.enabled ? '是' : '否（XUEQIU_COLLECTOR_ENABLED）' }}
+            {{ state.status.enabled ? '是' : '否（需在部署配置中开启）' }}
           </el-descriptions-item>
           <el-descriptions-item label="进程心跳">
             {{ formatDateTime(state.status.heartbeat_at) }}

@@ -18,8 +18,7 @@ FORBIDDEN_ABSOLUTE_PREFIXES = ("app", "sqlalchemy")
 
 def _is_forbidden_absolute(name: str) -> bool:
     return any(
-        name == prefix or name.startswith(prefix + ".")
-        for prefix in FORBIDDEN_ABSOLUTE_PREFIXES
+        name == prefix or name.startswith(prefix + ".") for prefix in FORBIDDEN_ABSOLUTE_PREFIXES
     )
 
 
@@ -65,7 +64,9 @@ def test_portfolio_kernel_has_no_implicit_today():
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "today"
             ):
-                violations.append(f"{path.name}:{node.lineno}: 内核不得调用 .today()，请由调用方传入")
+                violations.append(
+                    f"{path.name}:{node.lineno}: 内核不得调用 .today()，请由调用方传入"
+                )
     assert not violations, "\n".join(violations)
 
 

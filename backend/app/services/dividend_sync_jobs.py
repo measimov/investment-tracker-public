@@ -1,41 +1,46 @@
 """分红公告同步 job（结构照抄 price_refresh_jobs）。
 
-手动触发为 V1 唯一入口；周期任务（周度）由 settings.dividend_sync_periodic_enabled
+手动触发之外，周期任务（周度）由 settings.dividend_sync_periodic_enabled
 控制、默认关闭——dividend 接口有积分配额，且 A 股分红公告按年报/中报季集中，
 盲目轮询收益极低。港股（披露易）不依赖 TUSHARE_TOKEN：未配置时周期入口只为
 持有/交易过港股的用户入队。
+
+周期入口每小时 tick 一次，是否满一周按 scheduled_task_state 里的上次入队时间判定：
+内存里的 7 天间隔在每次重启/部署后都会立刻再跑一遍。
 """
 
+from datetime import timedelta
 from typing import Any, Dict, Optional
 
 from ..config import settings
+from ..core.timeutil import local_today
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from .background_job_store import (
-    JobOwnershipLostError,
     create_or_get_active_job,
     get_job,
-    set_job_progress,
     update_job,
 )
 from .dividend_sync_service import (
     HKEX_MARKETS,
     SUPPORTED_MARKETS,
     sync_dividends_for_user,
-    tushare_configured,
 )
-from .job_runtime import run_job_inline
+from .job_runtime import make_batch_progress, run_job_inline
+from .stock_price_service import tushare_configured
 from .job_worker import (
     PeriodicOutcome,
     periodic_outcome_task,
-    register_periodic_task,
     register_runner,
 )
 
 logger = get_app_logger(__name__)
 JOB_TYPE = "dividend_sync"
 
-PERIODIC_INTERVAL_SECONDS = 7 * 24 * 3600
+# 每小时 tick；真正的周期（每周一次）按库内上次入队时间判定
+PERIODIC_INTERVAL_SECONDS = 3600
+PERIODIC_TASK_NAME = "enqueue_periodic_dividend_sync"
+PERIODIC_EVERY = timedelta(days=7)
 
 
 def start_dividend_sync_job(user_id: int) -> Dict[str, Any]:
@@ -48,13 +53,7 @@ def execute_dividend_sync_job(claimed: Dict[str, Any]) -> None:
     进度逐标的（港股逐份表格下载）回写并续租：港股首次同步要下载历史表格，
     数十只标的会超过租约，不回写会被 worker 当 stale 接管重跑。
     """
-    attempt = claimed.get("attempt_count")
-
-    def progress(**fields: Any) -> None:
-        if set_job_progress(
-            claimed["id"], JOB_TYPE, required_attempt_count=attempt, **fields
-        ) is None:
-            raise JobOwnershipLostError(claimed["id"])
+    progress = make_batch_progress(claimed["id"], JOB_TYPE, claimed.get("attempt_count"))
 
     db = SessionLocal()
     try:
@@ -73,7 +72,10 @@ def execute_dividend_sync_job(claimed: Dict[str, Any]) -> None:
 
 
 def run_dividend_sync_job(job_id: str) -> None:
-    run_job_inline(job_id, JOB_TYPE, execute_dividend_sync_job, label="Dividend sync", logger=logger)
+    run_job_inline(
+        job_id, JOB_TYPE, execute_dividend_sync_job, label="Dividend sync", logger=logger
+    )
+
 
 def get_dividend_sync_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)
@@ -82,12 +84,11 @@ def get_dividend_sync_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]
 def enqueue_periodic_dividend_sync() -> int:
     """周期入口（默认关闭）：为每个可能有应收分红的用户入队一次同步。
 
-    用户全集 = 当前持有支持市场的用户 ∪ lookback 内交易过的用户——
+    用户全集 = 当前持有支持市场的活跃用户 ∪ lookback 内交易过的活跃用户——
     与服务层目标收集同一口径：登记日持有、随后卖清最后一只的用户
-    仍会入队，交由登记日重放判定权益。
+    仍会入队，交由登记日重放判定权益。停用的用户不入队。
     开关关闭时静默返回 0；无 token 时只看港股；create_or_get_active_job 天然去重。
     """
-    from datetime import date, timedelta
 
     if not settings.dividend_sync_periodic_enabled:
         return 0
@@ -95,21 +96,29 @@ def enqueue_periodic_dividend_sync() -> int:
 
     from ..models.holding import Holding
     from ..models.transaction import Transaction
+    from ..models.user import User
 
-    lookback_start = date.today() - timedelta(days=settings.dividend_sync_lookback_days)
+    lookback_start = local_today() - timedelta(days=settings.dividend_sync_lookback_days)
     db = SessionLocal()
     try:
         holding_users = {
             row[0]
             for row in db.query(Holding.user_id)
-            .filter(Holding.quantity > 0, Holding.market.in_(markets))
+            .join(User, User.id == Holding.user_id)
+            .filter(
+                User.is_active.is_(True),
+                Holding.quantity > 0,
+                Holding.market.in_(markets),
+            )
             .distinct()
             .all()
         }
         traded_users = {
             row[0]
             for row in db.query(Transaction.user_id)
+            .join(User, User.id == Transaction.user_id)
             .filter(
+                User.is_active.is_(True),
                 Transaction.market.in_(markets),
                 Transaction.transaction_date >= lookback_start,
             )
@@ -127,16 +136,22 @@ def enqueue_periodic_dividend_sync() -> int:
 
 @periodic_outcome_task
 def periodic_enqueue_dividend_sync() -> PeriodicOutcome:
-    """周期任务入口（以名字 enqueue_periodic_dividend_sync 注册）：开关关闭为 skipped；
-    查询/入队出错照常上抛（worker 记失败）；同步任务本身的失败由后台任务检查器报告。"""
+    """周期任务入口（以名字 enqueue_periodic_dividend_sync 注册，每小时 tick）：
+    开关关闭或距上次入队不足一周为 skipped；查询/入队出错照常上抛（worker 记失败，
+    且不记入队时间，下个 tick 重试）；同步任务本身的失败由后台任务检查器报告。"""
+    from . import scheduled_state
+
     if not settings.dividend_sync_periodic_enabled:
         return PeriodicOutcome.skipped("DIVIDEND_SYNC_PERIODIC_ENABLED=false")
-    return PeriodicOutcome.succeeded(enqueue_periodic_dividend_sync())
+    db = SessionLocal()
+    try:
+        if not scheduled_state.is_due(db, PERIODIC_TASK_NAME, PERIODIC_EVERY):
+            return PeriodicOutcome.skipped("距上次入队不足 7 天")
+        enqueued = enqueue_periodic_dividend_sync()
+        scheduled_state.mark_ran(db, PERIODIC_TASK_NAME, detail={"enqueued_users": enqueued})
+    finally:
+        db.close()
+    return PeriodicOutcome.succeeded(enqueued)
 
 
 register_runner(JOB_TYPE, execute_dividend_sync_job)
-register_periodic_task(
-    periodic_enqueue_dividend_sync,
-    PERIODIC_INTERVAL_SECONDS,
-    name="enqueue_periodic_dividend_sync",
-)

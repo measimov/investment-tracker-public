@@ -200,9 +200,9 @@ def refresh_session(
     链上所有 JWT（含续期前已泄露的旧令牌）；同时在途请求携带的旧 Cookie
     仍指向同一有效会话，不会被轮换误判成 401。
     """
-    token = (
-        credentials.credentials if credentials else None
-    ) or request.cookies.get(AUTH_COOKIE_NAME)
+    token = (credentials.credentials if credentials else None) or request.cookies.get(
+        AUTH_COOKIE_NAME
+    )
     payload = decode_access_token(token) if token else None
     jti = payload.get("jti") if payload else None
     renewed = renew_session(db, current_user, jti) if jti else None
@@ -226,9 +226,9 @@ def logout(
     db: Session = Depends(get_db),
 ):
     """Revoke the current server-side session and clear the browser cookies."""
-    token = (
-        credentials.credentials if credentials else None
-    ) or request.cookies.get(AUTH_COOKIE_NAME)
+    token = (credentials.credentials if credentials else None) or request.cookies.get(
+        AUTH_COOKIE_NAME
+    )
     payload = decode_access_token(token) if token else None
     jti = payload.get("jti") if payload else None
     if jti:

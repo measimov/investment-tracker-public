@@ -21,17 +21,17 @@ def api_users():
         for u in (demo, admin):
             u.hashed_password = get_password_hash("watchlist-api-password")
         db.query(WatchlistItem).delete()
-        db.query(SecurityProfileData).filter(
-            SecurityProfileData.symbol.like("600WATCH%")
-        ).delete(synchronize_session=False)
+        db.query(SecurityProfileData).filter(SecurityProfileData.symbol.like("600WATCH%")).delete(
+            synchronize_session=False
+        )
         db.commit()
         yield
         for u in (demo, admin):
             u.hashed_password = originals[u.id]
         db.query(WatchlistItem).delete()
-        db.query(SecurityProfileData).filter(
-            SecurityProfileData.symbol.like("600WATCH%")
-        ).delete(synchronize_session=False)
+        db.query(SecurityProfileData).filter(SecurityProfileData.symbol.like("600WATCH%")).delete(
+            synchronize_session=False
+        )
         db.commit()
     finally:
         db.close()
@@ -100,7 +100,7 @@ async def test_watchlist_crud_unique_and_ownership(api_users):
         assert [row["id"] for row in listed.json()] == [item["id"]]
 
         removed = await client.delete(f"/api/watchlist/{item['id']}", headers=user_auth)
-        assert removed.status_code == 200
+        assert removed.status_code == 204
         assert (await client.get("/api/watchlist", headers=user_auth)).json() == []
 
 
@@ -124,10 +124,15 @@ async def test_graham_summary_appears_when_profile_data_exists(api_users):
                 },
             ),
         ):
-            db.add(SecurityProfileData(
-                symbol="600WATCH", market="A股", dataset=dataset,
-                period_key="20251231", payload=payload,
-            ))
+            db.add(
+                SecurityProfileData(
+                    symbol="600WATCH",
+                    market="A股",
+                    dataset=dataset,
+                    period_key="20251231",
+                    payload=payload,
+                )
+            )
         db.commit()
     finally:
         db.close()
@@ -154,16 +159,32 @@ async def test_symbol_is_normalized_uppercase_and_case_dupes_409(api_users):
     小写请求也能命中既有大写档案的准则摘要。"""
     db = SessionLocal()
     try:
-        db.add(SecurityProfileData(
-            symbol="600WATCH", market="A股", dataset="income", period_key="20251231",
-            payload={"end_date": "20251231", "n_income_attr_p": 100.0, "basic_eps": 1.0},
-        ))
-        db.add(SecurityProfileData(
-            symbol="600WATCH", market="A股", dataset="balancesheet", period_key="20251231",
-            payload={"end_date": "20251231", "total_cur_assets": 500.0, "total_cur_liab": 100.0,
-                     "total_assets": 1000.0, "total_liab": 300.0, "money_cap": 200.0,
-                     "lt_borr": 50.0},
-        ))
+        db.add(
+            SecurityProfileData(
+                symbol="600WATCH",
+                market="A股",
+                dataset="income",
+                period_key="20251231",
+                payload={"end_date": "20251231", "n_income_attr_p": 100.0, "basic_eps": 1.0},
+            )
+        )
+        db.add(
+            SecurityProfileData(
+                symbol="600WATCH",
+                market="A股",
+                dataset="balancesheet",
+                period_key="20251231",
+                payload={
+                    "end_date": "20251231",
+                    "total_cur_assets": 500.0,
+                    "total_cur_liab": 100.0,
+                    "total_assets": 1000.0,
+                    "total_liab": 300.0,
+                    "money_cap": 200.0,
+                    "lt_borr": 50.0,
+                },
+            )
+        )
         db.commit()
     finally:
         db.close()
@@ -172,7 +193,9 @@ async def test_symbol_is_normalized_uppercase_and_case_dupes_409(api_users):
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         user_auth = {"Authorization": f"Bearer {await _token(client, 'demo')}"}
         lower = await client.post(
-            "/api/watchlist", json={"symbol": " 600watch ", "market": "A股"}, headers=user_auth,
+            "/api/watchlist",
+            json={"symbol": " 600watch ", "market": "A股"},
+            headers=user_auth,
         )
         assert lower.status_code == 201
         assert lower.json()["symbol"] == "600WATCH"
@@ -180,21 +203,38 @@ async def test_symbol_is_normalized_uppercase_and_case_dupes_409(api_users):
         assert lower.json()["graham_summary"] is not None
         # 大小写重复 → 唯一约束 409
         upper = await client.post(
-            "/api/watchlist", json={"symbol": "600WATCH", "market": "A股"}, headers=user_auth,
+            "/api/watchlist",
+            json={"symbol": "600WATCH", "market": "A股"},
+            headers=user_auth,
         )
         assert upper.status_code == 409
         # membership 端点对小写查询同样命中
         contains = await client.get(
-            "/api/watchlist/contains", params={"symbol": "600watch", "market": "A股"},
+            "/api/watchlist/contains",
+            params={"symbol": "600watch", "market": "A股"},
             headers=user_auth,
         )
         assert contains.status_code == 200
         assert contains.json()["watching"] is True
         absent = await client.get(
-            "/api/watchlist/contains", params={"symbol": "NOPE", "market": "A股"},
+            "/api/watchlist/contains",
+            params={"symbol": "NOPE", "market": "A股"},
             headers=user_auth,
         )
         assert absent.json()["watching"] is False
+        # 港股按写入口径补零（#278）：「700」要命中「00700」
+        hk = await client.post(
+            "/api/watchlist",
+            json={"symbol": "700", "market": "港股"},
+            headers=user_auth,
+        )
+        assert hk.status_code == 201 and hk.json()["symbol"] == "00700"
+        hk_contains = await client.get(
+            "/api/watchlist/contains",
+            params={"symbol": "700", "market": "港股"},
+            headers=user_auth,
+        )
+        assert hk_contains.json()["watching"] is True
 
 
 @pytest.mark.anyio
@@ -207,11 +247,15 @@ async def test_list_summaries_batched_not_per_item(api_users):
     db = SessionLocal()
     try:
         for i in range(6):
-            db.add(SecurityProfileData(
-                symbol=f"600WATCH{i}", market="A股", dataset="income",
-                period_key="20251231",
-                payload={"end_date": "20251231", "n_income_attr_p": 100.0 + i},
-            ))
+            db.add(
+                SecurityProfileData(
+                    symbol=f"600WATCH{i}",
+                    market="A股",
+                    dataset="income",
+                    period_key="20251231",
+                    payload={"end_date": "20251231", "n_income_attr_p": 100.0 + i},
+                )
+            )
         db.commit()
     finally:
         db.close()
@@ -221,7 +265,8 @@ async def test_list_summaries_batched_not_per_item(api_users):
         user_auth = {"Authorization": f"Bearer {await _token(client, 'demo')}"}
         for i in range(6):
             created = await client.post(
-                "/api/watchlist", json={"symbol": f"600WATCH{i}", "market": "A股"},
+                "/api/watchlist",
+                json={"symbol": f"600WATCH{i}", "market": "A股"},
                 headers=user_auth,
             )
             assert created.status_code == 201
@@ -229,7 +274,9 @@ async def test_list_summaries_batched_not_per_item(api_users):
         profile_selects = []
 
         def _count(conn, cursor, statement, parameters, context, executemany):
-            if "security_profile_data" in statement and statement.lstrip().upper().startswith("SELECT"):
+            if "security_profile_data" in statement and statement.lstrip().upper().startswith(
+                "SELECT"
+            ):
                 profile_selects.append(statement)
 
         event.listen(engine, "before_cursor_execute", _count)
@@ -248,10 +295,9 @@ async def test_list_summaries_batched_not_per_item(api_users):
 
     db = SessionLocal()
     try:
-        db.query(SecurityProfileData).filter(
-            SecurityProfileData.symbol.like("600WATCH%")
-        ).delete(synchronize_session=False)
+        db.query(SecurityProfileData).filter(SecurityProfileData.symbol.like("600WATCH%")).delete(
+            synchronize_session=False
+        )
         db.commit()
     finally:
         db.close()
-

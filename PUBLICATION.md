@@ -4,7 +4,7 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`ae154ea` (2026-09-28).
+`1799b03` (2026-09-30).
 
 Before syncing a new public release:
 
@@ -28,7 +28,9 @@ Public-only adaptations:
 - Replace real-ledger reconciliation figures in `METRICS_AUDIT.md` with neutral
   isolated-test wording.
 - Keep `TUSHARE_TOKEN` optional (empty default) in `.env.example`,
-  `docker-compose.yml`, and deployment docs.
+  `docker-compose.yml`, and deployment docs. Compose passes it as a bare key
+  (`- TUSHARE_TOKEN`) so the only default lives in `config.py`; the private
+  repository requires it with `${TUSHARE_TOKEN:?...}`.
 - Test report fixtures contain excerpts and metadata from public regulatory
   filings; they do not contain broker statements or user portfolio data.
 - Treat the squashed `20260728_0001_initial_schema.py` as a fresh pre-v1.0
@@ -45,7 +47,8 @@ Public-only adaptations:
   `SEED_AUTHORS`; the public snapshot carries no personal follow list. Collector
   tests seed their own synthetic authors, and fixtures derived from public
   Xueqiu pages use synthetic IDs/names for followed authors and cubes
-  (`1000000001`, `1000000002`, `某作者`, `ZH000001`); signer goldens were
+  (`1000000001`, `1000000002`, `某作者`, `ZH000001`, cube number `000001`);
+  signer goldens were
   regenerated for those URLs with the original signing script.
 - The `xueqiu-collector` compose service builds from the same backend image
   without BuildKit secrets.

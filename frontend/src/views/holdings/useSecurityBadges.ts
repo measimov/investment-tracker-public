@@ -1,24 +1,27 @@
 /**
  * 标的角标 feature（issue #140）：持仓列表的附加信息——
  * AI 标的分析摘要（标签列；点击名称跳转详情页）、标的事件角标
- * （未来 90 天：财报披露 / 分红预案 / 限售解禁）、雪球观点与行业分类（#235）。
+ * （未来 90 天：财报披露 / 分红预案 / 限售解禁）、雪球观点、行业分类（#235）与近 7 天
+ * 重要官方公告（#306，useRecentAnnouncements 与观察清单共用）。
  *
  * 两者都是锦上添花：加载失败一律静默，不打断持仓主流程。
  */
 
 import { reactive } from 'vue'
 import api from '@/api'
+import { useRecentAnnouncements } from '@/composables/useRecentAnnouncements'
 import { todayLocalISODate } from '@/utils/helpers'
 import { parseLocalDate } from '@/utils/dateRange'
 import type {
+  AnalysisSummaryRow,
   OpinionSummariesResponse,
   OpinionSummaryRow,
   SecurityEvent,
   SecurityIndustryItem
 } from '@/types'
 import { OPINION_CHANGE_TAGS, opinionTagType } from '../opinions/useOpinions'
+import { isAnalysisOutdated } from '../security-detail/format'
 import { securityEventTypeLabel } from '@/utils/labels'
-import type { AnalysisSummaryRow } from './types'
 import type { HoldingTagSource } from './filters'
 
 export const RISK_LABELS: Record<string, string> = { low: '低', medium: '中', high: '高' }
@@ -31,6 +34,8 @@ export function useSecurityBadges() {
     industries: new Map<string, SecurityIndustryItem>()
   })
 
+  const announcements = useRecentAnnouncements()
+
   function riskTagType(level: string) {
     if (level === 'high') return 'danger'
     if (level === 'medium') return 'warning'
@@ -41,11 +46,17 @@ export function useSecurityBadges() {
     return state.analyses.get(`${row.symbol}:${row.market}`) || null
   }
 
+  /** 分析早于最新的财报摘要/报表抽取 = 没吃到最新数据（与详情页「可能过期」同一判据） */
+  function analysisOutdated(row: { symbol: string; market: string }): boolean {
+    const analysis = analysisFor(row)
+    return !!analysis && isAnalysisOutdated(analysis.created_at, analysis.latest_data_at)
+  }
+
   async function loadAnalyses() {
     try {
       const response = await api.listSecurityAnalyses()
       const map = new Map<string, AnalysisSummaryRow>()
-      for (const row of response.data as AnalysisSummaryRow[]) {
+      for (const row of response.data) {
         map.set(`${row.symbol}:${row.market}`, row)
       }
       state.analyses = map
@@ -84,7 +95,7 @@ export function useSecurityBadges() {
   async function loadOpinions() {
     try {
       const response = await api.listOpinionSummaries()
-      const body = response.data as OpinionSummariesResponse
+      const body = response.data
       const map = new Map<string, OpinionSummaryRow>()
       for (const row of body.items) {
         map.set(`${row.symbol}:${row.market}`, row)
@@ -160,12 +171,15 @@ export function useSecurityBadges() {
     riskLabels: RISK_LABELS,
     riskTagType,
     analysisFor,
+    analysisOutdated,
     opinionFor,
     opinionBadgeTags,
     opinionTagType,
     loadAnalyses,
     loadEvents,
     loadOpinions,
+    loadAnnouncements: announcements.load,
+    announcementBadge: announcements.badgeFor,
     industryFor,
     loadIndustries,
     upcomingEvent,

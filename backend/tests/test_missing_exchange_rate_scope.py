@@ -48,15 +48,29 @@ def _thb_holding(db, *, with_transaction=False):
     """
     if with_transaction:
         add_transaction(
-            db, symbol="PTT", name="泰国国家石油", market="美股",
-            transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-            transaction_date=date(2026, 1, 5), currency="THB",
+            db,
+            symbol="PTT",
+            name="泰国国家石油",
+            market="美股",
+            transaction_type="BUY",
+            quantity=Decimal("100"),
+            price=Decimal("10"),
+            transaction_date=date(2026, 1, 5),
+            currency="THB",
         )
-    db.add(Holding(
-        user_id=1, symbol="PTT", name="泰国国家石油", market="美股",
-        quantity=Decimal("100"), avg_cost=Decimal("10"), total_cost=Decimal("1000"),
-        currency="THB", current_price=Decimal("12"),
-    ))
+    db.add(
+        Holding(
+            user_id=1,
+            symbol="PTT",
+            name="泰国国家石油",
+            market="美股",
+            quantity=Decimal("100"),
+            avg_cost=Decimal("10"),
+            total_cost=Decimal("1000"),
+            currency="THB",
+            current_price=Decimal("12"),
+        )
+    )
     db.commit()
 
 
@@ -96,12 +110,20 @@ def test_current_holdings_performance_excludes_and_reports(db):
 
 
 def test_dividend_summary_excludes_and_reports(db):
-    db.add(CorporateAction(
-        user_id=1, symbol="PTT", name="泰国国家石油", market="美股",
-        action_type="CASH_DIVIDEND", ex_date=date(2026, 3, 1),
-        total_dividend=Decimal("100"), tax_withheld=Decimal("0"),
-        net_dividend=Decimal("100"), currency="THB",
-    ))
+    db.add(
+        CorporateAction(
+            user_id=1,
+            symbol="PTT",
+            name="泰国国家石油",
+            market="美股",
+            action_type="CASH_DIVIDEND",
+            ex_date=date(2026, 3, 1),
+            total_dividend=Decimal("100"),
+            tax_withheld=Decimal("0"),
+            net_dividend=Decimal("100"),
+            currency="THB",
+        )
+    )
     db.commit()
 
     result = get_dividend_summary(db, 1)
@@ -118,44 +140,73 @@ def test_dividend_summary_excludes_and_reports(db):
 def test_range_dividend_excludes_and_reports(db):
     """PR #148 复审复现的那条：100 THB 曾被当成 100 CNY 计入区间收益。"""
     add_transaction(
-        db, symbol="PTT", name="泰国国家石油", market="美股",
-        transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-        transaction_date=date(2026, 1, 5), currency="THB",
+        db,
+        symbol="PTT",
+        name="泰国国家石油",
+        market="美股",
+        transaction_type="BUY",
+        quantity=Decimal("100"),
+        price=Decimal("10"),
+        transaction_date=date(2026, 1, 5),
+        currency="THB",
     )
-    db.add(CorporateAction(
-        user_id=1, symbol="PTT", name="泰国国家石油", market="美股",
-        action_type="CASH_DIVIDEND", ex_date=date(2026, 3, 1),
-        payment_date=date(2026, 3, 1),
-        total_dividend=Decimal("100"), tax_withheld=Decimal("0"),
-        net_dividend=Decimal("100"), currency="THB",
-    ))
-    db.add(Holding(
-        user_id=1, symbol="PTT", name="泰国国家石油", market="美股",
-        quantity=Decimal("100"), avg_cost=Decimal("10"), total_cost=Decimal("1000"),
-        currency="THB", current_price=Decimal("12"),
-    ))
+    db.add(
+        CorporateAction(
+            user_id=1,
+            symbol="PTT",
+            name="泰国国家石油",
+            market="美股",
+            action_type="CASH_DIVIDEND",
+            ex_date=date(2026, 3, 1),
+            payment_date=date(2026, 3, 1),
+            total_dividend=Decimal("100"),
+            tax_withheld=Decimal("0"),
+            net_dividend=Decimal("100"),
+            currency="THB",
+        )
+    )
+    db.add(
+        Holding(
+            user_id=1,
+            symbol="PTT",
+            name="泰国国家石油",
+            market="美股",
+            quantity=Decimal("100"),
+            avg_cost=Decimal("10"),
+            total_cost=Decimal("1000"),
+            currency="THB",
+            current_price=Decimal("12"),
+        )
+    )
     db.commit()
 
     analytics = calculate_performance_analytics(
-        db, 1, {"PTT:美股": 12},
-        start_date=date(2026, 1, 1), end_date=date(2026, 6, 30),
+        db,
+        1,
+        {"PTT:美股": 12},
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 6, 30),
     )
 
     # 旧行为：dividend_net_cny == 100.0（100 THB 当成 100 CNY），且无任何提示
     assert analytics["range_summary"]["dividend_net_cny"] == 0.0
     warnings = analytics["data_quality"].get("warnings") or []
-    assert any("THB" in w for w in warnings), (
-        f"区间股息缺汇率必须进 analytics warnings：{warnings}"
-    )
+    assert any("THB" in w for w in warnings), f"区间股息缺汇率必须进 analytics warnings：{warnings}"
 
 
 def test_rates_present_means_no_warning(db):
     """有汇率时不得误报——守住正常路径。"""
     _thb_holding(db)
-    db.add(ExchangeRate(
-        from_currency="THB", to_currency="CNY", rate=Decimal("0.2"),
-        effective_date=date(2026, 1, 1), source="test", is_active=True,
-    ))
+    db.add(
+        ExchangeRate(
+            from_currency="THB",
+            to_currency="CNY",
+            rate=Decimal("0.2"),
+            effective_date=date(2026, 1, 1),
+            source="test",
+            is_active=True,
+        )
+    )
     db.commit()
 
     summary = get_summary_statistics(db, 1)
@@ -164,6 +215,4 @@ def test_rates_present_means_no_warning(db):
     assert summary["total_invested_cny"] == pytest.approx(200.0)
     assert summary["missing_rate_currencies"] == []
     assert performance["missing_rate_currencies"] == []
-    assert not any(
-        "THB" in w for w in (performance["data_quality"].get("warnings") or [])
-    )
+    assert not any("THB" in w for w in (performance["data_quality"].get("warnings") or []))

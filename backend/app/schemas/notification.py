@@ -76,3 +76,26 @@ class AlertListResponse(BaseModel):
     counts: AlertCounts
     active: List[AlertItem]
     recent_resolved: List[AlertItem]
+
+
+class NotificationEventItem(BaseModel):
+    id: int
+    event_key: str
+    kind: str = Field(description="dividend_suggestion / ex_date / price_move / announcement")
+    user_id: Optional[int] = None
+    title: str
+    message: str
+    status: Literal["pending", "sent", "failed", "skipped"]
+    attempts: int
+    last_error: Optional[str] = None
+    created_at: datetime
+    sent_at: Optional[datetime] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NotificationEventListResponse(BaseModel):
+    enabled: bool
+    price_move_pct: float
+    ex_date_days_ahead: int
+    announcement_notify_enabled: bool = Field(description="持仓/自选标的重大公告推送开关")
+    items: List[NotificationEventItem]

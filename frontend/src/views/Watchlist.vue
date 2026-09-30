@@ -30,15 +30,70 @@
           <template #empty>
             <el-empty description="暂无观察标的；点击右上角添加" :image-size="88" />
           </template>
-          <el-table-column label="代码" width="110">
+          <el-table-column label="代码" width="130">
             <template #default="{ row }">
               <el-link type="primary" :underline="false" @click="openSecurityDetail(row)">
                 {{ row.symbol }}
               </el-link>
+              <el-tooltip v-if="announcements.badgeFor(row)" placement="top">
+                <template #content>
+                  <div v-for="line in announcements.badgeFor(row)!.lines" :key="line">
+                    {{ line }}
+                  </div>
+                </template>
+                <el-tag
+                  type="danger"
+                  size="small"
+                  effect="plain"
+                  class="announcement-badge"
+                  data-testid="watchlist-announcement-badge"
+                >
+                  {{ announcements.badgeFor(row)!.text }}
+                </el-tag>
+              </el-tooltip>
             </template>
           </el-table-column>
           <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
           <el-table-column prop="market" label="市场" width="90" />
+          <el-table-column label="现价" width="130" align="right">
+            <template #default="{ row }">
+              <template v-if="priceInfoOf(row)">
+                <el-tooltip placement="top">
+                  <template #content>
+                    <div v-for="line in priceInfoOf(row)!.tooltip" :key="line">{{ line }}</div>
+                  </template>
+                  <div data-testid="watchlist-price">
+                    <div class="num">{{ formatPrice(row.current_price) }}</div>
+                    <div class="cell-sub" :class="{ 'is-stale': priceInfoOf(row)!.stale }">
+                      {{ priceInfoOf(row)!.label }}
+                    </div>
+                  </div>
+                </el-tooltip>
+              </template>
+              <el-tooltip v-else :content="missingChangeReason({ current_price: null })">
+                <span class="muted">{{ EMPTY }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
+          <el-table-column label="加入以来" width="110" align="right">
+            <template #default="{ row }">
+              <el-tooltip v-if="changeOf(row)" placement="top">
+                <template #content>
+                  <div v-for="line in changeOf(row)!.tooltip" :key="line">{{ line }}</div>
+                </template>
+                <span
+                  class="num"
+                  :class="`change-${changeOf(row)!.direction}`"
+                  data-testid="watchlist-change"
+                >
+                  {{ changeOf(row)!.text }}
+                </span>
+              </el-tooltip>
+              <el-tooltip v-else :content="missingChangeReason(row)">
+                <span class="muted">{{ EMPTY }}</span>
+              </el-tooltip>
+            </template>
+          </el-table-column>
           <el-table-column prop="note" label="观察理由" min-width="220" show-overflow-tooltip />
           <el-table-column label="格雷厄姆准则" min-width="150">
             <template #default="{ row }">
@@ -91,6 +146,15 @@
             <div class="mobile-card-tags">
               <el-tag size="small" effect="plain">{{ row.market }}</el-tag>
               <el-tag
+                v-if="announcements.badgeFor(row)"
+                type="danger"
+                size="small"
+                effect="plain"
+                data-testid="watchlist-card-announcement"
+              >
+                {{ announcements.badgeFor(row)!.text }}
+              </el-tag>
+              <el-tag
                 v-if="row.graham_summary"
                 :type="grahamTagType(row.graham_summary)"
                 size="small"
@@ -102,6 +166,18 @@
           </div>
           <div v-if="row.note" class="mobile-card-meta">
             <span>{{ row.note }}</span>
+          </div>
+          <div class="mobile-card-meta">
+            <span>
+              现价 <span class="num">{{ formatPrice(row.current_price) }}</span>
+              <template v-if="priceInfoOf(row)">（{{ priceInfoOf(row)!.label }}）</template>
+            </span>
+            <span v-if="changeOf(row)">
+              加入以来
+              <span class="num" :class="`change-${changeOf(row)!.direction}`">
+                {{ changeOf(row)!.text }}
+              </span>
+            </span>
           </div>
           <div class="mobile-card-meta">
             <span>加入 {{ formatDate(row.created_at) }}</span>
@@ -175,15 +251,20 @@
 </template>
 
 <script setup lang="ts">
+import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { showApiError } from '@/utils/showApiError'
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
+import { ElMessage, type FormInstance } from 'element-plus'
 import { ArrowRight, Plus } from '@element-plus/icons-vue'
 import api from '../api'
 import SecuritySelect from '../components/SecuritySelect.vue'
+import { useAutoReload } from '../composables/useAutoReload'
+import { useRecentAnnouncements } from '../composables/useRecentAnnouncements'
 import { useMediaQuery } from '../composables/useMediaQuery'
-import { formatDate } from '../utils/helpers'
+import { EMPTY, formatDate, formatPrice, todayLocalISODate } from '../utils/helpers'
+import { describePrice } from './holdings/display'
+import { describeChangeSinceAdded, missingChangeReason } from './watchlist/priceChange'
 import {
   MARKETS,
   freeTextFormPatch,
@@ -202,6 +283,8 @@ const editingId = ref<number | null>(null)
 const formRef = ref<FormInstance | null>(null)
 
 const form = reactive({ symbol: '', market: '', name: '', note: '' })
+// 近 7 天重要公告徽标（与持仓页同一数据；失败静默）
+const announcements = useRecentAnnouncements()
 
 const rules = {
   symbol: [{ required: true, message: '请输入股票代码', trigger: 'blur' }],
@@ -218,21 +301,45 @@ function grahamTagType(summary: Record<string, unknown>) {
   return 'info'
 }
 
+function priceInfoOf(row: WatchlistItem) {
+  return describePrice(
+    {
+      price:
+        row.current_price === null || row.current_price === undefined
+          ? null
+          : Number(row.current_price),
+      priceAsOf: row.price_as_of,
+      priceUpdatedAt: row.price_updated_at,
+      priceSource: row.price_source
+    },
+    todayLocalISODate()
+  )
+}
+
+function changeOf(row: WatchlistItem) {
+  return describeChangeSinceAdded(row)
+}
+
 function openSecurityDetail(row: WatchlistItem) {
   router.push(`/securities/${encodeURIComponent(row.market)}/${encodeURIComponent(row.symbol)}`)
 }
 
-async function loadWatchlist() {
-  loading.value = true
+async function loadWatchlist(options: { silent?: boolean } = {}) {
+  // 自动重读静默进行：不转圈、不弹错（失败保留当前数据，下一轮再试）
+  if (!options.silent) loading.value = true
   try {
     const response = await api.getWatchlist()
     items.value = response.data
   } catch (error) {
+    if (options.silent) throw error
     showApiError(error, '加载观察清单失败')
   } finally {
-    loading.value = false
+    if (!options.silent) loading.value = false
   }
 }
+
+// 报价由后端交易时段每 15 分钟刷新；页面可见时每 5 分钟静默重读一次（对话框打开时不打断）
+useAutoReload(() => loadWatchlist({ silent: true }), { paused: () => dialogVisible.value })
 
 // 自选表单没有币种：只取 symbol/market/name；解析结果只补空名称
 function onSymbolSelected(item: SecuritySearchItem) {
@@ -298,26 +405,27 @@ async function handleSubmit() {
   }
 }
 
-function removeItem(row: WatchlistItem) {
-  ElMessageBox.confirm(
-    `确定把 ${row.symbol} 移出观察清单吗？标的档案与已生成的分析不受影响。`,
-    '移出观察',
-    { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' }
-  ).then(async () => {
-    try {
-      await api.removeWatchlistItem(row.id)
-      ElMessage.success('已移出观察清单')
-      await loadWatchlist()
-    } catch (error) {
-      showApiError(error, '移除失败')
-    }
-  })
-}
+const removeItem = makeConfirmedAction<WatchlistItem>({
+  title: '移出观察',
+  message: (row) => `确定把 ${row.symbol} 移出观察清单吗？标的档案与已生成的分析不受影响。`,
+  request: (row) => api.removeWatchlistItem(row.id),
+  successMessage: '已移出观察清单',
+  failureMessage: '移除失败',
+  reload: () => loadWatchlist()
+})
 
-onMounted(loadWatchlist)
+onMounted(() => {
+  loadWatchlist()
+  announcements.load()
+})
 </script>
 
 <style scoped>
+.announcement-badge {
+  margin-left: 6px;
+  cursor: help;
+}
+
 .watchlist-page {
   width: 100%;
 }
@@ -333,6 +441,23 @@ onMounted(loadWatchlist)
 .muted {
   color: var(--app-text-soft);
   font-size: 12px;
+}
+
+.cell-sub {
+  color: var(--app-text-soft);
+  font-size: 12px;
+}
+
+.cell-sub.is-stale {
+  color: var(--app-warning);
+}
+
+.change-up {
+  color: var(--app-success);
+}
+
+.change-down {
+  color: var(--app-danger);
 }
 
 @media (max-width: 900px) {

@@ -26,8 +26,8 @@
       </div>
       <div class="summary-item">
         <span>月末核对</span>
-        <strong>{{ reconciledCount }}/{{ snapshots.length }}</strong>
-        <small>持仓数量一致；自动快照不核验现金</small>
+        <strong>{{ reconciliation.matched }}/{{ reconciliation.total }}</strong>
+        <small>个账户最近一次核对持仓一致；自动快照不核验现金</small>
       </div>
     </div>
 
@@ -98,8 +98,9 @@ import ImportBatchesTab from './account-data/ImportBatchesTab.vue'
 import ReconciliationTab from './account-data/ReconciliationTab.vue'
 import SecurityRulesTab from './account-data/SecurityRulesTab.vue'
 import {
-  LIST_LIMIT,
   isAtListLimit,
+  LIST_LIMIT,
+  reconciledAccountSummary,
   type AccountRow,
   type CashEventRow,
   type ImportBatchRow,
@@ -130,12 +131,10 @@ const rulesTab = ref<InstanceType<typeof SecurityRulesTab>>()
 const activeAccountCount = computed(
   () => accounts.value.filter((item) => item.is_active !== false).length
 )
-const reconciledCount = computed(
-  () => snapshots.value.filter((item) => String(item.status).toUpperCase() === 'MATCHED').length
-)
+const reconciliation = computed(() => reconciledAccountSummary(accounts.value, snapshots.value))
 const latestBatchDate = computed(() => {
   const dates = importBatches.value
-    .map((item) => item.created_at || item.imported_at)
+    .map((item) => item.created_at)
     .filter(Boolean)
     .sort()
   return dates.length ? formatDate(dates[dates.length - 1]) : '尚无'

@@ -95,7 +95,12 @@ def test_interim_reports_locate_all_three_statements(name):
     for kind, expected in (("income", income), ("balance", balance), ("cashflow", cashflow)):
         parsed = found[kind]
         assert parsed is not None, f"{name} 未定位 {kind}"
-        assert (parsed.page_start, parsed.page_end) == expected, (name, kind, parsed.page_start, parsed.page_end)
+        assert (parsed.page_start, parsed.page_end) == expected, (
+            name,
+            kind,
+            parsed.page_start,
+            parsed.page_end,
+        )
         assert parsed.unit_multiplier == unit
         assert parsed.currency == currency
         assert parsed.column_count == 2
@@ -110,7 +115,12 @@ def test_annual_reports_locate_all_three_statements(name):
     for kind, expected in (("income", income), ("balance", balance), ("cashflow", cashflow)):
         parsed = found[kind]
         assert parsed is not None, f"{name} 未定位 {kind}"
-        assert (parsed.page_start, parsed.page_end) == expected, (name, kind, parsed.page_start, parsed.page_end)
+        assert (parsed.page_start, parsed.page_end) == expected, (
+            name,
+            kind,
+            parsed.page_start,
+            parsed.page_end,
+        )
         assert parsed.unit_multiplier == unit
         assert parsed.currency == currency
         assert len(parsed.rows) >= rs.MIN_ROWS
@@ -141,7 +151,8 @@ def test_tencent_2025_values_and_note_splitting():
     assert income.page_start == 130 and cashflow.page_start == 139
     cols = rs.period_columns(income, report_type="annual", end_date="20251231")
     assert [(c.column, c.end_date, c.fp, c.is_primary) for c in cols] == [
-        (0, "20251231", "FY", True), (1, "20241231", "FY", False),
+        (0, "20251231", "FY", True),
+        (1, "20241231", "FY", False),
     ]
 
 
@@ -160,17 +171,29 @@ def test_interim_report_four_columns_and_balance_prior_fiscal_year():
     assert income.column_count == 4 and income.interim_four_columns
     assert income.years == [2026, 2025, 2026, 2025]
     total = next(r for r in income.rows if r.label == "" and r.note == "6")
-    assert total.values == [Decimal("204785"), Decimal("184504"), Decimal("401243"), Decimal("364526")]
+    assert total.values == [
+        Decimal("204785"),
+        Decimal("184504"),
+        Decimal("401243"),
+        Decimal("364526"),
+    ]
     # 四列取六个月那组
     cols = rs.period_columns(income, report_type="interim", end_date="20260630")
-    assert [(c.column, c.end_date, c.fp) for c in cols] == [(2, "20260630", "H1"), (3, "20250630", "H1")]
+    assert [(c.column, c.end_date, c.fp) for c in cols] == [
+        (2, "20260630", "H1"),
+        (3, "20250630", "H1"),
+    ]
     # 资产负债表两列：期末 H1 + 上财年末 FY
     cols = rs.period_columns(balance, report_type="interim", end_date="20260630")
     assert [(c.column, c.end_date, c.fp, c.is_primary) for c in cols] == [
-        (0, "20260630", "H1", True), (1, "20251231", "FY", False),
+        (0, "20260630", "H1", True),
+        (1, "20251231", "FY", False),
     ]
     cols = rs.period_columns(cashflow, report_type="interim", end_date="20260630")
-    assert [(c.column, c.end_date, c.fp) for c in cols] == [(0, "20260630", "H1"), (1, "20250630", "H1")]
+    assert [(c.column, c.end_date, c.fp) for c in cols] == [
+        (0, "20260630", "H1"),
+        (1, "20250630", "H1"),
+    ]
     assert cashflow.column_count == 2 and not cashflow.interim_four_columns
 
 
@@ -182,7 +205,8 @@ def test_jd_us_gaap_layout_years_ascending_with_usd_column():
     assert income.years == [2023, 2024, 2025] and income.column_count == 4
     cols = rs.period_columns(income, report_type="annual", end_date="20251231")
     assert [(c.column, c.end_date, c.is_primary) for c in cols] == [
-        (2, "20251231", True), (1, "20241231", False),
+        (2, "20251231", True),
+        (1, "20241231", False),
     ]
     assert balance.years == [2024, 2025] and balance.column_count == 3
     cols = rs.period_columns(balance, report_type="annual", end_date="20251231")
@@ -200,25 +224,51 @@ def test_bilingual_report_rows_keep_english_labels():
     assert not any(len(r.values) == 1 and r.values[0] == 2025 for r in income.rows)
 
 
-@pytest.mark.parametrize("line, columns, expected", [
-    # 已知两列：比列数多一个 token 且首 token 是附注形态 → 剥附注
-    ("收入成本 7 (329,173) (311,011)", 2, ("收入成本", "7", [Decimal("-329173"), Decimal("-311011")])),
-    ("6 751,766 660,257", 2, ("", "6", [Decimal("751766"), Decimal("660257")])),
-    ("物業、設備及器材 17 149,905 80,185", 2, ("物業、設備及器材", "17", [Decimal("149905"), Decimal("80185")])),
-    # 列数吻合：小额整数就是数值，哪怕另一列带千分位（评审 P1 复现）
-    ("利息收入 80 1,200", 2, ("利息收入", "", [Decimal("80"), Decimal("1200")])),
-    ("80 1,200", 2, ("", "", [Decimal("80"), Decimal("1200")])),
-    ("利息收入 4 5", 2, ("利息收入", "", [Decimal("4"), Decimal("5")])),
-    # 列数未知：不猜附注，原样当数值（宁多一列不错列）
-    ("收入成本 7 (329,173) (311,011)", 0, ("收入成本", "", [Decimal("7"), Decimal("-329173"), Decimal("-311011")])),
-    ("229,801 196,467", 0, ("", "", [Decimal("229801"), Decimal("196467")])),
-    ("投資物業 268 —", 0, ("投資物業", "", [Decimal("268"), None])),
-    # 标签尾部的非数字附注号（12(a) / 七、1）不依赖列数
-    ("所得稅開支 12(a) (47,448) (45,018)", 0, ("所得稅開支", "12(a)", [Decimal("-47448"), Decimal("-45018")])),
-    ("货币资金 七、1 4,076,200,534.07 4,551,004,583.08", 0,
-     ("货币资金", "七、1", [Decimal("4076200534.07"), Decimal("4551004583.08")])),
-    ("－基本 13(a) 24.749 20.938", 0, ("－基本", "13(a)", [Decimal("24.749"), Decimal("20.938")])),
-])
+@pytest.mark.parametrize(
+    "line, columns, expected",
+    [
+        # 已知两列：比列数多一个 token 且首 token 是附注形态 → 剥附注
+        (
+            "收入成本 7 (329,173) (311,011)",
+            2,
+            ("收入成本", "7", [Decimal("-329173"), Decimal("-311011")]),
+        ),
+        ("6 751,766 660,257", 2, ("", "6", [Decimal("751766"), Decimal("660257")])),
+        (
+            "物業、設備及器材 17 149,905 80,185",
+            2,
+            ("物業、設備及器材", "17", [Decimal("149905"), Decimal("80185")]),
+        ),
+        # 列数吻合：小额整数就是数值，哪怕另一列带千分位（评审 P1 复现）
+        ("利息收入 80 1,200", 2, ("利息收入", "", [Decimal("80"), Decimal("1200")])),
+        ("80 1,200", 2, ("", "", [Decimal("80"), Decimal("1200")])),
+        ("利息收入 4 5", 2, ("利息收入", "", [Decimal("4"), Decimal("5")])),
+        # 列数未知：不猜附注，原样当数值（宁多一列不错列）
+        (
+            "收入成本 7 (329,173) (311,011)",
+            0,
+            ("收入成本", "", [Decimal("7"), Decimal("-329173"), Decimal("-311011")]),
+        ),
+        ("229,801 196,467", 0, ("", "", [Decimal("229801"), Decimal("196467")])),
+        ("投資物業 268 —", 0, ("投資物業", "", [Decimal("268"), None])),
+        # 标签尾部的非数字附注号（12(a) / 七、1）不依赖列数
+        (
+            "所得稅開支 12(a) (47,448) (45,018)",
+            0,
+            ("所得稅開支", "12(a)", [Decimal("-47448"), Decimal("-45018")]),
+        ),
+        (
+            "货币资金 七、1 4,076,200,534.07 4,551,004,583.08",
+            0,
+            ("货币资金", "七、1", [Decimal("4076200534.07"), Decimal("4551004583.08")]),
+        ),
+        (
+            "－基本 13(a) 24.749 20.938",
+            0,
+            ("－基本", "13(a)", [Decimal("24.749"), Decimal("20.938")]),
+        ),
+    ],
+)
 def test_parse_row(line, columns, expected):
     assert rs.parse_row(line, expected_columns=columns) == expected
 
@@ -234,11 +284,20 @@ def test_small_amounts_are_not_mistaken_for_notes_when_columns_match():
     parsed = rs.locate_statements(pages, report_type="annual")["income"]
     assert parsed.column_count == 2
     by_label = {row.label: row for row in parsed.rows}
-    assert (by_label["收入"].note, by_label["收入"].values) == ("6", [Decimal("1000"), Decimal("900")])
-    assert (by_label["利息收入"].note, by_label["利息收入"].values) == ("", [Decimal("80"), Decimal("1200")])
+    assert (by_label["收入"].note, by_label["收入"].values) == (
+        "6",
+        [Decimal("1000"), Decimal("900")],
+    )
+    assert (by_label["利息收入"].note, by_label["利息收入"].values) == (
+        "",
+        [Decimal("80"), Decimal("1200")],
+    )
     unlabeled = next(row for row in parsed.rows if row.label == "")
     assert (unlabeled.note, unlabeled.values) == ("", [Decimal("80"), Decimal("1200")])
-    assert (by_label["財務成本"].note, by_label["財務成本"].values) == ("7", [Decimal("-12"), Decimal("-9")])
+    assert (by_label["財務成本"].note, by_label["財務成本"].values) == (
+        "7",
+        [Decimal("-12"), Decimal("-9")],
+    )
     interest = by_label["利息收入"].row_id
     assert rs.resolve_value(parsed, [interest], 0, scale=True) == Decimal("80000000")
     assert rs.resolve_value(parsed, [interest], 1, scale=True) == Decimal("1200000000")
@@ -248,38 +307,98 @@ def test_small_amounts_are_not_mistaken_for_notes_when_columns_match():
 def test_expected_columns_rules():
     # 1) 表头"每列一个币种/单位 token"最可靠：两列人民币 → 2；人民币两列 + 美元折算一列 → 3；
     #    整表美元计价两列 → 2（不能靠"表头提到美元"去猜有折算列）
-    assert rs._expected_columns(["綜合財務狀況表", "二零二五年 二零二四年", "附註 人民幣百萬元 人民幣百萬元"],
-                                [2025, 2024], {3: 30, 2: 1}, {3: ["17", "18"], 2: ["10,000"]}) == 2
-    assert rs._expected_columns(["合併資產負債表", "2024年 2025年", "附註 人民幣 人民幣 美元"], [2024, 2025],
-                                {4: 24, 3: 26, 1: 3}, {4: ["4", "7"], 3: ["108,350", "7,619"]}) == 3
-    assert rs._expected_columns(["綜合財務狀況表", "二零二五年 二零二四年", "附註 美元千元 美元千元"],
-                                [2025, 2024], {3: 5, 2: 1}, {3: ["10", "11", "12", "13", "14"], 2: ["10,000"]}) == 2
-    assert rs._expected_columns(["綜合損益表", "Notes RMB’000 RMB’000"], [2025, 2024], {3: 8, 2: 3}, {}) == 2
+    assert (
+        rs._expected_columns(
+            ["綜合財務狀況表", "二零二五年 二零二四年", "附註 人民幣百萬元 人民幣百萬元"],
+            [2025, 2024],
+            {3: 30, 2: 1},
+            {3: ["17", "18"], 2: ["10,000"]},
+        )
+        == 2
+    )
+    assert (
+        rs._expected_columns(
+            ["合併資產負債表", "2024年 2025年", "附註 人民幣 人民幣 美元"],
+            [2024, 2025],
+            {4: 24, 3: 26, 1: 3},
+            {4: ["4", "7"], 3: ["108,350", "7,619"]},
+        )
+        == 3
+    )
+    assert (
+        rs._expected_columns(
+            ["綜合財務狀況表", "二零二五年 二零二四年", "附註 美元千元 美元千元"],
+            [2025, 2024],
+            {3: 5, 2: 1},
+            {3: ["10", "11", "12", "13", "14"], 2: ["10,000"]},
+        )
+        == 2
+    )
+    assert (
+        rs._expected_columns(
+            ["綜合損益表", "Notes RMB’000 RMB’000"], [2025, 2024], {3: 8, 2: 3}, {}
+        )
+        == 2
+    )
     #    币种与单位分开排版：一个单位 token = 一列，紧邻币种不另计（评审复现）
-    assert rs._expected_columns(["綜合財務狀況表", "二零二五年 二零二四年", "附註 美元 千元 美元 千元"],
-                                [2025, 2024], {3: 5, 2: 1}, {3: ["10", "11"], 2: ["10,000"]}) == 2
-    assert rs._expected_columns(["Consolidated Balance Sheet", "2025 2024", "Notes RMB million RMB million"],
-                                [2025, 2024], {3: 5, 2: 1}, {3: ["10", "11"], 2: ["10,000"]}) == 2
+    assert (
+        rs._expected_columns(
+            ["綜合財務狀況表", "二零二五年 二零二四年", "附註 美元 千元 美元 千元"],
+            [2025, 2024],
+            {3: 5, 2: 1},
+            {3: ["10", "11"], 2: ["10,000"]},
+        )
+        == 2
+    )
+    assert (
+        rs._expected_columns(
+            ["Consolidated Balance Sheet", "2025 2024", "Notes RMB million RMB million"],
+            [2025, 2024],
+            {3: 5, 2: 1},
+            {3: ["10", "11"], 2: ["10,000"]},
+        )
+        == 2
+    )
     assert rs._unit_token_columns(["附註 美元 千元 美元 千元"]) == 2
     assert rs._unit_token_columns(["附註 人民幣 人民幣 美元"]) == 3
     assert rs._unit_token_columns(["（以百萬元計，股份及每股數據除外）"]) == 0
     #    表头布局与数据行不吻合（说明分组没确认）→ 退回年份/数据行约束
-    assert rs._expected_columns(["綜合收益表", "二零二五年 二零二四年", "附註 人民幣 千元 港元 千元 美元 千元 x"],
-                                [2025, 2024], {3: 30, 2: 10}, {3: ["17"], 2: ["950"]}) == 2
+    assert (
+        rs._expected_columns(
+            ["綜合收益表", "二零二五年 二零二四年", "附註 人民幣 千元 港元 千元 美元 千元 x"],
+            [2025, 2024],
+            {3: 30, 2: 10},
+            {3: ["17"], 2: ["950"]},
+        )
+        == 2
+    )
     # 2) 无单位行：年份数 vs 行 token 最小常见值
     no_units = ["綜合財務狀況表", "二零二五年 二零二四年"]
-    assert rs._expected_columns(no_units, [2025, 2024], {3: 30, 2: 10, 1: 2}, {3: ["17", "18"], 2: ["950"]}) == 2
-    assert rs._expected_columns(no_units, [2025, 2024], {3: 30}, {3: ["17", "18", "19"]}) == 2  # 全行带附注
-    assert rs._expected_columns(no_units, [2025, 2024], {3: 26, 4: 24}, {3: ["108,350"], 4: ["4"]}) == 3  # 真多一列
+    assert (
+        rs._expected_columns(
+            no_units, [2025, 2024], {3: 30, 2: 10, 1: 2}, {3: ["17", "18"], 2: ["950"]}
+        )
+        == 2
+    )
+    assert (
+        rs._expected_columns(no_units, [2025, 2024], {3: 30}, {3: ["17", "18", "19"]}) == 2
+    )  # 全行带附注
+    assert (
+        rs._expected_columns(no_units, [2025, 2024], {3: 26, 4: 24}, {3: ["108,350"], 4: ["4"]})
+        == 3
+    )  # 真多一列
     # 3) 无年份无单位：最小常见值
     assert rs._expected_columns(["合并利润表", "项目 附注 本期 上期"], [], {2: 30, 3: 4}, {}) == 2
 
 
-@pytest.mark.parametrize("unit_line", [
-    "附註 美元千元 美元千元",  # 币种+单位粘在一起
-    "附註 美元 千元 美元 千元",  # 币种与单位分开排版（评审复现）
-    "Notes US$ thousand US$ thousand",
-])
+@pytest.mark.parametrize(
+    "unit_line",
+    [
+        "附註 美元千元 美元千元",  # 币种+单位粘在一起
+        "附註 美元 千元 美元 千元",  # 币种与单位分开排版（评审复现）
+        "Notes US$ thousand US$ thousand",
+    ],
+)
 def test_usd_denominated_two_column_table_with_single_unlabeled_total(unit_line):
     """评审 P1：整表以美元计价 ≠ 多一列美元折算，且同一列的币种+单位无论是否分开排版都只算
     一列。五条附注行 + 仅一条无附注合计，列数必须判 2、附注全部剥离，现金本期取 1,000 而
@@ -311,33 +430,57 @@ def test_english_rmb_million_header_with_separated_unit_words():
         "Property 13 4,000 3,000\nIntangibles 14 500 400\nTotal assets 10,000 7,900\n"
     ]
     parsed = rs.locate_statements(pages, report_type="annual")["balance"]
-    assert parsed.column_count == 2 and parsed.unit_multiplier == 1_000_000 and parsed.currency == "CNY"
+    assert (
+        parsed.column_count == 2
+        and parsed.unit_multiplier == 1_000_000
+        and parsed.currency == "CNY"
+    )
     assert all(len(r.values) == 2 for r in parsed.rows)
     cash = next(r for r in parsed.rows if r.label == "Cash")
     assert (cash.note, cash.values) == ("10", [Decimal("1000"), Decimal("900")])
     cols = rs.period_columns(parsed, report_type="annual", end_date="20251231")
-    assert rs.resolve_value(parsed, [cash.row_id], cols[0].column, scale=True) == Decimal("1000000000")
-    assert rs.resolve_value(parsed, [cash.row_id], cols[1].column, scale=True) == Decimal("900000000")
+    assert rs.resolve_value(parsed, [cash.row_id], cols[0].column, scale=True) == Decimal(
+        "1000000000"
+    )
+    assert rs.resolve_value(parsed, [cash.row_id], cols[1].column, scale=True) == Decimal(
+        "900000000"
+    )
 
 
-@pytest.mark.parametrize("line", ["資產", "非流動資產", "附註 人民幣百萬元 人民幣百萬元", "6", "下列人士應佔："])
+@pytest.mark.parametrize(
+    "line", ["資產", "非流動資產", "附註 人民幣百萬元 人民幣百萬元", "6", "下列人士應佔："]
+)
 def test_parse_row_rejects_non_numeric_lines(line):
     assert rs.parse_row(line) is None
 
 
-@pytest.mark.parametrize("line, kind", [
-    ("綜合收益表", "income"), ("簡明綜合全面收益表", "income"), ("綜合損益及其他全面收益表", "income"),
-    ("1、合并资产负债表", "balance"), ("綜合財務狀況表（續）", "balance"), ("合併現金流量表", "cashflow"),
-    ("合併經營狀況及綜合收益表（續）", "income"), ("（三）合并现金流量表", "cashflow"),
-])
+@pytest.mark.parametrize(
+    "line, kind",
+    [
+        ("綜合收益表", "income"),
+        ("簡明綜合全面收益表", "income"),
+        ("綜合損益及其他全面收益表", "income"),
+        ("1、合并资产负债表", "balance"),
+        ("綜合財務狀況表（續）", "balance"),
+        ("合併現金流量表", "cashflow"),
+        ("合併經營狀況及綜合收益表（續）", "income"),
+        ("（三）合并现金流量表", "cashflow"),
+    ],
+)
 def test_title_line_matches(line, kind):
     assert rs.match_title(line)[0] == kind
 
 
-@pytest.mark.parametrize("line", [
-    "43 綜合現金流量表附註", "(a) 於綜合財務狀況表確認的金額", "母公司资产负债表", "綜合權益變動表",
-    "載於第140頁至第272頁的附註乃此等綜合財務報表的組成部分。",
-])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "43 綜合現金流量表附註",
+        "(a) 於綜合財務狀況表確認的金額",
+        "母公司资产负债表",
+        "綜合權益變動表",
+        "載於第140頁至第272頁的附註乃此等綜合財務報表的組成部分。",
+    ],
+)
 def test_title_line_rejects_notes_and_other_statements(line):
     assert rs.match_title(line) is None
 
@@ -351,8 +494,16 @@ def test_prior_fiscal_year_end_for_interim_balance():
 
 def test_resolve_value_sums_rows_and_scales_units():
     parsed = rs.ParsedStatement(
-        kind="income", page_start=1, page_end=1, title="t", header=[], unit_multiplier=1_000_000,
-        currency="CNY", years=[2025, 2024], column_count=2, interim_four_columns=False,
+        kind="income",
+        page_start=1,
+        page_end=1,
+        title="t",
+        header=[],
+        unit_multiplier=1_000_000,
+        currency="CNY",
+        years=[2025, 2024],
+        column_count=2,
+        interim_four_columns=False,
         rows=[
             rs.StatementRow("r1", "銷售開支", "", [Decimal("-10"), Decimal("-8")]),
             rs.StatementRow("r2", "行政開支", "", [Decimal("-5"), None]),
@@ -360,7 +511,9 @@ def test_resolve_value_sums_rows_and_scales_units():
         ],
     )
     assert rs.resolve_value(parsed, ["r1", "r2"], 0, scale=True) == Decimal("-15000000")
-    assert rs.resolve_value(parsed, ["r1", "r2"], 1, scale=True) == Decimal("-8000000")  # None 分项跳过
+    assert rs.resolve_value(parsed, ["r1", "r2"], 1, scale=True) == Decimal(
+        "-8000000"
+    )  # None 分项跳过
     assert rs.resolve_value(parsed, ["r2"], 1, scale=True) is None
     assert rs.resolve_value(parsed, ["r3"], 0, scale=False) == Decimal("2.5")
     assert rs.resolve_value(parsed, ["r999"], 0, scale=True) is None
@@ -370,7 +523,9 @@ def test_resolve_value_sums_rows_and_scales_units():
 
 
 def test_locate_returns_none_when_no_statement_present():
-    found = rs.locate_statements(["公司簡介\n業務回顧", "董事會報告\n收入 1,000 900"], report_type="annual")
+    found = rs.locate_statements(
+        ["公司簡介\n業務回顧", "董事會報告\n收入 1,000 900"], report_type="annual"
+    )
     assert found == {"income": None, "balance": None, "cashflow": None}
 
 
@@ -442,7 +597,10 @@ def test_statement_printed_on_announcement_page_starts_after_the_board_paragraph
     income = found["income"]
     assert (income.page_start, income.page_end) == (6, 7)
     assert income.years == [2025, 2024] and income.unit_multiplier == 1_000
-    assert "Revenue" in income.rows[0].label and income.rows[0].values == [Decimal("1822878"), Decimal("1602395")]
+    assert "Revenue" in income.rows[0].label and income.rows[0].values == [
+        Decimal("1822878"),
+        Decimal("1602395"),
+    ]
     eps = next(r for r in income.rows if "Basic" in r.label)
     assert eps.values == [Decimal("0.16"), Decimal("0.14")]
 
@@ -455,20 +613,33 @@ def test_interim_prefix_and_separate_comprehensive_income_statement():
     assert found["balance"].title == "中期簡明綜合財務狀況表"
 
 
-@pytest.mark.parametrize("line, kind", [
-    ("中期簡明綜合損益表", "income"), ("未經審核簡明綜合財務狀況表", "balance"),
-    ("中期簡明合併現金流量表（未經審計）", "cashflow"), ("合併損益及其他綜合收益表", "income"),
-    ("合併綜合收益表", "income"), ("合併利潤表", "income"), ("合併經營狀況及綜合收益╱（損失）表", "income"),
-    ("簡明綜合中期財務狀況表", "balance"), ("綜合損益表（未經審核）（續）", "income"),
-])
+@pytest.mark.parametrize(
+    "line, kind",
+    [
+        ("中期簡明綜合損益表", "income"),
+        ("未經審核簡明綜合財務狀況表", "balance"),
+        ("中期簡明合併現金流量表（未經審計）", "cashflow"),
+        ("合併損益及其他綜合收益表", "income"),
+        ("合併綜合收益表", "income"),
+        ("合併利潤表", "income"),
+        ("合併經營狀況及綜合收益╱（損失）表", "income"),
+        ("簡明綜合中期財務狀況表", "balance"),
+        ("綜合損益表（未經審核）（續）", "income"),
+    ],
+)
 def test_title_variants_from_first_production_round(line, kind):
     assert rs.match_title(line)[0] == kind
 
 
-@pytest.mark.parametrize("line", [
-    "合併損益及其他綜合收益表（已經審計）", "母公司利潤表", "中期簡明綜合權益變動表",
-    "28 簡明綜合損益表 96 Condensed Consolidated",
-])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "合併損益及其他綜合收益表（已經審計）",
+        "母公司利潤表",
+        "中期簡明綜合權益變動表",
+        "28 簡明綜合損益表 96 Condensed Consolidated",
+    ],
+)
 def test_title_variants_still_rejected(line):
     assert rs.match_title(line) is None
     assert line != "母公司利潤表" or rs._is_terminator(line)
@@ -480,17 +651,28 @@ def test_detect_period_end_from_statement_header():
     assert rs.detect_period_end(found["income"]) == "20251231"
     assert rs.detect_period_end(found["balance"]) == "20251231"
     cols = rs.period_columns(found["balance"], report_type="interim", end_date="20251231")
-    assert [(c.end_date, c.fp, c.is_primary) for c in cols] == [("20251231", "H1", True), ("20250630", "FY", False)]
+    assert [(c.end_date, c.fp, c.is_primary) for c in cols] == [
+        ("20251231", "H1", True),
+        ("20250630", "FY", False),
+    ]
     # 阿拉伯数字 / 整行日期 / 英文
     make = lambda header: rs.ParsedStatement(  # noqa: E731
-        kind="income", page_start=1, page_end=1, title="t", header=header, unit_multiplier=1,
-        currency=None, years=[], column_count=2, interim_four_columns=False, rows=[],
+        kind="income",
+        page_start=1,
+        page_end=1,
+        title="t",
+        header=header,
+        unit_multiplier=1,
+        currency=None,
+        years=[],
+        column_count=2,
+        interim_four_columns=False,
+        rows=[],
     )
     assert rs.detect_period_end(make(["截至2026年3月31日止年度"])) == "20260331"
     assert rs.detect_period_end(make(["二零二五年十二月三十一日"])) == "20251231"
     assert rs.detect_period_end(make(["FOR THE YEAR ENDED 31 MARCH 2026"])) == "20260331"
     assert rs.detect_period_end(make(["截至12月31日止年度", "2025年 2024年"])) is None
-
 
 
 def test_shenzhou_rows_are_labeled_after_baseline_clustering():
@@ -563,8 +745,13 @@ def test_two_short_pages_together_reach_the_row_threshold():
 def test_short_head_only_merges_with_the_adjacent_next_page():
     """中间隔着附註页：短首块不再与两页之外的同类块拼接，后者单独够 6 行则单独成表。"""
     notes = "綜合財務報表附註\n1. 一般資料\n本公司於開曼群島註冊成立。"
-    found = rs.locate_statements([_SHORT_HEAD_PAGE, notes, _CONTINUATION_PAGE], report_type="annual")
-    assert found["income"] is not None and (found["income"].page_start, found["income"].page_end) == (3, 3)
+    found = rs.locate_statements(
+        [_SHORT_HEAD_PAGE, notes, _CONTINUATION_PAGE], report_type="annual"
+    )
+    assert found["income"] is not None and (
+        found["income"].page_start,
+        found["income"].page_end,
+    ) == (3, 3)
     assert found["income"].rows[0].label == "財務成本"
 
 
@@ -572,14 +759,19 @@ def test_continuation_page_without_repeated_header_inherits_head_metadata():
     """PR #202 评审：「綜合收益表（續）」下面直接是金额行、不重复日期/年份/单位——续页不得
     因自身没有表头证据被拒（那会连带丢掉挂起的短首块），年份/单位/币种从首块继承。"""
     bare_continuation = "\n".join(
-        line for line in _CONTINUATION_PAGE.splitlines()
+        line
+        for line in _CONTINUATION_PAGE.splitlines()
         if line not in ("截至2025年12月31日止年度", "2025年 2024年", "人民幣千元 人民幣千元")
     )
     found = rs.locate_statements([_SHORT_HEAD_PAGE, bare_continuation], report_type="annual")
     income = found["income"]
     assert income is not None and (income.page_start, income.page_end) == (1, 2)
     assert len(income.rows) == 11 and income.rows[0].label == "收入"
-    assert income.years == [2025, 2024] and income.unit_multiplier == 1_000 and income.currency == "CNY"
+    assert (
+        income.years == [2025, 2024]
+        and income.unit_multiplier == 1_000
+        and income.currency == "CNY"
+    )
 
 
 def test_years_split_across_two_header_lines_is_still_a_statement():
@@ -616,7 +808,11 @@ def test_cas_headers_without_years_use_period_captions_as_evidence():
     assert (found["balance"].page_start, found["balance"].page_end) == (63, 67)
     assert (income.page_start, income.page_end) == (73, 75)
     assert (found["cashflow"].page_start, found["cashflow"].page_end) == (78, 80)
-    assert rs._is_terminator("資產負債表") and rs._is_terminator("利潤表（續）") and rs._is_terminator("現金流量表 81")
+    assert (
+        rs._is_terminator("資產負債表")
+        and rs._is_terminator("利潤表（續）")
+        and rs._is_terminator("現金流量表 81")
+    )
 
 
 def test_title_split_across_two_lines_is_rejoined():
@@ -624,16 +820,24 @@ def test_title_split_across_two_lines_is_rejoined():
     拼回后才能作为终止标题，否则財務狀況表块会一路吞到十几列的權益變動表。"""
     found = rs.locate_statements(_pages("hk_03900_20190630_interim"), report_type="interim")
     assert found["income"].title == "簡明綜合損益及其他全面收益表"
-    assert found["balance"].column_count == 2 and (found["balance"].page_start, found["balance"].page_end) == (36, 37)
+    assert found["balance"].column_count == 2 and (
+        found["balance"].page_start,
+        found["balance"].page_end,
+    ) == (36, 37)
     stream = rs._line_stream(["簡明綜合\n權益變動表\n截至2019年6月30日止六個月"])
     assert [line.text for line in stream][:2] == ["簡明綜合權益變動表", "截至2019年6月30日止六個月"]
     assert rs._is_terminator("簡明綜合權益變動表")
 
 
-@pytest.mark.parametrize("line, kind", [
-    ("綜合全面收益表 82", "income"), ("83 綜合財務狀況表", "balance"), ("綜合現金流量表 108", "cashflow"),
-    ("101 綜合損益表（續） 102", "income"),
-])
+@pytest.mark.parametrize(
+    "line, kind",
+    [
+        ("綜合全面收益表 82", "income"),
+        ("83 綜合財務狀況表", "balance"),
+        ("綜合現金流量表 108", "cashflow"),
+        ("101 綜合損益表（續） 102", "income"),
+    ],
+)
 def test_title_line_tolerates_page_numbers(line, kind):
     assert rs.match_title(line)[0] == kind
 
@@ -675,9 +879,13 @@ def test_malformed_thousands_group_is_glued_with_or_without_column_count():
     from app.services.report_statements import parse_row
 
     # 09926 2020：「854,84」不是合法数值，行内证据充分，不知道列数也粘
-    assert parse_row("非流動資產總值 854,84 3 416,97 5")[2] == [Decimal("854843"), Decimal("416975")]
+    assert parse_row("非流動資產總值 854,84 3 416,97 5")[2] == [
+        Decimal("854843"),
+        Decimal("416975"),
+    ]
     assert parse_row("非流動資產總值 854,84 3 416,97 5", expected_columns=2)[2] == [
-        Decimal("854843"), Decimal("416975"),
+        Decimal("854843"),
+        Decimal("416975"),
     ]
 
 
@@ -695,14 +903,20 @@ def test_decimal_tail_is_glued_only_when_token_count_exceeds_known_columns():
 
     # 01133 形态：两列表里出现三个 token 且尾数被拆 → 粘回恰好两列
     assert parse_row("營業收入 1,648,565,774.6 1 1,500,000,000.00", expected_columns=2)[2] == [
-        Decimal("1648565774.61"), Decimal("1500000000.00"),
+        Decimal("1648565774.61"),
+        Decimal("1500000000.00"),
     ]
     # 多出的 token 是附注号：粘完落到 列数+1，再由附注剥离
-    label, note, values = parse_row("營業收入 5 1,648,565,774.6 1 1,500,000,000.00", expected_columns=2)
+    label, note, values = parse_row(
+        "營業收入 5 1,648,565,774.6 1 1,500,000,000.00", expected_columns=2
+    )
     assert note == "5" and values == [Decimal("1648565774.61"), Decimal("1500000000.00")]
     # 粘完仍对不上列数 → 原样不动（宁可多列也不错列）
     assert parse_row("x 1,234.5 6 7 8", expected_columns=2)[2] == [
-        Decimal("1234.5"), Decimal("6"), Decimal("7"), Decimal("8"),
+        Decimal("1234.5"),
+        Decimal("6"),
+        Decimal("7"),
+        Decimal("8"),
     ]
 
 
@@ -711,19 +925,32 @@ def test_note_column_plus_exact_columns_is_never_glued():
     不是断字证据。粘了会把附注顶成本期、上期粘进本期。"""
     from app.services.report_statements import parse_row
 
-    assert parse_row("收入 12 1,234.5 6", expected_columns=2) == ("收入", "12", [Decimal("1234.5"), Decimal("6")])
+    assert parse_row("收入 12 1,234.5 6", expected_columns=2) == (
+        "收入",
+        "12",
+        [Decimal("1234.5"), Decimal("6")],
+    )
     assert parse_row("收入 12(a) 1,234.5 6", expected_columns=2) == (
-        "收入", "12(a)", [Decimal("1234.5"), Decimal("6")],
+        "收入",
+        "12(a)",
+        [Decimal("1234.5"), Decimal("6")],
     )
     # 无标签合计行同样：首 token 是附注号形态
-    assert parse_row("12 1,234.5 6", expected_columns=2) == ("", "12", [Decimal("1234.5"), Decimal("6")])
+    assert parse_row("12 1,234.5 6", expected_columns=2) == (
+        "",
+        "12",
+        [Decimal("1234.5"), Decimal("6")],
+    )
     # 附注号 + 真断字（四个 token）：先粘再剥附注
     assert parse_row("收入 12 1,648,565,774.6 1 2,000.00", expected_columns=2) == (
-        "收入", "12", [Decimal("1648565774.61"), Decimal("2000.00")],
+        "收入",
+        "12",
+        [Decimal("1648565774.61"), Decimal("2000.00")],
     )
     # 标签里已带附注号（「所得稅開支 12(a) …」形态由 _parse_row_tokens 剥出）→ 列数吻合不动
     assert parse_row("所得稅開支 12(a) (47,448) (45,018)", expected_columns=2)[2] == [
-        Decimal("-47448"), Decimal("-45018"),
+        Decimal("-47448"),
+        Decimal("-45018"),
     ]
 
 
@@ -751,25 +978,39 @@ def test_toc_page_with_masthead_lines_is_not_a_statement():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("line", [
-    "本年度虧損 ( 1,034,206) (970,000)",  # v8：本期数吞进标签「本年度虧損 (」，上期顶成本期
-    "本年度虧損 (1,034,206 ) (970,000)",  # v8：同样错列
-    "本年度虧損 ( 1,034,206 ) ( 970,000 )",  # v8：整行不是数字行，被丢掉
-])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "本年度虧損 ( 1,034,206) (970,000)",  # v8：本期数吞进标签「本年度虧損 (」，上期顶成本期
+        "本年度虧損 (1,034,206 ) (970,000)",  # v8：同样错列
+        "本年度虧損 ( 1,034,206 ) ( 970,000 )",  # v8：整行不是数字行，被丢掉
+    ],
+)
 def test_parenthesised_negatives_with_inner_spaces(line):
     expected = ("本年度虧損", "", [Decimal("-1034206"), Decimal("-970000")])
     assert rs.parse_row(line, expected_columns=2) == expected
     assert rs.parse_row(line) == expected
 
 
-@pytest.mark.parametrize("line, columns, expected", [
-    ("銷售成本 7 ( 1,034,206) ( 1,222,076)", 2, ("銷售成本", "7", [Decimal("-1034206"), Decimal("-1222076")])),
-    ("所得稅開支 12(a) ( 47,448 ) (45,018)", 0, ("所得稅開支", "12(a)", [Decimal("-47448"), Decimal("-45018")])),
-    ("其他 ( 1,234) –", 2, ("其他", "", [Decimal("-1234"), None])),
-    ("( 229,801 ) 196,467", 0, ("", "", [Decimal("-229801"), Decimal("196467")])),
-    # 标签里的括号不动（半角括号内不是数字）
-    ("應收款項 (附註) ( 12) 9", 2, ("應收款項 (附註)", "", [Decimal("-12"), Decimal("9")])),
-])
+@pytest.mark.parametrize(
+    "line, columns, expected",
+    [
+        (
+            "銷售成本 7 ( 1,034,206) ( 1,222,076)",
+            2,
+            ("銷售成本", "7", [Decimal("-1034206"), Decimal("-1222076")]),
+        ),
+        (
+            "所得稅開支 12(a) ( 47,448 ) (45,018)",
+            0,
+            ("所得稅開支", "12(a)", [Decimal("-47448"), Decimal("-45018")]),
+        ),
+        ("其他 ( 1,234) –", 2, ("其他", "", [Decimal("-1234"), None])),
+        ("( 229,801 ) 196,467", 0, ("", "", [Decimal("-229801"), Decimal("196467")])),
+        # 标签里的括号不动（半角括号内不是数字）
+        ("應收款項 (附註) ( 12) 9", 2, ("應收款項 (附註)", "", [Decimal("-12"), Decimal("9")])),
+    ],
+)
 def test_spaced_parentheses_keep_notes_dashes_and_labels(line, columns, expected):
     assert rs.parse_row(line, expected_columns=columns) == expected
 
@@ -789,17 +1030,30 @@ def test_spaced_parentheses_in_real_reports():
     assert cost.values == [Decimal("-1034206"), Decimal("-1222076")]
     writedown = next(r for r in found["cashflow"].rows if r.label == "撥 回撇減存貨至可變現淨值")
     assert (writedown.note, writedown.values) == ("7", [Decimal("-4146"), Decimal("-14562")])
-    interim = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")["cashflow"]
+    interim = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")[
+        "cashflow"
+    ]
     by_label = {r.label: r.values for r in interim.rows}
     assert by_label["應 付關聯人士款項增加╱（減少）"] == [Decimal("13112"), Decimal("-3558")]
-    assert by_label["於 初始存款期超過三個月之銀行存款的投資增加"] == [Decimal("-1301306"), Decimal("-1752955")]
+    assert by_label["於 初始存款期超過三個月之銀行存款的投資增加"] == [
+        Decimal("-1301306"),
+        Decimal("-1752955"),
+    ]
 
 
 def _statement(header, *, years=None, kind="balance", columns=2, four=False):
     return rs.ParsedStatement(
-        kind=kind, page_start=1, page_end=1, title="t", header=header, unit_multiplier=1_000,
-        currency="HKD", years=rs._header_years(header) if years is None else years,
-        column_count=columns, interim_four_columns=four, rows=[],
+        kind=kind,
+        page_start=1,
+        page_end=1,
+        title="t",
+        header=header,
+        unit_multiplier=1_000,
+        currency="HKD",
+        years=rs._header_years(header) if years is None else years,
+        column_count=columns,
+        interim_four_columns=four,
+        rows=[],
     )
 
 
@@ -813,20 +1067,34 @@ def _cols(parsed, report_type, end_date):
 def test_bilingual_caption_date_is_not_the_column_year_line():
     """00148 全部年报：「For the year ended 31 December 2016 截至二零一六年十二月三十一日止年度」是同一个
     日期的中英双语，v8 当成列年份 [2016, 2016]，找不到上期 2015，比较列与比较期行全部缺失。"""
-    assert rs._header_years([
-        "綜合損益表", "For the year ended 31 December 2016 截至二零一六年十二月三十一日止年度", "2016 2015",
-        "二零一六年 二零一五年",
-    ]) == [2016, 2015]
-    assert rs._header_years([
-        "簡明綜合損益表", "截至二零二一年六月三十日止六個月 For the six months ended 30 June 2021",
-        "截至六月三十日止六個月", "二零二一年 二零二零年",
-    ]) == [2021, 2020]
+    assert rs._header_years(
+        [
+            "綜合損益表",
+            "For the year ended 31 December 2016 截至二零一六年十二月三十一日止年度",
+            "2016 2015",
+            "二零一六年 二零一五年",
+        ]
+    ) == [2016, 2015]
+    assert rs._header_years(
+        [
+            "簡明綜合損益表",
+            "截至二零二一年六月三十日止六個月 For the six months ended 30 June 2021",
+            "截至六月三十日止六個月",
+            "二零二一年 二零二零年",
+        ]
+    ) == [2021, 2020]
     # 两个不同的完整日期才是列（中国准则的期初列）
-    assert rs._header_years(["合併資產負債表", "項目 附註 2020年12月31日 2020年1月1日"]) == [2020, 2020]
+    assert rs._header_years(["合併資產負債表", "項目 附註 2020年12月31日 2020年1月1日"]) == [
+        2020,
+        2020,
+    ]
     found = rs.locate_statements(_pages("hk_00148_20171231"), report_type="annual")
     for kind in ("income", "balance", "cashflow"):
         assert found[kind].years == [2017, 2016]
-        assert _cols(found[kind], "annual", "20171231") == [(0, "20171231", "FY"), (1, "20161231", "FY")]
+        assert _cols(found[kind], "annual", "20171231") == [
+            (0, "20171231", "FY"),
+            (1, "20161231", "FY"),
+        ]
     revenue = next(r for r in found["income"].rows if "Revenue" in r.label)
     assert revenue.values == [Decimal("43159473"), Decimal("35830320")]
 
@@ -839,12 +1107,19 @@ def test_column_dates_decide_duplicate_year_columns():
     assert rs.column_dates(balance) == ["20221231", "20220630"]
     assert _cols(balance, "interim", "20221231") == [(0, "20221231", "H1"), (1, "20220630", "FY")]
     # 列日期决定本期列，不按位置：本期在第 1 列
-    swapped = _statement(["簡明綜合財務狀況表", "於二零二一年 於二零二一年", "六月 十二月", "附註 千港元 千港元"])
+    swapped = _statement(
+        ["簡明綜合財務狀況表", "於二零二一年 於二零二一年", "六月 十二月", "附註 千港元 千港元"]
+    )
     assert rs.column_dates(swapped) == ["20210630", "20211231"]
     assert _cols(swapped, "interim", "20211231") == [(1, "20211231", "H1"), (0, "20210630", "FY")]
     # 三列：本期末 / 上期末 / 上期初（02669 2023 重列）
     three = _statement(
-        ["綜合財務狀況表", "二零二三年 二零二二年 二零二二年", "十二月三十一日 十二月三十一日 一月一日"], columns=3,
+        [
+            "綜合財務狀況表",
+            "二零二三年 二零二二年 二零二二年",
+            "十二月三十一日 十二月三十一日 一月一日",
+        ],
+        columns=3,
     )
     assert rs.column_dates(three) == ["20231231", "20221231", "20220101"]
     assert _cols(three, "annual", "20231231") == [(0, "20231231", "FY"), (1, "20221231", "FY")]
@@ -862,7 +1137,9 @@ def test_opening_balance_column_is_not_a_prior_year_end():
     interim = _statement(["合併資產負債表", "項目 附註 2023年6月30日 2023年1月1日"])
     assert _cols(interim, "interim", "20230630") == [(0, "20230630", "H1"), (1, "20221231", "FY")]
     # 三列里有真正的上年末：取它（01133 2018）
-    three = _statement(["合併資產負債表", "項目 附註 2018年12月31日 2018年1月1日 2017年12月31日"], columns=3)
+    three = _statement(
+        ["合併資產負債表", "項目 附註 2018年12月31日 2018年1月1日 2017年12月31日"], columns=3
+    )
     assert _cols(three, "annual", "20181231") == [(0, "20181231", "FY"), (2, "20171231", "FY")]
 
 
@@ -871,14 +1148,18 @@ def test_duplicate_years_without_dates_fall_back_to_positions_for_annual():
     assert rs.column_dates(parsed) == []
     assert _cols(parsed, "annual", "20161231") == [(0, "20161231", "FY"), (1, "20151231", "FY")]
     # 四列中报（三个月 + 六个月）不受影响
-    four = _statement(["簡明綜合收益表"], years=[2026, 2025, 2026, 2025], kind="income", columns=4, four=True)
+    four = _statement(
+        ["簡明綜合收益表"], years=[2026, 2025, 2026, 2025], kind="income", columns=4, four=True
+    )
     assert _cols(four, "interim", "20260630") == [(2, "20260630", "H1"), (3, "20250630", "H1")]
 
 
 def test_per_share_unit_hint_lines_are_attached_to_following_rows():
     """#223：「人民幣仙 人民幣仙」（02669 中报 EPS 小表的列单位）此前只进无标签行的上下文，
     其后的「基本及攤薄 21.33 23.45」有标签，提示就丢了。标签不改，提示进 context。"""
-    income = rs.locate_statements(_pages("hk_02669_20260630_interim"), report_type="interim")["income"]
+    income = rs.locate_statements(_pages("hk_02669_20260630_interim"), report_type="interim")[
+        "income"
+    ]
     eps = next(r for r in income.rows if r.label == "基本及攤薄")
     assert eps.values == [Decimal("21.33"), Decimal("23.45")]
     assert "人民幣仙 人民幣仙" in eps.context
@@ -937,14 +1218,18 @@ def test_currency_wrapped_eps_rows_parse_as_numbers(name, report_type, basic, di
     row = _eps_row(income, basic)
     assert row is not None, f"{name} 基本 EPS 行缺失"
     # 币种/单位不丢：原文标记进 context（「仙」由构建层读 context ÷100）
-    assert any(c.startswith(rs.WRAPPED_UNIT_CONTEXT) and marker in c for c in row.context), row.context
+    assert any(c.startswith(rs.WRAPPED_UNIT_CONTEXT) and marker in c for c in row.context), (
+        row.context
+    )
     if diluted:
         assert _eps_row(income, diluted) is not None, f"{name} 摊薄 EPS 行缺失"
 
 
 def test_wrapped_eps_keeps_note_numbers_and_kind_lines():
     # 附注号在币种包裹的数值前（02313 中报「基本及攤薄期內利潤 9 人民幣2.11元 人民幣1.95元」）
-    income = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")["income"]
+    income = rs.locate_statements(_pages("hk_02313_20250630_interim"), report_type="interim")[
+        "income"
+    ]
     row = _eps_row(income, ("2.11", "1.95"))
     assert (row.label, row.note) == ("基本及攤薄期內利潤", "9")
     income = rs.locate_statements(_pages("hk_09926_20201231"), report_type="annual")["income"]
@@ -961,49 +1246,80 @@ def test_wrapped_eps_keeps_note_numbers_and_kind_lines():
     # 双语：「基本 Basic」一行、「－年度利潤 – For profit for the year 人民幣…」一行、「RMB… RMB…」一行
     income = rs.locate_statements(_pages("hk_02313_20161231"), report_type="annual")["income"]
     labelled = next(r for r in income.rows if r.label == "－年度利潤 – For profit for the year")
-    assert labelled.values == [Decimal("2.11"), Decimal("1.68")] and "基本 Basic" in labelled.context
+    assert (
+        labelled.values == [Decimal("2.11"), Decimal("1.68")] and "基本 Basic" in labelled.context
+    )
 
 
-@pytest.mark.parametrize("line, expected, markers", [
-    ("– Basic －基本 HK$4.889港元 HK$1.609港元", "– Basic －基本 4.889 1.609", ["HK$…港元"]),
-    ("– Basic －基本 HK$5.692 港元 HK$5.363 港元", "– Basic －基本 5.692 5.363", ["HK$…港元"]),
-    ("基本 (0.1481)港元 0.4901港元", "基本 (0.1481) 0.4901", ["…港元"]),
-    ("基本 US$0.1084 US$0.0562", "基本 0.1084 0.0562", ["US$…"]),
-    ("RMB2.11 RMB1.68", "2.11 1.68", ["RMB…"]),
-    ("－年度利潤 – For profit for the year 人民幣2.02 人民幣1.62元",
-     "－年度利潤 – For profit for the year 2.02 1.62", ["人民幣…", "人民幣…元"]),
-    ("基本及攤薄 12 人民幣(1.65)元 人民幣(2.74)元", "基本及攤薄 12 (1.65) (2.74)", ["人民幣…元"]),
-    ("－期內利潤 – For profit for the period 人民幣RMB1.67元 人民幣RMB1.61元",
-     "－期內利潤 – For profit for the period 1.67 1.61", ["人民幣RMB…元"]),
-    ("基本人民幣1.05元 人民幣0.55元", "基本 1.05 0.55", ["人民幣…元"]),
-])
+@pytest.mark.parametrize(
+    "line, expected, markers",
+    [
+        ("– Basic －基本 HK$4.889港元 HK$1.609港元", "– Basic －基本 4.889 1.609", ["HK$…港元"]),
+        ("– Basic －基本 HK$5.692 港元 HK$5.363 港元", "– Basic －基本 5.692 5.363", ["HK$…港元"]),
+        ("基本 (0.1481)港元 0.4901港元", "基本 (0.1481) 0.4901", ["…港元"]),
+        ("基本 US$0.1084 US$0.0562", "基本 0.1084 0.0562", ["US$…"]),
+        ("RMB2.11 RMB1.68", "2.11 1.68", ["RMB…"]),
+        (
+            "－年度利潤 – For profit for the year 人民幣2.02 人民幣1.62元",
+            "－年度利潤 – For profit for the year 2.02 1.62",
+            ["人民幣…", "人民幣…元"],
+        ),
+        (
+            "基本及攤薄 12 人民幣(1.65)元 人民幣(2.74)元",
+            "基本及攤薄 12 (1.65) (2.74)",
+            ["人民幣…元"],
+        ),
+        (
+            "－期內利潤 – For profit for the period 人民幣RMB1.67元 人民幣RMB1.61元",
+            "－期內利潤 – For profit for the period 1.67 1.61",
+            ["人民幣RMB…元"],
+        ),
+        ("基本人民幣1.05元 人民幣0.55元", "基本 1.05 0.55", ["人民幣…元"]),
+    ],
+)
 def test_unwrap_currency_amounts_real_lines(line, expected, markers):
     assert rs.unwrap_currency_amounts(line) == (expected, markers)
 
 
-@pytest.mark.parametrize("line", [
-    "每股面值 HK$0.10 的普通股",  # 只有一个包裹 token：正文，不动
-    "攤薄 Diluted 不適用 人民幣1.22元",  # 02313 2018 中报：一列不適用，只剩一个包裹 token
-    "附註 人民幣千元 人民幣千元",  # 表头单位行
-    "股本 1,234 2,345",
-    "末期股息每股 HK$0.3 港元 已派付 120,000 110,000",  # 包裹 token 不在行尾数值串里
-])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "每股面值 HK$0.10 的普通股",  # 只有一个包裹 token：正文，不动
+        "攤薄 Diluted 不適用 人民幣1.22元",  # 02313 2018 中报：一列不適用，只剩一个包裹 token
+        "附註 人民幣千元 人民幣千元",  # 表头单位行
+        "股本 1,234 2,345",
+        "末期股息每股 HK$0.3 港元 已派付 120,000 110,000",  # 包裹 token 不在行尾数值串里
+    ],
+)
 def test_unwrap_currency_amounts_leaves_other_lines(line):
     assert rs.unwrap_currency_amounts(line) == (line, [])
 
 
 def test_running_report_title_glued_into_a_data_row_is_stripped():
     # 03900 2020 年报：页边报告名排进基本 EPS 行，中文年份曾让整行被当成表头噪音
-    assert rs.strip_running_title("二零二零年年報基本人民幣1.05元 人民幣0.55元") == "基本人民幣1.05元 人民幣0.55元"
+    assert (
+        rs.strip_running_title("二零二零年年報基本人民幣1.05元 人民幣0.55元")
+        == "基本人民幣1.05元 人民幣0.55元"
+    )
     # 页脚（报告名 + 页码）不是数据行，不动
     assert rs.strip_running_title("二零一九年中期報告 033") == "二零一九年中期報告 033"
     assert rs.strip_running_title("二零二零年年報") == "二零二零年年報"
 
 
-@pytest.mark.parametrize("line, kind", [
-    ("基本", True), ("攤薄", True), ("基本 Basic", True), ("攤薄 Diluted", True),
-    ("基本及攤薄 Basic and diluted", True), ("基本及攤薄", True),
-    ("每股盈利", False), ("基本每股盈利", False), ("－", False), ("基本 Basic RMB RMB", False),
-])
+@pytest.mark.parametrize(
+    "line, kind",
+    [
+        ("基本", True),
+        ("攤薄", True),
+        ("基本 Basic", True),
+        ("攤薄 Diluted", True),
+        ("基本及攤薄 Basic and diluted", True),
+        ("基本及攤薄", True),
+        ("每股盈利", False),
+        ("基本每股盈利", False),
+        ("－", False),
+        ("基本 Basic RMB RMB", False),
+    ],
+)
 def test_eps_kind_line(line, kind):
     assert bool(rs._EPS_KIND_LINE_RE.match(line)) is kind

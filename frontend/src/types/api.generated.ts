@@ -21,6 +21,26 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/announcements/recent': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Recent Announcements
+     * @description 当前用户持仓（数量>0）∪ 自选范围内、公告日在近 days 天内的组。
+     */
+    get: operations['get_recent_announcements_api_announcements_recent_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/auth/login': {
     parameters: {
       query?: never
@@ -413,28 +433,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/corporate-actions/stock-dividend': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Create Stock Dividend
-     * @description 快捷创建红股/股票股息记录
-     *
-     *     会自动重新计算持仓成本
-     */
-    post: operations['create_stock_dividend_api_corporate_actions_stock_dividend_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/corporate-actions/suggestions': {
     parameters: {
       query?: never
@@ -534,26 +532,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/corporate-actions/symbol/{symbol}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Actions By Symbol
-     * @description 获取特定股票的所有公司行动记录。兼容保留：外部 API 客户端可能依赖。
-     */
-    get: operations['get_actions_by_symbol_api_corporate_actions_symbol__symbol__get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/corporate-actions/{action_id}': {
     parameters: {
       query?: never
@@ -611,7 +589,7 @@ export interface paths {
     patch: operations['update_opening_position_cost_api_corporate_actions__action_id__cost_basis_patch']
     trace?: never
   }
-  '/api/exchange-rates/': {
+  '/api/exchange-rates': {
     parameters: {
       query?: never
       header?: never
@@ -620,35 +598,15 @@ export interface paths {
     }
     /**
      * List Exchange Rates
-     * @description 获取汇率列表
+     * @description 获取汇率列表（默认只列启用的行；include_inactive=true 连已停用的一起看）
      */
-    get: operations['list_exchange_rates_api_exchange_rates__get']
+    get: operations['list_exchange_rates_api_exchange_rates_get']
     put?: never
     /**
      * Create Or Update Exchange Rate
-     * @description 创建或更新汇率
+     * @description 手工创建或覆盖某日汇率（仅管理员；来源固定为 manual，同日行被重新启用）
      */
-    post: operations['create_or_update_exchange_rate_api_exchange_rates__post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/exchange-rates/convert': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    /**
-     * Convert Currency
-     * @description 转换货币
-     */
-    post: operations['convert_currency_api_exchange_rates_convert_post']
+    post: operations['create_or_update_exchange_rate_api_exchange_rates_post']
     delete?: never
     options?: never
     head?: never
@@ -718,26 +676,6 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/exchange-rates/{from_currency}/{to_currency}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Exchange Rate
-     * @description 获取特定货币对的最新汇率
-     */
-    get: operations['get_exchange_rate_api_exchange_rates__from_currency___to_currency__get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
   '/api/exchange-rates/{rate_id}': {
     parameters: {
       query?: never
@@ -748,70 +686,21 @@ export interface paths {
     get?: never
     /**
      * Update Exchange Rate
-     * @description 更新汇率
+     * @description 修正汇率数值（仅管理员）：改过数值的行记为 manual——此前保留「官方中间价」标签，
+     *     下一次自动刷新会静默覆盖用户的修正，页面上还显示成官方来源
      */
     put: operations['update_exchange_rate_api_exchange_rates__rate_id__put']
     post?: never
     /**
      * Delete Exchange Rate
-     * @description 删除汇率
+     * @description 停用汇率（仅管理员）：保留行作审计，折算不再使用它；同日重新录入即恢复启用。
+     *     此前是硬删，官方中间价行被删掉不留任何痕迹。
+     *
+     *     只有手工行能停用：官方中间价与第三方报价行会被下一次刷新原样重建并重新启用，停用对它们
+     *     兑现不了「折算不再使用」（PR #300 评审）。要改用别的数值，编辑它（改过数值的行记为手工，
+     *     刷新不再覆盖）。
      */
     delete: operations['delete_exchange_rate_api_exchange_rates__rate_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/excluded-securities': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /** List Excluded Securities */
-    get: operations['list_excluded_securities_api_excluded_securities_get']
-    put?: never
-    /** Create Excluded Security */
-    post: operations['create_excluded_security_api_excluded_securities_post']
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/excluded-securities/{record_id}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    get?: never
-    put?: never
-    post?: never
-    /** Delete Excluded Security */
-    delete: operations['delete_excluded_security_api_excluded_securities__record_id__delete']
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/export/csv': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Export Csv
-     * @description Export all transactions to CSV file.
-     */
-    get: operations['export_csv_api_export_csv_get']
-    put?: never
-    post?: never
-    delete?: never
     options?: never
     head?: never
     patch?: never
@@ -969,29 +858,6 @@ export interface paths {
      *     Used when user manually inputs price in UI.
      */
     put: operations['update_holding_price_api_holdings__holding_id__price_put']
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/holdings/{symbol}': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /**
-     * Get Holding
-     * @description Get a specific holding by symbol for the authenticated user.
-     *
-     *     账户级持仓下同一 symbol 可能存在多行（每账户一行）；本端点保持单对象响应，
-     *     多行时聚合数量与成本（加权均价），broker_account_id 置空表示跨账户汇总。
-     */
-    get: operations['get_holding_api_holdings__symbol__get']
-    put?: never
     post?: never
     delete?: never
     options?: never
@@ -1377,6 +1243,26 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/notifications/events': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List Notification Events
+     * @description 最近的事件提醒（新分红建议、除净日临近、价格异动、重大公告），新的在前。
+     */
+    get: operations['list_notification_events_api_notifications_events_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/notifications/test': {
     parameters: {
       query?: never
@@ -1485,7 +1371,8 @@ export interface paths {
      * List Holding Analyses
      * @description 当前用户持仓标的的最新分析摘要（持仓页 AI 标签列，一次取全）。
      *
-     *     列表端点：按持仓收敛（见模块 docstring 的全局表读取口径）。
+     *     列表端点：按持仓收敛（见模块 docstring 的全局表读取口径）。每行带 `latest_data_at`
+     *     （与详情页同一判定），持仓页据此给早于最新摘要/报表的分析标「可能过期」。
      */
     get: operations['list_holding_analyses_api_securities_analyses_get']
     put?: never
@@ -1586,23 +1473,6 @@ export interface paths {
     }
     /** Get Analysis Job */
     get: operations['get_analysis_job_api_securities_analysis_jobs__job_id__get']
-    put?: never
-    post?: never
-    delete?: never
-    options?: never
-    head?: never
-    patch?: never
-    trace?: never
-  }
-  '/api/securities/catalog-status': {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    /** Get Catalog Status */
-    get: operations['get_catalog_status_api_securities_catalog_status_get']
     put?: never
     post?: never
     delete?: never
@@ -1961,6 +1831,23 @@ export interface paths {
      * @description 启动标的分析（同步基本面 → LLM 生成；每用户单活跃任务去重）。
      */
     post: operations['start_analysis_api_securities__market___symbol__analysis_jobs_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/securities/{market}/{symbol}/announcements': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Security Announcements */
+    get: operations['get_security_announcements_api_securities__market___symbol__announcements_get']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -2403,14 +2290,9 @@ export interface paths {
     put?: never
     /**
      * Create Transfer
-     * @description 账户间转仓：创建 TRANSFER_OUT/TRANSFER_IN 互指交易对，成本基础跟随迁移。
-     *
-     *     不产生任何盈亏或现金流；账户为 null 表示"未指定账户"桶。返回 [转出腿, 转入腿]。
-     *
-     *     校验策略：对完整时间线做两次严格的按账户重放（插入前基线 + 插入后）——
-     *     这同时覆盖了历史日期转仓（transfer_date 当天转出账户必须真有足够数量）
-     *     和转仓与后续交易的冲突（转出后未来卖出会超卖）。与所有时间线写入口共用
-     *     事务级 advisory lock 串行化并发。交易对写入与派生持仓重算在同一事务内提交。
+     * @description 账户间转仓：创建 TRANSFER_OUT/TRANSFER_IN 互指交易对，成本基础跟随迁移
+     *     （不产生盈亏或现金流；账户为 null 表示"未指定账户"桶）。返回 [转出腿, 转入腿]。
+     *     校验与写入见 services/transfer_service.create_transfer_pair。
      */
     post: operations['create_transfer_api_transactions_transfer_post']
     delete?: never
@@ -2505,11 +2387,7 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /**
-     * Get User
-     * @description Get user by ID (admin only). 兼容保留：外部 API 客户端可能依赖。
-     */
-    get: operations['get_user_api_users__user_id__get']
+    get?: never
     /**
      * Update User
      * @description Update user information (admin only).
@@ -2608,7 +2486,7 @@ export interface paths {
     /**
      * Watchlist Contains
      * @description 轻量 membership 查询：详情页只需知道"在不在"，不该为此拉整份
-     *     enriched 列表（评审 P2）。symbol 按写入口径规范化后比对。
+     *     enriched 列表（评审 P2）。symbol 按写入口径（normalize_manual_symbol）规范化后比对。
      */
     get: operations['watchlist_contains_api_watchlist_contains_get']
     put?: never
@@ -2971,6 +2849,83 @@ export interface components {
       /** Reminder Hours */
       reminder_hours: number
     }
+    /** AnnouncementDocument */
+    AnnouncementDocument: {
+      /** Category */
+      category: string
+      /**
+       * Importance
+       * @enum {string}
+       */
+      importance: 'major' | 'normal' | 'minor'
+      /**
+       * Published At
+       * Format: date-time
+       */
+      published_at: string
+      /** Title */
+      title: string
+      /** Url */
+      url: string
+    }
+    /** AnnouncementGroup */
+    AnnouncementGroup: {
+      /**
+       * Ann Date
+       * Format: date
+       */
+      ann_date: string
+      /** Category */
+      category: string
+      /** Category Label */
+      category_label: string
+      /** Document Count */
+      document_count: number
+      /** Documents */
+      documents: components['schemas']['AnnouncementDocument'][]
+      /**
+       * First Seen At
+       * Format: date-time
+       */
+      first_seen_at: string
+      /**
+       * Group Key
+       * @description symbol|market|公告日|类别：同日同类的文件合为一组
+       */
+      group_key: string
+      /**
+       * Importance
+       * @description 组内最高重要性
+       * @enum {string}
+       */
+      importance: 'major' | 'normal' | 'minor'
+      /**
+       * Latest Published At
+       * Format: date-time
+       */
+      latest_published_at: string
+      /** Market */
+      market: string
+      /**
+       * Name
+       * @description 用户录入的名称，缺省取来源的证券简称
+       */
+      name?: string | null
+      /**
+       * Source
+       * @description cninfo / hkexnews / edgar
+       */
+      source: string
+      /** Symbol */
+      symbol: string
+      /**
+       * Title
+       * @description 代表标题（交易所原文）
+       */
+      title: string
+      /** Url */
+      url: string
+    }
     /** Body_import_cmb_fund_flows_api_import_cmb_fund_flows_post */
     Body_import_cmb_fund_flows_api_import_cmb_fund_flows_post: {
       /** Broker Account Id */
@@ -3118,6 +3073,11 @@ export interface components {
        * Format: date-time
        */
       created_at: string
+      /**
+       * Has Records
+       * @default false
+       */
+      has_records: boolean
       /** Id */
       id: number
       /**
@@ -3479,13 +3439,13 @@ export interface components {
         | 'OTHER'
       /** Id */
       id: number
-      /**
-       * Imported
-       * @default false
-       */
-      imported: boolean
       /** Notes */
       notes?: string | null
+      /**
+       * Read Only
+       * @default false
+       */
+      read_only: boolean
       /**
        * Updated At
        * Format: date-time
@@ -3540,55 +3500,6 @@ export interface components {
       ready: boolean
       /** Stale */
       stale: boolean
-    }
-    /** CatalogSourceStatus */
-    CatalogSourceStatus: {
-      /**
-       * Detail
-       * @default {}
-       */
-      detail: Record<string, unknown>
-      /** Error */
-      error?: string | null
-      /** Finished At */
-      finished_at?: string | null
-      /** Last Success At */
-      last_success_at?: string | null
-      /** Markets */
-      markets: string[]
-      /**
-       * Rows Seen
-       * @default 0
-       */
-      rows_seen: number
-      /**
-       * Rows Upserted
-       * @default 0
-       */
-      rows_upserted: number
-      /** Source */
-      source: string
-      /** Started At */
-      started_at?: string | null
-      /**
-       * Status
-       * @enum {string}
-       */
-      status: 'ok' | 'failed' | 'skipped' | 'running' | 'never'
-    }
-    /** CatalogStatusResponse */
-    CatalogStatusResponse: {
-      /** By Market */
-      by_market: {
-        [key: string]: number
-      }
-      /** Coverage Notes */
-      coverage_notes: string[]
-      health: components['schemas']['CatalogHealth']
-      /** Sources */
-      sources: components['schemas']['CatalogSourceStatus'][]
-      /** Total Rows */
-      total_rows: number
     }
     /** CatalogSyncAccepted */
     CatalogSyncAccepted: {
@@ -4203,58 +4114,6 @@ export interface components {
       /** Total Dividend */
       total_dividend?: number | string | null
     }
-    /**
-     * CurrencyConvertRequest
-     * @description 货币转换请求
-     */
-    CurrencyConvertRequest: {
-      /**
-       * Amount
-       * @description 金额
-       */
-      amount: number | string
-      /**
-       * From Currency
-       * @description 源币种
-       */
-      from_currency: string
-      /**
-       * To Currency
-       * @description 目标币种
-       */
-      to_currency: string
-    }
-    /**
-     * CurrencyConvertResponse
-     * @description 货币转换响应
-     */
-    CurrencyConvertResponse: {
-      /**
-       * Amount
-       * @description 原金额
-       */
-      amount: string
-      /**
-       * Converted Amount
-       * @description 转换后金额
-       */
-      converted_amount: string
-      /**
-       * Effective Date
-       * Format: date
-       * @description 汇率日期
-       */
-      effective_date: string
-      /** From Currency */
-      from_currency: string
-      /**
-       * Rate
-       * @description 使用的汇率
-       */
-      rate: string
-      /** To Currency */
-      to_currency: string
-    }
     /** ExchangeRate */
     ExchangeRate: {
       /**
@@ -4277,10 +4136,10 @@ export interface components {
       id: number
       /**
        * Is Active
-       * @description 是否启用
+       * @description 是否启用（手工删除 = 停用，保留审计）
        * @default true
        */
-      is_active: boolean | null
+      is_active: boolean
       /**
        * Rate
        * @description 汇率
@@ -4289,9 +4148,8 @@ export interface components {
       /**
        * Source
        * @description 汇率来源
-       * @default manual
        */
-      source: string | null
+      source?: string | null
       /**
        * To Currency
        * @description 目标币种代码
@@ -4333,7 +4191,10 @@ export interface components {
       /** To Currency */
       to_currency: string
     }
-    /** ExchangeRateCreate */
+    /**
+     * ExchangeRateCreate
+     * @description 手工录入汇率。来源由服务端定为 manual（#277：客户端不能自称官方中间价）。
+     */
     ExchangeRateCreate: {
       /**
        * Effective Date
@@ -4347,22 +4208,10 @@ export interface components {
        */
       from_currency: string
       /**
-       * Is Active
-       * @description 是否启用
-       * @default true
-       */
-      is_active: boolean | null
-      /**
        * Rate
        * @description 汇率
        */
       rate: number | string
-      /**
-       * Source
-       * @description 汇率来源
-       * @default manual
-       */
-      source: string | null
       /**
        * To Currency
        * @description 目标币种代码
@@ -4428,39 +4277,13 @@ export interface components {
        */
       source?: string | null
     }
-    /** ExchangeRateUpdate */
+    /**
+     * ExchangeRateUpdate
+     * @description 手工修正汇率数值；改过数值的行一律记为 manual（不再被自动刷新覆盖）。
+     */
     ExchangeRateUpdate: {
-      /** Is Active */
-      is_active?: boolean | null
       /** Rate */
-      rate?: (number | string) | null
-      /** Source */
-      source?: string | null
-    }
-    /** ExcludedSecurityCreate */
-    ExcludedSecurityCreate: {
-      /** Market */
-      market: string
-      /** Note */
-      note?: string | null
-      /** Symbol */
-      symbol: string
-    }
-    /** ExcludedSecurityResponse */
-    ExcludedSecurityResponse: {
-      /**
-       * Created At
-       * Format: date-time
-       */
-      created_at: string
-      /** Id */
-      id: number
-      /** Market */
-      market: string
-      /** Note */
-      note: string | null
-      /** Symbol */
-      symbol: string
+      rate: number | string
     }
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -4703,6 +4526,58 @@ export interface components {
     LoginResponse: {
       user: components['schemas']['User']
     }
+    /** NotificationEventItem */
+    NotificationEventItem: {
+      /** Attempts */
+      attempts: number
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string
+      /** Event Key */
+      event_key: string
+      /** Id */
+      id: number
+      /**
+       * Kind
+       * @description dividend_suggestion / ex_date / price_move / announcement
+       */
+      kind: string
+      /** Last Error */
+      last_error?: string | null
+      /** Message */
+      message: string
+      /** Payload */
+      payload?: Record<string, unknown>
+      /** Sent At */
+      sent_at?: string | null
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: 'pending' | 'sent' | 'failed' | 'skipped'
+      /** Title */
+      title: string
+      /** User Id */
+      user_id?: number | null
+    }
+    /** NotificationEventListResponse */
+    NotificationEventListResponse: {
+      /**
+       * Announcement Notify Enabled
+       * @description 持仓/自选标的重大公告推送开关
+       */
+      announcement_notify_enabled: boolean
+      /** Enabled */
+      enabled: boolean
+      /** Ex Date Days Ahead */
+      ex_date_days_ahead: number
+      /** Items */
+      items: components['schemas']['NotificationEventItem'][]
+      /** Price Move Pct */
+      price_move_pct: number
+    }
     /** NotifyChannel */
     NotifyChannel: {
       /**
@@ -4801,8 +4676,20 @@ export interface components {
        */
       symbol: string
     }
+    /** RecentAnnouncementsResponse */
+    RecentAnnouncementsResponse: {
+      /** Days */
+      days: number
+      /** Groups */
+      groups: components['schemas']['AnnouncementGroup'][]
+      /**
+       * Importance
+       * @enum {string}
+       */
+      importance: 'major' | 'normal' | 'all'
+    }
     /** ReconciliationPosition */
-    'ReconciliationPosition-Input': {
+    ReconciliationPosition: {
       /** Currency */
       currency?: string | null
       /** Market */
@@ -4812,8 +4699,8 @@ export interface components {
       /** Symbol */
       symbol: string
     }
-    /** ReconciliationPosition */
-    'ReconciliationPosition-Output': {
+    /** ReconciliationPositionRead */
+    ReconciliationPositionRead: {
       /** Currency */
       currency?: string | null
       /** Market */
@@ -4834,7 +4721,7 @@ export interface components {
       /** Notes */
       notes?: string | null
       /** Positions */
-      positions?: components['schemas']['ReconciliationPosition-Input'][]
+      positions?: components['schemas']['ReconciliationPosition'][]
       /**
        * Snapshot Date
        * Format: date
@@ -4873,7 +4760,7 @@ export interface components {
       /** Notes */
       notes?: string | null
       /** Positions */
-      positions?: components['schemas']['ReconciliationPosition-Output'][]
+      positions?: components['schemas']['ReconciliationPositionRead'][]
       /**
        * Snapshot Date
        * Format: date
@@ -4905,11 +4792,35 @@ export interface components {
       /** Notes */
       notes?: string | null
       /** Positions */
-      positions?: components['schemas']['ReconciliationPosition-Input'][] | null
+      positions?: components['schemas']['ReconciliationPosition'][] | null
       /** Snapshot Date */
       snapshot_date?: string | null
       /** Source Filename */
       source_filename?: string | null
+    }
+    /** SecurityAnnouncementsResponse */
+    SecurityAnnouncementsResponse: {
+      /** Groups */
+      groups: components['schemas']['AnnouncementGroup'][]
+      /**
+       * Has More
+       * @default false
+       */
+      has_more: boolean
+      /** Last Synced */
+      last_synced?: string | null
+      /** Market */
+      market: string
+      /** Symbol */
+      symbol: string
+      /**
+       * Sync Status
+       * @description pending = 尚未同步（只同步持仓∪自选标的，或首次回溯未轮到）
+       * @enum {string}
+       */
+      sync_status: 'synced' | 'unsupported' | 'pending'
+      /** Unsupported Reason */
+      unsupported_reason?: string | null
     }
     /** SecurityEventResponse */
     SecurityEventResponse: {
@@ -5061,42 +4972,6 @@ export interface components {
       catalog: components['schemas']['CatalogHealth']
       /** Items */
       items: components['schemas']['SecuritySearchItem'][]
-    }
-    /**
-     * StockDividendCreate
-     * @description 红股/股票股息快捷创建
-     */
-    StockDividendCreate: {
-      /** Broker Account Id */
-      broker_account_id?: number | null
-      /**
-       * Currency
-       * @default CNY
-       */
-      currency: string
-      /**
-       * Distribution Ratio
-       * @description 分配比例，如'10:3'表示每10股送3股
-       */
-      distribution_ratio: string
-      /**
-       * Ex Date
-       * Format: date
-       */
-      ex_date: string
-      /** Market */
-      market: string
-      /** Name */
-      name?: string | null
-      /** Notes */
-      notes?: string | null
-      /**
-       * Shares Received
-       * @description 获得的股数
-       */
-      shares_received: number | string
-      /** Symbol */
-      symbol: string
     }
     /**
      * SuggestionAccept
@@ -5307,7 +5182,10 @@ export interface components {
        */
       transaction_type: string
     }
-    /** TransactionResponse */
+    /**
+     * TransactionResponse
+     * @description 读模型：不带输入约束与 validator（落库的任何行都能如实列出，#283）。
+     */
     TransactionResponse: {
       /** Broker Account Id */
       broker_account_id?: number | null
@@ -5362,6 +5240,11 @@ export interface components {
        * @description Quantity
        */
       quantity: string
+      /**
+       * Read Only
+       * @default false
+       */
+      read_only: boolean
       /**
        * Symbol
        * @description Stock/Asset symbol
@@ -5548,6 +5431,14 @@ export interface components {
     }
     /** WatchlistItemResponse */
     WatchlistItemResponse: {
+      /** Added Price */
+      added_price?: string | null
+      /** Added Price Basis */
+      added_price_basis?: string | null
+      /** Added Price Date */
+      added_price_date?: string | null
+      /** Change Since Added Pct */
+      change_since_added_pct?: number | null
       /** Created At */
       created_at?: string | null
       /** Current Price */
@@ -5562,6 +5453,10 @@ export interface components {
       name?: string | null
       /** Note */
       note?: string | null
+      /** Price As Of */
+      price_as_of?: string | null
+      /** Price Source */
+      price_source?: string | null
       /** Price Updated At */
       price_updated_at?: string | null
       /** Symbol */
@@ -5768,6 +5663,39 @@ export interface operations {
         }
         content: {
           'application/json': unknown
+        }
+      }
+    }
+  }
+  get_recent_announcements_api_announcements_recent_get: {
+    parameters: {
+      query?: {
+        days?: number
+        importance?: 'major' | 'normal' | 'all'
+        limit?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['RecentAnnouncementsResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
         }
       }
     }
@@ -6556,39 +6484,6 @@ export interface operations {
       }
     }
   }
-  create_stock_dividend_api_corporate_actions_stock_dividend_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['StockDividendCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CorporateActionResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   list_suggestions_api_corporate_actions_suggestions_get: {
     parameters: {
       query?: {
@@ -6744,40 +6639,6 @@ export interface operations {
       }
     }
   }
-  get_actions_by_symbol_api_corporate_actions_symbol__symbol__get: {
-    parameters: {
-      query?: {
-        /** @description 市场筛选 */
-        market?: string | null
-      }
-      header?: never
-      path: {
-        symbol: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CorporateActionResponse'][]
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   get_corporate_action_api_corporate_actions__action_id__get: {
     parameters: {
       query?: never
@@ -6908,11 +6769,12 @@ export interface operations {
       }
     }
   }
-  list_exchange_rates_api_exchange_rates__get: {
+  list_exchange_rates_api_exchange_rates_get: {
     parameters: {
       query?: {
         from_currency?: string
         to_currency?: string
+        include_inactive?: boolean
         skip?: number
         limit?: number
       }
@@ -6942,7 +6804,7 @@ export interface operations {
       }
     }
   }
-  create_or_update_exchange_rate_api_exchange_rates__post: {
+  create_or_update_exchange_rate_api_exchange_rates_post: {
     parameters: {
       query?: never
       header?: never
@@ -6962,39 +6824,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['ExchangeRate']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  convert_currency_api_exchange_rates_convert_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['CurrencyConvertRequest']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CurrencyConvertResponse']
         }
       }
       /** @description Validation Error */
@@ -7079,38 +6908,6 @@ export interface operations {
       }
     }
   }
-  get_exchange_rate_api_exchange_rates__from_currency___to_currency__get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        from_currency: string
-        to_currency: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ExchangeRate']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   update_exchange_rate_api_exchange_rates__rate_id__put: {
     parameters: {
       query?: never
@@ -7158,90 +6955,6 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': unknown
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  list_excluded_securities_api_excluded_securities_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ExcludedSecurityResponse'][]
-        }
-      }
-    }
-  }
-  create_excluded_security_api_excluded_securities_post: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody: {
-      content: {
-        'application/json': components['schemas']['ExcludedSecurityCreate']
-      }
-    }
-    responses: {
-      /** @description Successful Response */
-      201: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['ExcludedSecurityResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  delete_excluded_security_api_excluded_securities__record_id__delete: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        record_id: number
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
       204: {
         headers: {
           [name: string]: unknown
@@ -7255,26 +6968,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  export_csv_api_export_csv_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': unknown
         }
       }
     }
@@ -7479,39 +7172,6 @@ export interface operations {
         'application/json': components['schemas']['HoldingPriceUpdate']
       }
     }
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HoldingResponse']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_holding_api_holdings__symbol__get: {
-    parameters: {
-      query?: {
-        market?: string | null
-      }
-      header?: never
-      path: {
-        symbol: string
-      }
-      cookie?: never
-    }
-    requestBody?: never
     responses: {
       /** @description Successful Response */
       200: {
@@ -8199,6 +7859,37 @@ export interface operations {
       }
     }
   }
+  list_notification_events_api_notifications_events_get: {
+    parameters: {
+      query?: {
+        limit?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['NotificationEventListResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   send_test_notification_api_notifications_test_post: {
     parameters: {
       query?: never
@@ -8598,26 +8289,6 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
-  get_catalog_status_api_securities_catalog_status_get: {
-    parameters: {
-      query?: never
-      header?: never
-      path?: never
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['CatalogStatusResponse']
         }
       }
     }
@@ -9121,6 +8792,44 @@ export interface operations {
         }
         content: {
           'application/json': Record<string, unknown>
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_security_announcements_api_securities__market___symbol__announcements_get: {
+    parameters: {
+      query?: {
+        importance?: 'major' | 'normal' | 'all'
+        category?: string | null
+        /** @description 只取公告日早于此日的组（翻页） */
+        before?: string | null
+        limit?: number
+      }
+      header?: never
+      path: {
+        market: string
+        symbol: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SecurityAnnouncementsResponse']
         }
       }
       /** @description Validation Error */
@@ -10037,37 +9746,6 @@ export interface operations {
       }
     }
   }
-  get_user_api_users__user_id__get: {
-    parameters: {
-      query?: never
-      header?: never
-      path: {
-        user_id: number
-      }
-      cookie?: never
-    }
-    requestBody?: never
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['User']
-        }
-      }
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown
-        }
-        content: {
-          'application/json': components['schemas']['HTTPValidationError']
-        }
-      }
-    }
-  }
   update_user_api_users__user_id__put: {
     parameters: {
       query?: never
@@ -10299,13 +9977,11 @@ export interface operations {
     requestBody?: never
     responses: {
       /** @description Successful Response */
-      200: {
+      204: {
         headers: {
           [name: string]: unknown
         }
-        content: {
-          'application/json': unknown
-        }
+        content?: never
       }
       /** @description Validation Error */
       422: {

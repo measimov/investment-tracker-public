@@ -102,7 +102,9 @@ def convert_on_date(
     base_currency: str = "CNY",
 ) -> Decimal:
     """按指定日期汇率换算到本位币；查不到汇率时原样返回（历史兼容口径）。"""
-    rate = rate_lookup.get_rate_on_or_before(currency or base_currency, base_currency, effective_date)
+    rate = rate_lookup.get_rate_on_or_before(
+        currency or base_currency, base_currency, effective_date
+    )
     if rate is None:
         return amount
     return amount * rate

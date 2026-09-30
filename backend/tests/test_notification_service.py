@@ -95,8 +95,9 @@ class FakeApprise:
         return True
 
     def notify(self, title, body, notify_type):
-        FakeApprise.calls.append({"urls": list(self.urls), "title": title, "body": body,
-                                  "type": notify_type})
+        FakeApprise.calls.append(
+            {"urls": list(self.urls), "title": title, "body": body, "type": notify_type}
+        )
         if any("boom" in url for url in self.urls):
             raise RuntimeError(f"connection refused for {self.urls[0]}")
         return not any("fail" in url for url in self.urls)
@@ -188,7 +189,9 @@ def test_channel_summary_counts_valid_channels(monkeypatch, fake_apprise):
     summary = ns.channel_summary()
     assert summary["configured"] and summary["count"] == 2 and summary["valid_count"] == 1
     assert summary["channels"][0] == {
-        "kind": "bark", "channel": "barks://api.day.app/Ab***", "valid": True
+        "kind": "bark",
+        "channel": "barks://api.day.app/Ab***",
+        "valid": True,
     }
     assert KEY not in repr(summary)
     assert fake_apprise.calls == []  # 概况不外呼
@@ -205,8 +208,12 @@ def test_real_apprise_recognizes_normalized_bark_url(monkeypatch):
 
 @pytest.mark.parametrize(
     "threshold,expected",
-    [("warning", [False, True, True]), ("info", [True, True, True]),
-     ("critical", [False, False, True]), ("bogus", [False, True, True])],
+    [
+        ("warning", [False, True, True]),
+        ("info", [True, True, True]),
+        ("critical", [False, False, True]),
+        ("bogus", [False, True, True]),
+    ],
 )
 def test_should_push_threshold(monkeypatch, threshold, expected):
     monkeypatch.setattr(ns.settings, "notify_min_severity", threshold)
@@ -229,7 +236,9 @@ def test_malformed_url_is_an_invalid_channel_not_an_exception(monkeypatch, fake_
     result = ns.send("t", "b", severity="critical")
     assert result["status"] == "partial" and result["sent"] == 1
     assert result["channels"][0] == {
-        "kind": "invalid", "channel": "barks://***", "ok": False,
+        "kind": "invalid",
+        "channel": "barks://***",
+        "ok": False,
         "error": "URL 格式无效（ValueError）",
     }
     assert result["channels"][1]["ok"] is True

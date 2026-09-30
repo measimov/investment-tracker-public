@@ -11,7 +11,7 @@
  */
 import type { SecurityResolveResponse, SecuritySearchItem } from '@/types'
 
-/** 与后端 `schemas/security_rule.py:VALID_MARKETS` 对齐 */
+/** 与后端 `app/core/markets.py:MANUAL_MARKETS` 对齐（顺序也一致） */
 export const MARKETS = ['A股', 'B股', '港股', '美股', '新加坡股', '加密货币'] as const
 export type Market = (typeof MARKETS)[number]
 

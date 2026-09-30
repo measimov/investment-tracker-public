@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def _stale_rows(db, symbol: str | None):
     """版本过期的抽取行；已滚出十年窗口的旧报告永远不会被计划处理，不算（不删数据）。"""
     from app.models.security_profile import SecurityProfileData
+    from app.services.payload_versions import versions_current
     from app.services.report_statement_prompts import STATEMENT_PROMPT_VERSION
     from app.services.report_statement_service import (
         EXTRACT_DATASET,
@@ -45,9 +46,10 @@ def _stale_rows(db, symbol: str | None):
         payload = row.payload or {}
         if outside_statement_window(row.period_key, plans[row.symbol]):
             continue
-        if (
-            int(payload.get("extractor_version") or 1) != STATEMENT_EXTRACTOR_VERSION
-            or int(payload.get("prompt_version") or 1) != STATEMENT_PROMPT_VERSION
+        if not versions_current(
+            payload,
+            extractor_version=STATEMENT_EXTRACTOR_VERSION,
+            prompt_version=STATEMENT_PROMPT_VERSION,
         ):
             stale.append(row)
     return stale

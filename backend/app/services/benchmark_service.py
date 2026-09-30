@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
+from ..core.timeutil import local_today
 from ..database import SessionLocal
 from ..models.security_price import SecurityPrice
 from .job_worker import PeriodicOutcome, periodic_outcome_task
@@ -104,11 +105,9 @@ def periodic_refresh_benchmark_tails() -> PeriodicOutcome:
     无 token 或全部冷启动 → skipped；任一基准补尾失败（sync 返回 success=False）→ failed。
     main.py 以名字 refresh_benchmark_tails 注册。
     """
-    import os
+    from .stock_price_service import tushare_configured
 
-    from ..config import settings
-
-    if not (os.environ.get("TUSHARE_TOKEN") or settings.tushare_token):
+    if not tushare_configured():
         return PeriodicOutcome.skipped("未配置 TUSHARE_TOKEN")
 
     refreshed = 0
@@ -127,15 +126,11 @@ def periodic_refresh_benchmark_tails() -> PeriodicOutcome:
             )
             if coverage_start is None:
                 continue  # 冷启动：等首轮用户区间回填
-            result = sync_benchmark_history(
-                db, code, coverage_start[0], date.today()
-            )
+            result = sync_benchmark_history(db, code, coverage_start[0], local_today())
             if result.get("success"):
                 refreshed += 1
             else:
-                logger.warning(
-                    "基准 %s 周期补尾失败: %s", code, result.get("error")
-                )
+                logger.warning("基准 %s 周期补尾失败: %s", code, result.get("error"))
                 failures.append(f"{code}: {str(result.get('error') or '')[:120]}")
     finally:
         db.close()

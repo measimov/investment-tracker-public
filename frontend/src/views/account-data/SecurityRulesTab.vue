@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { LEDGER_CURRENCIES } from '@/utils/currency'
+import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { showApiError } from '@/utils/showApiError'
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
@@ -9,7 +11,7 @@ import { formatDateTime } from '@/utils/helpers'
 import { CASH_EVENT_TYPE_LABELS, cashEventTypeLabel, optionsOf } from '@/utils/labels'
 import { inferCurrency } from '@/utils/securities'
 import type { SecuritySearchItem } from '@/types'
-import { type SecurityRuleRow, currencyOptions, makeRemover, marketOptions } from './shared'
+import { type SecurityRuleRow, marketOptions } from './shared'
 
 // 特例规则 tab 完全自足（数据+筛选+弹窗都在本组件）：页头汇总卡不消费
 // 规则数据，父组件只经 defineExpose 的 reload 参与整页刷新。
@@ -251,8 +253,9 @@ async function saveRule() {
   }
 }
 
-const removeRule = makeRemover<SecurityRuleRow>({
+const removeRule = makeConfirmedAction<SecurityRuleRow>({
   title: '删除特例规则',
+  confirmText: '删除',
   // EXCLUDE 删除后果与旧排除清单一致：后续导入会重新入账，保留原警示
   message: (row) =>
     row.rule_type === 'EXCLUDE'
@@ -386,7 +389,7 @@ defineExpose({ reload: loadSecurityRules })
         <template v-if="ruleForm.rule_type === 'RELISTING'">
           <el-form-item label="旧币种" prop="old_currency">
             <el-select v-model="ruleForm.old_currency">
-              <el-option v-for="c in currencyOptions" :key="c" :label="c" :value="c" />
+              <el-option v-for="c in LEDGER_CURRENCIES" :key="c" :label="c" :value="c" />
             </el-select>
           </el-form-item>
           <el-form-item label="新代码" prop="new_symbol">
@@ -404,7 +407,7 @@ defineExpose({ reload: loadSecurityRules })
           </el-form-item>
           <el-form-item label="新币种" prop="new_currency">
             <el-select v-model="ruleForm.new_currency">
-              <el-option v-for="c in currencyOptions" :key="c" :label="c" :value="c" />
+              <el-option v-for="c in LEDGER_CURRENCIES" :key="c" :label="c" :value="c" />
             </el-select>
           </el-form-item>
           <el-form-item label="名称">

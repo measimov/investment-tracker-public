@@ -57,11 +57,19 @@ def dump_cn(symbol: str, index: int = 0) -> None:
     target = annual[index]
     content = download_report_pdf(target["url"])
     text = _pdf_to_pages_text(content)
-    _write(f"cn_{symbol}_{target['end_date']}", text, {
-        "market": "A股", "symbol": symbol, "end_date": target["end_date"],
-        "title": target["title"], "source_url": target["url"],
-        "pdf_bytes": len(content), "chars": len(text),
-    })
+    _write(
+        f"cn_{symbol}_{target['end_date']}",
+        text,
+        {
+            "market": "A股",
+            "symbol": symbol,
+            "end_date": target["end_date"],
+            "title": target["title"],
+            "source_url": target["url"],
+            "pdf_bytes": len(content),
+            "chars": len(text),
+        },
+    )
 
 
 def dump_hk(symbol: str, index: int = 0) -> None:
@@ -75,11 +83,19 @@ def dump_hk(symbol: str, index: int = 0) -> None:
     end_date = top["end_date"]
     content = download_report_pdf(top["url"], source="hkexnews")
     text = _pdf_to_pages_text(content)
-    _write(f"hk_{symbol}_{end_date}", text, {
-        "market": "港股", "symbol": symbol, "end_date": end_date,
-        "title": top["title"], "source_url": top["url"],
-        "pdf_bytes": len(content), "chars": len(text),
-    })
+    _write(
+        f"hk_{symbol}_{end_date}",
+        text,
+        {
+            "market": "港股",
+            "symbol": symbol,
+            "end_date": end_date,
+            "title": top["title"],
+            "source_url": top["url"],
+            "pdf_bytes": len(content),
+            "chars": len(text),
+        },
+    )
 
 
 def dump_us(symbol: str, index: int = 0) -> None:
@@ -97,11 +113,20 @@ def dump_us(symbol: str, index: int = 0) -> None:
     with gzip.open(path, "wt", encoding="utf-8") as handle:
         handle.write(html)
     (FIXTURE_DIR / f"us_{symbol}_{target['end_date']}.meta.json").write_text(
-        json.dumps({
-            "market": "美股", "symbol": symbol, "end_date": target["end_date"],
-            "report_type": target.get("report_type"), "title": target["title"],
-            "chars": len(html),
-        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(
+            {
+                "market": "美股",
+                "symbol": symbol,
+                "end_date": target["end_date"],
+                "report_type": target.get("report_type"),
+                "title": target["title"],
+                "chars": len(html),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
     )
     print(f"写入 {path}  ({len(html)} 字符, {path.stat().st_size // 1024}KB)")
 

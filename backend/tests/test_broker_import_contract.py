@@ -186,3 +186,111 @@ def test_preview_counts_separate_bookable_from_skipped():
     assert payload["skipped_cash_rows"] == 1  # 仅调整
     assert payload["skipped_fx_rows"] == 1  # 仅币种异常行
     assert payload["expected_archived_rows"] == 1
+
+
+# --------------------------------------------------------------------------- #279 批次生命周期
+
+
+def test_cmb_archived_disposition_dispatch_table():
+    """招商重导的归档行去向查表；未登记的 skip_reason 一律按重复计（不插第二条同 hash 行）。"""
+    from types import SimpleNamespace
+
+    from app.services import cmb_fund_flow_importer as cmb
+    from app.services.broker_import_common import (
+        SUSPECTED_DUPLICATE,
+        UNATTRIBUTED_TAX,
+        UNBOOKED_CUSTODY_OUT,
+        UNBOOKED_OPENING_POSITION,
+    )
+
+    def flow(**kw):
+        base = dict(row_hash="h1", is_dividend_tax=False, is_opening_position=False)
+        return SimpleNamespace(**{**base, **kw})
+
+    d = cmb.archived_disposition
+    assert d(flow(), None, set()) == cmb.ARCHIVED_BOOKED
+    assert d(flow(), UNBOOKED_CUSTODY_OUT, set()) == cmb.ARCHIVED_DUPLICATE
+    assert d(flow(), UNATTRIBUTED_TAX, set()) == cmb.ARCHIVED_DUPLICATE
+    assert d(flow(is_dividend_tax=True), UNATTRIBUTED_TAX, set()) == cmb.ARCHIVED_REVIVE
+    assert d(flow(), SUSPECTED_DUPLICATE, set()) == cmb.ARCHIVED_DUPLICATE
+    assert d(flow(), SUSPECTED_DUPLICATE, {"h1"}) == cmb.ARCHIVED_REVIVE
+    assert d(flow(), UNBOOKED_OPENING_POSITION, set()) == cmb.ARCHIVED_DUPLICATE
+    assert d(flow(is_opening_position=True), UNBOOKED_OPENING_POSITION, set()) == (
+        cmb.ARCHIVED_REVIVE
+    )
+    assert d(flow(), "some_future_marker", {"h1"}) == cmb.ARCHIVED_DUPLICATE
+
+
+def test_archive_and_link_revives_or_creates_and_booked_rows_count_both():
+    from types import SimpleNamespace
+
+    from app.services.broker_import_common import archive_and_link
+
+    added = []
+    db = SimpleNamespace(add=added.append)
+    held = {"old": SimpleNamespace(name="preserved")}
+    revived = set()
+    kept = archive_and_link(
+        db,
+        held,
+        "old",
+        revive=lambda row: (setattr(row, "linked", 7), row)[1],
+        create=lambda: SimpleNamespace(name="new"),
+        revived=revived,
+    )
+    fresh = archive_and_link(
+        db,
+        held,
+        "fresh",
+        revive=lambda row: row,
+        create=lambda: SimpleNamespace(name="new"),
+        revived=revived,
+    )
+    assert (kept.name, kept.linked, fresh.name) == ("preserved", 7, "new")
+    assert held == {} and revived == {"old"} and added == [kept, fresh]
+
+
+def test_fail_broker_import_counts_only_what_is_committed(monkeypatch):
+    """已提交后才失败：按库里实际状态重数；未提交：计数清零（fail_import_batch 自己回滚）。"""
+    from app.services import broker_import_common as common
+
+    calls = []
+    monkeypatch.setattr(
+        common, "fail_import_batch", lambda db, batch_id, exc, **kw: calls.append(kw)
+    )
+    monkeypatch.setattr(common, "archived_row_count", lambda db, model, batch_id: 5)
+    monkeypatch.setattr(
+        common, "booked_source_rows", lambda db, model, batch_id, revived: 3 + len(set(revived))
+    )
+
+    class FakeDb:
+        rolled_back = False
+
+        def rollback(self):
+            self.rolled_back = True
+
+    db = FakeDb()
+    common.fail_broker_import(
+        db,
+        1,
+        RuntimeError("x"),
+        model=object,
+        records_committed=True,
+        row_count=10,
+        duplicate_count=2,
+        revived_hashes={"a"},
+    )
+    assert db.rolled_back
+    assert calls[-1] == dict(
+        records_committed=True, row_count=10, imported_count=4, duplicate_count=2, archived_count=5
+    )
+    common.fail_broker_import(
+        FakeDb(),
+        1,
+        RuntimeError("x"),
+        model=object,
+        records_committed=False,
+        row_count=10,
+        duplicate_count=2,
+    )
+    assert calls[-1]["imported_count"] == 0 and calls[-1]["archived_count"] == 0

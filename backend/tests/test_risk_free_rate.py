@@ -31,7 +31,11 @@ def test_parse_shibor_history_takes_term_and_sorts():
 
 
 def test_parse_shibor_history_rejects_refusal_and_unknown_term():
-    payload = {"head": {"rep_code": "200"}, "data": {"message": "只提供一年历史数据查询及下载"}, "records": []}
+    payload = {
+        "head": {"rep_code": "200"},
+        "data": {"message": "只提供一年历史数据查询及下载"},
+        "records": [],
+    }
     with pytest.raises(ChinamoneyError):
         chinamoney_source.parse_shibor_history(payload)
     with pytest.raises(ValueError):
@@ -59,14 +63,26 @@ def test_forward_filled_rates():
 def _curve(returns, gaps):
     """规则或不规则日期网格上的曲线：首点无收益，其后每点一个日收益率（%）。"""
     day = date(2026, 1, 1)
-    curve = [{"date": day.isoformat(), "daily_return_rate": None, "cumulative_return_rate": 0,
-              "drawdown_rate": 0}]
+    curve = [
+        {
+            "date": day.isoformat(),
+            "daily_return_rate": None,
+            "cumulative_return_rate": 0,
+            "drawdown_rate": 0,
+        }
+    ]
     cumulative = Decimal("1")
     for ret, gap in zip(returns, gaps):
         day += timedelta(days=gap)
         cumulative *= 1 + Decimal(str(ret)) / 100
-        curve.append({"date": day.isoformat(), "daily_return_rate": ret,
-                      "cumulative_return_rate": float((cumulative - 1) * 100), "drawdown_rate": 0})
+        curve.append(
+            {
+                "date": day.isoformat(),
+                "daily_return_rate": ret,
+                "cumulative_return_rate": float((cumulative - 1) * 100),
+                "drawdown_rate": 0,
+            }
+        )
     return curve
 
 
@@ -77,7 +93,9 @@ def test_constant_series_on_regular_grid_equals_constant_rate():
     curve = _curve(RETURNS, [1] * len(RETURNS))
     constant = calculate_risk_metrics(curve, Decimal("2"), "daily_price_history")
     series = calculate_risk_metrics(
-        curve, Decimal("0"), "daily_price_history",
+        curve,
+        Decimal("0"),
+        "daily_price_history",
         risk_free_points=[(date(2025, 12, 31), Decimal("2"))],
     )
     assert constant["risk_free_basis"] == "constant" and series["risk_free_basis"] == "series"
@@ -92,7 +110,9 @@ def test_series_accrues_by_actual_gap_and_reports_missing_points():
     gaps = [1, 1, 1, 7, 1, 1, 1, 1, 7, 1]
     curve = _curve(RETURNS, gaps)
     series = calculate_risk_metrics(
-        curve, Decimal("0"), "daily_price_history",
+        curve,
+        Decimal("0"),
+        "daily_price_history",
         risk_free_points=[(date(2026, 1, 6), Decimal("3"))],  # 前 3 个收益点（1/2–1/4）早于序列首值
     )
     assert series["risk_free_missing_points"] == 3
@@ -125,12 +145,16 @@ def test_sync_series_backfills_head_then_tail_and_is_idempotent(db, monkeypatch)
 
     def fake_fetch(start, end):
         calls.append((start, end))
-        return [(start + timedelta(days=i), Decimal("1.5")) for i in range((end - start).days + 1)
-                if (start + timedelta(days=i)).weekday() < 5]
+        return [
+            (start + timedelta(days=i), Decimal("1.5"))
+            for i in range((end - start).days + 1)
+            if (start + timedelta(days=i)).weekday() < 5
+        ]
 
     spec = reference_rate_service.SERIES["SHIBOR_3M"]
     monkeypatch.setitem(
-        reference_rate_service.SERIES, "SHIBOR_3M",
+        reference_rate_service.SERIES,
+        "SHIBOR_3M",
         reference_rate_service.SeriesSpec(spec.label, spec.currency, spec.source, fake_fetch),
     )
     today = date(2026, 9, 28)
@@ -140,14 +164,23 @@ def test_sync_series_backfills_head_then_tail_and_is_idempotent(db, monkeypatch)
 
     # 目标起点提前 → 补前段 + 补尾（尾部重复值不改写）
     calls.clear()
-    second = reference_rate_service.sync_series(db, "SHIBOR_3M", start=date(2026, 8, 25), today=today)
+    second = reference_rate_service.sync_series(
+        db, "SHIBOR_3M", start=date(2026, 8, 25), today=today
+    )
     assert calls == [(date(2026, 8, 25), date(2026, 8, 31)), (date(2026, 9, 18), today)]
     assert second["written"] == 5
 
-    points = reference_rate_service.load_points(db, "SHIBOR_3M", date(2026, 9, 6), date(2026, 9, 10))
+    points = reference_rate_service.load_points(
+        db, "SHIBOR_3M", date(2026, 9, 6), date(2026, 9, 10)
+    )
     # 区间首日（周日）之前最近一个发布值一并带上，供向前填充
     assert points[0][0] == date(2026, 9, 4)
-    assert [p[0] for p in points[1:]] == [date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10)]
+    assert [p[0] for p in points[1:]] == [
+        date(2026, 9, 7),
+        date(2026, 9, 8),
+        date(2026, 9, 9),
+        date(2026, 9, 10),
+    ]
 
 
 def test_sync_series_failure_is_reported_not_raised(db, monkeypatch):
@@ -156,10 +189,13 @@ def test_sync_series_failure_is_reported_not_raised(db, monkeypatch):
 
     spec = reference_rate_service.SERIES["SHIBOR_3M"]
     monkeypatch.setitem(
-        reference_rate_service.SERIES, "SHIBOR_3M",
+        reference_rate_service.SERIES,
+        "SHIBOR_3M",
         reference_rate_service.SeriesSpec(spec.label, spec.currency, spec.source, boom),
     )
-    outcome = reference_rate_service.sync_series(db, "SHIBOR_3M", start=date(2026, 9, 1), today=date(2026, 9, 28))
+    outcome = reference_rate_service.sync_series(
+        db, "SHIBOR_3M", start=date(2026, 9, 1), today=date(2026, 9, 28)
+    )
     assert outcome["written"] == 0 and "系统繁忙" in outcome["error"]
 
 
@@ -171,7 +207,9 @@ def test_analytics_defaults_to_series_and_explicit_rate_overrides(db):
         _reset(db)
         _seed_scenario(db)
         reference_rate_service.upsert_points(
-            db, "SHIBOR_3M", "cfets-shibor",
+            db,
+            "SHIBOR_3M",
+            "cfets-shibor",
             [(date(2024, 12, 31), Decimal("1.6")), (date(2025, 6, 2), Decimal("1.4"))],
         )
         kwargs = dict(start_date=date(2025, 1, 1), end_date=date(2025, 12, 31))

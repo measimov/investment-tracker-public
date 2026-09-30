@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from sqlalchemy import tuple_
 from sqlalchemy.orm import Session
 
+from ...core.timeutil import local_today
 from ...models.corporate_action import CorporateAction
 from ...models.holding import Holding
 from ...models.security_price import SecurityPrice
@@ -25,6 +26,7 @@ from ..portfolio.benchmark import build_benchmark_series, calculate_benchmark_co
 from ..portfolio.curve import (
     build_return_curve,
     corporate_action_curve_date,
+    corporate_action_inflows,
     decimal_close,
 )
 from ..portfolio.fx import ExchangeRateLookup
@@ -147,13 +149,14 @@ def _clamp_range(
     corporate_actions: List[CorporateAction],
     start_date: Optional[date],
     end_date: Optional[date],
+    today: date,
 ) -> Tuple[date, date, Optional[date], Optional[date], bool]:
     """请求区间钳制到 [首笔交易日, 最后事件日]，回显 requested vs effective。"""
     first_date = min(txn.transaction_date for txn in transactions)
     last_event_date = max(
         [txn.transaction_date for txn in transactions]
         + [corporate_action_curve_date(action) for action in corporate_actions]
-        + [date.today()]
+        + [today]
     )
     # 越界只会得到平直的边界填充点，钳制并回显，前端可提示"已按有效区间计算"。
     requested_start = start_date
@@ -298,6 +301,15 @@ def _build_range_summary(
                 to_cny_on_date(net, currency, flow_date, rate_lookup),
             )
         )
+    # 区间内公司行动带来的外部投入（期初建仓按成本、配股按认购成本，#271）；区间前的已在期初市值里
+    action_flows, unknown_cost_positions = corporate_action_inflows(
+        corporate_actions,
+        rate_lookup=rate_lookup,
+        fallback_currency=infer_price_currency,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    range_cash_flows.extend(action_flows)
     closing_market_value_cny = Decimal(str(curve[-1]["equity_cny"])) if curve else Decimal("0")
     if closing_market_value_cny > 0:
         range_cash_flows.append((end_date, closing_market_value_cny))
@@ -315,6 +327,8 @@ def _build_range_summary(
             float(range_xirr * Decimal("100")) if range_xirr is not None else None
         ),
         "fx_basis": {"display": "latest_rate", "xirr_flows": "transaction_date"},
+        # 成本未知的期初建仓不计 XIRR 投入（曲线按估值计），逐条列出供展示标注
+        "xirr_unknown_cost_positions": unknown_cost_positions,
     }
     return range_summary, trade_skill, range_missing_rates
 
@@ -324,9 +338,10 @@ def _reconcile_terminal_positions(
     curve: List[Dict[str, Any]],
     curve_quality: Dict[str, Any],
     end_date: date,
+    today: date,
 ) -> Dict[str, Any]:
     """曲线终点持仓 vs 当前持仓表的对账（仅当区间终点覆盖今天时）。"""
-    should_reconcile_terminal_positions = end_date >= date.today()
+    should_reconcile_terminal_positions = end_date >= today
     actual_holding_quantities: Dict[Tuple[str, str], Decimal] = {}
     if should_reconcile_terminal_positions:
         # 账户级持仓下同一证券可能多行，对齐曲线终点时按证券聚合数量。
@@ -487,7 +502,11 @@ def calculate_performance_analytics(
     risk_free_rate: Optional[Decimal] = None,
     refresh_history: bool = False,
     benchmarks: Optional[List[str]] = None,
+    today: Optional[date] = None,
 ) -> Dict[str, Any]:
+    """today：区间钳制、曲线末点用现价快照与终点持仓对账所依据的「今天」，缺省为今天；
+    口径双跑脚本传固定值，让跨天运行的两份快照可比（PR #292 评审）。"""
+    today = today or local_today()
     if start_date and end_date and end_date < start_date:
         raise ValueError("end_date must be on or after start_date")
 
@@ -508,7 +527,7 @@ def calculate_performance_analytics(
         return _empty_analytics_response()
 
     start_date, end_date, requested_start, requested_end, range_clamped = _clamp_range(
-        transactions, corporate_actions, start_date, end_date
+        transactions, corporate_actions, start_date, end_date, today
     )
 
     symbols_by_key = {}
@@ -541,7 +560,7 @@ def calculate_performance_analytics(
         end_date,
         rate_lookup=rate_lookup,
         fallback_currency=infer_price_currency,
-        today=date.today(),
+        today=today,
     )
 
     # Reuse the transactions/corporate actions already loaded above instead of
@@ -585,7 +604,13 @@ def calculate_performance_analytics(
             "部分标的缺少历史行情，夏普率等风险指标可能不完整；可点击同步历史行情补齐。"
         )
 
-    terminal = _reconcile_terminal_positions(holdings, curve, curve_quality, end_date)
+    if range_summary.get("xirr_unknown_cost_positions"):
+        warnings.append(
+            f"区间年化收益偏高：{len(range_summary['xirr_unknown_cost_positions'])} 笔期初建仓"
+            "成本未知，未计入年化收益的投入，补录成本后才准确。"
+        )
+
+    terminal = _reconcile_terminal_positions(holdings, curve, curve_quality, end_date, today)
     if terminal["terminal_unpriced_positions"]:
         warnings.append("部分当前持仓缺少可用估值价格，TTWR 曲线和风险指标可能不完整。")
     if terminal["terminal_stale_price_positions"]:

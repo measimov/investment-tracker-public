@@ -15,10 +15,17 @@ from app.services.stock_price_service import price_result, update_all_holdings_p
 
 def _make_holding(db, symbol, price_updated_at):
     holding = Holding(
-        user_id=1, broker_account_id=None, symbol=symbol, name=symbol,
-        market="A股", quantity=Decimal("100"), avg_cost=Decimal("10"),
-        total_cost=Decimal("1000"), currency="CNY",
-        current_price=Decimal("10"), price_updated_at=price_updated_at,
+        user_id=1,
+        broker_account_id=None,
+        symbol=symbol,
+        name=symbol,
+        market="A股",
+        quantity=Decimal("100"),
+        avg_cost=Decimal("10"),
+        total_cost=Decimal("1000"),
+        currency="CNY",
+        current_price=Decimal("10"),
+        price_updated_at=price_updated_at,
     )
     db.add(holding)
     return holding
@@ -26,10 +33,9 @@ def _make_holding(db, symbol, price_updated_at):
 
 def _run_refresh(db, monkeypatch):
     monkeypatch.setattr(
-        stock_price_service, "fetch_stock_price",
-        lambda symbol, market: price_result(
-            price=Decimal("11"), source="test", success=True
-        ),
+        stock_price_service,
+        "fetch_stock_price",
+        lambda symbol, market: price_result(price=Decimal("11"), source="test", success=True),
     )
     return update_all_holdings_prices(db, 1)
 
@@ -79,9 +85,7 @@ def test_freshness_window_skips_and_is_configurable(monkeypatch):
         assert result["success_count"] == 0
 
         # 窗口缩到 120s → 同一持仓应刷新
-        monkeypatch.setattr(
-            stock_price_service.settings, "price_refresh_freshness_seconds", 120
-        )
+        monkeypatch.setattr(stock_price_service.settings, "price_refresh_freshness_seconds", 120)
         result = _run_refresh(db, monkeypatch)
         assert result["success_count"] == 1
         assert result["skipped_count"] == 0
@@ -94,5 +98,8 @@ def test_freshness_window_skips_and_is_configurable(monkeypatch):
 def test_compose_passes_freshness_setting():
     from pathlib import Path
 
+    import re
+
     compose = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
-    assert "PRICE_REFRESH_FRESHNESS_SECONDS=${PRICE_REFRESH_FRESHNESS_SECONDS:-600}" in compose
+    # 裸键透传，默认值只在 config.py（#278）
+    assert re.search(r"^\s+- PRICE_REFRESH_FRESHNESS_SECONDS\s*$", compose, re.M)

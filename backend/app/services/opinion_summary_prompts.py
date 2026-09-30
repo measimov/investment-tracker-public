@@ -19,9 +19,20 @@ from .prompt_guardrails import no_prior_knowledge_guardrail
 
 # 观点标签白名单（1-4 个）：整体立场 / 近期变化（重点） / 语境 三层
 ALLOWED_OPINION_TAGS = [
-    "一致看多", "偏多", "多空分歧", "偏空", "一致看空", "中性观望",
-    "近期转多", "近期转空", "新增关注", "关注度上升", "关注度下降", "讨论沉寂",
-    "事件驱动讨论", "观点数据不足",
+    "一致看多",
+    "偏多",
+    "多空分歧",
+    "偏空",
+    "一致看空",
+    "中性观望",
+    "近期转多",
+    "近期转空",
+    "新增关注",
+    "关注度上升",
+    "关注度下降",
+    "讨论沉寂",
+    "事件驱动讨论",
+    "观点数据不足",
 ]
 
 STANCE_VALUES = frozenset({"看多", "看空", "中性", "不明"})
@@ -73,9 +84,7 @@ def build_system_prompt(recent_days: int) -> str:
 
 
 def build_opinion_messages(input_payload: Dict[str, Any]) -> List[Dict[str, str]]:
-    serialized = json.dumps(
-        input_payload, ensure_ascii=False, separators=(",", ":"), default=str
-    )
+    serialized = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"), default=str)
     recent_days = int((input_payload.get("meta") or {}).get("recent_days") or 30)
     user_content = (
         "请基于下方 JSON 的雪球发言记录生成该标的的观点摘要"
@@ -178,10 +187,14 @@ def parse_opinion_output(
         if not isinstance(evidence, str):
             raise ValueError("evidence 必须是字符串")
         validated_changes.add(change)
-        parsed_stances.append({
-            "author": author, "stance": stance,
-            "recent_change": change, "evidence": evidence.strip()[:120],
-        })
+        parsed_stances.append(
+            {
+                "author": author,
+                "stance": stance,
+                "recent_change": change,
+                "evidence": evidence.strip()[:120],
+            }
+        )
 
     missing = set(author_stats) - seen_authors
     if missing:
@@ -191,9 +204,7 @@ def parse_opinion_output(
     top_level_requires = {"近期转多": "转多", "近期转空": "转空", "新增关注": "新增"}
     for tag, required_change in top_level_requires.items():
         if tag in tags and required_change not in validated_changes:
-            raise ValueError(
-                f"「{tag}」缺少逐作者依据：无任何作者通过「{required_change}」校验"
-            )
+            raise ValueError(f"「{tag}」缺少逐作者依据：无任何作者通过「{required_change}」校验")
 
     return {
         "tags": tags,

@@ -37,10 +37,15 @@ def test_xirr_degenerate_inputs_still_return_none():
     assert xirr([(date(2025, 1, 1), Decimal("-1000"))]) is None
     assert xirr([(date(2025, 1, 1), Decimal("1000"))]) is None
     # 同日正负相抵为零 → 无有效流
-    assert xirr([
-        (date(2025, 1, 1), Decimal("-1000")),
-        (date(2025, 1, 1), Decimal("1000")),
-    ]) is None
+    assert (
+        xirr(
+            [
+                (date(2025, 1, 1), Decimal("-1000")),
+                (date(2025, 1, 1), Decimal("1000")),
+            ]
+        )
+        is None
+    )
 
 
 @pytest.fixture
@@ -162,8 +167,7 @@ def test_job_success_clears_previous_attempt_error(monkeypatch):
     claim_job(job["id"], "price_refresh")
     handle_job_failure(job["id"], "price_refresh", "第一次失败")
     claim_job(job["id"], "price_refresh")
-    updated = update_job(job["id"], "price_refresh", status="succeeded",
-                         required_status="running")
+    updated = update_job(job["id"], "price_refresh", status="succeeded", required_status="running")
     assert updated["status"] == "succeeded"
     assert updated["error"] is None
 

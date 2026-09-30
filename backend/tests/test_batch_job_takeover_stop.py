@@ -50,9 +50,7 @@ def db():
 
     def _clear():
         session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(
-                [ANALYSIS_JOB_TYPE, DIGEST_JOB_TYPE, HISTORY_JOB_TYPE]
-            )
+            BackgroundJob.job_type.in_([ANALYSIS_JOB_TYPE, DIGEST_JOB_TYPE, HISTORY_JOB_TYPE])
         ).delete(synchronize_session=False)
         session.commit()
 
@@ -95,10 +93,16 @@ def test_batch_analysis_stops_after_takeover(db, monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        security_analysis_batch_jobs, "analyze_one",
-        lambda db_, symbol, market, **kw: calls.append((symbol, market)) or {
-            "status": "succeeded", "analysis_id": 1, "degraded": [],
-        },
+        security_analysis_batch_jobs,
+        "analyze_one",
+        lambda db_, symbol, market, **kw: (
+            calls.append((symbol, market))
+            or {
+                "status": "succeeded",
+                "analysis_id": 1,
+                "degraded": [],
+            }
+        ),
     )
     monkeypatch.setattr(
         security_analysis_batch_jobs, "_recent_analysis_keys", lambda *a, **k: set()
@@ -107,9 +111,7 @@ def test_batch_analysis_stops_after_takeover(db, monkeypatch):
     # 不得抛出：哨兵在 execute 顶层被安静接住
     security_analysis_batch_jobs.execute_batch_analysis_job(stale)
 
-    assert calls == [], (
-        f"失权后仍分析了 {calls} —— 僵尸线程会与接管者双倍消耗 LLM/外部 API"
-    )
+    assert calls == [], f"失权后仍分析了 {calls} —— 僵尸线程会与接管者双倍消耗 LLM/外部 API"
 
 
 def test_digest_batch_stops_after_takeover(db, monkeypatch):
@@ -120,23 +122,29 @@ def test_digest_batch_stops_after_takeover(db, monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        report_digest_batch_jobs, "ensure_report_digests",
-        lambda db_, symbol, market, **kw: calls.append((symbol, market)) or {
-            "generated": 1, "gaps": [], "failed": 0, "completed": 1,
-        },
+        report_digest_batch_jobs,
+        "ensure_report_digests",
+        lambda db_, symbol, market, **kw: (
+            calls.append((symbol, market))
+            or {
+                "generated": 1,
+                "gaps": [],
+                "failed": 0,
+                "completed": 1,
+            }
+        ),
     )
 
     report_digest_batch_jobs.execute_digest_batch_job(stale)
 
-    assert calls == [], (
-        f"失权后仍回填了 {calls} —— 僵尸线程会重复下载年报并烧 LLM token"
-    )
+    assert calls == [], f"失权后仍回填了 {calls} —— 僵尸线程会重复下载年报并烧 LLM token"
 
 
 def test_takeover_mid_run_stops_before_next_symbol(db, monkeypatch):
     """跑到一半才被接管：已开始的那只允许跑完，但不得继续下一只。"""
     job = create_or_get_active_job(
-        ANALYSIS_JOB_TYPE, 1,
+        ANALYSIS_JOB_TYPE,
+        1,
         {"targets": TARGETS, "completed_keys": [], "total": len(TARGETS)},
     )
     claimed = claim_job(job["id"], ANALYSIS_JOB_TYPE)
@@ -173,17 +181,24 @@ def test_takeover_mid_run_stops_before_next_symbol(db, monkeypatch):
 def test_owned_run_completes_all_targets(db, monkeypatch):
     """未被接管时哨兵不得误伤：整批正常跑完。"""
     job = create_or_get_active_job(
-        ANALYSIS_JOB_TYPE, 1,
+        ANALYSIS_JOB_TYPE,
+        1,
         {"targets": TARGETS, "completed_keys": [], "total": len(TARGETS)},
     )
     claimed = claim_job(job["id"], ANALYSIS_JOB_TYPE)
 
     calls = []
     monkeypatch.setattr(
-        security_analysis_batch_jobs, "analyze_one",
-        lambda db_, symbol, market, **kw: calls.append((symbol, market)) or {
-            "status": "succeeded", "analysis_id": 1, "degraded": [],
-        },
+        security_analysis_batch_jobs,
+        "analyze_one",
+        lambda db_, symbol, market, **kw: (
+            calls.append((symbol, market))
+            or {
+                "status": "succeeded",
+                "analysis_id": 1,
+                "degraded": [],
+            }
+        ),
     )
     monkeypatch.setattr(
         security_analysis_batch_jobs, "_recent_analysis_keys", lambda *a, **k: set()
@@ -212,7 +227,8 @@ HISTORY_TARGETS = [
 
 def _patch_history_targets(monkeypatch):
     monkeypatch.setattr(
-        performance_history_jobs, "get_history_sync_targets",
+        performance_history_jobs,
+        "get_history_sync_targets",
         lambda *a, **k: {
             "targets": HISTORY_TARGETS,
             "start_date": date(2026, 1, 1),
@@ -228,7 +244,8 @@ def test_history_sync_stops_when_taken_over_before_run(db, monkeypatch):
 
     fetched = []
     monkeypatch.setattr(
-        performance_history_jobs, "fetch_and_store_security_price_history_incremental",
+        performance_history_jobs,
+        "fetch_and_store_security_price_history_incremental",
         lambda db_, **kw: fetched.append(kw["symbol"]) or {"success": True},
     )
 
@@ -254,9 +271,7 @@ def test_history_sync_stops_mid_run_after_takeover(db, monkeypatch):
             # 第一只刚跑完就被接管
             session = SessionLocal()
             try:
-                row = session.query(BackgroundJob).filter(
-                    BackgroundJob.id == job["id"]
-                ).one()
+                row = session.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
                 row.attempt_count = (row.attempt_count or 1) + 1
                 session.commit()
             finally:
@@ -282,7 +297,8 @@ def test_history_sync_completes_all_targets_when_owned(db, monkeypatch):
 
     fetched = []
     monkeypatch.setattr(
-        performance_history_jobs, "fetch_and_store_security_price_history_incremental",
+        performance_history_jobs,
+        "fetch_and_store_security_price_history_incremental",
         lambda db_, **kw: fetched.append(kw["symbol"]) or {"success": True},
     )
 
@@ -306,7 +322,8 @@ def test_ownership_sentinel_survives_analyze_one_stage_wrapper(monkeypatch):
     """
     called = []
     monkeypatch.setattr(
-        security_analysis_jobs, "sync_symbol_profile",
+        security_analysis_jobs,
+        "sync_symbol_profile",
         lambda *a, **k: called.append("sync") or {"supported": True},
     )
 
@@ -323,15 +340,14 @@ def test_ownership_sentinel_survives_analyze_one_stage_wrapper(monkeypatch):
 def test_analyze_one_still_swallows_ordinary_progress_errors(monkeypatch):
     """普通回写失败仍不得拖垮分析（原有语义不能被本次改动破坏）。"""
     monkeypatch.setattr(
-        security_analysis_jobs, "sync_symbol_profile",
+        security_analysis_jobs,
+        "sync_symbol_profile",
         lambda *a, **k: {"supported": False},
     )
 
     def flaky(stage_name, extra):
         raise RuntimeError("DB 抖动")
 
-    outcome = security_analysis_jobs.analyze_one(
-        None, "600000", "未知市场", on_stage=flaky
-    )
+    outcome = security_analysis_jobs.analyze_one(None, "600000", "未知市场", on_stage=flaky)
     assert outcome["status"] == "failed"
     assert outcome["error_kind"] == "unsupported_market"

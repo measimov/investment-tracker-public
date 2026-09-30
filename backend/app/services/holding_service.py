@@ -2,20 +2,21 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 from ..core.logging import get_app_logger
 from ..models.transaction import Transaction
 from ..models.holding import Holding
 from ..models.corporate_action import CorporateAction
 from .portfolio.semantics import (
-    QUANTITY_ACTION_TYPES,
     action_has_ratio,
     apply_action_quantity,
     bonus_share_factor,
-    split_share_factor,
     OPENING_POSITION,
     opening_position_bucket,
     opening_position_lot,
+    QUANTITY_ACTION_TYPES,
+    rights_issue_lot,
+    split_share_factor,
 )
 
 logger = get_app_logger(__name__)
@@ -68,10 +69,9 @@ def replay_transactions_per_account(transactions, corporate_actions, symbol: str
     as-of 快照日的持仓重放，转仓校验用它做全时间线重放。
     """
     events = [
-        {'type': 'transaction', 'date': txn.transaction_date, 'data': txn}
-        for txn in transactions
+        {"type": "transaction", "date": txn.transaction_date, "data": txn} for txn in transactions
     ] + [
-        {'type': 'corporate_action', 'date': action.ex_date, 'data': action}
+        {"type": "corporate_action", "date": action.ex_date, "data": action}
         for action in corporate_actions
     ]
     events.sort(key=_event_sort_key)
@@ -85,10 +85,9 @@ def replay_transactions_merged(transactions, corporate_actions, symbol: str, mar
     数量总和仍然可信（含送转/拆股因子），只是无法按账户拆分。
     """
     events = [
-        {'type': 'transaction', 'date': txn.transaction_date, 'data': txn}
-        for txn in transactions
+        {"type": "transaction", "date": txn.transaction_date, "data": txn} for txn in transactions
     ] + [
-        {'type': 'corporate_action', 'date': action.ex_date, 'data': action}
+        {"type": "corporate_action", "date": action.ex_date, "data": action}
         for action in corporate_actions
     ]
     events.sort(key=_event_sort_key)
@@ -102,16 +101,24 @@ def replay_account_buckets(db: Session, user_id: int, symbol: str, market: str):
     与排序，但归属矛盾时不降级而是抛 AccountReplayError，让调用方拒绝写入。
     同一会话中未提交的 flush 行也会被计入（校验"插入转仓对之后"的时间线）。
     """
-    transactions = db.query(Transaction).filter(
-        Transaction.user_id == user_id,
-        Transaction.symbol == symbol,
-        Transaction.market == market
-    ).all()
-    corporate_actions = db.query(CorporateAction).filter(
-        CorporateAction.user_id == user_id,
-        CorporateAction.symbol == symbol,
-        CorporateAction.market == market
-    ).all()
+    transactions = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user_id,
+            Transaction.symbol == symbol,
+            Transaction.market == market,
+        )
+        .all()
+    )
+    corporate_actions = (
+        db.query(CorporateAction)
+        .filter(
+            CorporateAction.user_id == user_id,
+            CorporateAction.symbol == symbol,
+            CorporateAction.market == market,
+        )
+        .all()
+    )
     return replay_transactions_per_account(transactions, corporate_actions, symbol, market)
 
 
@@ -142,33 +149,147 @@ def _txn_replay_order(txn):
 
 
 def _event_sort_key(event):
-    if event['type'] == 'transaction':
-        return (event['date'], 1) + _txn_replay_order(event['data'])
-    return (event['date'], 0, 0, event['data'].id, 0)
+    if event["type"] == "transaction":
+        return (event["date"], 1) + _txn_replay_order(event["data"])
+    return (event["date"], 0, 0, event["data"].id, 0)
 
 
-def validate_no_oversell(transactions):
-    """Raise ValueError if ordered transactions sell/transfer more than available.
+def _plain(quantity: Decimal) -> str:
+    """数量的人读形式：去掉 Numeric(18,8) 的尾零（150.00000000 → 150）。"""
+    return format(quantity.normalize(), "f")
 
-    调用方传入的列表通常已按账户桶过滤（_validate_transaction_sequence 按
-    candidate 的 broker_account_id 过滤）；转仓在桶视角就是数量的增减：
-    TRANSFER_OUT 等同卖出数量、TRANSFER_IN 等同买入数量。
+
+def _precheck_sort_key(event, tiebreak):
+    """账户预检的排序键：与 _event_sort_key 同一骨架，券商 tie-break 插在类型组之后。
+
+    行动排在同日交易之前；交易按类型组（买入 → 转仓 → 卖出）、再按券商 tie-break
+    （招商的流水号/合同号/行号），最后按转仓对与 id。tie-break 缺省为空元组，此时
+    与 recalculate_holdings 的 _event_sort_key 次序完全一致。未落库的替身 id 为
+    UNPERSISTED_SORT_ID，排在同日同组既有记录之后（与 flush 拿到真 id 后一致）。
     """
-    quantity = Decimal("0")
-    for txn in sorted(
-        transactions,
-        key=lambda item: (item.transaction_date,) + _txn_replay_order(item),
-    ):
-        txn_quantity = Decimal(str(txn.quantity))
-        if txn.transaction_type in ("BUY", "TRANSFER_IN"):
-            quantity += txn_quantity
-        elif txn.transaction_type in ("SELL", "TRANSFER_OUT"):
-            if txn_quantity > quantity:
-                raise ValueError(
-                    f"Sell quantity {txn_quantity} exceeds available quantity {quantity} "
-                    f"for {txn.symbol} ({txn.market}) on {txn.transaction_date}"
-                )
-            quantity -= txn_quantity
+    if getattr(event, "transaction_type", None) is None:  # CorporateAction / 替身
+        action_id = event.id if event.id is not None else UNPERSISTED_SORT_ID
+        return (event.ex_date, 0, 0, (), action_id, 0)
+    group, pair_or_id, leg = _txn_replay_order(event)
+    extra = tiebreak(event) if tiebreak is not None else ()
+    return (event.transaction_date, 1, group, extra, pair_or_id, leg)
+
+
+def account_precheck_events(
+    db: Session,
+    *,
+    user_id: int,
+    broker_account_id: Optional[int],
+    keys=None,
+    through_date=None,
+    extra_transactions=(),
+    extra_corporate_actions=(),
+    exclude_transaction_ids=(),
+    tiebreak=None,
+):
+    """单账户桶预检的事件序列（已排序）——手工录入、标准 CSV 与三家券商导入共用（#279）。
+
+    此前招商、东财各写一份「查本账户交易 → 查本账户数量类行动 → load_account_quantity_actions
+    → 自拼 type_rank 排序元组」，同日 tie-break 与内核 _TYPE_SORT_ORDER 要三处同步，IBKR
+    干脆没有预检。现在装配只在这里：
+
+    - broker_account_id=None 即未指定账户桶。
+    - keys：只看这些 (symbol, market)；缺省 = 本桶交易、替身与本桶数量类行动涉及的全部标的。
+    - through_date：只看该日（含）之前的交易与行动（东财按对账单期末日推演）。
+    - extra_transactions / extra_corporate_actions：尚未落库的本批替身（预览通道）。
+    - tiebreak(txn) -> tuple：券商同日 tie-break，替身与既有交易都会传进来。
+
+    返回值直接喂 replay_account_quantities。
+    """
+    query = db.query(Transaction).filter(Transaction.user_id == user_id)
+    if broker_account_id is None:
+        query = query.filter(Transaction.broker_account_id.is_(None))
+    else:
+        query = query.filter(Transaction.broker_account_id == broker_account_id)
+    if keys is not None:
+        query = query.filter(Transaction.symbol.in_({symbol for symbol, _ in keys}))
+    if through_date is not None:
+        query = query.filter(Transaction.transaction_date <= through_date)
+    if exclude_transaction_ids:
+        query = query.filter(Transaction.id.notin_(list(exclude_transaction_ids)))
+    transactions = query.all()
+    extras = [
+        txn
+        for txn in extra_transactions
+        if through_date is None or txn.transaction_date <= through_date
+    ]
+    extra_actions = [
+        action
+        for action in extra_corporate_actions
+        if through_date is None or action.ex_date <= through_date
+    ]
+    if keys is not None:
+        keys = set(keys)
+        transactions = [txn for txn in transactions if (txn.symbol, txn.market) in keys]
+        extras = [txn for txn in extras if (txn.symbol, txn.market) in keys]
+        extra_actions = [a for a in extra_actions if (a.symbol, a.market) in keys]
+    else:
+        keys = {(txn.symbol, txn.market) for txn in [*transactions, *extras]}
+        keys |= {(action.symbol, action.market) for action in extra_actions}
+        owned = db.query(CorporateAction).filter(
+            CorporateAction.user_id == user_id,
+            CorporateAction.action_type.in_(QUANTITY_ACTION_TYPES),
+            (
+                CorporateAction.broker_account_id.is_(None)
+                if broker_account_id is None
+                else CorporateAction.broker_account_id == broker_account_id
+            ),
+        )
+        if through_date is not None:
+            owned = owned.filter(CorporateAction.ex_date <= through_date)
+        keys |= {(action.symbol, action.market) for action in owned.all()}
+    actions = load_account_quantity_actions(
+        db,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        keys=keys,
+        through_date=through_date,
+    )
+    events = [*transactions, *extras, *actions, *extra_actions]
+    events.sort(key=lambda event: _precheck_sort_key(event, tiebreak))
+    return events
+
+
+def validate_account_sequence(
+    db: Session,
+    *,
+    user_id: int,
+    broker_account_id: Optional[int],
+    symbol: str,
+    market: str,
+    candidates=(),
+    exclude_transaction_ids=(),
+) -> None:
+    """单个账户桶（NULL = 未指定账户）的超卖校验，**计入公司行动**（#270）。
+
+    手工录入交易与标准 CSV 导入的写前校验，与券商导入器的账户预检同一装配
+    （account_precheck_events）与同一排序口径（行动排在同日交易之前、转仓按对分组）。
+
+    candidates：尚未落库的候选交易（id=None 的 SimpleNamespace 亦可），排在同日既有交易之后。
+    超卖抛 ValueError（中文，含标的、日期与数量）。
+    """
+    events = account_precheck_events(
+        db,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        keys={(symbol, market)},
+        extra_transactions=candidates,
+        exclude_transaction_ids=exclude_transaction_ids,
+    )
+
+    def reject(event, available, needed):
+        action = "转出" if event.transaction_type == "TRANSFER_OUT" else "卖出"
+        raise ValueError(
+            f"{event.symbol}（{event.market}）{event.transaction_date} {action} "
+            f"{_plain(needed)} 超过可用数量 {_plain(available)}（已计入该账户的公司行动）"
+        )
+
+    replay_account_quantities(events, on_oversell=reject)
 
 
 def replay_account_quantities(events, *, on_oversell=None):
@@ -182,7 +303,7 @@ def replay_account_quantities(events, *, on_oversell=None):
     各自的中文错误 = 严格模式；不抛 = 宽松模式（东财对账口径依赖这一分支，
     数量继续减、可为负）。
 
-    转仓在单账户桶视角就是数量的增减（口径同 validate_no_oversell）：
+    转仓在单账户桶视角就是数量的增减（口径同 validate_account_sequence）：
     TRANSFER_IN 等同买入、TRANSFER_OUT 等同卖出。按 broker_account 过滤后，
     转入腿往往是本账户获得该数量的唯一记录，忽略它会凭空少一整笔。
     """
@@ -209,11 +330,11 @@ def load_account_quantity_actions(
     db: Session,
     *,
     user_id: int,
-    broker_account_id: int,
+    broker_account_id: Optional[int],
     keys,
     through_date=None,
 ):
-    """单账户预检可见的数量类公司行动。
+    """单账户预检可见的数量类公司行动（broker_account_id=None 即未指定账户桶）。
 
     可见性规则对齐真实重放（_replay_events + _resolve_action_bucket）：
 
@@ -239,7 +360,8 @@ def load_account_quantity_actions(
     if through_date is not None:
         query = query.filter(CorporateAction.ex_date <= through_date)
     return [
-        action for action in query.all()
+        action
+        for action in query.all()
         if (action.symbol, action.market) in keys
         and (
             action_has_ratio(action)
@@ -289,24 +411,33 @@ def recalculate_holdings(
     # 保留 BUY-first 而不是恢复流水序，是因为它才是有正确性价值的那个：
     # FIFO 从队首弹出最老批次，所以同日"先卖后买"在 BUY-first 下成本基础
     # 依然正确；而 BUY-first 还能避免同日回转被误判成超卖。
-    transactions = db.query(Transaction).filter(
-        Transaction.user_id == user_id,
-        Transaction.symbol == symbol,
-        Transaction.market == market
-    ).all()
+    transactions = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user_id,
+            Transaction.symbol == symbol,
+            Transaction.market == market,
+        )
+        .all()
+    )
 
     # 获取所有公司行动，按除权除息日排序
-    corporate_actions = db.query(CorporateAction).filter(
-        CorporateAction.user_id == user_id,
-        CorporateAction.symbol == symbol,
-        CorporateAction.market == market
-    ).order_by(CorporateAction.ex_date, CorporateAction.id).all()
+    corporate_actions = (
+        db.query(CorporateAction)
+        .filter(
+            CorporateAction.user_id == user_id,
+            CorporateAction.symbol == symbol,
+            CorporateAction.market == market,
+        )
+        .order_by(CorporateAction.ex_date, CorporateAction.id)
+        .all()
+    )
 
-    existing_rows = db.query(Holding).filter(
-        Holding.user_id == user_id,
-        Holding.symbol == symbol,
-        Holding.market == market
-    ).all()
+    existing_rows = (
+        db.query(Holding)
+        .filter(Holding.user_id == user_id, Holding.symbol == symbol, Holding.market == market)
+        .all()
+    )
 
     # 如果既没有交易也没有公司行动，删除持仓
     if not transactions and not corporate_actions:
@@ -321,17 +452,9 @@ def recalculate_holdings(
     # 合并交易和公司行动，按日期排序
     events = []
     for txn in transactions:
-        events.append({
-            'type': 'transaction',
-            'date': txn.transaction_date,
-            'data': txn
-        })
+        events.append({"type": "transaction", "date": txn.transaction_date, "data": txn})
     for action in corporate_actions:
-        events.append({
-            'type': 'corporate_action',
-            'date': action.ex_date,
-            'data': action
-        })
+        events.append({"type": "corporate_action", "date": action.ex_date, "data": action})
 
     # 同日默认先处理公司行动，再处理买入，最后处理卖出，避免录入顺序导致成本偏差。
     events.sort(key=_event_sort_key)
@@ -341,16 +464,17 @@ def recalculate_holdings(
     except _AccountReplayFallback as exc:
         logger.warning(
             "Account-scoped replay fell back to merged bucket for user=%s %s(%s): %s",
-            user_id, symbol, market, exc,
+            user_id,
+            symbol,
+            market,
+            exc,
         )
         buckets = _replay_events(events, symbol, market, per_account=False)
 
     # 持久化：每个仍有数量的桶一行；其余删除。
     existing_by_account = {row.broker_account_id: row for row in existing_rows}
     surviving = {
-        account_id: state
-        for account_id, state in buckets.items()
-        if state['quantity'] > 0
+        account_id: state for account_id, state in buckets.items() if state["quantity"] > 0
     }
 
     # 价格是证券级元数据：旧行被拆桶/合桶删除时，新建行必须继承已有估值，
@@ -364,8 +488,7 @@ def recalculate_holdings(
         if row.current_price is None:
             continue
         if inherited_price is None or (
-            (row.price_updated_at or _DATETIME_MIN)
-            > (inherited_price_at or _DATETIME_MIN)
+            (row.price_updated_at or _DATETIME_MIN) > (inherited_price_at or _DATETIME_MIN)
         ):
             inherited_price = row.current_price
             inherited_price_at = row.price_updated_at
@@ -380,25 +503,25 @@ def recalculate_holdings(
     for account_id, state in surviving.items():
         row = existing_by_account.get(account_id)
         if row:
-            row.quantity = state['quantity']
-            row.avg_cost = state['avg_cost']
-            row.total_cost = state['total_cost']
-            row.unknown_cost_quantity = state['unknown_cost_quantity']
-            if state['name']:
-                row.name = state['name']
-            row.currency = state['currency']
+            row.quantity = state["quantity"]
+            row.avg_cost = state["avg_cost"]
+            row.total_cost = state["total_cost"]
+            row.unknown_cost_quantity = state["unknown_cost_quantity"]
+            if state["name"]:
+                row.name = state["name"]
+            row.currency = state["currency"]
         else:
             row = Holding(
                 user_id=user_id,
                 broker_account_id=account_id,
                 symbol=symbol,
-                name=state['name'] or symbol,
+                name=state["name"] or symbol,
                 market=market,
-                quantity=state['quantity'],
-                avg_cost=state['avg_cost'],
-                total_cost=state['total_cost'],
-                unknown_cost_quantity=state['unknown_cost_quantity'],
-                currency=state['currency'],
+                quantity=state["quantity"],
+                avg_cost=state["avg_cost"],
+                total_cost=state["total_cost"],
+                unknown_cost_quantity=state["unknown_cost_quantity"],
+                currency=state["currency"],
                 current_price=inherited_price,
                 price_updated_at=inherited_price_at,
                 price_as_of=inherited_price_as_of,
@@ -421,21 +544,21 @@ def recalculate_holdings(
 
 def _new_bucket_state():
     return {
-        'quantity': Decimal("0"),
-        'avg_cost': Decimal("0"),
-        'total_cost': Decimal("0"),
+        "quantity": Decimal("0"),
+        "avg_cost": Decimal("0"),
+        "total_cost": Decimal("0"),
         # 成本未知的份额（期初建仓/转托管转入，#174）：avg_cost/total_cost 对这部分是估计值
-        'unknown_cost_quantity': Decimal("0"),
-        'name': None,
-        'currency': "CNY",
+        "unknown_cost_quantity": Decimal("0"),
+        "name": None,
+        "currency": "CNY",
     }
 
 
 def _clamp_unknown(state):
     """减仓后未知成本份额不得超过剩余数量（先卖掉的按 FIFO 未必是未知批次，这里只是
     展示口径的上界；精确的估计标记由 FIFO 逐批次给出）。"""
-    if state['unknown_cost_quantity'] > state['quantity']:
-        state['unknown_cost_quantity'] = max(state['quantity'], Decimal("0"))
+    if state["unknown_cost_quantity"] > state["quantity"]:
+        state["unknown_cost_quantity"] = max(state["quantity"], Decimal("0"))
 
 
 # 语义已上提到内核 semantics（原先 holding_service 与 fifo 各有一份拷贝）
@@ -449,7 +572,7 @@ def _resolve_action_bucket(action, buckets, per_account):
     account_id = getattr(action, "broker_account_id", None)
     if account_id is not None:
         return account_id
-    holders = [aid for aid, state in buckets.items() if state['quantity'] > 0]
+    holders = [aid for aid, state in buckets.items() if state["quantity"] > 0]
     if len(holders) == 1:
         return holders[0]
     if not holders:
@@ -476,8 +599,8 @@ def _replay_events(events, symbol, market, *, per_account):
         return buckets[account_id]
 
     for event in events:
-        if event['type'] == 'transaction':
-            txn = event['data']
+        if event["type"] == "transaction":
+            txn = event["data"]
 
             if txn.transaction_type in ("TRANSFER_OUT", "TRANSFER_IN"):
                 if not per_account:
@@ -485,26 +608,27 @@ def _replay_events(events, symbol, market, *, per_account):
                 if txn.transaction_type == "TRANSFER_OUT":
                     state = bucket(txn.broker_account_id)
                     move_qty = Decimal(str(txn.quantity))
-                    if move_qty > state['quantity']:
+                    if move_qty > state["quantity"]:
                         raise _AccountReplayFallback(
                             f"transfer out {move_qty} exceeds bucket quantity "
                             f"{state['quantity']} for {symbol} ({market}) on {txn.transaction_date}"
                         )
-                    moved_cost = state['avg_cost'] * move_qty
+                    moved_cost = state["avg_cost"] * move_qty
                     # 未知成本份额按比例随转仓迁移
                     moved_unknown = (
-                        state['unknown_cost_quantity'] * move_qty / state['quantity']
-                        if state['quantity'] > 0 else Decimal("0")
+                        state["unknown_cost_quantity"] * move_qty / state["quantity"]
+                        if state["quantity"] > 0
+                        else Decimal("0")
                     )
-                    state['quantity'] -= move_qty
-                    state['unknown_cost_quantity'] -= moved_unknown
-                    if state['quantity'] > 0:
-                        state['total_cost'] = state['quantity'] * state['avg_cost']
+                    state["quantity"] -= move_qty
+                    state["unknown_cost_quantity"] -= moved_unknown
+                    if state["quantity"] > 0:
+                        state["total_cost"] = state["quantity"] * state["avg_cost"]
                     else:
-                        state['quantity'] = Decimal("0")
-                        state['avg_cost'] = Decimal("0")
-                        state['total_cost'] = Decimal("0")
-                        state['unknown_cost_quantity'] = Decimal("0")
+                        state["quantity"] = Decimal("0")
+                        state["avg_cost"] = Decimal("0")
+                        state["total_cost"] = Decimal("0")
+                        state["unknown_cost_quantity"] = Decimal("0")
                     pending_transfers[txn.id] = (move_qty, moved_cost, moved_unknown)
                 else:  # TRANSFER_IN
                     entry = pending_transfers.pop(txn.linked_transaction_id, None)
@@ -515,36 +639,36 @@ def _replay_events(events, symbol, market, *, per_account):
                         )
                     move_qty, moved_cost, moved_unknown = entry
                     state = bucket(txn.broker_account_id)
-                    new_quantity = state['quantity'] + move_qty
-                    state['total_cost'] = state['quantity'] * state['avg_cost'] + moved_cost
-                    state['avg_cost'] = (
-                        state['total_cost'] / new_quantity if new_quantity > 0 else Decimal("0")
+                    new_quantity = state["quantity"] + move_qty
+                    state["total_cost"] = state["quantity"] * state["avg_cost"] + moved_cost
+                    state["avg_cost"] = (
+                        state["total_cost"] / new_quantity if new_quantity > 0 else Decimal("0")
                     )
-                    state['quantity'] = new_quantity
-                    state['unknown_cost_quantity'] += moved_unknown
+                    state["quantity"] = new_quantity
+                    state["unknown_cost_quantity"] += moved_unknown
                 continue
 
             account_id = txn.broker_account_id if per_account else None
             state = bucket(account_id)
 
             if txn.transaction_type == "BUY":
-                new_quantity = state['quantity'] + Decimal(str(txn.quantity))
+                new_quantity = state["quantity"] + Decimal(str(txn.quantity))
                 if new_quantity > 0:
-                    state['total_cost'] = (
-                        state['quantity'] * state['avg_cost']
+                    state["total_cost"] = (
+                        state["quantity"] * state["avg_cost"]
                         + Decimal(str(txn.quantity)) * Decimal(str(txn.price))
                         + Decimal(str(txn.fee))
                     )
-                    state['avg_cost'] = state['total_cost'] / new_quantity
-                    state['quantity'] = new_quantity
+                    state["avg_cost"] = state["total_cost"] / new_quantity
+                    state["quantity"] = new_quantity
                 else:
-                    state['quantity'] = new_quantity
-                    state['avg_cost'] = Decimal("0")
-                    state['total_cost'] = Decimal("0")
+                    state["quantity"] = new_quantity
+                    state["avg_cost"] = Decimal("0")
+                    state["total_cost"] = Decimal("0")
 
             elif txn.transaction_type == "SELL":
                 sell_quantity = Decimal(str(txn.quantity))
-                if sell_quantity > state['quantity']:
+                if sell_quantity > state["quantity"]:
                     # 走到合并桶仍超卖，说明账本本身缺记录（不是账户归属问题）：
                     # 文案要能直接指向排查方向，与东财导入器的中文提示同风格。
                     message = (
@@ -555,42 +679,45 @@ def _replay_events(events, symbol, market, *, per_account):
                     if per_account:
                         raise _AccountReplayFallback(message)
                     raise ValueError(message)
-                state['quantity'] -= sell_quantity
-                if state['quantity'] > 0:
-                    state['total_cost'] = state['quantity'] * state['avg_cost']
+                state["quantity"] -= sell_quantity
+                if state["quantity"] > 0:
+                    state["total_cost"] = state["quantity"] * state["avg_cost"]
                 else:
-                    state['quantity'] = Decimal("0")
-                    state['avg_cost'] = Decimal("0")
-                    state['total_cost'] = Decimal("0")
+                    state["quantity"] = Decimal("0")
+                    state["avg_cost"] = Decimal("0")
+                    state["total_cost"] = Decimal("0")
                 _clamp_unknown(state)
 
             if txn.name:
-                state['name'] = txn.name
-            state['currency'] = txn.currency
+                state["name"] = txn.name
+            state["currency"] = txn.currency
 
-        elif event['type'] == 'corporate_action':
-            action = event['data']
+        elif event["type"] == "corporate_action":
+            action = event["data"]
             action_type = action.action_type
 
             if action_type in ("STOCK_DIVIDEND", "BONUS_ISSUE", "STOCK_SPLIT", "REVERSE_SPLIT"):
                 if _action_has_ratio(action):
                     # 比例按每股生效，作用于所有持仓桶。
-                    targets = [aid for aid, s in buckets.items() if s['quantity'] > 0]
+                    targets = [aid for aid, s in buckets.items() if s["quantity"] > 0]
                 else:
                     target = _resolve_action_bucket(action, buckets, per_account)
-                    targets = [target] if target in buckets and buckets[target]['quantity'] > 0 else []
+                    targets = (
+                        [target] if target in buckets and buckets[target]["quantity"] > 0 else []
+                    )
                 for aid in targets:
                     state = buckets[aid]
                     if action_type in ("STOCK_DIVIDEND", "BONUS_ISSUE"):
-                        factor = bonus_share_factor(action, state['quantity'])
+                        factor = bonus_share_factor(action, state["quantity"])
                     else:
-                        factor = split_share_factor(action, state['quantity'])
+                        factor = split_share_factor(action, state["quantity"])
                     if factor is not None:
-                        state['quantity'] = state['quantity'] * factor
-                        state['unknown_cost_quantity'] = state['unknown_cost_quantity'] * factor
-                        state['avg_cost'] = (
-                            state['total_cost'] / state['quantity']
-                            if state['quantity'] > 0 else Decimal("0")
+                        state["quantity"] = state["quantity"] * factor
+                        state["unknown_cost_quantity"] = state["unknown_cost_quantity"] * factor
+                        state["avg_cost"] = (
+                            state["total_cost"] / state["quantity"]
+                            if state["quantity"] > 0
+                            else Decimal("0")
                         )
 
             elif action_type == OPENING_POSITION:
@@ -598,44 +725,45 @@ def _replay_events(events, symbol, market, *, per_account):
                 if lot is not None:
                     lot_qty, lot_cost = lot
                     state = bucket(opening_position_bucket(action, per_account))
-                    new_quantity = state['quantity'] + lot_qty
+                    new_quantity = state["quantity"] + lot_qty
                     if lot_cost is not None:
-                        state['total_cost'] = state['quantity'] * state['avg_cost'] + lot_cost
+                        state["total_cost"] = state["quantity"] * state["avg_cost"] + lot_cost
                     else:
                         # 成本未知：按 0 成本并入，份额记入 unknown_cost_quantity 供展示/守卫
-                        state['total_cost'] = state['quantity'] * state['avg_cost']
-                        state['unknown_cost_quantity'] += lot_qty
-                    state['quantity'] = new_quantity
-                    state['avg_cost'] = (
-                        state['total_cost'] / new_quantity if new_quantity > 0 else Decimal("0")
+                        state["total_cost"] = state["quantity"] * state["avg_cost"]
+                        state["unknown_cost_quantity"] += lot_qty
+                    state["quantity"] = new_quantity
+                    state["avg_cost"] = (
+                        state["total_cost"] / new_quantity if new_quantity > 0 else Decimal("0")
                     )
 
             elif action_type == "RIGHTS_ISSUE":
-                if action.subscription_quantity and action.subscription_price:
+                lot = rights_issue_lot(action)
+                if lot is not None:
+                    sub_qty, sub_cost = lot
                     target = _resolve_action_bucket(action, buckets, per_account)
                     state = bucket(target)
-                    sub_qty = Decimal(str(action.subscription_quantity))
-                    sub_price = Decimal(str(action.subscription_price))
-                    new_quantity = state['quantity'] + sub_qty
+                    new_quantity = state["quantity"] + sub_qty
                     if new_quantity > 0:
-                        state['total_cost'] = state['quantity'] * state['avg_cost'] + sub_qty * sub_price
-                        state['avg_cost'] = state['total_cost'] / new_quantity
-                        state['quantity'] = new_quantity
+                        state["total_cost"] = state["quantity"] * state["avg_cost"] + sub_cost
+                        state["avg_cost"] = state["total_cost"] / new_quantity
+                        state["quantity"] = new_quantity
 
             if action_type != "CASH_DIVIDEND":
                 # Cash dividends are income events; they must not replace the
                 # holding's security name or trading currency.
-                affected = [s for s in buckets.values() if s['quantity'] > 0] or list(buckets.values())
+                affected = [s for s in buckets.values() if s["quantity"] > 0] or list(
+                    buckets.values()
+                )
                 for state in affected:
                     if action.name:
-                        state['name'] = action.name
+                        state["name"] = action.name
                     if action.currency:
-                        state['currency'] = action.currency
+                        state["currency"] = action.currency
 
     if per_account and pending_transfers:
         raise _AccountReplayFallback(
-            f"unmatched transfer-out legs for {symbol} ({market}): "
-            f"ids={sorted(pending_transfers)}"
+            f"unmatched transfer-out legs for {symbol} ({market}): ids={sorted(pending_transfers)}"
         )
 
     return buckets

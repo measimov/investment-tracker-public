@@ -19,12 +19,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # 前后对比时逐个比较的科目（与 report_statement_checks.NUMERIC_FIELDS 一致，含夹层权益）
 REPORT_FIELDS = (
-    "total_revenue", "cost_of_revenue", "gross_profit", "operating_income", "n_income_attr_p",
-    "total_profit", "income_tax", "ebitda", "sga_exp", "int_exp", "basic_eps", "diluted_eps",
-    "total_assets", "total_nca", "total_cur_assets", "total_cur_liab", "total_ncl",
-    "accounts_receiv", "inventories", "fix_assets", "money_cap", "total_liab",
-    "total_hldr_eqy_exc_min_int", "total_equity", "minority_int", "total_debt",
-    "n_cashflow_act", "capex", "depr_fa_coga_dpba", "free_cashflow", "mezzanine_equity",
+    "total_revenue",
+    "cost_of_revenue",
+    "gross_profit",
+    "operating_income",
+    "n_income_attr_p",
+    "total_profit",
+    "income_tax",
+    "ebitda",
+    "sga_exp",
+    "int_exp",
+    "basic_eps",
+    "diluted_eps",
+    "total_assets",
+    "total_nca",
+    "total_cur_assets",
+    "total_cur_liab",
+    "total_ncl",
+    "accounts_receiv",
+    "inventories",
+    "fix_assets",
+    "money_cap",
+    "total_liab",
+    "total_hldr_eqy_exc_min_int",
+    "total_equity",
+    "minority_int",
+    "total_debt",
+    "n_cashflow_act",
+    "capex",
+    "depr_fa_coga_dpba",
+    "free_cashflow",
+    "mezzanine_equity",
 )
 
 
@@ -152,7 +177,11 @@ def main() -> int:
                     print(line)
         print(
             f"共重建 {totals['rebuilt']} 份，失败 {totals['failed']} 份"
-            + (f"；存疑期 {totals['suspect_before']} → {totals['suspect_after']}" if args.report else "")
+            + (
+                f"；存疑期 {totals['suspect_before']} → {totals['suspect_after']}"
+                if args.report
+                else ""
+            )
         )
         if args.dry_run:
             db.rollback()

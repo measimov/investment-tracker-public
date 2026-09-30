@@ -30,12 +30,14 @@ indeterminate；三年平均 PE 同样逐行按这组
 汇率折价格币种。盈利稳定性（只看正负）与分红记录（只看 > 0）与币种无关。
 """
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from .edgar_facts import EDGAR_MISSING_OTHER_CURRENCY
 from .earnings_quality import (
-    EDGAR_MISSING_OTHER_CURRENCY,
     edgar_missing_other_currency,
+    edgar_zero_inference_allowed,
     statement_currency,
 )
 
@@ -152,11 +154,6 @@ def _criterion(
     return item
 
 
-# 美股 EDGAR 行的长期债务：本期未报任何长期债务概念、但往年报过（同一概念链）→ 视为 0
-# 的前提是该行由当前概念链抓取（旧链抓的行缺新概念不代表公司没有债务）
-EDGAR_ZERO_DEBT_MIN_VERSION = 2  # v3（按报告币种取数）同样满足
-
-
 def _lt_debt(
     balance_row: Optional[Dict[str, Any]],
     market: str,
@@ -183,11 +180,10 @@ def _lt_debt(
             return info
         if edgar_missing_other_currency(balance_row, "lt_debt"):
             return None  # 只以非报告币种披露：不可知，不能按「缺概念 → 0」
-        version = int(balance_row.get("edgar_chain_version") or 0)
-        reported_before = any(
-            _num(row, "lt_debt") is not None for row in balance_by_year.values()
-        )
-        if version >= EDGAR_ZERO_DEBT_MIN_VERSION and reported_before:
+        # 本期未报任何长期债务概念、但往年报过 → 0 的前提是该行由当前概念链抓取
+        # （旧链抓的行缺新概念不代表公司没有债务；阈值与股息推断共用，见 earnings_quality）
+        reported_before = any(_num(row, "lt_debt") is not None for row in balance_by_year.values())
+        if edgar_zero_inference_allowed(balance_row) and reported_before:
             return {
                 "value": 0.0,
                 "basis": "EDGAR 本期未报长期债务概念（往年报过，视为已清偿/转入流动负债，按 0 计）",
@@ -217,7 +213,11 @@ def _total_debt(balance_row: Optional[Dict[str, Any]], market: str) -> Optional[
         return None
     if market == "美股":
         value = _num(balance_row, "lt_debt")
-        return {"value": value, "basis": "仅长期债务(EDGAR 短债概念不统一)"} if value is not None else None
+        return (
+            {"value": value, "basis": "仅长期债务(EDGAR 短债概念不统一)"}
+            if value is not None
+            else None
+        )
     parts = {
         "st_borr": _num(balance_row, "st_borr"),
         "lt_borr": _num(balance_row, "lt_borr"),
@@ -319,7 +319,9 @@ class _Valuation:
     def ratio(self) -> float:
         return float(self.share_ratio or 1.0)
 
-    def convert(self, value: float, currency: Optional[str]) -> Tuple[Optional[float], Optional[str]]:
+    def convert(
+        self, value: float, currency: Optional[str]
+    ) -> Tuple[Optional[float], Optional[str]]:
         if not currency:
             return None, "报表币种未知"
         if currency == self.currency:
@@ -374,7 +376,9 @@ def _reference_shares(annual_income: List[Dict[str, Any]]) -> Optional[float]:
 
 
 def _eps_component(
-    row: Dict[str, Any], sign: str, view: _Valuation,
+    row: Dict[str, Any],
+    sign: str,
+    view: _Valuation,
     reference_shares: Optional[float] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     eps = _num(row, "basic_eps")
@@ -399,23 +403,28 @@ def _find_prior(rows: List[Dict[str, Any]], current: Dict[str, Any]) -> Optional
     """上年同期行：期末日在「本期末 − 1 年」±20 天内（52/53 周财年与月末差异）。"""
     target = _one_year_before(_end(current))
     candidates = [
-        row for row in rows
-        if _end(row) is not None and abs((_end(row) - target).days) <= 20
+        row
+        for row in rows
+        if _end(row) is not None
+        and abs((_end(row) - target).days) <= 20
         and _num(row, "basic_eps") is not None
     ]
     return min(candidates, key=lambda row: abs((_end(row) - target).days)) if candidates else None
 
 
-def _ttm_eps(
-    market: str, annual_income: List[Dict[str, Any]], view: _Valuation
-) -> Dict[str, Any]:
+def _ttm_eps(market: str, annual_income: List[Dict[str, Any]], view: _Valuation) -> Dict[str, Any]:
     """TTM 每股盈利（价格币种、报表每股口径，未乘 ADS 比例）。
 
     返回 {eps, method, label, components[, note]} 或 {error}。"""
     # 最新一份有利润表数据的年报：它缺 EPS 就判不可算，不拿更早年份顶替（那不是 TTM）
     fy = next(
-        (row for row in annual_income
-         if any(_num(row, f) is not None for f in ("basic_eps", "n_income_attr_p", "total_revenue"))),
+        (
+            row
+            for row in annual_income
+            if any(
+                _num(row, f) is not None for f in ("basic_eps", "n_income_attr_p", "total_revenue")
+            )
+        ),
         None,
     )
     if fy is None:
@@ -430,8 +439,10 @@ def _ttm_eps(
 
     def annual_only(label: str, note: Optional[str] = None) -> Dict[str, Any]:
         result = {
-            "eps": fy_component["eps_in_price_currency"], "method": "annual",
-            "label": label, "components": [fy_component],
+            "eps": fy_component["eps_in_price_currency"],
+            "method": "annual",
+            "label": label,
+            "components": [fy_component],
         }
         if note:
             result["note"] = note
@@ -439,7 +450,8 @@ def _ttm_eps(
 
     # 只看带利润表数据的期间行（EDGAR 季度键下还有只含时点科目的比较列行）；同一期末只留一行
     interim = [
-        row for row in view.interim_rows
+        row
+        for row in view.interim_rows
         if _end(row) is not None
         and any(_num(row, f) is not None for f in ("basic_eps", "n_income_attr_p"))
     ]
@@ -447,8 +459,7 @@ def _ttm_eps(
     for row in interim:
         by_end.setdefault(_end(row), row)
     newer = [
-        by_end[end] for end in sorted(by_end)
-        if fy_end and fy_end < end <= _one_year_after(fy_end)
+        by_end[end] for end in sorted(by_end) if fy_end and fy_end < end <= _one_year_after(fy_end)
     ]
     if market == "港股":
         newer = newer[-1:]  # 只取最新一期中报（H1 为 6 个月累计）
@@ -530,7 +541,8 @@ def _mrq_bvps(
         (row, income_by_end.get(row.get("end_date"))) for row in annual_balance
     ] + [(row, row) for row in view.interim_rows]
     candidates = [
-        (balance, income) for balance, income in candidates
+        (balance, income)
+        for balance, income in candidates
         if _end(balance) is not None and _num(balance, "total_hldr_eqy_exc_min_int") is not None
     ]
     if not candidates:
@@ -623,59 +635,96 @@ def _daily_basic_valuation(
     close = _num(basic, "close")
     supplement = (
         _eps_supplement(annual_income, close, lambda value, _currency: (value, None))
-        if close else None
+        if close
+        else None
     )
     basis = (
-        {"valuation_method": "snapshot", "label": "Tushare daily_basic 快照（pe_ttm / pb）",
-         "price_date": trade_date,
-         "price": close, "price_currency": "CNY"}
-        if basic else None
+        {
+            "valuation_method": "snapshot",
+            "label": "Tushare daily_basic 快照（pe_ttm / pb）",
+            "price_date": trade_date,
+            "price": close,
+            "price_currency": "CNY",
+        }
+        if basic
+        else None
     )
     if pe is not None:
         verdict = "pass" if 0 < pe <= thresholds["pe_max"] else "fail"
         reason = f"PE {pe:.2f}（阈值 ≤ {thresholds['pe_max']:.0f}，快照 {trade_date}）"
         if pe <= 0:
             verdict, reason = "fail", f"PE 为负（亏损），快照 {trade_date}"
-        criteria.append(_criterion(
-            "pe", verdict, reason, pe, basis=basis, supplement=supplement,
-        ))
+        criteria.append(
+            _criterion(
+                "pe",
+                verdict,
+                reason,
+                pe,
+                basis=basis,
+                supplement=supplement,
+            )
+        )
     else:
-        criteria.append(_criterion(
-            "pe", "indeterminate",
-            "无估值快照" + ("" if market == "A股" else "（本市场无估值数据源）"),
-        ))
+        criteria.append(
+            _criterion(
+                "pe",
+                "indeterminate",
+                "无估值快照" + ("" if market == "A股" else "（本市场无估值数据源）"),
+            )
+        )
     if pb is not None:
         if pb <= 0:
             # 负 PB = 净资产为负，不是"价格低于账面价值"的安全边际（评审 P1；
             # 与上面负 PE 判 fail 同口径）
-            criteria.append(_criterion(
-                "pb_or_product", "fail",
-                f"PB {pb:.2f} 为负/零（净资产非正），不构成账面价值安全边际，快照 {trade_date}",
-                pb, basis=basis,
-            ))
+            criteria.append(
+                _criterion(
+                    "pb_or_product",
+                    "fail",
+                    f"PB {pb:.2f} 为负/零（净资产非正），不构成账面价值安全边际，快照 {trade_date}",
+                    pb,
+                    basis=basis,
+                )
+            )
         elif pb <= thresholds["pb_max"]:
-            criteria.append(_criterion(
-                "pb_or_product", "pass",
-                f"PB {pb:.2f} ≤ {thresholds['pb_max']}（快照 {trade_date}）", pb, basis=basis,
-            ))
+            criteria.append(
+                _criterion(
+                    "pb_or_product",
+                    "pass",
+                    f"PB {pb:.2f} ≤ {thresholds['pb_max']}（快照 {trade_date}）",
+                    pb,
+                    basis=basis,
+                )
+            )
         elif pe is not None and pe > 0 and pe * pb <= thresholds["pe_pb_product_max"]:
-            criteria.append(_criterion(
-                "pb_or_product", "pass",
-                f"PB {pb:.2f} 超限但 PE×PB {pe * pb:.1f} ≤ "
-                f"{thresholds['pe_pb_product_max']}（放宽条款）", pb, basis=basis,
-            ))
+            criteria.append(
+                _criterion(
+                    "pb_or_product",
+                    "pass",
+                    f"PB {pb:.2f} 超限但 PE×PB {pe * pb:.1f} ≤ "
+                    f"{thresholds['pe_pb_product_max']}（放宽条款）",
+                    pb,
+                    basis=basis,
+                )
+            )
         else:
-            criteria.append(_criterion(
-                "pb_or_product", "fail",
-                f"PB {pb:.2f} > {thresholds['pb_max']}"
-                + (f" 且 PE×PB {pe * pb:.1f} 超限" if pe is not None and pe > 0 else ""),
-                pb, basis=basis,
-            ))
+            criteria.append(
+                _criterion(
+                    "pb_or_product",
+                    "fail",
+                    f"PB {pb:.2f} > {thresholds['pb_max']}"
+                    + (f" 且 PE×PB {pe * pb:.1f} 超限" if pe is not None and pe > 0 else ""),
+                    pb,
+                    basis=basis,
+                )
+            )
     else:
-        criteria.append(_criterion(
-            "pb_or_product", "indeterminate",
-            "无估值快照" + ("" if market == "A股" else "（本市场无估值数据源）"),
-        ))
+        criteria.append(
+            _criterion(
+                "pb_or_product",
+                "indeterminate",
+                "无估值快照" + ("" if market == "A股" else "（本市场无估值数据源）"),
+            )
+        )
     return criteria
 
 
@@ -712,43 +761,62 @@ def _statement_valuation(
     pe: Optional[float] = None
     if "error" in ttm:
         pe_item = _criterion(
-            "pe", "indeterminate", f"无法计算 TTM 每股盈利：{ttm['error']}",
-            basis=base_basis, supplement=supplement,
+            "pe",
+            "indeterminate",
+            f"无法计算 TTM 每股盈利：{ttm['error']}",
+            basis=base_basis,
+            supplement=supplement,
         )
     else:
         eps = ttm["eps"] * view.ratio
         basis = {
-            **base_basis, "eps_ttm": round(eps, 6), "method": ttm["method"],
-            "label": ttm["label"], "components": ttm["components"],
+            **base_basis,
+            "eps_ttm": round(eps, 6),
+            "method": ttm["method"],
+            "label": ttm["label"],
+            "components": ttm["components"],
         }
         if ttm.get("note"):
             basis["note"] = ttm["note"]
         detail = f"每股盈利 {eps:.4g} {view.currency}，{ttm['label']}"
         if eps <= 0:
             pe_item = _criterion(
-                "pe", "fail", f"TTM 每股盈利为负/零（亏损）；{detail}；{price_label}",
-                close / eps if eps else None, basis=basis, supplement=supplement,
+                "pe",
+                "fail",
+                f"TTM 每股盈利为负/零（亏损）；{detail}；{price_label}",
+                close / eps if eps else None,
+                basis=basis,
+                supplement=supplement,
             )
         else:
             pe = close / eps
             verdict = "pass" if pe <= thresholds["pe_max"] else "fail"
             pe_item = _criterion(
-                "pe", verdict,
+                "pe",
+                verdict,
                 f"PE(TTM) {pe:.2f}（阈值 ≤ {thresholds['pe_max']:.0f}；{detail}；{price_label}）",
-                pe, basis=basis, supplement=supplement,
+                pe,
+                basis=basis,
+                supplement=supplement,
             )
 
     book = _mrq_bvps(annual_income, annual_balance, view)
     if "error" in book:
         return pe_item, _criterion(
-            "pb_or_product", "indeterminate", f"无法估算每股净资产：{book['error']}",
+            "pb_or_product",
+            "indeterminate",
+            f"无法估算每股净资产：{book['error']}",
             basis=base_basis,
         )
     pb = close / book["bvps"] if book["bvps"] else None
     pb_basis = {
-        **base_basis, "bvps": round(book["bvps"], 6), "bvps_period": book["period"],
-        "equity": book["equity"], "equity_currency": book["equity_currency"],
-        "implied_shares": book["implied_shares"], "shares_from": book["shares_from"],
+        **base_basis,
+        "bvps": round(book["bvps"], 6),
+        "bvps_period": book["period"],
+        "equity": book["equity"],
+        "equity_currency": book["equity_currency"],
+        "implied_shares": book["implied_shares"],
+        "shares_from": book["shares_from"],
         "label": f"MRQ {book['period']} 归母权益 ÷ 隐含股数（估算）",
     }
     if book["notes"]:
@@ -756,30 +824,38 @@ def _statement_valuation(
     book_label = f"每股净资产 {book['bvps']:.4g} {view.currency}（{book['period']}，隐含股数估算）"
     if pb is None or pb <= 0:
         pb_item = _criterion(
-            "pb_or_product", "fail",
+            "pb_or_product",
+            "fail",
             f"PB 为负/零（净资产非正），不构成账面价值安全边际；{book_label}；{price_label}",
-            pb, basis=pb_basis,
+            pb,
+            basis=pb_basis,
         )
     elif pb <= thresholds["pb_max"]:
         pb_item = _criterion(
-            "pb_or_product", "pass",
+            "pb_or_product",
+            "pass",
             f"PB {pb:.2f} ≤ {thresholds['pb_max']}（{book_label}；{price_label}）",
-            pb, basis=pb_basis,
+            pb,
+            basis=pb_basis,
         )
     elif pe is not None and pe * pb <= thresholds["pe_pb_product_max"]:
         pb_item = _criterion(
-            "pb_or_product", "pass",
+            "pb_or_product",
+            "pass",
             f"PB {pb:.2f} 超限但 PE(TTM)×PB {pe * pb:.1f} ≤ "
             f"{thresholds['pe_pb_product_max']}（放宽条款；{book_label}）",
-            pb, basis=pb_basis,
+            pb,
+            basis=pb_basis,
         )
     else:
         pb_item = _criterion(
-            "pb_or_product", "fail",
+            "pb_or_product",
+            "fail",
             f"PB {pb:.2f} > {thresholds['pb_max']}"
             + (f" 且 PE(TTM)×PB {pe * pb:.1f} 超限" if pe is not None else "")
             + f"（{book_label}；{price_label}）",
-            pb, basis=pb_basis,
+            pb,
+            basis=pb_basis,
         )
     return pe_item, pb_item
 
@@ -889,11 +965,14 @@ def _statement_dividend(
         else:
             pending = "（待重新同步 EDGAR 档案）"
         return _criterion(
-            "dividend_record", "indeterminate", "无现金流量表已付股息数据" + pending,
+            "dividend_record",
+            "indeterminate",
+            "无现金流量表已付股息数据" + pending,
         )
     listed_note = (
         f"；{'、'.join(str(y) for y in sorted(not_listed))} 年现金流量表未列已付股息，按 0 计"
-        if not_listed else ""
+        if not_listed
+        else ""
     )
     paid = sorted((year for year, value in known.items() if value > 0), reverse=True)
     latest_paid = paid[0] if paid else None
@@ -906,21 +985,27 @@ def _statement_dividend(
         if unknown:
             last = f"已知最近一次支付股东股息为 {latest_paid} 年，" if latest_paid else ""
             return _criterion(
-                "dividend_record", "indeterminate",
+                "dividend_record",
+                "indeterminate",
                 f"{last}{'、'.join(str(y) for y in unknown)} 年无现金流量表已付股息数据"
                 f"{currency_note(unknown)}，"
                 f"无法判断分红是否持续（允许 {DIVIDEND_LAG_YEARS} 年披露滞后）",
             )
         if latest_paid is None:
             detail = (
-                "现金流量表均未列已付股东股息（按 0 计）" if len(not_listed) == len(known)
+                "现金流量表均未列已付股东股息（按 0 计）"
+                if len(not_listed) == len(known)
                 else f"现金流量表均无已付本公司股东股息{listed_note}"
             )
             return _criterion(
-                "dividend_record", "fail", f"{min(known)}–{max(known)} 年{detail}", 0.0,
+                "dividend_record",
+                "fail",
+                f"{min(known)}–{max(known)} 年{detail}",
+                0.0,
             )
         return _criterion(
-            "dividend_record", "fail",
+            "dividend_record",
+            "fail",
             f"最近一次支付股东股息为 {latest_paid} 年，距最新报告年度 {anchor_year} "
             f"已中断（允许 {DIVIDEND_LAG_YEARS} 年披露滞后）{listed_note}",
             0.0,
@@ -933,30 +1018,399 @@ def _statement_dividend(
     tail = f"（现金流量表口径；阈值 ≥ {minimum} 年；原著为 20 年）"
     if consecutive >= minimum:
         return _criterion(
-            "dividend_record", "pass",
+            "dividend_record",
+            "pass",
             f"截至 {latest_paid} 年连续 {consecutive} 年支付股东股息{tail}",
             float(consecutive),
         )
     if stop_year not in known:
         if history_confirmed and stop_year < earliest_year:
             return _criterion(
-                "dividend_record", "fail",
+                "dividend_record",
+                "fail",
                 f"截至 {latest_paid} 年连续 {consecutive} 年支付股东股息，披露历史始于 "
                 f"{earliest_year} 年，不足 {minimum} 年{tail}",
                 float(consecutive),
             )
         return _criterion(
-            "dividend_record", "indeterminate",
+            "dividend_record",
+            "indeterminate",
             f"截至 {latest_paid} 年连续 {consecutive} 年支付股东股息，{stop_year} 年无现金流量表"
             f"数据{currency_note([stop_year])}，无法确认是否达到 {minimum} 年{tail}",
             float(consecutive),
         )
     stop_note = "现金流量表未列已付股息" if stop_year in not_listed else "未支付股东股息"
     return _criterion(
-        "dividend_record", "fail",
+        "dividend_record",
+        "fail",
         f"截至 {latest_paid} 年连续 {consecutive} 年支付股东股息（{stop_year} 年{stop_note}）{tail}",
         float(consecutive),
     )
+
+
+@dataclass
+class _ScreenContext:
+    """七准则共用的输入与年度窗口（此前内联在一个 326 行函数里，anchor_year 赋值两次）。"""
+
+    market: str
+    thresholds: Dict[str, Any]
+    income: Dict[str, Dict[str, Any]]
+    balance: Dict[str, Dict[str, Any]]
+    cashflow: Dict[str, Dict[str, Any]]
+    years: List[str]
+    history_confirmed: bool
+    valuation: Optional[Dict[str, Any]]
+
+    @property
+    def latest(self) -> str:
+        return self.years[0]
+
+    @property
+    def latest_balance(self) -> Optional[Dict[str, Any]]:
+        return self.balance.get(self.latest)
+
+    @property
+    def latest_income(self) -> Optional[Dict[str, Any]]:
+        return self.income.get(self.latest)
+
+    @property
+    def anchor_year(self) -> int:
+        return int(self.latest)
+
+    @property
+    def required_years(self) -> int:
+        return int(self.thresholds["earnings_stability_years"])
+
+    @property
+    def window_floor(self) -> int:
+        return self.anchor_year - self.required_years + 1
+
+
+@dataclass
+class _ProfitHistory:
+    """以最新报告年度为锚的净利润覆盖情况（盈利稳定与盈利增长共用）。"""
+
+    known: List[Tuple[str, float]]
+    loss_years: List[str]
+    contiguous_span: int
+    missing_years: List[str]
+    earliest_year: int
+    short_history: bool
+    short_history_reason: str
+
+
+def _profit_history(ctx: _ScreenContext) -> _ProfitHistory:
+    profit_series = [
+        (year, _num(ctx.income.get(year), "n_income_attr_p", "n_income")) for year in ctx.years
+    ]
+    known = [(year, value) for year, value in profit_series if value is not None]
+    anchor_year, required_years, window_floor = (
+        ctx.anchor_year,
+        ctx.required_years,
+        ctx.window_floor,
+    )
+    # 连续覆盖检查（评审 P1）：只数"有 10 条为正的记录"会把缺年冒充成稳定
+    # 记录。pass 必须是以最新报告年度为锚、逐年无缺口的连续 N 年；有缺口或
+    # 末年缺失一律 indeterminate 并点名缺年。
+    # 亏损年触发 fail 也只看锚定窗口 [anchor-9, anchor]（评审 P1 二轮）：
+    # years 最多取 12 年，窗口外的旧亏损（如 2014 亏、2016-2025 十年全正）
+    # 不该推翻"以最新年度为锚的连续十年为正"这一已声明语义。
+    loss_years = [
+        year for year, value in known if value <= 0 and window_floor <= int(year) <= anchor_year
+    ]
+    known_years = {year for year, _ in known}
+    contiguous_span = 0
+    for offset in range(required_years):
+        if str(anchor_year - offset) in known_years:
+            contiguous_span += 1
+        else:
+            break
+    missing_years = sorted(
+        str(anchor_year - offset)
+        for offset in range(required_years)
+        if str(anchor_year - offset) not in known_years
+    )
+    earliest_year = min((int(year) for year in known_years), default=anchor_year)
+    # 可得年度数据整段连续、只是起点晚于十年窗口：如实说"历史短"，而不是"缺某某年数据"
+    short_history = (
+        bool(known)
+        and earliest_year > window_floor
+        and contiguous_span == anchor_year - earliest_year + 1
+    )
+    history_span = anchor_year - earliest_year + 1
+    short_history_reason = (
+        f"披露历史仅 {history_span} 年（最早 {earliest_year}），不足原著十年"
+        if ctx.history_confirmed
+        else f"已取得的年度数据仅 {history_span} 年（最早 {earliest_year}），不足原著十年"
+        "（更早年度未取得）"
+    )
+    return _ProfitHistory(
+        known,
+        loss_years,
+        contiguous_span,
+        missing_years,
+        earliest_year,
+        short_history,
+        short_history_reason,
+    )
+
+
+def _criterion_current_ratio(ctx: _ScreenContext) -> Dict[str, Any]:
+    """1. 流动比率。"""
+    cur_assets = _num(ctx.latest_balance, "total_cur_assets")
+    cur_liab = _num(ctx.latest_balance, "total_cur_liab")
+    if cur_assets is not None and cur_liab not in (None, 0):
+        ratio = cur_assets / cur_liab
+        threshold = ctx.thresholds["current_ratio_min"]
+        return _criterion(
+            "current_ratio",
+            "pass" if ratio >= threshold else "fail",
+            f"{ctx.latest} 年流动比率 {ratio:.2f}（阈值 ≥ {threshold}）",
+            ratio,
+        )
+    return _criterion("current_ratio", "indeterminate", "缺流动资产或流动负债科目")
+
+
+def _criterion_lt_debt(ctx: _ScreenContext) -> Dict[str, Any]:
+    """2. 长期债务 ≤ 净流动资产。"""
+    market, latest, latest_balance = ctx.market, ctx.latest, ctx.latest_balance
+    cur_assets = _num(latest_balance, "total_cur_assets")
+    cur_liab = _num(latest_balance, "total_cur_liab")
+    lt_info = _lt_debt(latest_balance, market, ctx.balance)  # 准则 2 的长期债务口径
+    if cur_assets is not None and cur_liab is not None and lt_info is not None:
+        net_current_assets = cur_assets - cur_liab
+        debt = lt_info["value"]
+        if (
+            market == "港股"
+            and not lt_info.get("long_term_only")
+            and debt > net_current_assets
+            and net_current_assets < 0
+        ):
+            # 净流动资产为负：长期债务（≥ 0）无论多少都超过它，无需归因
+            return _criterion(
+                "lt_debt_vs_net_current_assets",
+                "fail",
+                f"{latest} 年净流动资产为负（{net_current_assets:,.0f}），"
+                "任何非负的长期债务都超过它（数据源只有含短债的合计，不影响结论）",
+                debt,
+            )
+        if market == "港股" and not lt_info.get("long_term_only") and debt > net_current_assets:
+            # total_debt 含短债（短债已在流动负债里扣过一次），超出时无法归因于长期债务
+            return _criterion(
+                "lt_debt_vs_net_current_assets",
+                "indeterminate",
+                f"总有息负债 {debt:,.0f} > 净流动资产 {net_current_assets:,.0f}，"
+                "但数据源只有含短债的合计，无法单独判定长期债务",
+                debt,
+            )
+        verdict = "pass" if debt <= net_current_assets else "fail"
+        label = "长期债务" if lt_info.get("long_term_only") else "有息负债"
+        return _criterion(
+            "lt_debt_vs_net_current_assets",
+            verdict,
+            f"{latest} 年{label}（{lt_info['basis']}）{debt:,.0f} "
+            f"{'≤' if verdict == 'pass' else '>'} 净流动资产 {net_current_assets:,.0f}",
+            debt,
+        )
+    if market == "美股" and edgar_missing_other_currency(latest_balance, "lt_debt"):
+        return _criterion(
+            "lt_debt_vs_net_current_assets",
+            "indeterminate",
+            f"{latest} 年长期债务只以非报告币种披露（不混币取数），无法判定",
+        )
+    return _criterion("lt_debt_vs_net_current_assets", "indeterminate", "缺债务或流动项科目")
+
+
+def _criterion_earnings_stability(ctx: _ScreenContext, history: _ProfitHistory) -> Dict[str, Any]:
+    """3. 盈利稳定（亏损年一票 fail；年限不足且全为正 → indeterminate）。"""
+    anchor_year, required_years = ctx.anchor_year, ctx.required_years
+    if not history.known:
+        return _criterion("earnings_stability", "indeterminate", "无净利润数据")
+    if history.loss_years:
+        return _criterion(
+            "earnings_stability",
+            "fail",
+            f"{ctx.window_floor}→{anchor_year} 窗口内存在亏损/零利润年度："
+            f"{'、'.join(sorted(history.loss_years))}",
+        )
+    if history.contiguous_span >= required_years:
+        return _criterion(
+            "earnings_stability",
+            "pass",
+            f"{anchor_year - required_years + 1}→{anchor_year} 连续 {required_years} 年"
+            "净利润均为正",
+        )
+    if history.short_history:
+        return _criterion(
+            "earnings_stability",
+            "indeterminate",
+            f"{history.short_history_reason}；{history.earliest_year}→{anchor_year} 净利润均为正",
+        )
+    missing_years = history.missing_years
+    return _criterion(
+        "earnings_stability",
+        "indeterminate",
+        f"以 {anchor_year} 为锚仅连续覆盖 {history.contiguous_span} 年（缺 "
+        f"{'、'.join(missing_years[:4])}{'…' if len(missing_years) > 4 else ''}），"
+        f"不足原著 {required_years} 年连续口径",
+    )
+
+
+def _criterion_dividend_record(
+    ctx: _ScreenContext,
+    history: _ProfitHistory,
+    dividend_rows: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """4. 股息记录（连续年数，仅 A股 有 dividend 数据集）。
+
+    锚定最新报告年度（评审 P1）：只从"最近一次分红"往回数，2015-2019 分过
+    五年、之后停分的公司也会判 pass。年报分红在次年实施，允许 1 年披露
+    滞后；最新实施年度更早即视为分红已中断 → fail（有记录但不连续到当下）。
+    港股/美股（无分红实施数据集）：现金流量表「已付本公司股东股息」逐年判断。
+    """
+    market, anchor_year = ctx.market, ctx.anchor_year
+    div_years = _dividend_years(dividend_rows or [])
+    if market in ("港股", "美股") and not div_years:
+        return _statement_dividend(
+            market,
+            ctx.cashflow,
+            anchor_year,
+            history.earliest_year,
+            ctx.history_confirmed,
+        )
+    if not div_years:
+        return _criterion(
+            "dividend_record",
+            "indeterminate",
+            "无分红实施记录数据" + ("" if market == "A股" else "（本市场无分红数据源）"),
+        )
+    latest_div_year = div_years[0]
+    if latest_div_year < anchor_year - DIVIDEND_LAG_YEARS:
+        return _criterion(
+            "dividend_record",
+            "fail",
+            f"最近一次现金分红为 {latest_div_year} 年，距最新报告年度 {anchor_year} "
+            f"已中断（允许 {DIVIDEND_LAG_YEARS} 年披露滞后）",
+            0.0,
+        )
+    consecutive = 1
+    for idx in range(1, len(div_years)):
+        if div_years[idx] == div_years[idx - 1] - 1:
+            consecutive += 1
+        else:
+            break
+    threshold = ctx.thresholds["dividend_years_min"]
+    verdict = "pass" if consecutive >= threshold else "fail"
+    return _criterion(
+        "dividend_record",
+        verdict,
+        f"截至 {latest_div_year} 年连续现金分红 {consecutive} 年"
+        f"（阈值 ≥ {int(threshold)} 年；原著为 20 年）",
+        float(consecutive),
+    )
+
+
+def _criterion_earnings_growth(ctx: _ScreenContext, history: _ProfitHistory) -> Dict[str, Any]:
+    """5. 盈利增长：**锚定十年窗口 [anchor-9, anchor]**（评审 P1 三轮）。
+
+    years 最多保留 12 年，反转取首尾会用 11 年区间套十年阈值——2014 EPS=1、2015-2025
+    EPS=2 会算出 2014→2025 +100% pass，而十年窗口 2016→2025 增长为 0 应 fail。
+    端点要求：窗口首年（anchor-9）与末年（anchor）都必须有值——首年缺则
+    indeterminate（不用更早/更晚的年份顶替，那会改变判定窗口）。
+    优先 EPS（净利润增长可能只是增发摊薄的幻象）；EPS 端点不齐才回退净利润。
+    """
+    income, anchor_year = ctx.income, ctx.anchor_year
+    growth_first_year = ctx.window_floor
+
+    def _growth_endpoints(*fields: str):
+        first = _num(income.get(str(growth_first_year)), *fields)
+        last = _num(income.get(str(anchor_year)), *fields)
+        return first, last
+
+    first, last = _growth_endpoints("basic_eps", "diluted_eps")
+    growth_basis = "每股盈利"
+    if first is None or last is None:
+        first, last = _growth_endpoints("n_income_attr_p", "n_income")
+        growth_basis = "净利润（缺 EPS 端点，未剔除股本变动）"
+    # 报告币种中途切换（00799 2016-2020 USD → 2021 起 HKD）：首尾按同一汇率折同一币种再比
+    growth_fx: Optional[Dict[str, Any]] = None
+    if first is not None and last is not None:
+        growth_fx = _constant_currency_endpoints(
+            (growth_first_year, income.get(str(growth_first_year)), first),
+            (anchor_year, income.get(str(anchor_year)), last),
+            _Valuation(ctx.market, ctx.valuation or {}),
+            ctx.market,
+        )
+    if growth_fx is not None and "error" in growth_fx:
+        return _criterion(
+            "earnings_growth",
+            "indeterminate",
+            f"{growth_first_year}→{anchor_year} {growth_basis}{growth_fx['error']}，"
+            "无法按同一币种比较增幅",
+        )
+    if (first is None or last is None) and history.short_history:
+        return _criterion(
+            "earnings_growth",
+            "indeterminate",
+            f"{history.short_history_reason}，无法按十年窗口（{growth_first_year}→{anchor_year}）计算增幅",
+        )
+    if first is None or last is None:
+        return _criterion(
+            "earnings_growth",
+            "indeterminate",
+            f"十年窗口端点 {growth_first_year}/{anchor_year} 缺{growth_basis}数据，"
+            "无法按十年口径计算增幅",
+        )
+    if first <= 0:
+        return _criterion(
+            "earnings_growth",
+            "indeterminate",
+            f"期初（{growth_first_year}）{growth_basis}非正，增幅无意义",
+        )
+    if growth_fx is not None:
+        first = growth_fx["first_converted"]
+    growth_pct = (last / first - 1) * 100
+    threshold = ctx.thresholds["earnings_growth_min_pct"]
+    verdict = "pass" if growth_pct >= threshold else "fail"
+    return _criterion(
+        "earnings_growth",
+        verdict,
+        f"{growth_first_year}→{anchor_year} {growth_basis}累计增幅 {growth_pct:.1f}%"
+        f"（阈值 ≥ {threshold:.0f}%，十年窗口"
+        + (f"；{growth_fx['note']}" if growth_fx else "")
+        + "）",
+        growth_pct,
+        basis=growth_fx["basis"] if growth_fx else None,
+    )
+
+
+def _fragility_signals(ctx: _ScreenContext, basic: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """塔勒布脆弱性信号。"""
+    latest_balance, latest_income = ctx.latest_balance, ctx.latest_income
+    debt_info = _total_debt(latest_balance, ctx.market)  # 脆弱性信号的有息负债口径
+    fragility: Dict[str, Any] = {}
+    total_assets = _num(latest_balance, "total_assets")
+    total_liab = _num(latest_balance, "total_liab")
+    money_cap = _num(latest_balance, "money_cap")
+    if total_assets and total_liab is not None:
+        fragility["debt_to_assets"] = round(total_liab / total_assets, 4)
+    if debt_info is not None and money_cap is not None and total_assets:
+        fragility["net_debt_to_assets"] = round((debt_info["value"] - money_cap) / total_assets, 4)
+        fragility["net_debt_basis"] = debt_info["basis"]
+    ebit = _num(latest_income, "operating_income", "operate_profit", "ebit")
+    interest = _num(latest_income, "int_exp", "fin_exp")
+    if ebit is not None and interest is not None:
+        if interest > 0:
+            fragility["interest_coverage"] = round(ebit / interest, 2)
+        else:
+            fragility["interest_coverage_note"] = "利息支出为零或净收益，覆盖倍数无意义"
+    total_mv = _num(basic, "total_mv")
+    if ctx.market == "A股" and total_mv and debt_info is not None and money_cap is not None:
+        # daily_basic 总市值单位为万元，报表科目单位为元
+        fragility["net_cash_to_market_cap"] = round(
+            (money_cap - debt_info["value"]) / (total_mv * 10000), 4
+        )
+    return fragility
 
 
 def compute_graham_screen(
@@ -991,245 +1445,24 @@ def compute_graham_screen(
             "fragility_semantics": FRAGILITY_SEMANTICS,
             "thresholds": thresholds,
         }
-    latest = years[0]
-    latest_balance = balance.get(latest)
-    latest_income = income.get(latest)
-
-    criteria: List[Dict[str, Any]] = []
-
-    # 1. 流动比率
-    cur_assets = _num(latest_balance, "total_cur_assets")
-    cur_liab = _num(latest_balance, "total_cur_liab")
-    if cur_assets is not None and cur_liab not in (None, 0):
-        ratio = cur_assets / cur_liab
-        criteria.append(_criterion(
-            "current_ratio",
-            "pass" if ratio >= thresholds["current_ratio_min"] else "fail",
-            f"{latest} 年流动比率 {ratio:.2f}（阈值 ≥ {thresholds['current_ratio_min']}）",
-            ratio,
-        ))
-    else:
-        criteria.append(_criterion(
-            "current_ratio", "indeterminate", "缺流动资产或流动负债科目",
-        ))
-
-    # 2. 长期债务 ≤ 净流动资产
-    debt_info = _total_debt(latest_balance, market)  # 脆弱性信号的有息负债口径
-    lt_info = _lt_debt(latest_balance, market, balance)  # 准则 2 的长期债务口径
-    if cur_assets is not None and cur_liab is not None and lt_info is not None:
-        net_current_assets = cur_assets - cur_liab
-        debt = lt_info["value"]
-        if (
-            market == "港股" and not lt_info.get("long_term_only")
-            and debt > net_current_assets and net_current_assets < 0
-        ):
-            # 净流动资产为负：长期债务（≥ 0）无论多少都超过它，无需归因
-            criteria.append(_criterion(
-                "lt_debt_vs_net_current_assets", "fail",
-                f"{latest} 年净流动资产为负（{net_current_assets:,.0f}），"
-                "任何非负的长期债务都超过它（数据源只有含短债的合计，不影响结论）",
-                debt,
-            ))
-        elif market == "港股" and not lt_info.get("long_term_only") and debt > net_current_assets:
-            # total_debt 含短债（短债已在流动负债里扣过一次），超出时无法归因于长期债务
-            criteria.append(_criterion(
-                "lt_debt_vs_net_current_assets", "indeterminate",
-                f"总有息负债 {debt:,.0f} > 净流动资产 {net_current_assets:,.0f}，"
-                "但数据源只有含短债的合计，无法单独判定长期债务",
-                debt,
-            ))
-        else:
-            verdict = "pass" if debt <= net_current_assets else "fail"
-            label = "长期债务" if lt_info.get("long_term_only") else "有息负债"
-            criteria.append(_criterion(
-                "lt_debt_vs_net_current_assets", verdict,
-                f"{latest} 年{label}（{lt_info['basis']}）{debt:,.0f} "
-                f"{'≤' if verdict == 'pass' else '>'} 净流动资产 {net_current_assets:,.0f}",
-                debt,
-            ))
-    elif market == "美股" and edgar_missing_other_currency(latest_balance, "lt_debt"):
-        criteria.append(_criterion(
-            "lt_debt_vs_net_current_assets", "indeterminate",
-            f"{latest} 年长期债务只以非报告币种披露（不混币取数），无法判定",
-        ))
-    else:
-        criteria.append(_criterion(
-            "lt_debt_vs_net_current_assets", "indeterminate", "缺债务或流动项科目",
-        ))
-
-    # 3. 盈利稳定（亏损年一票 fail；年限不足且全为正 → indeterminate）
-    profit_series = [
-        (year, _num(income.get(year), "n_income_attr_p", "n_income"))
-        for year in years
+    ctx = _ScreenContext(
+        market,
+        thresholds,
+        income,
+        balance,
+        cashflow,
+        years,
+        history_confirmed,
+        valuation,
+    )
+    history = _profit_history(ctx)
+    criteria: List[Dict[str, Any]] = [
+        _criterion_current_ratio(ctx),
+        _criterion_lt_debt(ctx),
+        _criterion_earnings_stability(ctx, history),
+        _criterion_dividend_record(ctx, history, dividend_rows),
+        _criterion_earnings_growth(ctx, history),
     ]
-    known = [(year, value) for year, value in profit_series if value is not None]
-    required_years = int(thresholds["earnings_stability_years"])
-    anchor_year = int(latest)
-    # 连续覆盖检查（评审 P1）：只数"有 10 条为正的记录"会把缺年冒充成稳定
-    # 记录。pass 必须是以最新报告年度为锚、逐年无缺口的连续 N 年；有缺口或
-    # 末年缺失一律 indeterminate 并点名缺年。
-    # 亏损年触发 fail 也只看锚定窗口 [anchor-9, anchor]（评审 P1 二轮）：
-    # years 最多取 12 年，窗口外的旧亏损（如 2014 亏、2016-2025 十年全正）
-    # 不该推翻"以最新年度为锚的连续十年为正"这一已声明语义。
-    window_floor = anchor_year - required_years + 1
-    loss_years = [
-        year for year, value in known
-        if value <= 0 and window_floor <= int(year) <= anchor_year
-    ]
-    known_years = {year for year, _ in known}
-    contiguous_span = 0
-    for offset in range(required_years):
-        if str(anchor_year - offset) in known_years:
-            contiguous_span += 1
-        else:
-            break
-    missing_years = sorted(
-        str(anchor_year - offset)
-        for offset in range(required_years)
-        if str(anchor_year - offset) not in known_years
-    )
-    earliest_year = min((int(year) for year in known_years), default=anchor_year)
-    # 可得年度数据整段连续、只是起点晚于十年窗口：如实说"历史短"，而不是"缺某某年数据"
-    short_history = (
-        bool(known) and earliest_year > window_floor
-        and contiguous_span == anchor_year - earliest_year + 1
-    )
-    history_span = anchor_year - earliest_year + 1
-    short_history_reason = (
-        f"披露历史仅 {history_span} 年（最早 {earliest_year}），不足原著十年"
-        if history_confirmed
-        else f"已取得的年度数据仅 {history_span} 年（最早 {earliest_year}），不足原著十年"
-        "（更早年度未取得）"
-    )
-    if not known:
-        criteria.append(_criterion("earnings_stability", "indeterminate", "无净利润数据"))
-    elif loss_years:
-        criteria.append(_criterion(
-            "earnings_stability", "fail",
-            f"{window_floor}→{anchor_year} 窗口内存在亏损/零利润年度："
-            f"{'、'.join(sorted(loss_years))}",
-        ))
-    elif contiguous_span >= required_years:
-        criteria.append(_criterion(
-            "earnings_stability", "pass",
-            f"{anchor_year - required_years + 1}→{anchor_year} 连续 {required_years} 年"
-            "净利润均为正",
-        ))
-    elif short_history:
-        criteria.append(_criterion(
-            "earnings_stability", "indeterminate",
-            f"{short_history_reason}；{earliest_year}→{anchor_year} 净利润均为正",
-        ))
-    else:
-        criteria.append(_criterion(
-            "earnings_stability", "indeterminate",
-            f"以 {anchor_year} 为锚仅连续覆盖 {contiguous_span} 年（缺 "
-            f"{'、'.join(missing_years[:4])}{'…' if len(missing_years) > 4 else ''}），"
-            f"不足原著 {required_years} 年连续口径",
-        ))
-
-    # 4. 股息记录（连续年数，仅 A股 有 dividend 数据集）
-    # 锚定最新报告年度（评审 P1）：只从"最近一次分红"往回数，2015-2019 分过
-    # 五年、之后停分的公司也会判 pass。年报分红在次年实施，允许 1 年披露
-    # 滞后；最新实施年度更早即视为分红已中断 → fail（有记录但不连续到当下）。
-    # 港股/美股（无分红实施数据集）：现金流量表「已付本公司股东股息」逐年判断
-    div_years = _dividend_years(dividend_rows or [])
-    if market in ("港股", "美股") and not div_years:
-        criteria.append(_statement_dividend(
-            market, cashflow, int(latest), earliest_year, history_confirmed,
-        ))
-    elif div_years:
-        anchor_year = int(latest)
-        latest_div_year = div_years[0]
-        if latest_div_year < anchor_year - DIVIDEND_LAG_YEARS:
-            criteria.append(_criterion(
-                "dividend_record", "fail",
-                f"最近一次现金分红为 {latest_div_year} 年，距最新报告年度 {anchor_year} "
-                f"已中断（允许 {DIVIDEND_LAG_YEARS} 年披露滞后）",
-                0.0,
-            ))
-        else:
-            consecutive = 1
-            for idx in range(1, len(div_years)):
-                if div_years[idx] == div_years[idx - 1] - 1:
-                    consecutive += 1
-                else:
-                    break
-            verdict = "pass" if consecutive >= thresholds["dividend_years_min"] else "fail"
-            criteria.append(_criterion(
-                "dividend_record", verdict,
-                f"截至 {latest_div_year} 年连续现金分红 {consecutive} 年"
-                f"（阈值 ≥ {int(thresholds['dividend_years_min'])} 年；原著为 20 年）",
-                float(consecutive),
-            ))
-    else:
-        criteria.append(_criterion(
-            "dividend_record", "indeterminate",
-            "无分红实施记录数据" + ("" if market == "A股" else "（本市场无分红数据源）"),
-        ))
-
-    # 5. 盈利增长：**锚定十年窗口 [anchor-9, anchor]**（评审 P1 三轮）：years 最多
-    # 保留 12 年，反转取首尾会用 11 年区间套十年阈值——2014 EPS=1、2015-2025
-    # EPS=2 会算出 2014→2025 +100% pass，而十年窗口 2016→2025 增长为 0 应 fail。
-    # 端点要求：窗口首年（anchor-9）与末年（anchor）都必须有值——首年缺则
-    # indeterminate（不用更早/更晚的年份顶替，那会改变判定窗口）。
-    # 优先 EPS（净利润增长可能只是增发摊薄的幻象）；EPS 端点不齐才回退净利润。
-    growth_first_year = anchor_year - required_years + 1
-
-    def _growth_endpoints(*fields: str):
-        first = _num(income.get(str(growth_first_year)), *fields)
-        last = _num(income.get(str(anchor_year)), *fields)
-        return first, last
-
-    first, last = _growth_endpoints("basic_eps", "diluted_eps")
-    growth_basis = "每股盈利"
-    if first is None or last is None:
-        first, last = _growth_endpoints("n_income_attr_p", "n_income")
-        growth_basis = "净利润（缺 EPS 端点，未剔除股本变动）"
-    # 报告币种中途切换（00799 2016-2020 USD → 2021 起 HKD）：首尾按同一汇率折同一币种再比
-    growth_fx: Optional[Dict[str, Any]] = None
-    if first is not None and last is not None:
-        growth_fx = _constant_currency_endpoints(
-            (growth_first_year, income.get(str(growth_first_year)), first),
-            (anchor_year, income.get(str(anchor_year)), last),
-            _Valuation(market, valuation or {}),
-            market,
-        )
-    if growth_fx is not None and "error" in growth_fx:
-        criteria.append(_criterion(
-            "earnings_growth", "indeterminate",
-            f"{growth_first_year}→{anchor_year} {growth_basis}{growth_fx['error']}，"
-            "无法按同一币种比较增幅",
-        ))
-    elif (first is None or last is None) and short_history:
-        criteria.append(_criterion(
-            "earnings_growth", "indeterminate",
-            f"{short_history_reason}，无法按十年窗口（{growth_first_year}→{anchor_year}）计算增幅",
-        ))
-    elif first is None or last is None:
-        criteria.append(_criterion(
-            "earnings_growth", "indeterminate",
-            f"十年窗口端点 {growth_first_year}/{anchor_year} 缺{growth_basis}数据，"
-            "无法按十年口径计算增幅",
-        ))
-    elif first <= 0:
-        criteria.append(_criterion(
-            "earnings_growth", "indeterminate",
-            f"期初（{growth_first_year}）{growth_basis}非正，增幅无意义",
-        ))
-    else:
-        if growth_fx is not None:
-            first = growth_fx["first_converted"]
-        growth_pct = (last / first - 1) * 100
-        verdict = "pass" if growth_pct >= thresholds["earnings_growth_min_pct"] else "fail"
-        criteria.append(_criterion(
-            "earnings_growth", verdict,
-            f"{growth_first_year}→{anchor_year} {growth_basis}累计增幅 {growth_pct:.1f}%"
-            f"（阈值 ≥ {thresholds['earnings_growth_min_pct']:.0f}%，十年窗口"
-            + (f"；{growth_fx['note']}" if growth_fx else "") + "）",
-            growth_pct,
-            basis=growth_fx["basis"] if growth_fx else None,
-        ))
 
     # 6/7. 估值：A股 = daily_basic 快照（pe_ttm/pb，判定口径不变）；港股/美股 = 行情价 ÷ 报表 TTM
     basic = _latest_daily_basic(daily_basic_rows or [])
@@ -1240,47 +1473,16 @@ def compute_graham_screen(
     else:
         criteria.extend(_daily_basic_valuation(market, basic, annual_income))
 
-    # 塔勒布脆弱性信号
-    fragility: Dict[str, Any] = {}
-    total_assets = _num(latest_balance, "total_assets")
-    total_liab = _num(latest_balance, "total_liab")
-    money_cap = _num(latest_balance, "money_cap")
-    if total_assets and total_liab is not None:
-        fragility["debt_to_assets"] = round(total_liab / total_assets, 4)
-    if debt_info is not None and money_cap is not None and total_assets:
-        fragility["net_debt_to_assets"] = round(
-            (debt_info["value"] - money_cap) / total_assets, 4
-        )
-        fragility["net_debt_basis"] = debt_info["basis"]
-    ebit = _num(latest_income, "operating_income", "operate_profit", "ebit")
-    interest = _num(latest_income, "int_exp", "fin_exp")
-    if ebit is not None and interest is not None:
-        if interest > 0:
-            fragility["interest_coverage"] = round(ebit / interest, 2)
-        else:
-            fragility["interest_coverage_note"] = "利息支出为零或净收益，覆盖倍数无意义"
-    total_mv = _num(basic, "total_mv")
-    if (
-        market == "A股"
-        and total_mv
-        and debt_info is not None
-        and money_cap is not None
-    ):
-        # daily_basic 总市值单位为万元，报表科目单位为元
-        fragility["net_cash_to_market_cap"] = round(
-            (money_cap - debt_info["value"]) / (total_mv * 10000), 4
-        )
-
     passed = sum(1 for c in criteria if c["verdict"] == "pass")
     failed = sum(1 for c in criteria if c["verdict"] == "fail")
     return {
         "status": "ok",
-        "as_of_year": latest,
+        "as_of_year": ctx.latest,
         "criteria": criteria,
         "passed": passed,
         "failed": failed,
         "indeterminate": len(criteria) - passed - failed,
-        "fragility": fragility,
+        "fragility": _fragility_signals(ctx, basic),
         "thresholds": thresholds,
         "criteria_semantics": CRITERIA_SEMANTICS,
         "fragility_semantics": FRAGILITY_SEMANTICS,

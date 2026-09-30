@@ -27,6 +27,13 @@ export default defineConfig({
         'export ADMIN_INITIAL_PASSWORD=e2e-admin-password;',
         'export DEMO_INITIAL_PASSWORD=e2e-user-password;',
         'export REQUIRE_HTTPS=false;',
+        // 周期任务（汇率/参考利率/港交所日报/目录/行业/基准/告警……）会在启动即外呼并写 e2e 库，
+        // 总开关一次关掉（#274）。报价与事件提醒两个开关另管非周期路径（加自选即时报价、
+        // 异动提醒），必须同时保留关闭
+        'export PERIODIC_TASKS_ENABLED=false QUOTE_AUTO_REFRESH_ENABLED=false EVENT_NOTIFICATIONS_ENABLED=false;',
+        // 后端从仓库根目录启动，但 alembic/seed 在 backend/ 下运行会读到 backend/.env 的真实凭证：
+        // 显式置空，E2E 不应拿开发者的 Key 调外部服务
+        'export LLM_REPORT_API_KEY= TUSHARE_TOKEN= TIINGO_API_TOKEN= XUEQIU_COOKIES= XUEQIU_COOKIE_FILE= XUEQIU_COLLECTOR_PUSH_URL= NOTIFY_URLS=;',
         `cd ${backendSourcePath}`,
         '&&',
         'alembic upgrade head',

@@ -10,12 +10,17 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
+from ..core.timeutil import local_today
 from ..models.security_price import SecurityPrice
 from . import tiingo_source
+from .http_source import BROWSER_USER_AGENT
 from .stock_price_service import (
+    TENCENT_HEADERS,
+    classify_tushare_error,
     get_exchange_type,
     get_tushare_pro,
     retry_with_backoff,
+    throttle_tencent,
     to_tushare_a_code,
     to_tushare_hk_code,
     tushare_query_once,
@@ -28,10 +33,7 @@ YAHOO_CHART_URLS = (
     "https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
 )
-YAHOO_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-)
+YAHOO_USER_AGENT = BROWSER_USER_AGENT
 STOCKANALYSIS_HISTORY_URL = "https://stockanalysis.com/quote/sgx/{symbol}/history/"
 SHORT_NO_DATA_RANGE_DAYS = 7
 # 腾讯历史 K 线：Tushare 覆盖空洞的兜底源（实测 daily 不含沪深 B 股与可转债、
@@ -50,14 +52,23 @@ def _date_to_tushare(value: date) -> str:
 
 
 def _tushare_history_query(api_name: str, **kwargs):
-    """Call Tushare history APIs without treating empty data as an exception."""
+    """Call Tushare history APIs without treating empty data as an exception.
+
+    空表是合法结果（停牌/无交易日）；上游故障（HTTP ≥400、非 JSON）由严格客户端抛
+    TushareUpstreamError——此前 SDK 把 5xx 吞成空表，尾部同步会把失败日当成停牌标为已处理。"""
 
     def fetch():
         wait_for_tushare_rate_limit(api_name)
         pro = get_tushare_pro()
         return getattr(pro, api_name)(**kwargs)
 
-    return retry_with_backoff(fetch, max_retries=3, initial_delay=0.5, max_delay=3.0)
+    return retry_with_backoff(
+        fetch,
+        max_retries=3,
+        initial_delay=0.5,
+        max_delay=3.0,
+        non_retryable=lambda exc: classify_tushare_error(exc) != "other",
+    )
 
 
 def _decimal_or_none(value: Any) -> Optional[Decimal]:
@@ -92,6 +103,61 @@ def infer_price_currency(market: str, fallback: Optional[str] = None) -> str:
     if market == "新加坡股":
         return "SGD"
     return "CNY"
+
+
+# 有确定报价币种规则的市场：交易币种不能当行情币种用——招商港股通按 CNY 记账、IBKR 可能按
+# USD 入账，拿它写港股行情的 currency 就错了
+_MARKET_QUOTE_CURRENCY = {"A股": "CNY", "港股": "HKD", "美股": "USD"}
+
+
+def resolve_price_currency(
+    db: Session, symbol: str, market: str, fallback: Optional[str] = None
+) -> str:
+    """security_prices.currency 的唯一解析（#276）。
+
+    此前各写入方各自推断（B 股一律 CNY、港股一律 HKD，尾部同步不传币种），同一行的币种随
+    写入顺序来回翻转：B 股美元/港元价被标成 CNY，人民币柜台被回填成 HKD，下游格雷厄姆估值
+    与港股复权的换汇方向跟着错。优先级：标的全集的币种（港交所日报官方 CUR 会回填进去）→
+    港股：该标的最近一行港交所日报行情的币种（标的全集缺这只时的官方来源，PR #299 评审：
+    否则 9xxxx 美元柜台会被日报写 USD、history-sync 改回 HKD 来回翻转）→
+    按代码推断（沪 B 美元、深 B 港元、港股 8xxxx 人民币柜台）→ 市场的报价币种 → 调用方给的
+    交易币种（只用于没有确定规则的市场，如新加坡股、场外基金）→ 市场默认。"""
+    from ..models.security_catalog import SecurityCatalogEntry
+    from .hkex_dayquot_source import SOURCE as HKEX_DAYQUOT_SOURCE
+    from .security_catalog_service import infer_b_share_currency, infer_hk_currency
+
+    catalog = (
+        db.query(SecurityCatalogEntry.currency)
+        .filter(SecurityCatalogEntry.symbol == symbol, SecurityCatalogEntry.market == market)
+        .scalar()
+    )
+    if catalog:
+        return catalog
+    if market == "港股":
+        official = (
+            db.query(SecurityPrice.currency)
+            .filter(
+                SecurityPrice.symbol == symbol,
+                SecurityPrice.market == market,
+                SecurityPrice.source == HKEX_DAYQUOT_SOURCE,
+            )
+            .order_by(SecurityPrice.price_date.desc())
+            .limit(1)
+            .scalar()
+        )
+        if official:
+            return official
+    if market == "B股":
+        inferred = infer_b_share_currency(symbol)
+        if inferred:
+            return inferred
+    if market == "港股":
+        inferred, _source = infer_hk_currency(symbol)
+        if inferred:
+            return inferred
+    if market in _MARKET_QUOTE_CURRENCY:
+        return _MARKET_QUOTE_CURRENCY[market]
+    return infer_price_currency(market, fallback)
 
 
 def resolve_tushare_history_api(symbol: str, market: str) -> Optional[Dict[str, str]]:
@@ -149,8 +215,25 @@ _TENCENT_US_SUFFIXES = (".OQ", ".N", ".AM")
 _tencent_us_code_cache: Dict[str, Optional[str]] = {}
 
 
+class TencentProbeInconclusive(RuntimeError):
+    """腾讯美股代码探测本次没能下结论（网络错误 / 异常应答）——不同于「确定没有这个代码」。"""
+
+
 def resolve_tencent_us_kline_code(symbol: str) -> Optional[str]:
-    """美股 → 腾讯 K 线代码（带交易所后缀）；探测不到返回 None（结果缓存，含 None）。
+    """美股 → 腾讯 K 线代码；探测不到（含本次没下结论）返回 None。
+
+    需要区分「确定没有」与「本次没下结论」的调用方用 probe_tencent_us_kline_code。"""
+    try:
+        return probe_tencent_us_kline_code(symbol)
+    except TencentProbeInconclusive:
+        return None
+
+
+def probe_tencent_us_kline_code(symbol: str) -> Optional[str]:
+    """美股 → 腾讯 K 线代码（带交易所后缀）；确定探测不到返回 None，
+    本次没下结论抛 TencentProbeInconclusive（PR #298 评审：两者不能共用 None）。
+
+    只缓存确定结论（找到，或三个后缀都正常应答却无数据）；网络错误与异常应答不缓存。
 
     Tushare 的美股日线在当前积分档是试用限频（us_daily 每分钟/每小时 1 次）、复权日线
     us_daily_adj 无权限，美股历史只能靠兜底源——此前美股没有任何兜底，同步必失败。"""
@@ -159,23 +242,36 @@ def resolve_tencent_us_kline_code(symbol: str) -> Optional[str]:
         return None
     if text in _tencent_us_code_cache:
         return _tencent_us_code_cache[text]
-    probe_end = date.today()
+    probe_end = local_today()
     probe_start = probe_end - timedelta(days=14)
     found: Optional[str] = None
     for suffix in _TENCENT_US_SUFFIXES:
         code = f"us{text}{suffix}"
         try:
+            throttle_tencent()
             response = requests.get(
                 TENCENT_KLINE_URL,
-                params={"param": f"{code},day,{probe_start.isoformat()},{probe_end.isoformat()},20,"},
-                headers={"User-Agent": YAHOO_USER_AGENT},
+                params={
+                    "param": f"{code},day,{probe_start.isoformat()},{probe_end.isoformat()},20,"
+                },
+                headers=TENCENT_HEADERS,
                 timeout=15,
             )
             response.raise_for_status()
-            node = ((response.json() or {}).get("data") or {}).get(code) or {}
+            payload = response.json()
         except Exception as exc:  # noqa: BLE001 — 探测失败不缓存，下次再试
             logger.warning("腾讯美股代码探测 %s 失败: %s", code, exc)
-            return None
+            raise TencentProbeInconclusive(f"腾讯美股代码探测 {code} 失败: {exc}") from exc
+        # 只有正常的成功外层（code=0、data 为对象）才能下「这个后缀没有数据」的结论；
+        # HTTP 200 的错误对象/限流页此前会让三个后缀都「未找到」并在进程内永久缓存成 None（#275）
+        if (
+            not isinstance(payload, dict)
+            or str(payload.get("code")) != "0"
+            or not isinstance(payload.get("data"), dict)
+        ):
+            logger.warning("腾讯美股代码探测 %s 返回异常结构，本次不下结论", code)
+            raise TencentProbeInconclusive(f"腾讯美股代码探测 {code} 返回异常结构")
+        node = payload["data"].get(code) or {}
         if isinstance(node, dict) and (node.get("day") or node.get("qfqday")):
             found = code
             break
@@ -203,11 +299,9 @@ def _fetch_tencent_kline_rows(
                 f"{TENCENT_KLINE_MAX_CANDLES},"
             )
         }
+        throttle_tencent()
         response = requests.get(
-            TENCENT_KLINE_URL,
-            params=params,
-            headers={"User-Agent": YAHOO_USER_AGENT},
-            timeout=20,
+            TENCENT_KLINE_URL, params=params, headers=TENCENT_HEADERS, timeout=20
         )
         response.raise_for_status()
         payload = response.json()
@@ -305,7 +399,9 @@ def _normalize_tiingo_eod_bars(
                 low_price=bar.get("low"),
                 close_price=close_price,
                 pre_close_price=previous_close,
-                adj_factor=(adj_close_price / close_price) if adj_close_price and close_price else None,
+                adj_factor=(adj_close_price / close_price)
+                if adj_close_price and close_price
+                else None,
                 adj_close_price=adj_close_price,
                 source=tiingo_source.EOD_SOURCE,
             )
@@ -351,7 +447,9 @@ def _fetch_and_store_tiingo_history(
     }
 
 
-def _fetch_adjustment_factors(api_name: str, ts_code: str, start_date: date, end_date: date) -> Dict[date, Decimal]:
+def _fetch_adjustment_factors(
+    api_name: str, ts_code: str, start_date: date, end_date: date
+) -> Dict[date, Decimal]:
     if not api_name:
         return {}
 
@@ -572,7 +670,9 @@ def _normalize_yahoo_chart_prices(
     for index, timestamp in enumerate(timestamps):
         price_date = datetime.fromtimestamp(int(timestamp), tz=timezone.utc).date()
         close_price = _decimal_or_none(_yahoo_series_value(quote, "close", index))
-        if price_date < chart.get("requested_start_date", price_date) or price_date > chart.get("requested_end_date", price_date):
+        if price_date < chart.get("requested_start_date", price_date) or price_date > chart.get(
+            "requested_end_date", price_date
+        ):
             continue
         if close_price is None:
             continue
@@ -580,7 +680,9 @@ def _normalize_yahoo_chart_prices(
         open_price = _decimal_or_none(_yahoo_series_value(quote, "open", index))
         high_price = _decimal_or_none(_yahoo_series_value(quote, "high", index))
         low_price = _decimal_or_none(_yahoo_series_value(quote, "low", index))
-        adj_close_price = _decimal_or_none(adj_close_values[index] if index < len(adj_close_values) else None)
+        adj_close_price = _decimal_or_none(
+            adj_close_values[index] if index < len(adj_close_values) else None
+        )
 
         rows.append(
             SecurityPrice(
@@ -594,7 +696,9 @@ def _normalize_yahoo_chart_prices(
                 low_price=low_price,
                 close_price=close_price,
                 pre_close_price=previous_close,
-                adj_factor=(adj_close_price / close_price) if adj_close_price and close_price else None,
+                adj_factor=(adj_close_price / close_price)
+                if adj_close_price and close_price
+                else None,
                 adj_close_price=adj_close_price,
                 source="yahoo-finance",
             )
@@ -641,7 +745,9 @@ def _normalize_stockanalysis_history_prices(
 
     rows: List[SecurityPrice] = []
     previous_close: Optional[Decimal] = None
-    for row_html in reversed(re.findall(r"<tr[^>]*>.*?</tr>", table_match.group(0), flags=re.S | re.I)):
+    for row_html in reversed(
+        re.findall(r"<tr[^>]*>.*?</tr>", table_match.group(0), flags=re.S | re.I)
+    ):
         cells = [
             _clean_stockanalysis_cell(cell)
             for cell in re.findall(r"<td[^>]*>(.*?)</td>", row_html, flags=re.S | re.I)
@@ -673,7 +779,9 @@ def _normalize_stockanalysis_history_prices(
                 low_price=_decimal_or_none(cells[3].replace(",", "")),
                 close_price=close_price,
                 pre_close_price=previous_close,
-                adj_factor=(adj_close_price / close_price) if adj_close_price and close_price else None,
+                adj_factor=(adj_close_price / close_price)
+                if adj_close_price and close_price
+                else None,
                 adj_close_price=adj_close_price,
                 source="stockanalysis",
             )
@@ -846,8 +954,16 @@ def upsert_security_prices(db: Session, prices: List[SecurityPrice]) -> int:
         return 0
 
     update_columns = (
-        "ts_code", "currency", "open_price", "high_price", "low_price",
-        "close_price", "pre_close_price", "adj_factor", "adj_close_price", "source",
+        "ts_code",
+        "currency",
+        "open_price",
+        "high_price",
+        "low_price",
+        "close_price",
+        "pre_close_price",
+        "adj_factor",
+        "adj_close_price",
+        "source",
     )
     rows = [
         {
@@ -877,6 +993,8 @@ def fetch_and_store_security_price_history(
     end_date: date,
     currency: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # 所有下游写入（Tushare / Tiingo / 腾讯 / Yahoo）共用同一个行情币种（#276）
+    currency = resolve_price_currency(db, symbol, market, currency)
     resolved = resolve_tushare_history_api(symbol, market)
     if not resolved:
         if to_yahoo_symbol(symbol, market):
@@ -903,7 +1021,11 @@ def fetch_and_store_security_price_history(
         if tencent_code:
             return tencent_code
         if market == "美股":
-            return resolve_tencent_us_kline_code(symbol)
+            try:
+                return probe_tencent_us_kline_code(symbol)
+            except TencentProbeInconclusive as exc:
+                fallback_errors.append(f"腾讯K线: {exc}")
+                return None
         return None
 
     fallback_errors: List[str] = []
@@ -954,15 +1076,48 @@ def fetch_and_store_security_price_history(
                 return tiingo_result
             code = fallback_code()
             if code:
-                return _fetch_and_store_tencent_history(
-                    db,
-                    symbol=symbol,
-                    market=market,
-                    kline_code=code,
-                    start_date=start_date,
-                    end_date=end_date,
-                    currency=currency,
-                )
+                # 单独 try：此前这里抛错会落进外层 except 再调一次腾讯（重复请求），
+                # 且把腾讯的异常文本当成主源错误报出去
+                try:
+                    return _fetch_and_store_tencent_history(
+                        db,
+                        symbol=symbol,
+                        market=market,
+                        kline_code=code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        currency=currency,
+                    )
+                except Exception as fallback_exc:  # noqa: BLE001
+                    db.rollback()
+                    logger.warning(
+                        "腾讯K线兜底同步 %s %s 失败（Tushare 空返回）: %s",
+                        market,
+                        symbol,
+                        fallback_exc,
+                    )
+                    fallback_errors.append(f"腾讯K线: {str(fallback_exc)[:160]}")
+                    return {
+                        "symbol": symbol,
+                        "market": market,
+                        "success": False,
+                        "rows": 0,
+                        "error": f"tushare {resolved['api']} 返回空表，兜底源也失败",
+                        "error_kind": "other",
+                        "fallback_errors": fallback_errors,
+                    }
+            if fallback_errors:
+                # 兜底源失败或没能下结论：不能当成「真没有交易日」，否则尾部同步会把这一天
+                # 标为已处理（PR #298 评审）
+                return {
+                    "symbol": symbol,
+                    "market": market,
+                    "success": False,
+                    "rows": 0,
+                    "error": f"tushare {resolved['api']} 返回空表，兜底源失败或未下结论",
+                    "error_kind": "other",
+                    "fallback_errors": fallback_errors,
+                }
             return {
                 "symbol": symbol,
                 "market": market,
@@ -972,12 +1127,20 @@ def fetch_and_store_security_price_history(
                 "message": "没有新增交易日数据",
             }
 
-        factors = _fetch_adjustment_factors(
-            resolved.get("adjust_api", ""),
-            resolved["ts_code"],
-            start_date,
-            end_date,
-        )
+        # 复权因子目前没有任何读取方（为回测/复权展示预留）：拉取是 best-effort，失败只记日志。
+        # 此前它在主 try 里，一报错（配额/权限）就丢掉已拿到的日线、整段改走不复权兜底源（#276）
+        try:
+            factors = _fetch_adjustment_factors(
+                resolved.get("adjust_api", ""),
+                resolved["ts_code"],
+                start_date,
+                end_date,
+            )
+        except Exception as factor_exc:  # noqa: BLE001
+            logger.warning(
+                "复权因子拉取失败（不影响日线入库）%s %s: %s", market, symbol, factor_exc
+            )
+            factors = {}
         rows = _normalize_price_rows(
             df.iterrows(),
             symbol=symbol,
@@ -1015,9 +1178,7 @@ def fetch_and_store_security_price_history(
                 )
             except Exception as fallback_exc:
                 db.rollback()
-                logger.warning(
-                    "腾讯K线兜底同步 %s %s 也失败: %s", market, symbol, fallback_exc
-                )
+                logger.warning("腾讯K线兜底同步 %s %s 也失败: %s", market, symbol, fallback_exc)
                 fallback_errors.append(f"腾讯K线: {str(fallback_exc)[:160]}")
         # error 保持主源（Tushare）原文：performance_history_jobs 按它识别配额/权限类
         # 错误并中止整批；兜底源的失败原因另列，不混进去改变判定
@@ -1027,6 +1188,8 @@ def fetch_and_store_security_price_history(
             "success": False,
             "rows": 0,
             "error": str(exc)[:240],
+            # 结构化分类只由 Tushare 调用点写入：下游按它判定整批中止，不再对 error 做子串匹配
+            "error_kind": classify_tushare_error(exc),
         }
         if fallback_errors:
             failure["fallback_errors"] = fallback_errors
@@ -1035,7 +1198,7 @@ def fetch_and_store_security_price_history(
 
 def _today() -> date:
     """可注入的"今天"（测试 monkeypatch 用）。"""
-    return date.today()
+    return local_today()
 
 
 def _last_weekday_on_or_before(day: date) -> date:
@@ -1084,9 +1247,7 @@ def get_last_completed_trading_day(market: str, today: Optional[date] = None) ->
             **extra,
         )
         open_days = [
-            str(row["cal_date"])
-            for _, row in df.iterrows()
-            if int(row.get("is_open", 0)) == 1
+            str(row["cal_date"]) for _, row in df.iterrows() if int(row.get("is_open", 0)) == 1
         ]
         if not open_days:
             raise ValueError("交易日历返回区间内无开市日")
@@ -1105,14 +1266,18 @@ def get_security_price_coverage(
     symbol: str,
     market: str,
 ) -> Dict[str, Any]:
-    min_date, max_date, count = db.query(
-        func.min(SecurityPrice.price_date),
-        func.max(SecurityPrice.price_date),
-        func.count(SecurityPrice.id),
-    ).filter(
-        SecurityPrice.symbol == symbol,
-        SecurityPrice.market == market,
-    ).one()
+    min_date, max_date, count = (
+        db.query(
+            func.min(SecurityPrice.price_date),
+            func.max(SecurityPrice.price_date),
+            func.count(SecurityPrice.id),
+        )
+        .filter(
+            SecurityPrice.symbol == symbol,
+            SecurityPrice.market == market,
+        )
+        .one()
+    )
 
     return {
         "start_date": min_date,
@@ -1149,14 +1314,18 @@ def fetch_and_store_security_price_history_incremental(
     end_date: date,
     currency: Optional[str] = None,
     calendar_market: Optional[str] = None,
+    completed_through: Optional[date] = None,
 ) -> Dict[str, Any]:
     coverage_before = get_security_price_coverage(db, symbol=symbol, market=market)
     # 尾部端点钳到该市场最近一个已完成交易日（交易日历精确判定）：当日
     # 日线收盘前不存在，周末/法定假日也不存在——否则每次刷新会给每个标的
     # 造出假尾部缺口，短空探测后缓存不前移，下次刷新全量复现。
     # calendar_market 供无自有日历的市场借用（基准指数按目录日历市场钳制）。
+    # completed_through：调用方已按该市场当地时钟确认收盘就绪的交易日（日线尾部同步
+    # 在当地收盘后传入当天）；缺省按 UTC 今天、不含今天——其余调用方保持盘中防护。
     effective_end = min(
-        end_date, get_last_completed_trading_day(calendar_market or market)
+        end_date,
+        completed_through or get_last_completed_trading_day(calendar_market or market),
     )
     ranges = (
         _missing_edge_ranges(coverage_before, start_date, effective_end)
@@ -1195,11 +1364,13 @@ def fetch_and_store_security_price_history_incremental(
             end_date=range_end,
             currency=currency,
         )
-        range_results.append({
-            **result,
-            "start_date": range_start.isoformat(),
-            "end_date": range_end.isoformat(),
-        })
+        range_results.append(
+            {
+                **result,
+                "start_date": range_start.isoformat(),
+                "end_date": range_end.isoformat(),
+            }
+        )
         if not result.get("success"):
             remaining_ranges = _missing_edge_ranges(
                 get_security_price_coverage(db, symbol=symbol, market=market),

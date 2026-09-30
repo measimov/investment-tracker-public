@@ -19,7 +19,6 @@ from app.models.user import User
 from app.services.statistics import get_dividend_summary
 
 
-
 @pytest.fixture
 def dividend_scenario():
     db = SessionLocal()
@@ -29,39 +28,77 @@ def dividend_scenario():
         user.hashed_password = get_password_hash("dividend-summary-password")
         db.query(CorporateAction).filter(CorporateAction.user_id == user.id).delete()
         db.query(ExchangeRate).delete()
-        db.add(ExchangeRate(
-            from_currency="HKD", to_currency="CNY", rate=Decimal("0.9"),
-            effective_date=date(2026, 1, 1), source="test", is_active=True,
-        ))
+        db.add(
+            ExchangeRate(
+                from_currency="HKD",
+                to_currency="CNY",
+                rate=Decimal("0.9"),
+                effective_date=date(2026, 1, 1),
+                source="test",
+                is_active=True,
+            )
+        )
         # CNY：净额显式给出
-        db.add(CorporateAction(
-            user_id=user.id, symbol="600000", name="甲", market="A股",
-            action_type="CASH_DIVIDEND", ex_date=date(2026, 3, 1),
-            total_dividend=Decimal("100"), tax_withheld=Decimal("10"),
-            net_dividend=Decimal("90"), currency="CNY",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=user.id,
+                symbol="600000",
+                name="甲",
+                market="A股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 3, 1),
+                total_dividend=Decimal("100"),
+                tax_withheld=Decimal("10"),
+                net_dividend=Decimal("90"),
+                currency="CNY",
+            )
+        )
         # HKD：net 为 NULL → 须按 gross − tax 兜底并折算（(200−20)×0.9=162）
-        db.add(CorporateAction(
-            user_id=user.id, symbol="00700", name="乙", market="港股",
-            action_type="CASH_DIVIDEND", ex_date=date(2026, 4, 1),
-            total_dividend=Decimal("200"), tax_withheld=Decimal("20"),
-            net_dividend=None, currency="HKD",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=user.id,
+                symbol="00700",
+                name="乙",
+                market="港股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 4, 1),
+                total_dividend=Decimal("200"),
+                tax_withheld=Decimal("20"),
+                net_dividend=None,
+                currency="HKD",
+            )
+        )
         # 显式 net=0 且 gross−tax=40≠0：旧的 `net or (gross−tax)` 实现会把
         # 显式 0 吞成 40（净额总计 292 而非 252）——本组数据必须能让旧实现变红
-        db.add(CorporateAction(
-            user_id=user.id, symbol="600036", name="丙", market="A股",
-            action_type="CASH_DIVIDEND", ex_date=date(2026, 5, 1),
-            total_dividend=Decimal("50"), tax_withheld=Decimal("10"),
-            net_dividend=Decimal("0"), currency="CNY",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=user.id,
+                symbol="600036",
+                name="丙",
+                market="A股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 5, 1),
+                total_dividend=Decimal("50"),
+                tax_withheld=Decimal("10"),
+                net_dividend=Decimal("0"),
+                currency="CNY",
+            )
+        )
         # THB 无汇率：不得以原值混入 CNY 总额，应剔除并记录缺汇率币种
-        db.add(CorporateAction(
-            user_id=user.id, symbol="THB001", name="丁", market="美股",
-            action_type="CASH_DIVIDEND", ex_date=date(2026, 6, 1),
-            total_dividend=Decimal("300"), tax_withheld=Decimal("30"),
-            net_dividend=None, currency="THB",
-        ))
+        db.add(
+            CorporateAction(
+                user_id=user.id,
+                symbol="THB001",
+                name="丁",
+                market="美股",
+                action_type="CASH_DIVIDEND",
+                ex_date=date(2026, 6, 1),
+                total_dividend=Decimal("300"),
+                tax_withheld=Decimal("30"),
+                net_dividend=None,
+                currency="THB",
+            )
+        )
         db.commit()
         yield user.id
         user.hashed_password = original_password

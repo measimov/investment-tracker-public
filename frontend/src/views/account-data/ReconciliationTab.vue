@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import type { ReconciliationSnapshotCreate } from '@/types'
+import { LEDGER_CURRENCIES } from '@/utils/currency'
+import { accountLabel, accountOptionLabel } from '@/utils/labels'
+import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { showApiError } from '@/utils/showApiError'
 import { reactive, ref } from 'vue'
 import { ElMessage, type FormInstance } from 'element-plus'
@@ -6,17 +10,13 @@ import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
 import SecuritySelect from '@/components/SecuritySelect.vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
-import { formatDate, formatDateTime, formatNumber, formatQuantity } from '@/utils/helpers'
+import { EMPTY, formatDate, formatDateTime, formatNumber, formatQuantity } from '@/utils/helpers'
 import {
   type AccountRow,
   type DialogState,
   type SnapshotRow,
   LIST_LIMIT,
-  accountLabelIn,
-  accountName,
-  currencyOptions,
   isAtListLimit,
-  makeRemover,
   marketOptions,
   monthEnd,
   signedDelta,
@@ -31,7 +31,7 @@ const props = defineProps<{
 }>()
 
 const isMobileView = useMediaQuery('(max-width: 640px)')
-const accountLabel = (id: unknown) => accountLabelIn(props.accounts, id)
+const accountLabelOf = (id: unknown) => accountLabel(props.accounts, id)
 
 interface SnapshotCashRowInput {
   currency: string
@@ -107,13 +107,10 @@ async function compareSnapshot(row: SnapshotRow) {
 }
 
 function resetSnapshotForm(row: Partial<SnapshotRow> = {}) {
-  const cashBalances = normalizeJson(row.cash_balances || row.reported_cash, {}) as Record<
-    string,
-    unknown
-  >
-  const positions = normalizeJson(row.positions || row.reported_positions, [])
+  const cashBalances = row.cash_balances ?? {}
+  const positions = row.positions ?? []
   Object.assign(snapshotForm, {
-    broker_account_id: row.broker_account_id || row.account_id || props.accounts[0]?.id || null,
+    broker_account_id: row.broker_account_id || props.accounts[0]?.id || null,
     snapshot_date: (row.snapshot_date || monthEnd()).slice(0, 10),
     source_filename: row.source_filename || '',
     cashRows: Object.entries(cashBalances).length
@@ -122,19 +119,17 @@ function resetSnapshotForm(row: Partial<SnapshotRow> = {}) {
           amount: Number(amount)
         }))
       : [{ currency: 'CNY', amount: 0 }],
-    positionRows: Array.isArray(positions)
-      ? positions.map((item: SnapshotPositionRowInput) => ({
-          ...item,
-          quantity: Number(item.quantity)
-        }))
-      : [],
+    positionRows: positions.map((item) => ({
+      ...item,
+      quantity: Number(item.quantity)
+    })),
     notes: row.notes || ''
   })
 }
 
 function addCashRow() {
   const used = new Set(snapshotForm.cashRows.map((item) => item.currency))
-  const currency = currencyOptions.find((item) => !used.has(item)) || 'CNY'
+  const currency = LEDGER_CURRENCIES.find((item) => !used.has(item)) || 'CNY'
   snapshotForm.cashRows.push({ currency, amount: 0 })
 }
 
@@ -186,8 +181,10 @@ async function saveSnapshot() {
         })),
       notes: snapshotForm.notes
     }
-    if (snapshotDialog.id) await api.updateReconciliationSnapshot(snapshotDialog.id, payload)
-    else await api.createReconciliationSnapshot(payload)
+    // 表单校验保证账户与日期必填：已校验表单 → 请求体
+    const body = payload as ReconciliationSnapshotCreate
+    if (snapshotDialog.id) await api.updateReconciliationSnapshot(snapshotDialog.id, body)
+    else await api.createReconciliationSnapshot(body)
     ElMessage.success(snapshotDialog.id ? '核对记录已更新' : '核对记录已新增')
     snapshotDialog.visible = false
     await props.reload()
@@ -198,8 +195,9 @@ async function saveSnapshot() {
   }
 }
 
-const removeSnapshot = makeRemover<SnapshotRow>({
+const removeSnapshot = makeConfirmedAction<SnapshotRow>({
   title: '删除核对记录',
+  confirmText: '删除',
   message: '确认删除这条月末核对记录？',
   request: (row) => api.deleteReconciliationSnapshot(row.id),
   successMessage: '核对记录已删除',
@@ -230,31 +228,13 @@ const snapshotStatusTag = (status: string | undefined) => {
   return 'warning'
 }
 
-// 后端 JSON 字段可能以字符串形式返回，解析失败回退默认值；调用方按各自形状收窄
-const normalizeJson = (value: unknown, fallback: unknown): unknown => {
-  if (value == null) return fallback
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value)
-    } catch {
-      return fallback
-    }
-  }
-  return value
-}
-const jsonSummary = (value: unknown) => {
-  const data = normalizeJson(value, {})
-  if (!data || Array.isArray(data) || typeof data !== 'object') return '-'
-  const entries = Object.entries(data as Record<string, number | string>)
-  if (!entries.length) return '-'
+const jsonSummary = (value: Record<string, string> | null | undefined) => {
+  const entries = Object.entries(value ?? {})
+  if (!entries.length) return EMPTY
   return entries.map(([currency, amount]) => `${currency} ${formatNumber(amount)}`).join(' · ')
 }
-const positionSummary = (value: unknown) => {
-  const data = normalizeJson(value, [])
-  if (Array.isArray(data)) return data.length ? `${data.length} 个标的` : '-'
-  if (data && typeof data === 'object') return `${Object.keys(data).length} 个标的`
-  return '-'
-}
+const positionSummary = (value: readonly unknown[] | null | undefined) =>
+  value?.length ? `${value.length} 个标的` : EMPTY
 </script>
 
 <template>
@@ -292,9 +272,7 @@ const positionSummary = (value: unknown) => {
           <template #default="{ row }">{{ formatDate(row.snapshot_date) }}</template>
         </el-table-column>
         <el-table-column label="账户" min-width="180">
-          <template #default="{ row }">{{
-            accountLabel(row.broker_account_id || row.account_id)
-          }}</template>
+          <template #default="{ row }">{{ accountLabelOf(row.broker_account_id) }}</template>
         </el-table-column>
         <el-table-column label="范围" width="100">
           <template #default="{ row }">{{ statementScopeLabel(row.statement_scope) }}</template>
@@ -319,14 +297,10 @@ const positionSummary = (value: unknown) => {
           </template>
         </el-table-column>
         <el-table-column label="现金摘要" min-width="180">
-          <template #default="{ row }">{{
-            jsonSummary(row.cash_balances || row.reported_cash)
-          }}</template>
+          <template #default="{ row }">{{ jsonSummary(row.cash_balances) }}</template>
         </el-table-column>
         <el-table-column label="持仓摘要" min-width="150">
-          <template #default="{ row }">{{
-            positionSummary(row.positions || row.reported_positions)
-          }}</template>
+          <template #default="{ row }">{{ positionSummary(row.positions) }}</template>
         </el-table-column>
         <el-table-column
           prop="source_filename"
@@ -362,7 +336,7 @@ const positionSummary = (value: unknown) => {
           <div class="mobile-card-title">
             <span class="mobile-card-symbol">{{ formatDate(row.snapshot_date) }}</span>
             <span class="mobile-card-name">
-              {{ accountLabel(row.broker_account_id || row.account_id) }}
+              {{ accountLabelOf(row.broker_account_id) }}
             </span>
           </div>
           <div class="mobile-card-tags">
@@ -386,8 +360,8 @@ const positionSummary = (value: unknown) => {
 
         <div class="mobile-card-meta">
           <span>范围 {{ statementScopeLabel(row.statement_scope) }}</span>
-          <span>现金 {{ jsonSummary(row.cash_balances || row.reported_cash) }}</span>
-          <span>持仓 {{ positionSummary(row.positions || row.reported_positions) }}</span>
+          <span>现金 {{ jsonSummary(row.cash_balances) }}</span>
+          <span>持仓 {{ positionSummary(row.positions) }}</span>
           <span v-if="row.source_filename">{{ row.source_filename }}</span>
           <span v-if="row.notes">{{ row.notes }}</span>
         </div>
@@ -437,7 +411,7 @@ const positionSummary = (value: unknown) => {
             <el-option
               v-for="account in accounts"
               :key="account.id"
-              :label="accountName(account)"
+              :label="accountOptionLabel(account)"
               :value="account.id"
             />
           </el-select>
@@ -461,7 +435,7 @@ const positionSummary = (value: unknown) => {
             >
               <el-select v-model="item.currency" placeholder="币种">
                 <el-option
-                  v-for="currency in currencyOptions"
+                  v-for="currency in LEDGER_CURRENCIES"
                   :key="currency"
                   :label="currency"
                   :value="currency"
@@ -510,13 +484,12 @@ const positionSummary = (value: unknown) => {
               <el-input-number
                 v-model="item.quantity"
                 :min="0"
-                :precision="8"
                 controls-position="right"
                 placeholder="数量"
               />
               <el-select v-model="item.currency" clearable placeholder="币种">
                 <el-option
-                  v-for="currency in currencyOptions"
+                  v-for="currency in LEDGER_CURRENCIES"
                   :key="currency"
                   :label="currency"
                   :value="currency"

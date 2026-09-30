@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import type { AlertItem, NotifyChannelSummary, NotifyResult } from '../../types'
+import type {
+  AlertItem,
+  NotificationEventItem,
+  NotificationEventList,
+  NotifyChannelSummary,
+  NotifyResult
+} from '../../types'
 import {
   channelStatus,
   durationText,
+  eventKindLabel,
+  eventSettingsText,
+  eventStatus,
   notifyStatusText,
   severityLabel,
   severityTagType,
@@ -154,5 +163,59 @@ describe('durationText', () => {
     expect(durationText('2026-09-28T00:00:00Z', '2026-09-29T01:30:00Z')).toBe('25 小时 30 分钟')
     expect(durationText('2026-09-25T00:00:00Z', '2026-09-28T02:00:00Z')).toBe('3 天 2 小时')
     expect(durationText(null, '2026-09-28T00:00:00Z')).toBe('')
+  })
+})
+
+function eventItem(overrides: Partial<NotificationEventItem> = {}): NotificationEventItem {
+  return {
+    id: 1,
+    event_key: 'dividend_suggestion:1',
+    kind: 'dividend_suggestion',
+    user_id: 2,
+    title: '新分红建议待确认',
+    message: '02669 中海物业 现金分红 每股 HKD 0.1（除净 10-12）',
+    status: 'sent',
+    attempts: 1,
+    last_error: null,
+    created_at: '2026-09-28T02:00:00Z',
+    sent_at: '2026-09-28T02:00:01Z',
+    payload: {},
+    ...overrides
+  }
+}
+
+describe('事件提醒', () => {
+  it('类型文案', () => {
+    expect(eventKindLabel('ex_date')).toBe('除净日临近')
+    expect(eventKindLabel('price_move')).toBe('价格异动')
+    expect(eventKindLabel('announcement')).toBe('重大公告')
+    expect(eventKindLabel('unknown')).toBe('unknown')
+  })
+
+  it('发送状态', () => {
+    expect(eventStatus(eventItem()).type).toBe('success')
+    expect(eventStatus(eventItem({ status: 'skipped' })).text).toContain('未配置')
+    expect(eventStatus(eventItem({ status: 'failed', attempts: 3 })).text).toBe(
+      '推送失败（已重试 3 次）'
+    )
+    expect(eventStatus(eventItem({ status: 'pending', attempts: 0 })).text).toBe('待推送')
+    expect(eventStatus(eventItem({ status: 'pending', attempts: 2 })).text).toContain('下一轮重试')
+  })
+
+  it('开关与阈值说明', () => {
+    const list: NotificationEventList = {
+      enabled: true,
+      price_move_pct: 7,
+      ex_date_days_ahead: 3,
+      announcement_notify_enabled: true,
+      items: []
+    }
+    expect(eventSettingsText(list)).toContain('3 天内')
+    expect(eventSettingsText(list)).toContain('重大公告')
+    expect(eventSettingsText({ ...list, announcement_notify_enabled: false })).not.toContain(
+      '重大公告'
+    )
+    expect(eventSettingsText(list)).toContain('7%')
+    expect(eventSettingsText({ ...list, enabled: false })).toContain('已关闭')
   })
 })

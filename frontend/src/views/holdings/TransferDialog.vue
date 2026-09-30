@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { formatQuantity } from '@/utils/helpers'
+import { UNASSIGNED_ACCOUNT, UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
 import type { TransferFeature } from './useTransfer'
 
 defineProps<{ transfer: TransferFeature }>()
@@ -30,8 +32,8 @@ defineProps<{ transfer: TransferFeature }>()
         <el-select v-model="transfer.state.form.to_broker_account_id" placeholder="请选择转入账户">
           <el-option
             v-if="transfer.state.form.from_broker_account_id !== null"
-            label="未指定账户"
-            value="unassigned"
+            :label="UNASSIGNED_ACCOUNT_LABEL"
+            :value="UNASSIGNED_ACCOUNT"
           />
           <el-option
             v-for="account in transfer.targetAccounts"
@@ -41,12 +43,14 @@ defineProps<{ transfer: TransferFeature }>()
           />
         </el-select>
       </el-form-item>
-      <el-form-item :label="`数量（可转 ${transfer.state.form.max_quantity}）`" required>
+      <el-form-item
+        :label="`数量（可转 ${formatQuantity(transfer.state.form.max_quantity)}）`"
+        required
+      >
         <el-input-number
           v-model="transfer.state.form.quantity"
           :min="0.00000001"
           :max="transfer.state.form.max_quantity"
-          :precision="8"
         />
       </el-form-item>
       <el-form-item label="转仓日期" required>

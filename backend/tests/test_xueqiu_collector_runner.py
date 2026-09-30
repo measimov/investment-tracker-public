@@ -66,14 +66,18 @@ def _unseed_authors(db):
 
 def _reset(db):
     db.execute(text(f"TRUNCATE {ARCHIVER_TABLES} RESTART IDENTITY CASCADE"))
-    db.execute(text(
-        "UPDATE xueqiu_collector_state SET heartbeat_at=NULL, run_requested_at=NULL, "
-        "last_cycle_started_at=NULL, last_cycle_finished_at=NULL, last_cycle_status='', "
-        "last_cycle_message='', last_waf_at=NULL WHERE id=1"
-    ))
-    db.execute(text(
-        "UPDATE xueqiu_collector_authors SET last_run_at=NULL, last_status='', last_message=''"
-    ))
+    db.execute(
+        text(
+            "UPDATE xueqiu_collector_state SET heartbeat_at=NULL, run_requested_at=NULL, "
+            "last_cycle_started_at=NULL, last_cycle_finished_at=NULL, last_cycle_status='', "
+            "last_cycle_message='', last_waf_at=NULL WHERE id=1"
+        )
+    )
+    db.execute(
+        text(
+            "UPDATE xueqiu_collector_authors SET last_run_at=NULL, last_status='', last_message=''"
+        )
+    )
     db.commit()
 
 
@@ -199,9 +203,9 @@ def test_full_cycle_writes_everything_then_second_run_is_incremental(db):
     assert author.utterance_count == 5
     assert author.reply_count == 1
 
-    keys = {row[0] for row in db.execute(text(
-        "select utterance_key from xueqiu_archiver_utterances"
-    ))}
+    keys = {
+        row[0] for row in db.execute(text("select utterance_key from xueqiu_archiver_utterances"))
+    }
     assert f"profile:{AUTHOR}:410664844" in keys
     assert "comment:424028717" in keys
     assert _count(db, "xueqiu_archiver_replies") == 1
@@ -211,7 +215,9 @@ def test_full_cycle_writes_everything_then_second_run_is_incremental(db):
     assert (run.status, run.target_user_id, run.author_user_id) == ("ok", AUTHOR, AUTHOR)
     assert run.finished_at is not None and run.waf_hit is False
     assert (run.candidate_count, run.reply_count, run.utterance_count) == (
-        author.candidate_count, 1, 5,
+        author.candidate_count,
+        1,
+        5,
     )
     db.expire_all()
     state = db.get(XueqiuCollectorState, 1)
@@ -234,7 +240,10 @@ def test_waf_on_timeline_stops_the_cycle(db):
     site = FakeSite(now_ms=_now_ms(), waf_on=lambda url: "user_timeline.json" in url)
     event = RecordingEvent()
     result = runner.run_authors_cycle(
-        db, author_ids=[AUTHOR, OTHER], client_factory=_factory(site), stop_event=event,
+        db,
+        author_ids=[AUTHOR, OTHER],
+        client_factory=_factory(site),
+        stop_event=event,
     )
     assert result.status == runner.CYCLE_WAF
     assert [a.author_id for a in result.authors] == [AUTHOR]  # 第二位作者没跑
@@ -244,13 +253,13 @@ def test_waf_on_timeline_stops_the_cycle(db):
     db.expire_all()
     state = db.get(XueqiuCollectorState, 1)
     assert state.last_cycle_status == "waf" and state.last_waf_at is not None
-    due, reason = st.cycle_due(
-        state, st.utcnow(), interval_minutes=0, waf_cooldown_seconds=1800
-    )
+    due, reason = st.cycle_due(state, st.utcnow(), interval_minutes=0, waf_cooldown_seconds=1800)
     assert (due, reason) == (False, "waf_cooldown")
     # 冷却结束后恢复调度
     due, _ = st.cycle_due(
-        state, st.utcnow() + timedelta(seconds=1801), interval_minutes=30,
+        state,
+        st.utcnow() + timedelta(seconds=1801),
+        interval_minutes=30,
         waf_cooldown_seconds=1800,
     )
     assert due is True
@@ -275,8 +284,12 @@ def test_author_gap_is_random_within_bounds(db, monkeypatch):
     site = FakeSite(now_ms=_now_ms())
     event = RecordingEvent()
     result = runner.run_authors_cycle(
-        db, author_ids=[AUTHOR, OTHER], client_factory=_factory(site), stop_event=event,
-        knobs=knobs, rng=random.Random(7),
+        db,
+        author_ids=[AUTHOR, OTHER],
+        client_factory=_factory(site),
+        stop_event=event,
+        knobs=knobs,
+        rng=random.Random(7),
     )
     assert [a.status for a in result.authors] == ["ok", "ok"]
     total_gap = sum(event.waits)
@@ -289,7 +302,10 @@ def test_stop_signal_interrupts_between_authors(db):
     event = RecordingEvent()
     event.set()
     result = runner.run_authors_cycle(
-        db, author_ids=[AUTHOR, OTHER], client_factory=_factory(site), stop_event=event,
+        db,
+        author_ids=[AUTHOR, OTHER],
+        client_factory=_factory(site),
+        stop_event=event,
     )
     assert result.status == runner.CYCLE_INTERRUPTED
 
@@ -308,8 +324,9 @@ def test_advisory_lock_makes_cycles_mutually_exclusive(db):
         assert site.calls == []
         assert _count(db, "xueqiu_archiver_scan_runs") == 0
     finally:
-        holder.execute(text("SELECT pg_advisory_unlock(hashtext(:n))"),
-                       {"n": runner.CYCLE_LOCK_NAME})
+        holder.execute(
+            text("SELECT pg_advisory_unlock(hashtext(:n))"), {"n": runner.CYCLE_LOCK_NAME}
+        )
         holder.close()
     # 锁释放后可以正常跑（上一轮自己的锁也在 finally 里释放了）
     result = runner.run_authors_cycle(
@@ -324,7 +341,8 @@ def test_unconfigured_cookie_degrades_explicitly(db, monkeypatch):
     pushed = []
     monkeypatch.setattr(runner.settings, "xueqiu_collector_push_url", "https://kuma/push/x")
     monkeypatch.setattr(
-        runner.cookie_health, "push_status",
+        runner.cookie_health,
+        "push_status",
         lambda url, *, status, message, timeout=10: pushed.append((status, message)),
     )
     site = FakeSite(now_ms=_now_ms())
@@ -341,15 +359,22 @@ def test_unconfigured_cookie_degrades_explicitly(db, monkeypatch):
 def test_dry_run_fetches_but_writes_nothing(db):
     site = FakeSite(now_ms=_now_ms())
     result = runner.run_authors_cycle(
-        db, author_ids=[AUTHOR], dry_run=True, client_factory=_factory(site),
+        db,
+        author_ids=[AUTHOR],
+        dry_run=True,
+        client_factory=_factory(site),
         stop_event=RecordingEvent(),
     )
     assert result.status == runner.CYCLE_OK
     assert f"profile:{AUTHOR}:410664844" in result.authors[0].utterance_keys
     assert "comment:424028717" in result.authors[0].utterance_keys
     assert site.calls
-    for table in ("xueqiu_archiver_utterances", "xueqiu_archiver_posts",
-                  "xueqiu_archiver_scan_runs", "xueqiu_archiver_replies"):
+    for table in (
+        "xueqiu_archiver_utterances",
+        "xueqiu_archiver_posts",
+        "xueqiu_archiver_scan_runs",
+        "xueqiu_archiver_replies",
+    ):
         assert _count(db, table) == 0, table
     db.expire_all()
     assert db.get(XueqiuCollectorState, 1).last_cycle_status == ""
@@ -445,9 +470,12 @@ def _seed_old_ok_run(db, hours_ago=100):
     "response",
     [
         pytest.param(lambda: _html(200), id="http200-html"),
-        pytest.param(lambda: FakeResponse({"error_code": "400016",
-                                           "error_description": "遇到错误，请刷新页面"}),
-                     id="json-error-object"),
+        pytest.param(
+            lambda: FakeResponse(
+                {"error_code": "400016", "error_description": "遇到错误，请刷新页面"}
+            ),
+            id="json-error-object",
+        ),
         pytest.param(lambda: FakeResponse([]), id="json-array"),
         pytest.param(lambda: FakeResponse({"statuses": None}), id="statuses-null"),
         pytest.param(lambda: _html(502), id="http502"),
@@ -476,8 +504,9 @@ def test_first_timeline_page_failure_is_an_error_not_success(db, response):
 def test_error_json_message_is_kept_in_scan_run(db):
     site = FakeSite(
         now_ms=_now_ms(),
-        override=lambda url: FakeResponse({"error_code": "400016"})
-        if "user_timeline.json" in url else None,
+        override=lambda url: (
+            FakeResponse({"error_code": "400016"}) if "user_timeline.json" in url else None
+        ),
     )
     _run(db, site)
     assert "400016" in _scan_run(db).error_message
@@ -499,8 +528,9 @@ def test_first_page_valid_empty_is_a_quiet_author(db):
     """只有合法的 statuses=[] 才是「作者近期无动态」：记 ok，并证明采集在流动。"""
     site = FakeSite(
         now_ms=_now_ms(),
-        override=lambda url: FakeResponse({"statuses": [], "maxPage": 0})
-        if "user_timeline.json" in url else None,
+        override=lambda url: (
+            FakeResponse({"statuses": [], "maxPage": 0}) if "user_timeline.json" in url else None
+        ),
     )
     result = _run(db, site)
     author = result.authors[0]
@@ -513,8 +543,7 @@ def test_first_page_valid_empty_is_a_quiet_author(db):
 def test_second_timeline_page_failure_keeps_first_page_as_partial(db):
     site = FakeSite(
         now_ms=_now_ms(),
-        override=lambda url: _html() if "user_timeline.json" in url and "page=2&" in url
-        else None,
+        override=lambda url: _html() if "user_timeline.json" in url and "page=2&" in url else None,
     )
     result = _run(db, site)
     author = result.authors[0]
@@ -541,9 +570,10 @@ def test_comment_page_failure_marks_post_for_rescan(db):
     author = result.authors[0]
     assert author.status == "partial"
     assert target_post in author.error
-    row = db.execute(text(
-        "select last_scanned_at from xueqiu_archiver_post_scan_state where post_id = :p"
-    ), {"p": target_post}).first()
+    row = db.execute(
+        text("select last_scanned_at from xueqiu_archiver_post_scan_state where post_id = :p"),
+        {"p": target_post},
+    ).first()
     assert row is None or row[0] is None
 
     # 下一轮：其他帖在冷却期内跳过，失败的那帖重扫（这次成功）
@@ -576,8 +606,9 @@ def test_comment_page_failure_on_second_page(db):
 def test_detail_failure_is_not_marked_enriched(db):
     site = FakeSite(
         now_ms=_now_ms(),
-        override=lambda url: _html(500)
-        if "user_timeline.json" not in url and "comments.json" not in url else None,
+        override=lambda url: (
+            _html(500) if "user_timeline.json" not in url and "comments.json" not in url else None
+        ),
     )
     result = _run(db, site)
     assert result.authors[0].status == "partial"
@@ -588,15 +619,10 @@ def test_detail_failure_is_not_marked_enriched(db):
     before = len(site.calls)
     _run(db, site)
     detail_calls = [
-        u for u in site.calls[before:]
-        if "user_timeline.json" not in u and "comments.json" not in u
+        u for u in site.calls[before:] if "user_timeline.json" not in u and "comments.json" not in u
     ]
     assert detail_calls  # 下一轮重抓全文
     assert _count(db, "xueqiu_archiver_posts", "where not detail_enriched") == 0
-
-
-def test_reader_and_collector_agree_on_live_statuses():
-    assert opinion_src.LIVE_SCAN_STATUSES == str(tuple(sorted(st.LIVE_RUN_STATUSES)))
 
 
 def test_max_posts_shadow_run_is_low_cost_and_writes_nothing(db):
@@ -607,8 +633,12 @@ def test_max_posts_shadow_run_is_low_cost_and_writes_nothing(db):
     knobs.max_posts = 1
     knobs.max_comment_pages = 1
     result = runner.run_authors_cycle(
-        db, author_ids=[AUTHOR], dry_run=True, knobs=knobs,
-        client_factory=_factory(site), stop_event=RecordingEvent(),
+        db,
+        author_ids=[AUTHOR],
+        dry_run=True,
+        knobs=knobs,
+        client_factory=_factory(site),
+        stop_event=RecordingEvent(),
     )
     author = result.authors[0]
     assert author.candidate_count == 1

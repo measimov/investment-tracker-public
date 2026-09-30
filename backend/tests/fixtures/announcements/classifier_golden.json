@@ -1,0 +1,912 @@
+[
+ {
+  "market": "A股",
+  "title": "安琪酵母股份有限公司第十届董事会第二十一次会议决议公告",
+  "category_raw": "01010503||010113||01239901",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "云南铝业股份有限公司2025年度环境、社会及管治（ESG）报告",
+  "category_raw": "01010503||010112||012330",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "海尔智家股份有限公司关于2025年年度股东会、2026年第一次A股类别股东会增加临时提案的公告",
+  "category_raw": "01010503||010113||011903",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "翌日披露報表 - 已發行股份變動",
+  "category_raw": "翌日披露報表 - [其他]",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "第十一届董事会第十九次会议决议公告",
+  "category_raw": "01010503||010112||01239901",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于开展票据池业务的公告",
+  "category_raw": "01010503||010112||012399",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "海外監管公告 - 中國電信股份有限公司2026年半年度報告摘要",
+  "category_raw": "公告及通告 - [海外監管公告-營運業績最新情況]",
+  "category": "periodic",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "长江电力2026年半年度报告摘要",
+  "category_raw": "01010503||010113||010303",
+  "category": "periodic",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于参加青海辖区上市公司2026年投资者网上集体接待日暨2025年度业绩说明会的公告",
+  "category_raw": "01010503||010112||012399",
+  "category": "periodic",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "福耀玻璃关于召开2026年半年度业绩说明会的公告",
+  "category_raw": "01010503||010113||012399",
+  "category": "periodic",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "长江电力2025年年度报告摘要",
+  "category_raw": "01010503||010113||010301",
+  "category": "periodic",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于参加深圳证券交易所深研发求精进·积蓄医药成长新动能2025年度集体业绩说明会的公告",
+  "category_raw": "01010503||010112||012399",
+  "category": "periodic",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "長城汽車股份有限公司2026年限制性股票激勵計劃激勵對象名單",
+  "category_raw": "公告及通告 - [股份計劃 &#x2f; 根據特定授權發行股份]",
+  "category": "incentive",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于2022年股票期权与限制性股票激励计划之股票期权首次及预留授予第四个行权期自主行权的提示性公告",
+  "category_raw": "01010503||010112||010115||012325",
+  "category": "incentive",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "根据2025年H股股份奖励计划的2026年奖励授予",
+  "category_raw": "01010501||010112||012399",
+  "category": "incentive",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "北京市嘉源律师事务所关于美的集团股份有限公司第九期股权激励计划相关事项调整、注销到期未行权期权及行权相关事项的法律意见书",
+  "category_raw": "01010503||01010901||010112||012325||012903",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于公司2026年A股员工持股计划相关事项的核查意见",
+  "category_raw": "01010503||010113||012399",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "赛轮轮胎关于2023年员工持股计划第三个锁定期届满暨解锁条件成就的公告",
+  "category_raw": "01010503||010113||011303||012399",
+  "category": "incentive",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于回购A股股份事项前十名股东和前十名无限售条件股东持股情况的公告",
+  "category_raw": "01010503||010112||011513||012399",
+  "category": "buyback",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于股份回购进展情况的公告",
+  "category_raw": "01010503||010112||011513",
+  "category": "buyback",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "(經修訂)翌日披露報表",
+  "category_raw": "翌日披露報表 - [股份購回]",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "海尔智家股份有限公司关于回购股份事项前十大股东和前十大无限售条件股东持股情况的公告",
+  "category_raw": "01010503||010113||011513||012399",
+  "category": "buyback",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "海尔智家股份有限公司关于以集中竞价交易方式回购A股股份的进展公告",
+  "category_raw": "01010503||010113||011513",
+  "category": "buyback",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于以集中竞价交易方式回购A股股份达总股本1%的进展公告",
+  "category_raw": "01010503||010112||011513",
+  "category": "buyback",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "截至二零二六年六月三十日止六個月期間之宣派股息",
+  "category_raw": "公告及通告 - [股息或分派（公告表格）]",
+  "category": "dividend",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "浙江和义观达律师事务所关于雅戈尔时尚股份有限公司差异化分红事项的专项核查意见",
+  "category_raw": "01010901||010113||0129",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "北京市中伦律师事务所关于海尔智家股份有限公司差异化分红事项之专项法律意见",
+  "category_raw": "01010901||010113||012903",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "二零二五年十二月三十一日止十二個月期間之宣派股息",
+  "category_raw": "公告及通告 - [股息或分派（公告表格）]",
+  "category": "dividend",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "云南铝业股份有限公司关于2026年中期利润分配预案的公告",
+  "category_raw": "01010503||010112||011301",
+  "category": "dividend",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "二零二六年五月二十七日舉行之股東週年大會之投票表決結果及派付末期股息",
+  "category_raw": "公告及通告 - [股東周年大會的結果 &#x2f; 股息或分派]",
+  "category": "dividend",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "截至2026年6月30日止6個月中期業績公告",
+  "category_raw": "公告及通告 - [中期業績]",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "2026年第二季度主要運營數據",
+  "category_raw": "公告及通告 - [其他-營運業績最新情況]",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "B股",
+  "title": "2026年一季度报告（英文版）",
+  "category_raw": "01010503||010112||010305",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "赛轮轮胎2026年半年度报告",
+  "category_raw": "01010503||010113||010303",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "B股",
+  "title": "2026年半年度报告（英文版）",
+  "category_raw": "01010503||010112||010303",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "致非登記股東之通知信函及回條 －2026年中期報告之刊發通知",
+  "category_raw": "通函 - [其他]",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于分拆所属子公司至香港联合交易所有限公司主板上市的进展公告",
+  "category_raw": "01010501||010112||012399",
+  "category": "restructuring",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "有關收購目標公司51%股權的須予披露交易補充協議",
+  "category_raw": "公告及通告 - [須予披露的交易]",
+  "category": "restructuring",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "中国移动：关于执行董事辞任的公告",
+  "category_raw": "01010503||010113||012303",
+  "category": "management",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "云南铝业股份有限公司关于公司董事离任的公告",
+  "category_raw": "01010503||010112||012303",
+  "category": "management",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "建議重選及選舉董事",
+  "category_raw": "公告及通告 - [在股東批准的情況下重選或委任董事 &#x2f; 更換董事或重要行政職能或職責的變更]",
+  "category": "management",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于公司独立董事辞职的公告",
+  "category_raw": "01010503||010112||012303",
+  "category": "management",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "委任首席獨立非執行董事及董事名單與其角色和職能",
+  "category_raw": "公告及通告 - [更換董事或重要行政職能或職責的變更 &#x2f; 董事名單和他們的地位和作用]",
+  "category": "management",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "安琪酵母股份有限公司关于公司高级管理人员离任的公告",
+  "category_raw": "01010503||010113||012303",
+  "category": "management",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于完成发行于2027年到期的86.24亿港元及于2033年到期的86.24亿港元可转换为公司H股的公司债券的公告",
+  "category_raw": "01010503||010112||010999",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于完成配售H股的公告",
+  "category_raw": "01010501||010112||010115||012399",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于完成发行人民币2,180百万元于2027年到期的美元结算零息可转换债券的公告",
+  "category_raw": "01010503||010112||010115||010999",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于拟发行人民币2,180百万元于2027年到期的美元结算零息可转换债券的公告",
+  "category_raw": "01010503||010112||010115||010999",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "安琪酵母股份有限公司向不特定对象发行可转换公司债券预案",
+  "category_raw": "01010503||010113||010901",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "安琪酵母股份有限公司关于向不特定对象发行可转换公司债券预案披露的提示性公告",
+  "category_raw": "01010503||010113||010901||010999",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "安琪酵母股份有限公司关于向不特定对象发行可转换公司债券摊薄即期回报、采取填补措施及相关主体承诺的公告",
+  "category_raw": "01010503||010113||010999||012399",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "安琪酵母股份有限公司向不特定对象发行可转换公司债券方案的论证分析报告",
+  "category_raw": "01010503||010113||010901||010999",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于拟发行人民币67.8亿元于2027年到期之美元结算零息可转换债券的公告",
+  "category_raw": "01010503||010113||010999",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于2025年度向特定对象发行A股股票导致控股股东及其一致行动人权益变动的提示性公告",
+  "category_raw": "01010503||010113||010799||011501",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于2025年度向特定对象发行A股股票上市公告的提示性公告",
+  "category_raw": "01010503||010113||010799",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "顾家家居股份有限公司2025年度向特定对象发行A股股票上市公告书",
+  "category_raw": "01010503||010113||010713",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于2025年度向特定对象发行A股股票导致5%以上股东及其一致行动人权益变动触及1%刻度的提示性公告",
+  "category_raw": "01010503||010113||010799||011501",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于2025年度向特定对象发行A股股票发行结果暨股本变动公告",
+  "category_raw": "01010501||010113||012399",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于2025年度向特定对象发行A股股票发行情况的提示性公告",
+  "category_raw": "01010503||010113||010799",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "顾家家居股份有限公司2025年度向特定对象发行A股股票发行情况报告书",
+  "category_raw": "01010503||010113||010799",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "广发证券关于顾家家居2025年度向特定对象发行A股股票之发行过程和认购对象合规性的报告",
+  "category_raw": "01010501||010113||012399",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "顾家家居股份有限公司向特定对象发行股票证券募集说明书（注册稿）",
+  "category_raw": "01010501||010113||010705",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于2025年度向特定对象发行A股股票申请获得中国证券监督管理委员会同意注册批复的公告",
+  "category_raw": "01010503||010113||010703",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于调整公司2025年度向特定对象发行股票发行价格和发行数量的公告",
+  "category_raw": "01010503||010113||010799",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于提请股东会延长授权董事会及其授权人士全权办理公司向不特定对象发行可转换公司债券相关事宜的公告",
+  "category_raw": "01010503||010113||010999",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于延长公司向不特定对象发行可转换公司债券股东会决议有效期的公告",
+  "category_raw": "01010503||010113||010999||011905",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "向不特定对象发行可转换公司债券募集说明书（注册稿）",
+  "category_raw": "01010501||010113||010905",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于向不特定对象发行可转换公司债券提交募集说明书（注册稿）等申请文件更新的提示性公告",
+  "category_raw": "01010501||01010503||010113||010905||010999",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于向不特定对象发行可转换公司债券申请获得上海证券交易所上市审核委员会审核通过的公告",
+  "category_raw": "01010503||010113||010999",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "山东百龙创园生物科技股份有限公司向不特定对象发行可转换公司债券证券募集说明书（申报稿）",
+  "category_raw": "01010501||010113||010905",
+  "category": "financing",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "翌日披露報表 - 已發行股份變動及股份購回",
+  "category_raw": "翌日披露報表 - [其他 &#x2f; 股份購回]",
+  "category": "buyback",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于变更以集中竞价方式回购公司A股股份方案的公告",
+  "category_raw": "01010503||010112||011513",
+  "category": "buyback",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于回购部分社会公众股份方案的公告暨回购股份报告书",
+  "category_raw": "01010503||010112||011513",
+  "category": "buyback",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于回购公司股份方案的公告暨回购股份报告书",
+  "category_raw": "01010503||010112||010115||011513",
+  "category": "buyback",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "自願公告-有關H股股份購回計劃",
+  "category_raw": "公告及通告 - [其他-雜項]",
+  "category": "buyback",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "股东询价转让计划书",
+  "category_raw": "01010503||010112||010115||011501",
+  "category": "shareholding",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "中信建投证券股份有限公司关于宁德时代新能源科技股份有限公司股东向特定机构投资者询价转让股份的核查报告",
+  "category_raw": "01010701||010109||010112||010115||0129",
+  "category": "shareholding",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "中国国际金融股份有限公司关于宁德时代新能源科技股份有限公司股东向特定机构投资者询价转让股份相关资格的核查意见",
+  "category_raw": "010109||010112||010115||0129",
+  "category": "shareholding",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于控股股东部分股份解除质押的公告",
+  "category_raw": "01010503||010113||012307",
+  "category": "shareholding",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "简式权益变动报告书",
+  "category_raw": "01011101||010112||011501",
+  "category": "shareholding",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于公司实际控制人股份质押及解除质押的公告",
+  "category_raw": "01010503||010112||010115||012307",
+  "category": "shareholding",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "关于大股东减持计划期限届满暨减持结果的公告",
+  "category_raw": "01010503||010112||011501",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "河南神火煤电股份有限公司关于持股5%以上股东减持计划实施完毕的公告",
+  "category_raw": "01010503||010112||011501",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "河南神火煤电股份有限公司关于持股5%以上股东减持股份预披露公告",
+  "category_raw": "01010503||010112||011501||012399",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于公司实际控制人的一致行动人减持计划实施完成的公告",
+  "category_raw": "01010503||010112||010115||011501",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于持股5%以上股东减持计划实施完成的公告",
+  "category_raw": "01010503||010112||010115||011501",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于公司实际控制人的一致行动人减持股份的预披露公告",
+  "category_raw": "01010503||010112||010115||011501||012399",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于持股5%以上股东减持股份的预披露公告",
+  "category_raw": "01010503||010112||010115||011501||012399",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "雅戈尔时尚股份有限公司关于控股股东增持公司股份及后续增持计划公告",
+  "category_raw": "01010503||010113||011501",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "2026年半年度业绩预告",
+  "category_raw": "01010503||010112||012111",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "2026年第一季度业绩快报",
+  "category_raw": "01010503||010112||012111",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "云南铝业股份有限公司2026年半年度业绩预告",
+  "category_raw": "01010503||010112||012111",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "河南神火煤电股份有限公司2026年半年度业绩预告",
+  "category_raw": "01010503||010112||012111",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "河南神火煤电股份有限公司2026年第一季度业绩预增公告",
+  "category_raw": "01010503||010112||012111",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "洛阳钼业2026年半年度业绩预增公告",
+  "category_raw": "01010503||010113||012111",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "2026年第一季度业绩快报公告",
+  "category_raw": "01010503||010113||012111",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "盈利預喜",
+  "category_raw": "公告及通告 - [盈利警告 &#x2f; 內幕消息]",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "內幕消息-正面盈利預告",
+  "category_raw": "公告及通告 - [內幕消息 &#x2f; 盈利警告]",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "內幕消息盈利警告",
+  "category_raw": "公告及通告 - [盈利警告 &#x2f; 內幕消息]",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "2026年半年度業績預告",
+  "category_raw": "公告及通告 - [內幕消息 &#x2f; 盈利警告 &#x2f; 海外監管公告-其他]",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "盈利警告",
+  "category_raw": "公告及通告 - [盈利警告 &#x2f; 內幕消息]",
+  "category": "earnings_alert",
+  "importance": "major"
+ },
+ {
+  "market": "A股",
+  "title": "关于参与投资的基金完成私募投资基金备案的公告",
+  "category_raw": "01010503||010112||010115||011705",
+  "category": "other",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "关于参与投资厦门时代怡远创业投资基金合伙企业（有限合伙）的公告",
+  "category_raw": "01010503||010112||010115||011705",
+  "category": "other",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "H股市场公告",
+  "category_raw": "01010501||010113||012399",
+  "category": "other",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "截至2026年6月30日之月報表",
+  "category_raw": "月報表",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "港股",
+  "title": "自願公告 - 依達方 (依沃西，PD-1 &#x2f;VEGF) 第三個適應症上市申請獲得國家藥品監督管理局批准，用於一線治療SQ-NSCLC",
+  "category_raw": "公告及通告 - [其他-業務發展最新情況]",
+  "category": "other",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "致非登記持有人之通知信函及回條&ndash;以電子方式發布公司通訊之安排",
+  "category_raw": "通函 - [其他]",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "A股",
+  "title": "福耀玻璃2026年度第二期中期票据发行情况公告",
+  "category_raw": "01010503||010113||011103",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "发行人及保荐机构关于审核问询函的回复（豁免版）",
+  "category_raw": "01010501||010113||012399",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "於香港聯合交易所有限公司上市之通告 - 騰訊控股有限公司最高限額為300億美元之全球中期票據計劃",
+  "category_raw": "債券及結構性產品 - [上市通告 - 債務證券發行計劃]",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "人民幣100億元以人民幣計值的優先票據的定價",
+  "category_raw": "公告及通告 - [發行債務證券 &#x2f; 海外監管公告-證券發行及相關事宜]",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "福耀玻璃2026年度第一期超短期融资券发行情况公告",
+  "category_raw": "01010503||010113||011103",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "A股",
+  "title": "福耀玻璃2026年度第三期科技创新债券发行情况公告",
+  "category_raw": "01010503||010113||013999",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "港股",
+  "title": "須予披露的交易 - 配售建滔積層板控股有限公司之股份",
+  "category_raw": "公告及通告 - [須予披露的交易]",
+  "category": "restructuring",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "(1)須予披露及關連交易 收購聯發物業100%股權 (2)持續關連交易 委託管理協議 (3)內幕消息 終止有關收購建發城服之諒解備忘錄",
+  "category_raw": "公告及通告 - [須予披露的交易 &#x2f; 關連交易 &#x2f; 持續關連交易 &#x2f; 內幕消息]",
+  "category": "restructuring",
+  "importance": "major"
+ },
+ {
+  "market": "港股",
+  "title": "有關可能收購事項之諒解備忘錄",
+  "category_raw": "公告及通告 - [內幕消息]",
+  "category": "restructuring",
+  "importance": "major"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "8-K|2.02,9.01",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "8-K|5.02",
+  "category": "management",
+  "importance": "normal"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "8-K|1.01,2.03,9.01",
+  "category": "restructuring",
+  "importance": "normal"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "8-K|2.01,9.01",
+  "category": "restructuring",
+  "importance": "major"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "8-K|4.02",
+  "category": "legal",
+  "importance": "major"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "8-K|8.01",
+  "category": "other",
+  "importance": "minor"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "10-K|",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "20-F|",
+  "category": "periodic",
+  "importance": "normal"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "SC 13D/A|",
+  "category": "shareholding",
+  "importance": "major"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "SC 13G|",
+  "category": "shareholding",
+  "importance": "normal"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "4|",
+  "category": "shareholding",
+  "importance": "minor"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "424B5|",
+  "category": "financing",
+  "importance": "normal"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "DEF 14A|",
+  "category": "governance",
+  "importance": "minor"
+ },
+ {
+  "market": "美股",
+  "title": "ignored",
+  "category_raw": "6-K|",
+  "category": "other",
+  "importance": "minor"
+ }
+]

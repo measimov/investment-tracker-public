@@ -59,24 +59,42 @@ def _user_id(db, username="demo"):
 
 
 def _hold(db, user_id, symbol, market, quantity="100"):
-    db.add(Holding(
-        user_id=user_id, symbol=symbol, market=market, quantity=Decimal(quantity),
-        avg_cost=Decimal("1"), total_cost=Decimal(quantity), currency="CNY",
-    ))
+    db.add(
+        Holding(
+            user_id=user_id,
+            symbol=symbol,
+            market=market,
+            quantity=Decimal(quantity),
+            avg_cost=Decimal("1"),
+            total_cost=Decimal(quantity),
+            currency="CNY",
+        )
+    )
 
 
 def _row(db, symbol, market, source, industry, *, age_days=0):
-    db.add(SecurityIndustry(
-        symbol=symbol, market=market, source=source, industry=industry, raw={},
-        fetched_at=datetime.now(timezone.utc) - timedelta(days=age_days),
-    ))
+    db.add(
+        SecurityIndustry(
+            symbol=symbol,
+            market=market,
+            source=source,
+            industry=industry,
+            raw={},
+            fetched_at=datetime.now(timezone.utc) - timedelta(days=age_days),
+        )
+    )
 
 
 def _rule(db, user_id, symbol, market, industry):
-    db.add(SecurityRule(
-        user_id=user_id, rule_type="INDUSTRY", symbol=symbol, market=market,
-        payload={"industry": industry},
-    ))
+    db.add(
+        SecurityRule(
+            user_id=user_id,
+            rule_type="INDUSTRY",
+            symbol=symbol,
+            market=market,
+            payload={"industry": industry},
+        )
+    )
 
 
 # ---------------------------------------------------------------- 纯函数
@@ -85,7 +103,9 @@ def _rule(db, user_id, symbol, market, industry):
 def test_parse_eastmoney_hk_fixture():
     parsed = svc.parse_eastmoney_industries("港股", _fixture("eastmoney/hkf10_orgprofile.json"))
     assert {symbol: item["industry"] for symbol, item in parsed.items()} == {
-        "00700": "软件服务", "00883": "石油及天然气", "02313": "纺织及服饰",
+        "00700": "软件服务",
+        "00883": "石油及天然气",
+        "02313": "纺织及服饰",
     }
     assert parsed["00700"]["raw"]["SECUCODE"] == "00700.HK"
 
@@ -164,9 +184,7 @@ def test_eastmoney_get_wraps_http_and_json_failures(monkeypatch):
     monkeypatch.setattr(svc.requests, "get", lambda *a, **k: _Response(503, {}))
     with pytest.raises(svc.EastmoneyError, match="请求失败"):
         svc.fetch_eastmoney_industries("港股", ["00700"])
-    monkeypatch.setattr(
-        svc.requests, "get", lambda *a, **k: _Response(200, ValueError("no json"))
-    )
+    monkeypatch.setattr(svc.requests, "get", lambda *a, **k: _Response(200, ValueError("no json")))
     with pytest.raises(svc.EastmoneyError, match="JSON"):
         svc.fetch_eastmoney_industries("港股", ["00700"])
 
@@ -177,7 +195,8 @@ def test_eastmoney_get_wraps_http_and_json_failures(monkeypatch):
     with pytest.raises(svc.EastmoneyError):
         svc.fetch_eastmoney_industries("港股", ["00700"])
     monkeypatch.setattr(
-        svc.requests, "get",
+        svc.requests,
+        "get",
         lambda *a, **k: _Response(200, _fixture("eastmoney/hkf10_orgprofile.json")),
     )
     assert svc.fetch_eastmoney_industries("港股", ["00700"])["00700"]["industry"] == "软件服务"
@@ -242,7 +261,11 @@ def test_resolve_priority_rule_over_official_over_eastmoney(db):
     resolved = svc.resolve_industries(db, keys, uid)
     assert resolved[("600036", "A股")]["industry"] == "银行"
     assert resolved[("600036", "A股")]["source"] == "tushare"
-    assert resolved[("00700", "港股")] == {"industry": "互联网", "source": "rule", "fetched_at": None}
+    assert resolved[("00700", "港股")] == {
+        "industry": "互联网",
+        "source": "rule",
+        "fetched_at": None,
+    }
     assert resolved[("PDD", "美股")]["industry"] == "电商"
     assert resolved[("PDD", "美股")]["source"] == "rule"
     assert resolved[("ZZZZ", "美股")] == {"industry": None, "source": None, "fetched_at": None}
@@ -316,8 +339,13 @@ def _sources_for_full_scope(monkeypatch):
     return _Sources(
         monkeypatch,
         tushare={"600036": "银行"},
-        edgar={"PDD": {"sic": "7389", "sic_description": "Services-Business Services, NEC",
-                       "cik": 1737806}},
+        edgar={
+            "PDD": {
+                "sic": "7389",
+                "sic_description": "Services-Business Services, NEC",
+                "cik": 1737806,
+            }
+        },
         eastmoney={
             "A股": {"000001": "银行"},
             "B股": {"900901": "计算机软件"},
@@ -427,15 +455,14 @@ def test_sync_eastmoney_batches(db, monkeypatch):
     sources = _Sources(monkeypatch, eastmoney={"港股": {}})
     keys = [(f"{i:05d}", "港股") for i in range(1, svc.EASTMONEY_BATCH_SIZE + 6)]
     svc.sync_security_industries(db, keys=keys, eastmoney_fetcher=sources.fetch_eastmoney)
-    assert [len(chunk) for _, chunk in sources.calls["eastmoney"]] == [
-        svc.EASTMONEY_BATCH_SIZE, 5
-    ]
+    assert [len(chunk) for _, chunk in sources.calls["eastmoney"]] == [svc.EASTMONEY_BATCH_SIZE, 5]
 
 
 def test_sync_edgar_stops_after_consecutive_failures(db, monkeypatch):
     symbols = ["AAA", "BBB", "CCC", "DDD", "EEE"]
     sources = _Sources(
-        monkeypatch, edgar={s: requests.ConnectionError("down") for s in symbols},
+        monkeypatch,
+        edgar={s: requests.ConnectionError("down") for s in symbols},
         eastmoney={"美股": {}},
     )
     result = svc.sync_security_industries(
@@ -516,7 +543,10 @@ async def test_industries_endpoint_scoped_to_current_user(db, api_users):
         assert body[("00700", "港股")]["source"] == "eastmoney"
         assert body[("PDD", "美股")]["source"] == "edgar"
         assert body[("D05", "新加坡股")] == {
-            "symbol": "D05", "market": "新加坡股", "industry": "银行", "source": "rule",
+            "symbol": "D05",
+            "market": "新加坡股",
+            "industry": "银行",
+            "source": "rule",
             "fetched_at": None,
         }
 
@@ -536,18 +566,36 @@ async def test_industry_rule_api_validation(db, api_users):
         async def post(body):
             return await client.post("/api/security-rules", headers=auth, json=body)
 
-        ok = await post({"rule_type": "INDUSTRY", "symbol": "00700", "market": "港股",
-                         "payload": {"industry": "  互联网 "}})
+        ok = await post(
+            {
+                "rule_type": "INDUSTRY",
+                "symbol": "00700",
+                "market": "港股",
+                "payload": {"industry": "  互联网 "},
+            }
+        )
         assert ok.status_code == 201, ok.text
         assert ok.json()["payload"] == {"industry": "互联网"}
         for body in (
             {"rule_type": "INDUSTRY", "symbol": "00883", "market": "港股"},
-            {"rule_type": "INDUSTRY", "symbol": "00883", "market": "港股",
-             "payload": {"industry": "   "}},
-            {"rule_type": "INDUSTRY", "symbol": "00883", "market": "港股",
-             "payload": {"industry": "x" * 51}},
+            {
+                "rule_type": "INDUSTRY",
+                "symbol": "00883",
+                "market": "港股",
+                "payload": {"industry": "   "},
+            },
+            {
+                "rule_type": "INDUSTRY",
+                "symbol": "00883",
+                "market": "港股",
+                "payload": {"industry": "x" * 51},
+            },
             {"rule_type": "INDUSTRY", "symbol": "00883", "payload": {"industry": "能源"}},
-            {"rule_type": "INDUSTRY", "symbol": "00883", "market": "港股",
-             "payload": {"industry": "能源", "extra": 1}},
+            {
+                "rule_type": "INDUSTRY",
+                "symbol": "00883",
+                "market": "港股",
+                "payload": {"industry": "能源", "extra": 1},
+            },
         ):
             assert (await post(body)).status_code == 422, body

@@ -5,12 +5,14 @@ reset_tables 的模型列表由各测试文件自持（RESET_MODELS 常量）：
 """
 
 import importlib.util
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from sqlalchemy import text
 
 from app.models.broker_account import BrokerAccount
 from app.models.holding import Holding
@@ -137,3 +139,24 @@ PCT_RELISTING_PAYLOAD = {
     "old_currency": "HKD",
     "name": "柏能集团",
 }
+
+
+@contextmanager
+def drifted_last_seen_column(db):
+    """临时把 utterances.last_seen_at 改名，复现列漂移导致的真实 SQL 错误。"""
+    db.execute(
+        text(
+            "ALTER TABLE xueqiu_archiver_utterances RENAME COLUMN last_seen_at TO last_seen_at_drift"
+        )
+    )
+    db.commit()
+    try:
+        yield
+    finally:
+        db.rollback()
+        db.execute(
+            text(
+                "ALTER TABLE xueqiu_archiver_utterances RENAME COLUMN last_seen_at_drift TO last_seen_at"
+            )
+        )
+        db.commit()

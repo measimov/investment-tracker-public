@@ -4,7 +4,8 @@ import { formatDate, formatPrice, formatQuantity } from '@/utils/helpers'
 import { holdingsLink } from '@/utils/securities'
 import type { BrokerAccount } from '@/types'
 import type { Transaction } from '@/stores/transactions'
-import { brokerAccountLabelById as labelById, isTransfer, typeLabel, typeTagKind } from './shared'
+import { accountLabel, transactionTypeLabel, transactionTypeTag } from '@/utils/labels'
+import { isTransfer } from './shared'
 import type { TransactionsListFeature } from './useTransactionsList'
 
 const props = defineProps<{ list: TransactionsListFeature; brokerAccounts: BrokerAccount[] }>()
@@ -14,7 +15,7 @@ defineEmits<{ edit: [row: Transaction] }>()
 const isMobileView = useMediaQuery('(max-width: 640px)')
 
 function brokerAccountLabelById(id: number | null | undefined) {
-  return labelById(props.brokerAccounts, id)
+  return accountLabel(props.brokerAccounts, id)
 }
 </script>
 
@@ -59,8 +60,8 @@ function brokerAccountLabelById(id: number | null | undefined) {
       </el-table-column>
       <el-table-column prop="transaction_type" label="类型" width="80">
         <template #default="{ row }">
-          <el-tag :type="typeTagKind(row.transaction_type)" size="small">
-            {{ typeLabel(row.transaction_type) }}
+          <el-tag :type="transactionTypeTag(row.transaction_type)" size="small">
+            {{ transactionTypeLabel(row.transaction_type) }}
           </el-tag>
         </template>
       </el-table-column>
@@ -83,7 +84,7 @@ function brokerAccountLabelById(id: number | null | undefined) {
       <el-table-column prop="notes" label="备注" min-width="150" show-overflow-tooltip />
       <el-table-column label="操作" width="150">
         <template #default="{ row }">
-          <template v-if="!row.import_batch_id">
+          <template v-if="!row.read_only">
             <el-button
               v-if="!isTransfer(row)"
               type="primary"
@@ -120,8 +121,8 @@ function brokerAccountLabelById(id: number | null | undefined) {
           </router-link>
           <span class="mobile-card-name">{{ row.name || row.market }}</span>
         </div>
-        <el-tag :type="typeTagKind(row.transaction_type)" size="small">
-          {{ typeLabel(row.transaction_type) }}
+        <el-tag :type="transactionTypeTag(row.transaction_type)" size="small">
+          {{ transactionTypeLabel(row.transaction_type) }}
         </el-tag>
       </div>
 
@@ -139,7 +140,7 @@ function brokerAccountLabelById(id: number | null | undefined) {
       </div>
 
       <div class="mobile-card-actions">
-        <template v-if="!row.import_batch_id">
+        <template v-if="!row.read_only">
           <el-button
             v-if="!isTransfer(row)"
             type="primary"

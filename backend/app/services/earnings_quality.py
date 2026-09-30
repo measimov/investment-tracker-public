@@ -23,6 +23,9 @@ currency_changes 等键——单币种序列（含 A股）的输出与改动前�
 
 from typing import Any, Callable, Dict, List, Optional
 
+from .edgar_facts import EDGAR_MISSING_OTHER_CURRENCY, EDGAR_ZERO_INFERENCE_MIN_VERSION
+from .payload_versions import stored_version
+
 METRIC_SEMANTICS = {
     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
@@ -131,19 +134,6 @@ def _currency_change(
     return f"{theirs or '未知'}→{ours or '未知'}"
 
 
-# EDGAR 透视行的版本（行上 `edgar_chain_version`）。v2：长期债务扩展链与已付股息链；
-# v3：按**报告币种**取数（中概 20-F 发行人为 CNY，此前只取 USD 单位——那只是最新一两年的
-# 便利折算，多年序列残缺且逐年折算率不同）。部署后美股档案需重新同步一次才会换成 v3 行
-EDGAR_PIVOT_VERSION = 3
-# 「现金流量表在而无股息概念 → 0」「本期无长期债务概念而往年有 → 0」只对 v2+ 的行成立——
-# 旧链抓的行缺这些概念只说明当时没抓，不说明公司没有（v3 只改取数币种，不影响这条前提）
-EDGAR_ZERO_INFERENCE_MIN_VERSION = 2
-# 行上 `edgar_missing_reasons[field]` 的取值：该科目在报告币种下为空、但发行人用**别的币种**
-# 披露过这个概念。只有不带这个标记的空值才是「发行人没报这个概念」——股息/长期债务的
-# 「缺概念 → 0」推断只对后者成立（透视层 security_profile_service._mark_other_currency_gaps 写入）
-EDGAR_MISSING_OTHER_CURRENCY = "other_currency_only"
-
-
 def _dividend_status(row: Dict[str, Any], absent_means_zero: Optional[Callable]) -> Optional[str]:
     """已付股东股息的来源状态：reported / not_listed（现金流量表在而未列，按 0 计）/
     other_currency_only（EDGAR：只以非报告币种披露，不混币取数 → 不可知）/ None（不可知）。"""
@@ -162,9 +152,14 @@ def edgar_missing_other_currency(row: Optional[Dict[str, Any]], field: str) -> b
     return reasons.get(field) == EDGAR_MISSING_OTHER_CURRENCY
 
 
+def edgar_zero_inference_allowed(row: Optional[Dict[str, Any]]) -> bool:
+    """该 EDGAR 透视行由支持「缺概念 → 0」推断的概念链抓取（edgar_chain_version ≥ 2）。"""
+    return stored_version(row, "edgar_chain_version") >= EDGAR_ZERO_INFERENCE_MIN_VERSION
+
+
 def _edgar_absent_means_zero(row: Dict[str, Any]) -> bool:
     return (
-        int(row.get("edgar_chain_version") or 0) >= EDGAR_ZERO_INFERENCE_MIN_VERSION
+        edgar_zero_inference_allowed(row)
         and row.get("n_cashflow_act") is not None
         and not edgar_missing_other_currency(row, "div_paid_owners")
     )
@@ -197,83 +192,110 @@ def pivot_rows_to_statements(
         # fp=FY 标记透传：美股财年不一定止于 12/31，_year_of 依赖它识别年度行；
         # currency 供格雷厄姆估值把每股盈利/净资产折成价格币种
         base = {"end_date": end_date, "fp": "FY", "currency": row.get("currency")}
-        income.append({
-            **base,
-            "total_revenue": row.get("total_revenue"),
-            "n_income_attr_p": row.get("n_income_attr_p"),
-            "sell_exp": row.get("sga_exp"),  # SGA 合并科目挂 sell_exp 位
-            "admin_exp": None,
-            # graham_screen 消费：盈利增长（EPS 优先）与利息覆盖
-            "basic_eps": row.get("basic_eps"),
-            "diluted_eps": row.get("diluted_eps"),
-            "int_exp": row.get("int_exp"),
-            "operating_income": row.get("operating_income"),
-        })
-        balance.append({
-            **base,
-            "total_assets": row.get("total_assets"),
-            "total_liab": row.get("total_liab"),
-            "accounts_receiv": row.get("accounts_receiv"),
-            "inventories": row.get("inventories"),
-            "total_cur_assets": row.get("total_cur_assets"),
-            "fix_assets": row.get("fix_assets"),
-            # graham_screen 消费：财务强度与净债务
-            "total_cur_liab": row.get("total_cur_liab"),
-            "total_debt": row.get("total_debt"),  # 港股 合计口径（PDF 映射 / Yahoo）
-            "lt_borr": row.get("lt_borr"),  # 港股 PDF：非流动借款（准则 2 的长期债务）
-            "st_borr": row.get("st_borr"),  # 港股 PDF：流动借款
-            "lt_debt": row.get("lt_debt"),  # 美股 EDGAR 长期债务口径
-            "money_cap": row.get("money_cap"),
-            # graham_screen 消费：MRQ 每股净资产；EDGAR 概念链版本（「本期无长债 → 0」的前提）
-            "total_hldr_eqy_exc_min_int": row.get("total_hldr_eqy_exc_min_int"),
-            "edgar_chain_version": row.get("edgar_chain_version"),
-            # 只以非报告币种披露的科目（lt_debt 为空时不得按「缺概念 → 0」）
-            "edgar_missing_reasons": row.get("edgar_missing_reasons"),
-        })
-        cashflow.append({
-            **base,
-            "n_cashflow_act": row.get("n_cashflow_act"),
-            "depr_fa_coga_dpba": row.get("depr_fa_coga_dpba"),
-            # graham_screen 消费：港股/美股的分红记录（已付本公司股东股息，量级）
-            "div_paid_owners": (
-                abs(row["div_paid_owners"])
-                if isinstance(row.get("div_paid_owners"), (int, float)) else None
-            ),
-            "div_paid_status": _dividend_status(row, dividend_absent_means_zero),
-        })
+        income.append(
+            {
+                **base,
+                "total_revenue": row.get("total_revenue"),
+                "n_income_attr_p": row.get("n_income_attr_p"),
+                "sell_exp": row.get("sga_exp"),  # SGA 合并科目挂 sell_exp 位
+                "admin_exp": None,
+                # graham_screen 消费：盈利增长（EPS 优先）与利息覆盖
+                "basic_eps": row.get("basic_eps"),
+                "diluted_eps": row.get("diluted_eps"),
+                "int_exp": row.get("int_exp"),
+                "operating_income": row.get("operating_income"),
+            }
+        )
+        balance.append(
+            {
+                **base,
+                "total_assets": row.get("total_assets"),
+                "total_liab": row.get("total_liab"),
+                "accounts_receiv": row.get("accounts_receiv"),
+                "inventories": row.get("inventories"),
+                "total_cur_assets": row.get("total_cur_assets"),
+                "fix_assets": row.get("fix_assets"),
+                # graham_screen 消费：财务强度与净债务
+                "total_cur_liab": row.get("total_cur_liab"),
+                "total_debt": row.get("total_debt"),  # 港股 合计口径（PDF 映射 / Yahoo）
+                "lt_borr": row.get("lt_borr"),  # 港股 PDF：非流动借款（准则 2 的长期债务）
+                "st_borr": row.get("st_borr"),  # 港股 PDF：流动借款
+                "lt_debt": row.get("lt_debt"),  # 美股 EDGAR 长期债务口径
+                "money_cap": row.get("money_cap"),
+                # graham_screen 消费：MRQ 每股净资产；EDGAR 概念链版本（「本期无长债 → 0」的前提）
+                "total_hldr_eqy_exc_min_int": row.get("total_hldr_eqy_exc_min_int"),
+                "edgar_chain_version": row.get("edgar_chain_version"),
+                # 只以非报告币种披露的科目（lt_debt 为空时不得按「缺概念 → 0」）
+                "edgar_missing_reasons": row.get("edgar_missing_reasons"),
+            }
+        )
+        cashflow.append(
+            {
+                **base,
+                "n_cashflow_act": row.get("n_cashflow_act"),
+                "depr_fa_coga_dpba": row.get("depr_fa_coga_dpba"),
+                # graham_screen 消费：港股/美股的分红记录（已付本公司股东股息，量级）
+                "div_paid_owners": (
+                    abs(row["div_paid_owners"])
+                    if isinstance(row.get("div_paid_owners"), (int, float))
+                    else None
+                ),
+                "div_paid_status": _dividend_status(row, dividend_absent_means_zero),
+            }
+        )
         revenue = row.get("total_revenue")
         cost = row.get("cost_of_revenue")
         net_income = row.get("n_income_attr_p")
         gross_margin = (
             (revenue - cost) / revenue * 100
-            if isinstance(revenue, (int, float)) and revenue
-            and isinstance(cost, (int, float))
+            if isinstance(revenue, (int, float)) and revenue and isinstance(cost, (int, float))
             else None
         )
         net_margin = (
             net_income / revenue * 100
-            if isinstance(revenue, (int, float)) and revenue
+            if isinstance(revenue, (int, float))
+            and revenue
             and isinstance(net_income, (int, float))
             else None
         )
-        fina.append({
-            **base,
-            "grossprofit_margin": gross_margin,
-            "netprofit_margin": net_margin,
-            "profit_dedt": None,  # 无扣非概念
-        })
+        fina.append(
+            {
+                **base,
+                "grossprofit_margin": gross_margin,
+                "netprofit_margin": net_margin,
+                "profit_dedt": None,  # 无扣非概念
+            }
+        )
     return {
-        "income": income, "balancesheet": balance,
-        "cashflow": cashflow, "fina_indicator": fina,
+        "income": income,
+        "balancesheet": balance,
+        "cashflow": cashflow,
+        "fina_indicator": fina,
     }
 
 
-_STATEMENT_META_KEYS = frozenset({
-    "end_date", "fp", "currency", "is_comparative", "source_period_key", "source_report_type",
-    "source_end_date", "source_url", "source_fingerprint", "source_pages", "source_by_kind",
-    "extractor_version", "prompt_version", "validation", "currency_by_kind", "unit_by_kind",
-    "derived_fields", "comparative_evidence",
-})
+_STATEMENT_META_KEYS = frozenset(
+    {
+        "end_date",
+        "fp",
+        "currency",
+        "is_comparative",
+        "source_period_key",
+        "source_report_type",
+        "source_end_date",
+        "source_url",
+        "source_fingerprint",
+        "source_pages",
+        "source_by_kind",
+        "extractor_version",
+        "prompt_version",
+        "validation",
+        "currency_by_kind",
+        "unit_by_kind",
+        "derived_fields",
+        "comparative_evidence",
+    }
+)
 
 
 def merge_hk_statement_rows(datasets: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -328,7 +350,8 @@ def market_statements(
         )
     if market == "港股":
         return pivot_rows_to_statements(
-            merge_hk_statement_rows(datasets), dividend_absent_means_zero=_hk_absent_means_zero,
+            merge_hk_statement_rows(datasets),
+            dividend_absent_means_zero=_hk_absent_means_zero,
         )
     return {
         key: datasets.get(key, [])
@@ -397,12 +420,14 @@ def compute_earnings_quality(
             "receivable_vs_revenue_gap_pp": _round(
                 receivable_growth - revenue_growth
                 if receivable_growth is not None and revenue_growth is not None
-                else None, 2,
+                else None,
+                2,
             ),
             "inventory_vs_revenue_gap_pp": _round(
                 inventory_growth - revenue_growth
                 if inventory_growth is not None and revenue_growth is not None
-                else None, 2,
+                else None,
+                2,
             ),
             "gross_margin": _num(fina.get(year), "grossprofit_margin"),
             "net_margin": _num(fina.get(year), "netprofit_margin"),
@@ -508,7 +533,10 @@ def _beneish_m_score(
     aqi = None
     if all(v is not None for v in (cur_assets, ppe, total_assets)) and total_assets:
         soft_cur = 1 - (cur_assets + ppe) / total_assets
-        if all(v is not None for v in (prev_assets_cur, ppe_prev, total_assets_prev)) and total_assets_prev:
+        if (
+            all(v is not None for v in (prev_assets_cur, ppe_prev, total_assets_prev))
+            and total_assets_prev
+        ):
             soft_prev = 1 - (prev_assets_cur + ppe_prev) / total_assets_prev
             aqi = _ratio(soft_cur, soft_prev)
     sgi = _ratio(revenue, revenue_prev)
@@ -522,14 +550,27 @@ def _beneish_m_score(
     tata = _ratio((ni - cfo) if ni is not None and cfo is not None else None, total_assets)
 
     factors = {
-        "DSRI": dsri, "GMI": gmi, "AQI": aqi, "SGI": sgi,
-        "DEPI": depi, "SGAI": sgai, "LVGI": lvgi, "TATA": tata,
+        "DSRI": dsri,
+        "GMI": gmi,
+        "AQI": aqi,
+        "SGI": sgi,
+        "DEPI": depi,
+        "SGAI": sgai,
+        "LVGI": lvgi,
+        "TATA": tata,
     }
     if any(value is None for value in factors.values()):
         return None
     score = (
-        -4.84 + 0.92 * dsri + 0.528 * gmi + 0.404 * aqi + 0.892 * sgi
-        + 0.115 * depi - 0.172 * sgai + 4.679 * tata - 0.327 * lvgi
+        -4.84
+        + 0.92 * dsri
+        + 0.528 * gmi
+        + 0.404 * aqi
+        + 0.892 * sgi
+        + 0.115 * depi
+        - 0.172 * sgai
+        + 4.679 * tata
+        - 0.327 * lvgi
     )
     return {
         "score": round(score, 3),

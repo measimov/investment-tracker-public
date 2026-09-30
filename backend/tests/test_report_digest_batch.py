@@ -17,7 +17,7 @@ from app.models.security_profile import SecurityProfileData
 from app.models.user import User
 from app.services import report_digest_batch_jobs as batch
 from app.services.security_analysis_batch_jobs import NoBatchTargetsError
-from app.services.security_profile_service import upsert_profile_row
+from app.services.profile_store import upsert_profile_row
 
 from .helpers import reset_tables
 
@@ -27,16 +27,25 @@ def _stub_statement_extraction(monkeypatch):
     """港股目标会顺带跑三张报表抽取（真实实现要下载披露易 PDF 并调 LLM）：本文件只测
     摘要批量骨架，默认打成零产出；专测见 test_hk_targets_attach_statement_outcome。"""
     monkeypatch.setattr(
-        batch, "ensure_report_statements",
+        batch,
+        "ensure_report_statements",
         lambda *args, **kwargs: {
-            "total": 0, "completed": 0, "generated": 0, "failed": 0,
-            "permanently_failed": 0, "gaps": [], "fatal": None,
+            "total": 0,
+            "completed": 0,
+            "generated": 0,
+            "failed": 0,
+            "permanently_failed": 0,
+            "gaps": [],
+            "fatal": None,
         },
     )
 
+
 JOB_TYPES = [
-    "report_digest_batch", "security_analysis_batch",
-    "security_analysis", "report_digest_backfill",
+    "report_digest_batch",
+    "security_analysis_batch",
+    "security_analysis",
+    "report_digest_backfill",
 ]
 
 
@@ -45,38 +54,61 @@ def db():
     session = SessionLocal()
     try:
         reset_tables(session, [SecurityProfileData, Holding])
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(JOB_TYPES)
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.in_(JOB_TYPES)).delete(
+            synchronize_session=False
+        )
         session.commit()
         yield session
         session.rollback()
         reset_tables(session, [SecurityProfileData, Holding])
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(JOB_TYPES)
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.in_(JOB_TYPES)).delete(
+            synchronize_session=False
+        )
         session.commit()
     finally:
         session.close()
 
 
 def _hold(db, symbol: str, market: str, user_id: int = 1):
-    db.add(Holding(
-        user_id=user_id, symbol=symbol, name=symbol, market=market,
-        quantity=Decimal("100"), avg_cost=Decimal("10"),
-        total_cost=Decimal("1000"), currency="CNY",
-    ))
+    db.add(
+        Holding(
+            user_id=user_id,
+            symbol=symbol,
+            name=symbol,
+            market=market,
+            quantity=Decimal("100"),
+            avg_cost=Decimal("10"),
+            total_cost=Decimal("1000"),
+            currency="CNY",
+        )
+    )
     db.commit()
 
 
-def _ok(symbol, *, total=8, completed=4, generated=4, remaining=4, gaps=None,
-        failed=0, fatal=None, permanently_failed=0, plan_incomplete=False):
+def _ok(
+    symbol,
+    *,
+    total=8,
+    completed=4,
+    generated=4,
+    remaining=4,
+    gaps=None,
+    failed=0,
+    fatal=None,
+    permanently_failed=0,
+    plan_incomplete=False,
+):
     return {
-        "total": total, "completed": completed, "generated": generated,
-        "failed": failed, "permanently_failed": permanently_failed,
+        "total": total,
+        "completed": completed,
+        "generated": generated,
+        "failed": failed,
+        "permanently_failed": permanently_failed,
         "plan_incomplete": plan_incomplete,
-        "remaining": remaining, "pending_periods": [],
-        "gaps": gaps or [], "fatal": fatal,
+        "remaining": remaining,
+        "pending_periods": [],
+        "gaps": gaps or [],
+        "fatal": fatal,
     }
 
 
@@ -108,15 +140,17 @@ def test_preview_counts_are_db_only(db, monkeypatch):
     """预览必须纯 DB 统计：外呼被显式炸掉仍能工作。"""
     from app.services import report_fetchers
 
-    for name in ("cninfo_search_reports", "hkex_annual_reports"):
+    for name in ("cninfo_search_reports", "hkex_reports"):
         monkeypatch.setattr(
-            report_fetchers, name,
+            report_fetchers,
+            name,
             lambda *a, **kw: (_ for _ in ()).throw(AssertionError("预览不得外呼")),
         )
     _hold(db, "600036", "A股")
     _hold(db, "00700", "港股")
-    upsert_profile_row(db, "600036", "A股", "report_digest", "20251231|annual",
-                       _current_digest_payload())
+    upsert_profile_row(
+        db, "600036", "A股", "report_digest", "20251231|annual", _current_digest_payload()
+    )
     db.commit()
 
     preview = batch.preview_digest_backfill(db, 1)
@@ -147,16 +181,30 @@ def test_preview_counts_only_rows_the_readers_would_use(db):
     """
     _hold(db, "600036", "A股")
     # 1 份当前有效 + 1 份封顶失败 + 1 份版本过期：只有第一份算数
-    upsert_profile_row(db, "600036", "A股", "report_digest", "20251231|annual",
-                       _current_digest_payload())
-    upsert_profile_row(db, "600036", "A股", "report_digest", "20241231|annual",
-                       _current_digest_payload(status="failed"))
-    upsert_profile_row(db, "600036", "A股", "report_digest", "20231231|annual",
-                       {"status": "ok"})  # 缺版本字段 = 历史 v1 行
+    upsert_profile_row(
+        db, "600036", "A股", "report_digest", "20251231|annual", _current_digest_payload()
+    )
+    upsert_profile_row(
+        db,
+        "600036",
+        "A股",
+        "report_digest",
+        "20241231|annual",
+        _current_digest_payload(status="failed"),
+    )
+    upsert_profile_row(
+        db, "600036", "A股", "report_digest", "20231231|annual", {"status": "ok"}
+    )  # 缺版本字段 = 历史 v1 行
     _hold(db, "00700", "港股")
     # 00700 只有一份过期行：等价于"一份摘要都没有"
-    upsert_profile_row(db, "00700", "港股", "report_digest", "20251231|annual",
-                       _current_digest_payload(extractor_version=1))
+    upsert_profile_row(
+        db,
+        "00700",
+        "港股",
+        "report_digest",
+        "20251231|annual",
+        _current_digest_payload(extractor_version=1),
+    )
     db.commit()
 
     preview = batch.preview_digest_backfill(db, 1)
@@ -235,9 +283,13 @@ def test_fatal_kind_aborts_batch(db, monkeypatch, kind, message):
     """
     _hold(db, "600036", "A股")
     _hold(db, "600000", "A股")
-    job, calls = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(s, generated=0, failed=1, fatal={"kind": kind, "message": message}),
-    ])
+    job, calls = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(s, generated=0, failed=1, fatal={"kind": kind, "message": message}),
+        ],
+    )
     assert job["status"] == "failed"
     assert message[:20] in (job.get("abort_reason") or "")
     assert job["failed_count"] == 1
@@ -253,13 +305,19 @@ def test_abort_does_not_depend_on_gap_wording(db, monkeypatch):
     """
     _hold(db, "600036", "A股")
     _hold(db, "600000", "A股")
-    job, calls = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(
-            s, generated=0, failed=1,
-            gaps=["LLM key missing"],  # 文案完全变了
-            fatal={"kind": "llm_not_configured", "message": "LLM key missing"},
-        ),
-    ])
+    job, calls = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(
+                s,
+                generated=0,
+                failed=1,
+                gaps=["LLM key missing"],  # 文案完全变了
+                fatal={"kind": "llm_not_configured", "message": "LLM key missing"},
+            ),
+        ],
+    )
     assert job["status"] == "failed"
     assert len(calls) == 1
 
@@ -272,11 +330,22 @@ def test_all_reports_failed_is_not_counted_as_success(db, monkeypatch):
     """
     _hold(db, "600036", "A股")
     _hold(db, "600000", "A股")
-    job, _ = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(s, total=4, completed=0, generated=0, failed=4, remaining=0,
-                      gaps=["20241231 摘要生成失败"]),
-        lambda s: _ok(s, total=4, completed=4, generated=0, failed=0, remaining=0),
-    ])
+    job, _ = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(
+                s,
+                total=4,
+                completed=0,
+                generated=0,
+                failed=4,
+                remaining=0,
+                gaps=["20241231 摘要生成失败"],
+            ),
+            lambda s: _ok(s, total=4, completed=4, generated=0, failed=0, remaining=0),
+        ],
+    )
     assert job["failed_count"] == 1
     assert job["success_count"] == 1  # 全缓存命中的那只仍算成功
     assert job["digests_generated"] == 0
@@ -291,10 +360,21 @@ def test_consecutive_all_failed_symbols_stop_early(db, monkeypatch):
     """
     for index in range(5):
         _hold(db, f"60000{index}", "A股")
-    job, calls = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(s, total=4, completed=0, generated=0, failed=4, remaining=0,
-                      gaps=["报告下载或章节抽取失败"] * 4),
-    ])
+    job, calls = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(
+                s,
+                total=4,
+                completed=0,
+                generated=0,
+                failed=4,
+                remaining=0,
+                gaps=["报告下载或章节抽取失败"] * 4,
+            ),
+        ],
+    )
     assert job["status"] == "failed"
     assert "连续" in (job.get("abort_reason") or "")
     assert len(calls) == batch.MAX_CONSECUTIVE_FAILURES  # 没跑完 5 只
@@ -309,15 +389,27 @@ def test_all_reports_permanently_failed_is_not_success(db, monkeypatch):
     """
     _hold(db, "600036", "A股")
     _hold(db, "600000", "A股")
-    job, _ = _run(db, monkeypatch, outcomes=[
-        # 第一只：全部封顶（摘要封顶 + section 封顶混合也一样）
-        lambda s: _ok(s, total=4, completed=0, generated=0, failed=0,
-                      remaining=0, permanently_failed=4,
-                      gaps=["摘要生成失败（已封顶）"] * 4),
-        # 第二只：3 份缓存命中 + 1 份封顶 = 有缺口的成功
-        lambda s: _ok(s, total=4, completed=3, generated=0, failed=0,
-                      remaining=0, permanently_failed=1),
-    ])
+    job, _ = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            # 第一只：全部封顶（摘要封顶 + section 封顶混合也一样）
+            lambda s: _ok(
+                s,
+                total=4,
+                completed=0,
+                generated=0,
+                failed=0,
+                remaining=0,
+                permanently_failed=4,
+                gaps=["摘要生成失败（已封顶）"] * 4,
+            ),
+            # 第二只：3 份缓存命中 + 1 份封顶 = 有缺口的成功
+            lambda s: _ok(
+                s, total=4, completed=3, generated=0, failed=0, remaining=0, permanently_failed=1
+            ),
+        ],
+    )
     assert job["status"] == "succeeded"  # 单只失败不中止整批
     assert job["failed_count"] == 1
     assert job["success_count"] == 1
@@ -335,11 +427,21 @@ def test_incomplete_plan_with_no_output_is_failure_and_trips_early_stop(db, monk
     """
     for index in range(5):
         _hold(db, f"60000{index}", "A股")
-    job, calls = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(s, total=0, completed=0, generated=0, remaining=0,
-                      plan_incomplete=True,
-                      gaps=["年报清单检索失败或不完整（数据源故障）"]),
-    ])
+    job, calls = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(
+                s,
+                total=0,
+                completed=0,
+                generated=0,
+                remaining=0,
+                plan_incomplete=True,
+                gaps=["年报清单检索失败或不完整（数据源故障）"],
+            ),
+        ],
+    )
     assert job["status"] == "failed"
     assert "连续" in (job.get("abort_reason") or "")
     assert len(calls) == batch.MAX_CONSECUTIVE_FAILURES
@@ -355,12 +457,22 @@ def test_incomplete_plan_with_output_is_still_not_success(db, monkeypatch):
     """
     for index in range(5):
         _hold(db, f"60000{index}", "A股")
-    job, calls = _run(db, monkeypatch, outcomes=[
-        # 半年报生成成功 + 年报清单检索失败
-        lambda s: _ok(s, total=1, completed=1, generated=1, remaining=0,
-                      plan_incomplete=True,
-                      gaps=["年报清单检索失败或不完整（数据源故障），本轮覆盖范围不可信"]),
-    ])
+    job, calls = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            # 半年报生成成功 + 年报清单检索失败
+            lambda s: _ok(
+                s,
+                total=1,
+                completed=1,
+                generated=1,
+                remaining=0,
+                plan_incomplete=True,
+                gaps=["年报清单检索失败或不完整（数据源故障），本轮覆盖范围不可信"],
+            ),
+        ],
+    )
     assert job["success_count"] == 0  # 一只都不得记成功
     assert job["status"] == "failed"  # 连续 partial 触发早停
     assert len(calls) == batch.MAX_CONSECUTIVE_FAILURES
@@ -374,20 +486,27 @@ def test_incomplete_plan_with_cache_hits_is_still_not_success(db, monkeypatch):
     """缓存命中（completed>0、零新生成）的 partial 同样不是成功。"""
     _hold(db, "600036", "A股")
     _hold(db, "600000", "A股")
-    job, _ = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(s, total=1, completed=1, generated=0, remaining=0,
-                      plan_incomplete=True),
-        lambda s: _ok(s, total=4, completed=4, generated=0, remaining=0),
-    ])
+    job, _ = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(s, total=1, completed=1, generated=0, remaining=0, plan_incomplete=True),
+            lambda s: _ok(s, total=4, completed=4, generated=0, remaining=0),
+        ],
+    )
     assert job["success_count"] == 1  # 只有 complete 清单的那只算成功
     assert job["failed_count"] == 1
 
 
 def test_complete_empty_plan_is_still_success(db, monkeypatch):
     _hold(db, "515180", "A股")  # ETF：cninfo 无年报，是确定的答案
-    job, _ = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(s, total=0, completed=0, generated=0, remaining=0),
-    ])
+    job, _ = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(s, total=0, completed=0, generated=0, remaining=0),
+        ],
+    )
     assert job["status"] == "succeeded"
     assert job["success_count"] == 1
     assert job["failed_count"] == 0
@@ -400,13 +519,22 @@ def test_fatal_abort_preserves_generated_and_blocked_counts(db, monkeypatch):
     撞上 401——中止时把 generated/blocked 记成 0，总数与结果行都在撒谎。
     """
     _hold(db, "600036", "A股")
-    job, _ = _run(db, monkeypatch, outcomes=[
-        lambda s: _ok(
-            s, total=6, completed=2, generated=2, failed=1, remaining=0,
-            permanently_failed=1,
-            fatal={"kind": "llm_auth", "message": "LLM 调用失败（HTTP 401）：bad key"},
-        ),
-    ])
+    job, _ = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            lambda s: _ok(
+                s,
+                total=6,
+                completed=2,
+                generated=2,
+                failed=1,
+                remaining=0,
+                permanently_failed=1,
+                fatal={"kind": "llm_auth", "message": "LLM 调用失败（HTTP 401）：bad key"},
+            ),
+        ],
+    )
     assert job["status"] == "failed"
     assert job["digests_generated"] == 2  # 中止前的产出入账
     assert job["digests_blocked"] == 1
@@ -422,12 +550,23 @@ def test_blocked_counts_survive_the_round_failure_branch(db, monkeypatch):
     已知的永久失败——与"成功与失败标的都汇总 blocked"的契约不一致。
     """
     _hold(db, "600036", "A股")
-    job, _ = _run(db, monkeypatch, outcomes=[
-        # 1 份历史封顶 + 1 份本轮抽取失败（评审给出的混合形态）
-        lambda s: _ok(s, total=2, completed=0, generated=0, failed=1,
-                      remaining=0, permanently_failed=1,
-                      gaps=["摘要生成失败（已封顶）", "报告下载或章节抽取失败"]),
-    ])
+    job, _ = _run(
+        db,
+        monkeypatch,
+        outcomes=[
+            # 1 份历史封顶 + 1 份本轮抽取失败（评审给出的混合形态）
+            lambda s: _ok(
+                s,
+                total=2,
+                completed=0,
+                generated=0,
+                failed=1,
+                remaining=0,
+                permanently_failed=1,
+                gaps=["摘要生成失败（已封顶）", "报告下载或章节抽取失败"],
+            ),
+        ],
+    )
     assert job["failed_count"] == 1
     assert job["digests_blocked"] == 1  # 混合形态下不得漏计
     failed_row = job["results"][0]
@@ -445,8 +584,12 @@ def test_capped_symbols_do_not_trip_the_early_stop(db, monkeypatch):
         _hold(db, f"60000{index}", "A股")
     outcomes = (
         # 前三只：全封顶（历史结果，零尝试）
-        [lambda s: _ok(s, total=4, completed=0, generated=0, failed=0,
-                       remaining=0, permanently_failed=4)] * 3
+        [
+            lambda s: _ok(
+                s, total=4, completed=0, generated=0, failed=0, remaining=0, permanently_failed=4
+            )
+        ]
+        * 3
         # 第四只：正常回填成功——必须被执行到
         + [lambda s: _ok(s, total=4, completed=4, generated=4, remaining=0)]
     )
@@ -475,10 +618,15 @@ def test_real_attempt_failures_still_stop_early_after_capped_symbols(db, monkeyp
     两只封顶夹在中间也不得打断真实失败的连击计数（它们不清零）。"""
     for index in range(6):
         _hold(db, f"60000{index}", "A股")
-    capped = lambda s: _ok(s, total=4, completed=0, generated=0, failed=0,  # noqa: E731
-                           remaining=0, permanently_failed=4)
-    real_fail = lambda s: _ok(s, total=4, completed=0, generated=0, failed=4,  # noqa: E731
-                              remaining=0)
+
+    def capped(s):
+        return _ok(
+            s, total=4, completed=0, generated=0, failed=0, remaining=0, permanently_failed=4
+        )
+
+    def real_fail(s):
+        return _ok(s, total=4, completed=0, generated=0, failed=4, remaining=0)
+
     outcomes = [real_fail, capped, real_fail, capped, real_fail]
     calls_seen: list = []
 
@@ -514,9 +662,15 @@ def test_completed_keys_resume_without_rework(db, monkeypatch):
     from app.services.background_job_store import claim_job, update_job
 
     claimed = claim_job(job["id"], batch.JOB_TYPE)
-    update_job(job["id"], batch.JOB_TYPE, data_updates={
-        "completed_keys": ["A股|600000"], "completed": 1, "success_count": 1,
-    })
+    update_job(
+        job["id"],
+        batch.JOB_TYPE,
+        data_updates={
+            "completed_keys": ["A股|600000"],
+            "completed": 1,
+            "success_count": 1,
+        },
+    )
     claimed["data"]["completed_keys"] = ["A股|600000"]
     claimed["data"]["success_count"] = 1
     batch.execute_digest_batch_job(claimed)
@@ -581,11 +735,23 @@ def test_runner_is_registered_on_fresh_app_import():
         "import app.main; from app.services.job_worker import _runners; "
         "print(','.join(sorted(_runners)))"
     )
+    import tempfile
+
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 临时目录 + PYTHONPATH：app.main 导入时配置的日志目录 `logs/` 相对工作目录，
+    # 放在 backend/ 下会写进部署机上属于容器用户的 backend/logs（PermissionError）
     proc = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output=True, text=True, timeout=120,
-        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        env={**os.environ},
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=tempfile.mkdtemp(prefix="it-runner-test-"),
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, [backend_dir, os.environ.get("PYTHONPATH")])
+            ),
+        },
     )
     assert proc.returncode == 0, proc.stderr[-500:]
     registered = set(proc.stdout.strip().split(","))
@@ -608,8 +774,7 @@ def test_exclusive_with_other_analysis_jobs(db, monkeypatch):
 
     _hold(db, "600036", "A股")
     batch.start_digest_batch_job(db, 1)  # 活跃的批量回填
-    for caller in ("security_analysis_batch", "security_analysis",
-                   "report_digest_backfill"):
+    for caller in ("security_analysis_batch", "security_analysis", "report_digest_backfill"):
         with pytest.raises(AnalysisBusyError, match="批量财报摘要回填"):
             ensure_no_conflicting_analysis_job(db, 1, caller)
     # 自己不拦自己（重复点按钮命中 create_or_get_active_job 的幂等返回）
@@ -624,7 +789,8 @@ async def test_digest_backfill_api_flow(db, monkeypatch):
     _hold(db, "600036", "A股", user_id=user.id)
 
     monkeypatch.setattr(
-        batch, "ensure_report_digests",
+        batch,
+        "ensure_report_digests",
         lambda db_, symbol, market, *, max_new: _ok(symbol),
     )
     monkeypatch.setattr(batch.settings, "security_analysis_batch_pause_seconds", 0)
@@ -641,21 +807,17 @@ async def test_digest_backfill_api_flow(db, monkeypatch):
         )
         auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
 
-        preview = (await client.get(
-            "/api/securities/digest-backfill-preview", headers=auth
-        )).json()
+        preview = (await client.get("/api/securities/digest-backfill-preview", headers=auth)).json()
         assert preview["targets_total"] == 1
         assert preview["targets_without_digest"] == 1
 
-        started = (await client.post(
-            "/api/securities/digest-backfill-jobs", headers=auth
-        )).json()
+        started = (await client.post("/api/securities/digest-backfill-jobs", headers=auth)).json()
         assert started["type"] == batch.JOB_TYPE
 
         # BackgroundTasks 在响应后执行；ASGITransport 会等它跑完
-        polled = (await client.get(
-            f"/api/securities/digest-backfill-jobs/{started['id']}", headers=auth
-        )).json()
+        polled = (
+            await client.get(f"/api/securities/digest-backfill-jobs/{started['id']}", headers=auth)
+        ).json()
         assert polled["status"] == "succeeded"
         assert polled["digests_generated"] == 4
 
@@ -714,9 +876,15 @@ def test_hk_targets_attach_statement_outcome(db, monkeypatch):
     def fake_statements(db_, symbol, market, *, max_new):
         seen.append((symbol, market, max_new))
         return {
-            "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
-            "suspect": 1, "remaining": 5,
-            "gaps": ["20161231 报表抽取失败（已封顶）"], "fatal": None,
+            "total": 12,
+            "completed": 3,
+            "generated": 2,
+            "failed": 0,
+            "permanently_failed": 1,
+            "suspect": 1,
+            "remaining": 5,
+            "gaps": ["20161231 报表抽取失败（已封顶）"],
+            "fatal": None,
         }
 
     monkeypatch.setattr(batch, "ensure_report_statements", fake_statements)
@@ -725,23 +893,38 @@ def test_hk_targets_attach_statement_outcome(db, monkeypatch):
     assert seen == [("00700", "港股", batch.DIGEST_BATCH_PER_SYMBOL)]  # A 股不跑报表抽取
     by_symbol = {row["symbol"]: row for row in job["results"]}
     assert by_symbol["00700"]["statements"] == {
-        "total": 12, "completed": 3, "generated": 2, "failed": 0, "permanently_failed": 1,
-        "suspect": 1, "remaining": 5,
+        "total": 12,
+        "completed": 3,
+        "generated": 2,
+        "failed": 0,
+        "permanently_failed": 1,
+        "suspect": 1,
+        "remaining": 5,
     }
     assert by_symbol["00700"]["gap_count"] == 1  # 摘要零缺口 + 报表 1 条
     assert by_symbol["00700"]["gaps_preview"] == ["[报表抽取] 20161231 报表抽取失败（已封顶）"]
     assert by_symbol["600036"]["statements"] is None
     # job 级计数：报表新抽 / 永久失败 / 存疑期
-    assert (job["statements_generated"], job["statements_blocked"], job["statements_suspect"]) == (2, 1, 1)
+    assert (job["statements_generated"], job["statements_blocked"], job["statements_suspect"]) == (
+        2,
+        1,
+        1,
+    )
 
 
 def test_hk_statement_fatal_aborts_batch_and_pipeline_error_is_isolated(db, monkeypatch):
     _hold(db, "00700", "港股")
     monkeypatch.setattr(
-        batch, "ensure_report_statements",
+        batch,
+        "ensure_report_statements",
         lambda *a, **k: {
-            "total": 1, "completed": 0, "generated": 0, "failed": 1, "permanently_failed": 0,
-            "gaps": ["x"], "fatal": {"kind": "llm_auth", "message": "LLM 调用失败（HTTP 401）"},
+            "total": 1,
+            "completed": 0,
+            "generated": 0,
+            "failed": 1,
+            "permanently_failed": 0,
+            "gaps": ["x"],
+            "fatal": {"kind": "llm_auth", "message": "LLM 调用失败（HTTP 401）"},
         },
     )
     job, _calls = _run(db, monkeypatch)
@@ -753,10 +936,10 @@ def test_hk_statement_fatal_aborts_batch_and_pipeline_error_is_isolated(db, monk
 
     # 报表管线自身意外异常：不拖垮本标的的摘要结果，只记一条缺口（持仓沿用上面那条）
     monkeypatch.setattr(
-        batch, "ensure_report_statements",
+        batch,
+        "ensure_report_statements",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("披露易 503")),
     )
     job, _calls = _run(db, monkeypatch)
     assert job["status"] == "succeeded" and job["success_count"] == 1
     assert job["results"][0]["statements"] is None and job["results"][0]["gap_count"] == 1
-

@@ -137,7 +137,9 @@ export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/investment_tes
 pytest
 ```
 
-测试入口会先执行 Alembic migration，并拒绝连接数据库名不含 `test` 或 `e2e` 的 PostgreSQL，避免误碰真实数据库。部分行情相关测试依赖外部 API、网络或 `TUSHARE_TOKEN`，可能被 skip。
+测试入口会先执行 Alembic migration，并拒绝连接数据库名不含 `test` 或 `e2e` 的 PostgreSQL，避免误碰真实数据库。
+
+测试进程与外部世界隔离（#274）：`conftest.py` 把 `backend/.env` 里的凭证（LLM Key、Tushare/Tiingo Token、雪球 Cookie、推送 URL）强制置空，并拦截一切非回环地址的出站连接——漏打桩的用例会直接报「测试进程禁止外部网络连接」，而不是悄悄花真 token。真实行情源冒烟用例需显式 `RUN_EXTERNAL_PRICE_TESTS=1`（或 `ALLOW_TEST_NETWORK=1`）运行，此时守卫与凭证置空一并关闭。
 
 前端 E2E：
 
@@ -152,6 +154,8 @@ npm run test:e2e
 ```bash
 npm run test:e2e:headed
 ```
+
+Playwright 自己起的后端设了 `PERIODIC_TASKS_ENABLED=false` 并置空凭证。本地 `reuseExistingServer` 开着：如果 18000 端口上已有一个自己手动起、开着周期任务的后端，E2E 会直接复用它——跑 E2E 前先停掉它。
 
 ## 代码风格
 
@@ -190,8 +194,9 @@ npx prettier --write src e2e
 ## 排障
 
 - CORS 错误：检查 `CORS_ORIGINS` 是否包含实际前端地址。
-- 登录失败：确认数据库迁移已执行，且 `users` 表存在。
+- 登录失败：确认数据库迁移已执行，且 `users` 表存在。开发库口令对不上（例如从生产备份恢复的库、或 `.env` 的初始口令改过而 `seed` 不会覆盖已存在用户）时，在 `backend/` 下运行 `python manage.py reset-password <用户名>` 按提示输入新口令；非交互场景用 `--password-env VAR` 从环境变量读取。该命令会吊销此用户的全部会话。
 - 数据库连接失败：确认 `DATABASE_URL` 指向可访问的 PostgreSQL。
+- 每次连库都要卡约 3 分钟（后端启动卡在 `Waiting for application startup`、起子进程的测试超时）：macOS 上 libpq 默认 `gssencmode=prefer`，GSSAPI 协商会挂起约 180 秒才回退。本机 `DATABASE_URL` 末尾加 `?gssencmode=disable` 即可。
 - API 文档不可访问：确认 `ENABLE_DOCS=true`。
 
 ## 认证与后台任务

@@ -10,6 +10,7 @@ token 成本高，由用户在详情页显式触发。
 """
 
 import json
+from datetime import timedelta
 from typing import Any, Callable, Dict, Optional
 
 from ..config import settings
@@ -23,7 +24,7 @@ from .background_job_store import (
     job_heartbeat,
     set_job_progress,
 )
-from .job_runtime import run_job_inline
+from .job_runtime import make_batch_progress, run_job_inline
 from .job_worker import register_runner
 from .llm_client import (
     LLMClientError,
@@ -32,6 +33,7 @@ from .llm_client import (
     is_output_truncated,
 )
 from .security_analysis_prompts import (
+    IncompleteReportError,
     build_analysis_messages,
     graham_for_llm,
     parse_analysis_output,
@@ -64,9 +66,9 @@ STAGE_TOTAL = len(ANALYSIS_STAGES)
 LLM_FATAL_STATUS_CODES = frozenset({401, 402, 403, 429})
 
 # 整批等价的失败类型：批量调用方遇到即立即中止，不再逐只消耗配额
-FATAL_ANALYSIS_ERROR_KINDS = frozenset(
-    {"llm_not_configured", "llm_auth", "tushare_fatal"}
-)
+FATAL_ANALYSIS_ERROR_KINDS = frozenset({"llm_not_configured", "llm_auth", "tushare_fatal"})
+# 报告缺章节（半截）时同一输入的重试次数
+INCOMPLETE_REPORT_RETRIES = 1
 
 
 def resolve_public_security_name(symbol: str, market: str) -> str | None:
@@ -106,6 +108,7 @@ class AnalysisBusyError(Exception):
         super().__init__(message)
         self.active_job = active_job
 
+
 # 输入字符预算：单标的档案远小于全组合复盘，30k 足够且省 token
 CHAR_BUDGET = 40_000  # 含十年财报摘要后上调（原 30k）
 # 分析输入的港股报表行窗口：年度十二期（十年 + 比较列多出的年份）；中报只送最新一期及其
@@ -131,29 +134,76 @@ SHRUNK_CAPS = shrink_caps(ANALYSIS_CAPS)
 # （库内保留全量行供详情面板与追溯）
 STATEMENT_LLM_FIELDS: Dict[str, tuple] = {
     "income": (
-        "end_date", "total_revenue", "revenue", "operate_profit", "total_profit",
-        "n_income", "n_income_attr_p", "basic_eps",
+        "end_date",
+        "total_revenue",
+        "revenue",
+        "operate_profit",
+        "total_profit",
+        "n_income",
+        "n_income_attr_p",
+        "basic_eps",
     ),
     "balancesheet": (
-        "end_date", "total_assets", "total_liab", "total_hldr_eqy_exc_min_int",
-        "money_cap", "goodwill", "inventories", "accounts_receiv",
+        "end_date",
+        "total_assets",
+        "total_liab",
+        "total_hldr_eqy_exc_min_int",
+        "money_cap",
+        "goodwill",
+        "inventories",
+        "accounts_receiv",
     ),
     "cashflow": (
-        "end_date", "n_cashflow_act", "n_cashflow_inv_act", "n_cash_flows_fnc_act",
-        "free_cashflow", "c_pay_acq_const_fiolta",
+        "end_date",
+        "n_cashflow_act",
+        "n_cashflow_inv_act",
+        "n_cash_flows_fnc_act",
+        "free_cashflow",
+        "c_pay_acq_const_fiolta",
     ),
     # 港股 PDF 抽取行：只送科目与期别，源 URL/页码/指纹等溯源元数据留在库里
     "report_statements": (
-        "end_date", "fp", "currency", "is_comparative", "validation_status",
+        "end_date",
+        "fp",
+        "currency",
+        "is_comparative",
+        "validation_status",
         # 已被后续报告重列的科目（值仍是首次披露数）/ 构建期修复过的资产小计
-        "restated_fields", "repaired_fields",
-        "total_revenue", "cost_of_revenue", "gross_profit", "operating_income",
-        "n_income_attr_p", "total_profit", "income_tax", "ebitda", "sga_exp", "int_exp",
-        "basic_eps", "diluted_eps", "total_assets", "total_nca", "total_cur_assets",
-        "total_cur_liab", "total_ncl", "accounts_receiv", "inventories", "fix_assets",
-        "money_cap", "total_liab", "total_hldr_eqy_exc_min_int", "total_equity", "minority_int",
-        "total_debt", "lt_borr", "st_borr", "n_cashflow_act", "capex", "free_cashflow",
-        "depr_fa_coga_dpba", "div_paid_owners",
+        "restated_fields",
+        "repaired_fields",
+        "total_revenue",
+        "cost_of_revenue",
+        "gross_profit",
+        "operating_income",
+        "n_income_attr_p",
+        "total_profit",
+        "income_tax",
+        "ebitda",
+        "sga_exp",
+        "int_exp",
+        "basic_eps",
+        "diluted_eps",
+        "total_assets",
+        "total_nca",
+        "total_cur_assets",
+        "total_cur_liab",
+        "total_ncl",
+        "accounts_receiv",
+        "inventories",
+        "fix_assets",
+        "money_cap",
+        "total_liab",
+        "total_hldr_eqy_exc_min_int",
+        "total_equity",
+        "minority_int",
+        "total_debt",
+        "lt_borr",
+        "st_borr",
+        "n_cashflow_act",
+        "capex",
+        "free_cashflow",
+        "depr_fa_coga_dpba",
+        "div_paid_owners",
     ),
 }
 
@@ -177,16 +227,12 @@ def _compact_statement_rows(dataset: str, rows: list) -> list:
             for row in rows
         ]
     return [
-        {field: row.get(field) for field in fields if row.get(field) is not None}
-        for row in rows
+        {field: row.get(field) for field in fields if row.get(field) is not None} for row in rows
     ]
 
 
 def _compact_profile(datasets: Dict[str, list]) -> Dict[str, list]:
-    return {
-        dataset: _compact_statement_rows(dataset, rows)
-        for dataset, rows in datasets.items()
-    }
+    return {dataset: _compact_statement_rows(dataset, rows) for dataset, rows in datasets.items()}
 
 
 # 缺口清单进 LLM 输入的条数上限（超出部分以计数如实告知）
@@ -194,15 +240,61 @@ MAX_DIGEST_GAPS = 6
 # 二级收缩的封顶：一级（档案减半 + 摘要压缩）仍超预算时才动 events/peers
 EVENTS_SHRUNK_CAP = 8
 PEERS_SHRUNK_CAP = 8
+# 官方公告块（#306）：近 180 天的重要/一般级别组，最多 30 组；二级收缩截到 10 组
+ANNOUNCEMENT_WINDOW_DAYS = 180
+ANNOUNCEMENTS_CAP = 30
+ANNOUNCEMENTS_SHRUNK_CAP = 10
+ANNOUNCEMENT_SEMANTICS = (
+    "；announcements=交易所官方公告(近 180 天，重要/一般级别，同日同类文件合并为一组，"
+    "按公告日倒序；importance=major 重要/normal 一般)：title 为代表文件的标题原文、"
+    "documents 为该组文件数——"
+    "只能说明「发布了该公告」，不得据标题推测正文内容、金额或结论；"
+    "公告日均早于或等于数据日，属已发生事项，不得写进「未来事件提醒」，"
+    "除非标题本身写明了之后的日期"
+)
 
 
 def _payload_chars(payload: Dict[str, Any]) -> int:
     return len(json.dumps(payload, ensure_ascii=False, default=str))
 
 
+AS_OF_SEMANTICS = (
+    "；as_of_date=本次分析的数据日（业务时区），判断事件已发生/未发生的基准；"
+    "events[].status=past（早于数据日，已发生）/upcoming（数据日当天及之后），"
+    "days_from_as_of=事件日距数据日的天数（负数为已过去）"
+)
+
+
+def annotate_event_status(events: list, as_of) -> list:
+    """输入副本上给事件标注时态（#288/#265：模型曾把 09-09 已发生的解禁写进「未来事件提醒」）。
+    不改 load_security_events_for 的返回结构——详情页展示共用它。"""
+    from datetime import date as _date
+
+    annotated = []
+    for event in events:
+        try:
+            event_day = _date.fromisoformat(str(event.get("event_date"))[:10])
+        except ValueError:
+            annotated.append(event)
+            continue
+        delta = (event_day - as_of).days
+        annotated.append(
+            {
+                **event,
+                "status": "upcoming" if delta >= 0 else "past",
+                "days_from_as_of": delta,
+            }
+        )
+    return annotated
+
+
 def build_analysis_input(
-    db, symbol: str, market: str, *,
-    digest_gaps: list | None = None, data_gaps: list | None = None,
+    db,
+    symbol: str,
+    market: str,
+    *,
+    digest_gaps: list | None = None,
+    data_gaps: list | None = None,
     user_id: int | None = None,
 ) -> Dict[str, Any]:
     """压缩输入：档案数据（逐集封顶+报表科目白名单）+ 事件 + 财报摘要
@@ -216,9 +308,23 @@ def build_analysis_input(
     from .earnings_quality import compute_earnings_quality, market_statements
     from .report_digest_service import load_report_digests, serialize_digest_for_analysis
     from .security_profile_service import compute_graham_for
+    from . import announcement_service, announcement_sync
 
+    from ..core.timeutil import local_today
+
+    as_of = local_today()
     profile = load_symbol_profile(db, symbol, market, caps=ANALYSIS_CAPS)
-    events = load_security_events_for(db, symbol, market)
+    events = annotate_event_status(load_security_events_for(db, symbol, market), as_of)
+    announcement_status = announcement_sync.sync_status(db, symbol, market)
+    announcements = announcement_service.compact_for_analysis(
+        announcement_service.load_groups(
+            db,
+            keys=[(symbol, market)],
+            since=as_of - timedelta(days=ANNOUNCEMENT_WINDOW_DAYS),
+            importance="normal",
+            limit=ANNOUNCEMENTS_CAP,
+        )
+    )
     digests = serialize_digest_for_analysis(load_report_digests(db, symbol, market))
     business = load_business_profile(db, symbol, market)
     statements = market_statements(market, profile["datasets"])
@@ -277,10 +383,17 @@ def build_analysis_input(
         "meta": {
             "symbol": symbol,
             "market": market,
-            "data_semantics": market_semantics.get(market, "") + common_semantics,
+            "as_of_date": as_of.isoformat(),
+            "data_semantics": (
+                market_semantics.get(market, "")
+                + common_semantics
+                + AS_OF_SEMANTICS
+                + ANNOUNCEMENT_SEMANTICS
+            ),
         },
         "profile": _compact_profile(profile["datasets"]),
         "events": events,
+        "announcements": announcements,
         "report_digests": digests,
         "business_profile": business.get("profile"),
         "peers": {
@@ -301,6 +414,16 @@ def build_analysis_input(
             payload["report_digest_gaps"].append(
                 f"（另有 {len(digest_gaps) - MAX_DIGEST_GAPS} 条摘要缺口未列出）"
             )
+    if announcement_status["status"] != "synced":
+        # 未同步与「近 180 天无公告」必须分得开，否则空列表会被读成「公司没有重大事项」
+        reason = (
+            "官方公告尚未同步"
+            if announcement_status["status"] == "pending"
+            else f"无官方公告源（{announcement_status['reason']}）"
+        )
+        announcement_gaps = [f"{reason}：announcements 为空不代表没有公告"]
+    else:
+        announcement_gaps = []
     suspect_periods = sorted(
         {
             f"{row.get('end_date')}|{row.get('fp') or 'FY'}"
@@ -321,6 +444,10 @@ def build_analysis_input(
         # 数据集本次未取到（接口冷却/同步失败）。必须显式告知模型，否则"没数据"
         # 会被当成"没有质押/无风险信号"——把限流伪装成利好，比整体失败更危险。
         payload["profile_data_gaps"] = data_gaps[:8]
+    if announcement_gaps:
+        # 不计入上面的 8 条上限：Tushare 限流时数据集缺口常 ≥8 条，公告这条被截掉后模型会把
+        # 空的 announcements 读成「近 180 天没有公告」（PR #311 评审 P3-1）
+        payload["profile_data_gaps"] = payload.get("profile_data_gaps", []) + announcement_gaps
     if _payload_chars(payload) > CHAR_BUDGET:
         # 一级收缩：档案封顶减半；摘要全部压为核心四字段
         profile = load_symbol_profile(db, symbol, market, caps=SHRUNK_CAPS)
@@ -332,12 +459,16 @@ def build_analysis_input(
         # 二级收缩：events/peers 此前完全不参与收缩，现在才轮到它们——
         # 它们只是辅助语境，截断代价远低于档案与摘要
         payload["events"] = (payload.get("events") or [])[:EVENTS_SHRUNK_CAP]
+        payload["announcements"] = payload["announcements"][:ANNOUNCEMENTS_SHRUNK_CAP]
         payload["peers"]["list"] = (payload["peers"].get("list") or [])[:PEERS_SHRUNK_CAP]
     final_chars = _payload_chars(payload)
     if final_chars > CHAR_BUDGET:
         logger.warning(
             "分析输入两级收缩后仍超预算 %s/%s: %d > %d，按现状送出",
-            symbol, market, final_chars, CHAR_BUDGET,
+            symbol,
+            market,
+            final_chars,
+            CHAR_BUDGET,
         )
     return payload
 
@@ -347,10 +478,15 @@ def start_security_analysis_job(user_id: int, symbol: str, market: str) -> Dict[
         JOB_TYPE,
         user_id,
         {
-            "symbol": symbol, "market": market, "analysis_id": None,
+            "symbol": symbol,
+            "market": market,
+            "analysis_id": None,
             # 进度字段（_serialize 展平到响应顶层，前端立即可读）
-            "stage": None, "stage_label": "排队中",
-            "total": STAGE_TOTAL, "completed": 0, "progress_percent": 0,
+            "stage": None,
+            "stage_label": "排队中",
+            "total": STAGE_TOTAL,
+            "completed": 0,
+            "progress_percent": 0,
         },
     )
     # _serialize 把 data 展平到顶层
@@ -400,6 +536,7 @@ def analyze_one(
     on_stage(stage, extra) 在每个阶段开始时回调（调用方用它回写进度并续租）；
     回调异常不得影响分析本身。
     """
+
     def stage(name: str, **extra: Any) -> None:
         if on_stage is None:
             return
@@ -415,9 +552,14 @@ def analyze_one(
 
     def failure(error: str, kind: str) -> Dict[str, Any]:
         return {
-            "symbol": symbol, "market": market, "status": "failed",
-            "analysis_id": None, "error": error, "error_kind": kind,
-            "degraded": [], "digest_gaps": [],
+            "symbol": symbol,
+            "market": market,
+            "status": "failed",
+            "analysis_id": None,
+            "error": error,
+            "error_kind": kind,
+            "degraded": [],
+            "digest_gaps": [],
         }
 
     # 1/6 先刷新档案数据（单数据集失败不阻断：LLM 会按"数据不足"处理）
@@ -432,17 +574,16 @@ def analyze_one(
     if fatal:
         # token 失效/无权限：不能继续生成一份没有数据依据的"降级分析"，
         # 也必须让批量调用方看得出这是整批等价的失败
-        return failure(
-            f"数据源致命错误（{fatal['dataset']}）：{fatal['error']}", "tushare_fatal"
-        )
-    degraded = [
-        f"{item['dataset']} 数据集本次获取失败"
-        for item in sync_result.get("failed", [])
-    ] + _ensure_ads_ratio_gap(db, symbol, market) + [
-        f"{item['dataset']} 数据集因数据源频率限制本次跳过"
-        f"（约 {item.get('retry_after_seconds')}s 后可重试）"
-        for item in sync_result.get("skipped", [])
-    ]
+        return failure(f"数据源致命错误（{fatal['dataset']}）：{fatal['error']}", "tushare_fatal")
+    degraded = (
+        [f"{item['dataset']} 数据集本次获取失败" for item in sync_result.get("failed", [])]
+        + _ensure_ads_ratio_gap(db, symbol, market)
+        + [
+            f"{item['dataset']} 数据集因数据源频率限制本次跳过"
+            f"（约 {item.get('retry_after_seconds')}s 后可重试）"
+            for item in sync_result.get("skipped", [])
+        ]
+    )
 
     # 2/6 财报摘要惰性保底：任何失败不阻断主分析，缺口进输入
     stage("report_digests", completed=1)
@@ -487,24 +628,40 @@ def analyze_one(
     # 4/6 组装输入
     stage("build_input", completed=3)
     input_payload = build_analysis_input(
-        db, symbol, market, digest_gaps=digest_gaps, data_gaps=degraded, user_id=user_id,
+        db,
+        symbol,
+        market,
+        digest_gaps=digest_gaps,
+        data_gaps=degraded,
+        user_id=user_id,
     )
 
     # 5/6 生成（LLM）
     stage("llm_analysis", completed=4)
+    messages = build_analysis_messages(input_payload)
     try:
-        completion = chat_completion(
-            build_analysis_messages(input_payload),
-            # 单独的输出额度：港股十年 PDF 报表行 + 摘要的输入让 JSON 结构化产物 + 全文
-            # 报告在 16384（复盘默认）里被截断（00799）
-            max_tokens=settings.security_analysis_max_output_tokens,
-            response_format={"type": "json_object"},
-        )
-        parsed = parse_analysis_output(
-            completion["content"],
-            market=market,
-            graham_screen=input_payload.get("graham_screen"),
-        )
+        for attempt in range(1 + INCOMPLETE_REPORT_RETRIES):
+            completion = chat_completion(
+                messages,
+                # 单独的输出额度：港股十年 PDF 报表行 + 摘要的输入让 JSON 结构化产物 + 全文
+                # 报告在 16384（复盘默认）里被截断（00799）
+                max_tokens=settings.security_analysis_max_output_tokens,
+                response_format={"type": "json_object"},
+            )
+            try:
+                parsed = parse_analysis_output(
+                    completion["content"],
+                    market=market,
+                    graham_screen=input_payload.get("graham_screen"),
+                )
+                break
+            except IncompleteReportError as exc:
+                # 半截报告（约束解码在正文英文引号处提前收尾）是随机的：同一输入重试一次，
+                # 仍不完整才记失败（#287）
+                if attempt >= INCOMPLETE_REPORT_RETRIES:
+                    return failure(f"LLM 输出不完整：{exc}", "incomplete")
+                logger.warning("分析报告不完整，重试 %s/%s: %s", symbol, market, exc)
+                stage("llm_analysis", completed=4)
     except LLMNotConfiguredError as exc:
         return failure(str(exc), "llm_not_configured")
     except ValueError as exc:  # 输出解析失败：确定性失败不烧重试
@@ -533,6 +690,7 @@ def analyze_one(
         tags=parsed["tags"],
         risk_level=parsed["risk_level"],
         risk_level_adjusted=parsed.get("risk_level_adjusted"),
+        output_adjustments=parsed.get("adjustments") or None,
         summary=parsed["summary"],
         content=parsed["report_markdown"],
         model=completion.get("model", ""),
@@ -546,9 +704,14 @@ def analyze_one(
     db.commit()
     db.refresh(analysis)
     return {
-        "symbol": symbol, "market": market, "status": "succeeded",
-        "analysis_id": analysis.id, "error": None, "error_kind": None,
-        "degraded": degraded, "digest_gaps": digest_gaps,
+        "symbol": symbol,
+        "market": market,
+        "status": "succeeded",
+        "analysis_id": analysis.id,
+        "error": None,
+        "error_kind": None,
+        "degraded": degraded,
+        "digest_gaps": digest_gaps,
     }
 
 
@@ -558,14 +721,16 @@ def execute_security_analysis_job(claimed: Dict[str, Any]) -> None:
     symbol = claimed["data"]["symbol"]
     market = claimed["data"]["market"]
 
+    progress = make_batch_progress(job_id, JOB_TYPE, attempt)
+
     def report(stage_name: str, extra: Dict[str, Any]) -> None:
         """阶段进度回写；失权即中断本次分析（analyze_one 的 stage 包装会放行）。"""
-        if set_job_progress(
-            job_id, JOB_TYPE, required_attempt_count=attempt,
-            stage=stage_name, stage_label=ANALYSIS_STAGE_LABELS.get(stage_name, stage_name),
-            total=STAGE_TOTAL, **extra,
-        ) is None:
-            raise JobOwnershipLostError(job_id)
+        progress(
+            stage=stage_name,
+            stage_label=ANALYSIS_STAGE_LABELS.get(stage_name, stage_name),
+            total=STAGE_TOTAL,
+            **extra,
+        )
 
     db = SessionLocal()
     try:
@@ -576,27 +741,40 @@ def execute_security_analysis_job(claimed: Dict[str, Any]) -> None:
             )
         if outcome["status"] == "failed":
             set_job_progress(
-                job_id, JOB_TYPE, required_attempt_count=attempt,
-                status="failed", error=outcome["error"],
+                job_id,
+                JOB_TYPE,
+                required_attempt_count=attempt,
+                status="failed",
+                error=outcome["error"],
             )
             return
         set_job_progress(
-            job_id, JOB_TYPE, required_attempt_count=attempt,
-            status="succeeded", stage="done", stage_label="已完成",
-            completed=STAGE_TOTAL, total=STAGE_TOTAL,
-            analysis_id=outcome["analysis_id"], degraded=outcome["degraded"],
+            job_id,
+            JOB_TYPE,
+            required_attempt_count=attempt,
+            status="succeeded",
+            stage="done",
+            stage_label="已完成",
+            completed=STAGE_TOTAL,
+            total=STAGE_TOTAL,
+            analysis_id=outcome["analysis_id"],
+            degraded=outcome["degraded"],
         )
     except JobOwnershipLostError:
         # 安静退出：接管者正在跑同一个 job，这不是失败。
         logger.warning(
-            "标的分析 job %s 已被接管或进入终态，本次执行停止", job_id,
+            "标的分析 job %s 已被接管或进入终态，本次执行停止",
+            job_id,
         )
     finally:
         db.close()
 
 
 def run_security_analysis_job(job_id: str) -> None:
-    run_job_inline(job_id, JOB_TYPE, execute_security_analysis_job, label="Security analysis", logger=logger)
+    run_job_inline(
+        job_id, JOB_TYPE, execute_security_analysis_job, label="Security analysis", logger=logger
+    )
+
 
 def get_security_analysis_job(job_id: str, user_id: int) -> Optional[Dict[str, Any]]:
     return get_job(job_id, JOB_TYPE, user_id)

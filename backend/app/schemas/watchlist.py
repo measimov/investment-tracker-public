@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .security_rule import VALID_MARKETS
+from ..core.markets import MANUAL_MARKET_SET
+from .read_models import read_model
 
 
 class WatchlistItemBase(BaseModel):
@@ -16,8 +17,8 @@ class WatchlistItemBase(BaseModel):
     @field_validator("market")
     @classmethod
     def market_must_be_valid(cls, value: str) -> str:
-        if value not in VALID_MARKETS:
-            raise ValueError(f"market 必须是 {sorted(VALID_MARKETS)} 之一")
+        if value not in MANUAL_MARKET_SET:
+            raise ValueError(f"market 必须是 {sorted(MANUAL_MARKET_SET)} 之一")
         return value
 
     @model_validator(mode="after")
@@ -47,15 +48,37 @@ class WatchlistItemUpdate(BaseModel):
     note: Optional[str] = Field(None, max_length=500)
 
 
-class WatchlistItemResponse(WatchlistItemBase):
+class WatchlistItemResponse(read_model(WatchlistItemBase)):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     current_price: Optional[Decimal] = None
     price_updated_at: Optional[datetime] = None
+    price_as_of: Optional[date] = None
+    price_source: Optional[str] = None
+    # 「加入以来涨跌幅」基准：quote 加入时报价 / close_on_add 加入日收盘 /
+    # close_after_add 加入后首个收盘 / first_quote 加入日前后都没有行情时的首次报价 /
+    # pending_quote（价格为空）等待首次报价
+    added_price: Optional[Decimal] = None
+    added_price_date: Optional[date] = None
+    added_price_basis: Optional[str] = None
+    # 现价相对基准价的涨跌幅（小数，0.052 = +5.2%）；缺任一价格为 None。
+    # 同币种价格比，不含分红
+    change_since_added_pct: Optional[float] = None
     created_at: Optional[datetime] = None
     # 格雷厄姆准则摘要（graham_screen 轻量计算；无档案数据时为 None）
     graham_summary: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def compute_change_since_added(self):
+        if (
+            self.change_since_added_pct is None
+            and self.current_price is not None
+            and self.added_price is not None
+            and self.added_price > 0
+        ):
+            self.change_since_added_pct = float(self.current_price / self.added_price - 1)
+        return self
 
 
 class WatchlistMembershipResponse(BaseModel):
@@ -64,4 +87,3 @@ class WatchlistMembershipResponse(BaseModel):
 
     watching: bool
     item_id: Optional[int] = None
-

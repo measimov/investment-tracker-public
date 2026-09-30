@@ -38,9 +38,9 @@ def _wait_until(predicate, timeout=5.0, interval=0.02):
 def _delete_jobs(*job_types):
     session = SessionLocal()
     try:
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type.in_(job_types)
-        ).delete(synchronize_session=False)
+        session.query(BackgroundJob).filter(BackgroundJob.job_type.in_(job_types)).delete(
+            synchronize_session=False
+        )
         session.commit()
     finally:
         session.close()
@@ -77,9 +77,7 @@ def lanes(monkeypatch):
     job_worker.register_runner(slow_type, slow_runner)
     job_worker.register_runner(fast_type, fast_runner)
 
-    worker = job_worker.JobWorker(
-        poll_seconds=0.05, housekeeping_interval=0.05, periodic_tick=0.05
-    )
+    worker = job_worker.JobWorker(poll_seconds=0.05, housekeeping_interval=0.05, periodic_tick=0.05)
     state.worker = worker
     try:
         yield state
@@ -94,7 +92,8 @@ def test_housekeeping_ticks_while_a_long_job_is_in_flight(lanes, monkeypatch):
     counters = collections.Counter()
     for name in ("fail_exhausted_jobs", "interrupt_stale_jobs", "cleanup_expired_jobs"):
         monkeypatch.setattr(
-            job_worker.store, name,
+            job_worker.store,
+            name,
             lambda _name=name: (counters.update([_name]), 0)[1],
         )
     periodic_ran = threading.Event()
@@ -108,6 +107,50 @@ def test_housekeeping_ticks_while_a_long_job_is_in_flight(lanes, monkeypatch):
         "长任务在飞期间租约回收停摆（单线程 worker 的原始缺陷）"
     )
     assert periodic_ran.wait(timeout=5), "长任务在飞期间周期任务停摆"
+
+
+def test_periodic_master_switch_skips_only_the_scheduler(lanes, monkeypatch):
+    """PERIODIC_TASKS_ENABLED=false：不起调度线程，周期任务不跑；排队任务照常执行。"""
+    monkeypatch.setattr(job_worker.settings, "periodic_tasks_enabled", False)
+    periodic_ran = threading.Event()
+    job_worker.register_periodic_task(periodic_ran.set, interval_seconds=0.05)
+
+    create_or_get_active_job(lanes.fast_type, 2, {"total": 1, "completed": 0})
+    lanes.worker.start()
+
+    assert lanes.fast_done.wait(timeout=5), "总开关关闭后排队任务也不执行了"
+    assert not periodic_ran.wait(timeout=0.5), "总开关关闭后周期任务仍被调度"
+    names = {thread.name for thread in lanes.worker._threads}
+    assert "background-job-scheduler" not in names
+    assert "background-job-reconciler" in names
+
+
+def test_slow_periodic_task_does_not_delay_other_groups(lanes, monkeypatch):
+    """#273：默认组里一个慢任务卡住时，告警组的任务照常按 tick 运行。"""
+    monkeypatch.setattr(job_worker, "_write_scheduler_heartbeat", lambda *a, **k: None)
+    release = threading.Event()
+    slow_started = threading.Event()
+    alerts_ran = collections.Counter()
+
+    def slow_default():
+        slow_started.set()
+        release.wait(timeout=30)
+
+    job_worker.register_periodic_task(slow_default, interval_seconds=0.05)
+    job_worker.register_periodic_task(
+        lambda: alerts_ran.update(["tick"]),
+        interval_seconds=0.05,
+        name="alerts_probe",
+        group=job_worker.ALERTS_GROUP,
+    )
+    lanes.worker.start()
+    try:
+        assert slow_started.wait(timeout=5)
+        assert _wait_until(lambda: alerts_ran["tick"] >= 3), "默认组卡住时告警组也停了"
+        names = {thread.name for thread in lanes.worker._threads}
+        assert "background-job-scheduler-alerts" in names
+    finally:
+        release.set()
 
 
 def test_fast_lane_claims_while_slow_lane_is_blocked(lanes):

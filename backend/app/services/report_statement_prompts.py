@@ -14,6 +14,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .payload_versions import versions_current
 from .report_statements import STATEMENT_EXTRACTOR_VERSION
 
 # v5：新增 lt_borr / st_borr（格雷厄姆准则 2 的长期债务）与 div_paid_owners（分红记录）
@@ -126,11 +127,13 @@ def statement_row_current(payload: Dict[str, Any]) -> bool:
     侧按双版本触发重算，但每轮受 max_new 限制只重算少量报告，未重算或重算失败的旧金额若
     仍被当成官方优先数据展示、送给分析并屏蔽 Yahoo，修复就被自己的缓存遮住（与摘要管线
     `digest_versions_current` 同一约定）。"""
-    return (
-        int(payload.get("extractor_version") or 1) == STATEMENT_EXTRACTOR_VERSION
-        and int(payload.get("prompt_version") or 1) == STATEMENT_PROMPT_VERSION
-        and int(payload.get("build_version") or 0) == STATEMENT_BUILD_VERSION
+    return versions_current(
+        payload,
+        extractor_version=STATEMENT_EXTRACTOR_VERSION,
+        prompt_version=STATEMENT_PROMPT_VERSION,
+        build_version=STATEMENT_BUILD_VERSION,
     )
+
 
 _SYSTEM_PROMPT = """你是财务报表科目映射器。用户给出一家上市公司一份年报/中报里三张合并报表的\
 结构化行（每行有 id、原文标签、附注号、上下文与所选会计期的原文数值），以及一组目标科目及其\
@@ -240,7 +243,9 @@ def parse_statement_mapping(
             if (
                 kind == "income"
                 and labels is not None
-                and not any(REVENUE_LABEL_RE.match((label or "").strip()) for label in labels.get(kind, ()))
+                and not any(
+                    REVENUE_LABEL_RE.match((label or "").strip()) for label in labels.get(kind, ())
+                )
                 and any(field in resolved_fields for field in PRE_REVENUE_FALLBACK_FIELDS)
             ):
                 unresolved.append("income.total_revenue:no_revenue_line")

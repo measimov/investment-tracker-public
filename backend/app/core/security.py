@@ -10,6 +10,8 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
 AUTH_COOKIE_NAME = "investment_session"
 CSRF_COOKIE_NAME = "investment_csrf"
+# bcrypt 只处理前 72 字节；bcrypt 5.x 对更长的口令直接抛 ValueError（不再静默截断）
+MAX_PASSWORD_BYTES = 72
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -23,8 +25,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Returns:
         True if password matches, False otherwise
     """
+    encoded = plain_password.encode("utf-8")
+    if len(encoded) > MAX_PASSWORD_BYTES:
+        return False  # 不可能是任何已存口令（设置时就不允许超长）
     try:
-        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+        return bcrypt.checkpw(encoded, hashed_password.encode("utf-8"))
     except Exception:
         return False
 
@@ -39,8 +44,12 @@ def get_password_hash(password: str) -> str:
     Returns:
         The hashed password
     """
+    encoded = password.encode("utf-8")
+    if len(encoded) > MAX_PASSWORD_BYTES:
+        # API 入口的 schema 已拦下（中文 422）；走到这里的是 seed 等绕过 schema 的调用方
+        raise ValueError(f"password exceeds bcrypt limit of {MAX_PASSWORD_BYTES} bytes")
     salt = bcrypt.gensalt(rounds=12)
-    hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
+    hashed = bcrypt.hashpw(encoded, salt)
     return hashed.decode("utf-8")
 
 
@@ -66,13 +75,13 @@ def create_access_token(
 
     if expires_at is not None:
         # 绝对时刻优先：调用方按会话的绝对截止点钳过位时，必须原样落到 exp 上。
-        # 走 delta 的话，helper 在**更晚**的 t1 上重新取 utcnow()，exp 会变成
+        # 走 delta 的话，helper 在**更晚**的 t1 上重新取当前时间，exp 会变成
         # deadline + (t1 − t0)，钳位白做（慢 commit 时偏移尤其明显）。
-        expire = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        expire = expires_at.astimezone(timezone.utc)
     elif expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

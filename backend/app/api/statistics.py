@@ -31,14 +31,13 @@ def _validate_date_range(start_date: date | None, end_date: date | None) -> None
     if start_date and end_date and end_date < start_date:
         raise HTTPException(
             status_code=422,
-            detail="end_date must be on or after start_date",
+            detail="结束日期不能早于开始日期",
         )
 
 
 @router.get("/summary", response_model=Dict[str, Any])
 def get_summary(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)
 ):
     """Get overall summary statistics."""
     return get_summary_statistics(db, current_user.id)
@@ -46,8 +45,7 @@ def get_summary(
 
 @router.get("/by-market", response_model=List[Dict[str, Any]])
 def get_by_market(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)
 ):
     """Get statistics grouped by market."""
     return get_statistics_by_market(db, current_user.id)
@@ -57,7 +55,7 @@ def get_by_market(
 def get_by_time(
     group_by: str = Query("month", pattern="^(month|year)$"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Get statistics grouped by time period."""
     return get_statistics_by_time(db, current_user.id, group_by)
@@ -65,8 +63,7 @@ def get_by_time(
 
 @router.get("/holdings-cost-breakdown", response_model=List[Dict[str, Any]])
 def get_holdings_cost_breakdown_api(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)
 ):
     """Get current holdings sorted by total cost (cost distribution chart)."""
     return get_holdings_cost_breakdown(db, current_user.id)
@@ -74,8 +71,7 @@ def get_holdings_cost_breakdown_api(
 
 @router.get("/portfolio-snapshot", response_model=Dict[str, Any])
 def get_portfolio_snapshot(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)
 ):
     """组合快照：一次调用返回看板全量数据（表现/持仓/价格新鲜度/市场/近期交易/对账状态）。
 
@@ -88,7 +84,7 @@ def get_portfolio_snapshot(
 def get_performance_summary(
     current_prices: Dict[str, float],
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     获取统计分析页核心收益卡片数据（手工试算：使用请求体中的价格）。
@@ -101,8 +97,7 @@ def get_performance_summary(
 
 @router.get("/performance-summary", response_model=Dict[str, Any])
 def get_performance_summary_server_priced(
-    current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)
 ):
     """获取核心收益卡片数据；估值价格由服务端权威数据决定（issue #46）。
 
@@ -166,7 +161,7 @@ def get_performance_analytics(
     refresh_history: bool = Query(False),
     benchmarks: str = Query("", description="逗号分隔的基准指数 code，最多 3 个"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     获取收益率曲线和量化指标（手工试算：使用请求体中的价格）。
@@ -176,8 +171,14 @@ def get_performance_analytics(
     calculating the curve.
     """
     return _run_performance_analytics(
-        db, current_user.id, current_prices,
-        start_date, end_date, risk_free_rate, refresh_history, benchmarks,
+        db,
+        current_user.id,
+        current_prices,
+        start_date,
+        end_date,
+        risk_free_rate,
+        refresh_history,
+        benchmarks,
     )
 
 
@@ -191,13 +192,19 @@ def get_performance_analytics_server_priced(
     refresh_history: bool = Query(False),
     benchmarks: str = Query("", description="逗号分隔的基准指数 code，最多 3 个"),
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """获取收益率曲线和量化指标；估值价格由服务端权威数据决定（issue #46）。"""
     prices, sources, freshness = resolve_server_prices(db, current_user.id)
     result = _run_performance_analytics(
-        db, current_user.id, prices,
-        start_date, end_date, risk_free_rate, refresh_history, benchmarks,
+        db,
+        current_user.id,
+        prices,
+        start_date,
+        end_date,
+        risk_free_rate,
+        refresh_history,
+        benchmarks,
     )
     result.setdefault("data_quality", {})["price_sources"] = sources
     result["data_quality"]["price_freshness"] = freshness
@@ -211,7 +218,7 @@ def get_period_pnl(
 ):
     """当日 / 本月 / 本年损益（权益仓口径，与收益曲线同一算法）；估值价格由服务端决定。"""
     prices, sources, freshness = resolve_server_prices(db, current_user.id)
-    result = calculate_period_pnl(db, current_user.id, prices)
+    result = calculate_period_pnl(db, current_user.id, prices, price_freshness=freshness)
     result["data_quality"]["price_sources"] = sources
     result["data_quality"]["price_freshness"] = freshness
     return result
@@ -251,5 +258,5 @@ def get_performance_history_sync(
 ):
     job = get_performance_history_sync_job(job_id, current_user.id)
     if not job:
-        raise HTTPException(status_code=404, detail="Performance history sync job not found")
+        raise HTTPException(status_code=404, detail="历史行情同步任务不存在")
     return job

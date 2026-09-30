@@ -56,14 +56,16 @@ def _seed_scenario(db):
         ("HKD", "CNY", "0.9", date(2025, 1, 1)),
     ]
     for from_c, to_c, rate, effective in rates:
-        db.add(ExchangeRate(
-            from_currency=from_c,
-            to_currency=to_c,
-            rate=Decimal(rate),
-            effective_date=effective,
-            is_active=True,
-            source="manual",
-        ))
+        db.add(
+            ExchangeRate(
+                from_currency=from_c,
+                to_currency=to_c,
+                rate=Decimal(rate),
+                effective_date=effective,
+                is_active=True,
+                source="manual",
+            )
+        )
 
     transactions = [
         # AAPL(美股/USD): 两笔买入 → 1:2 拆股 → 卖出
@@ -77,71 +79,113 @@ def _seed_scenario(db):
         ("600519", "贵州茅台", "A股", "SELL", "5", "1600", "5", date(2025, 8, 1), "CNY"),
     ]
     for symbol, name, market, txn_type, qty, price, fee, txn_date, currency in transactions:
-        db.add(Transaction(
-            user_id=1,
-            symbol=symbol,
-            name=name,
-            market=market,
-            transaction_type=txn_type,
-            quantity=Decimal(qty),
-            price=Decimal(price),
-            fee=Decimal(fee),
-            transaction_date=txn_date,
-            currency=currency,
-        ))
+        db.add(
+            Transaction(
+                user_id=1,
+                symbol=symbol,
+                name=name,
+                market=market,
+                transaction_type=txn_type,
+                quantity=Decimal(qty),
+                price=Decimal(price),
+                fee=Decimal(fee),
+                transaction_date=txn_date,
+                currency=currency,
+            )
+        )
 
-    db.add(CorporateAction(
-        user_id=1, symbol="AAPL", name="Apple", market="美股",
-        action_type="STOCK_SPLIT", ex_date=date(2025, 4, 15),
-        split_ratio="1:2", currency="USD",
-    ))
-    db.add(CorporateAction(
-        user_id=1, symbol="AAPL", name="Apple", market="美股",
-        action_type="CASH_DIVIDEND", ex_date=date(2025, 5, 15),
-        payment_date=date(2025, 5, 20),
-        total_dividend=Decimal("50"), tax_withheld=Decimal("5"),
-        net_dividend=Decimal("45"), currency="USD",
-    ))
-    db.add(CorporateAction(
-        user_id=1, symbol="0700", name="腾讯控股", market="港股",
-        action_type="RIGHTS_ISSUE", ex_date=date(2025, 3, 10),
-        subscription_quantity=Decimal("20"), subscription_price=Decimal("250"),
-        currency="HKD",
-    ))
-    db.add(CorporateAction(
-        user_id=1, symbol="600519", name="贵州茅台", market="A股",
-        action_type="BONUS_ISSUE", ex_date=date(2025, 5, 1),
-        distribution_ratio="10:2", currency="CNY",
-    ))
+    db.add(
+        CorporateAction(
+            user_id=1,
+            symbol="AAPL",
+            name="Apple",
+            market="美股",
+            action_type="STOCK_SPLIT",
+            ex_date=date(2025, 4, 15),
+            split_ratio="1:2",
+            currency="USD",
+        )
+    )
+    db.add(
+        CorporateAction(
+            user_id=1,
+            symbol="AAPL",
+            name="Apple",
+            market="美股",
+            action_type="CASH_DIVIDEND",
+            ex_date=date(2025, 5, 15),
+            payment_date=date(2025, 5, 20),
+            total_dividend=Decimal("50"),
+            tax_withheld=Decimal("5"),
+            net_dividend=Decimal("45"),
+            currency="USD",
+        )
+    )
+    db.add(
+        CorporateAction(
+            user_id=1,
+            symbol="0700",
+            name="腾讯控股",
+            market="港股",
+            action_type="RIGHTS_ISSUE",
+            ex_date=date(2025, 3, 10),
+            subscription_quantity=Decimal("20"),
+            subscription_price=Decimal("250"),
+            currency="HKD",
+        )
+    )
+    db.add(
+        CorporateAction(
+            user_id=1,
+            symbol="600519",
+            name="贵州茅台",
+            market="A股",
+            action_type="BONUS_ISSUE",
+            ex_date=date(2025, 5, 1),
+            distribution_ratio="10:2",
+            currency="CNY",
+        )
+    )
 
     price_history = {
         ("AAPL", "美股", "USD"): [
-            (date(2025, 1, 31), "11"), (date(2025, 2, 28), "11.5"),
-            (date(2025, 3, 31), "12.5"), (date(2025, 4, 30), "6.5"),
-            (date(2025, 5, 30), "7"), (date(2025, 6, 30), "7.5"),
-            (date(2025, 9, 30), "8"), (date(2025, 12, 31), "8.2"),
+            (date(2025, 1, 31), "11"),
+            (date(2025, 2, 28), "11.5"),
+            (date(2025, 3, 31), "12.5"),
+            (date(2025, 4, 30), "6.5"),
+            (date(2025, 5, 30), "7"),
+            (date(2025, 6, 30), "7.5"),
+            (date(2025, 9, 30), "8"),
+            (date(2025, 12, 31), "8.2"),
         ],
         ("0700", "港股", "HKD"): [
-            (date(2025, 1, 31), "290"), (date(2025, 2, 28), "305"),
-            (date(2025, 3, 31), "310"), (date(2025, 6, 30), "315"),
-            (date(2025, 9, 30), "318"), (date(2025, 12, 31), "322"),
+            (date(2025, 1, 31), "290"),
+            (date(2025, 2, 28), "305"),
+            (date(2025, 3, 31), "310"),
+            (date(2025, 6, 30), "315"),
+            (date(2025, 9, 30), "318"),
+            (date(2025, 12, 31), "322"),
         ],
         ("600519", "A股", "CNY"): [
-            (date(2025, 4, 30), "1520"), (date(2025, 5, 30), "1280"),
-            (date(2025, 6, 30), "1300"), (date(2025, 9, 30), "1450"),
+            (date(2025, 4, 30), "1520"),
+            (date(2025, 5, 30), "1280"),
+            (date(2025, 6, 30), "1300"),
+            (date(2025, 9, 30), "1450"),
             (date(2025, 12, 31), "1560"),
         ],
     }
     for (symbol, market, currency), rows in price_history.items():
         for price_date, close in rows:
-            db.add(SecurityPrice(
-                symbol=symbol,
-                market=market,
-                price_date=price_date,
-                close_price=Decimal(close),
-                currency=currency,
-                source="test",
-            ))
+            db.add(
+                SecurityPrice(
+                    symbol=symbol,
+                    market=market,
+                    price_date=price_date,
+                    close_price=Decimal(close),
+                    currency=currency,
+                    source="test",
+                )
+            )
 
     db.commit()
 

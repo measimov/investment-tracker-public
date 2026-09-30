@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { cashDividendAmounts, hkDividendNotes, suggestionSourceLabel, taxFromRate } from './shared'
+import {
+  cashDividendAmounts,
+  emptyActionForm,
+  formFromAction,
+  hkDividendNotes,
+  payloadFromForm,
+  suggestionSourceLabel,
+  taxFromRate
+} from './shared'
 
 describe('cashDividendAmounts', () => {
   it('没有显式 net 时按 gross − tax 派生', () => {
@@ -157,5 +165,58 @@ describe('hkDividendNotes', () => {
       ]
     })
     expect(lines).toContain('预设选项为「代息股份」：不作选择将收到代息股份')
+  })
+})
+
+describe('公司行动表单映射（#284）', () => {
+  const row = {
+    id: 7,
+    broker_account_id: 3,
+    symbol: '00700',
+    name: '腾讯控股',
+    market: '港股',
+    action_type: 'CASH_DIVIDEND',
+    ex_date: '2026-05-15',
+    dividend_per_share: '4.5',
+    total_dividend: '450',
+    tax_withheld: null,
+    tax_rate: '0.2',
+    currency: 'HKD',
+    notes: null
+  }
+
+  it('编辑回填：税率小数转百分数，缺税额保持 null', () => {
+    const form = formFromAction(row)
+    expect(form.tax_rate_percent).toBe(20)
+    expect(form.tax_withheld).toBeNull()
+    expect(form.dividend_per_share).toBe(4.5)
+    expect(form.notes).toBe('')
+  })
+
+  it('税率为 null 不回填（此前回填 10%，保存会悄悄写入 0.1）', () => {
+    expect(formFromAction({ ...row, tax_rate: null }).tax_rate_percent).toBeNull()
+  })
+
+  it('提交：税率百分数转小数；新建空税额提交 0，编辑原样', () => {
+    const form = formFromAction(row)
+    expect(payloadFromForm(form, { isEdit: true })).toMatchObject({
+      tax_rate: 0.2,
+      tax_withheld: null,
+      total_dividend: 450
+    })
+    expect(payloadFromForm({ ...form, id: undefined }, { isEdit: false }).tax_withheld).toBe(0)
+  })
+
+  it('只带该类型自己的字段', () => {
+    const form = {
+      ...emptyActionForm(),
+      action_type: 'OPENING_POSITION',
+      opening_quantity: 100,
+      total_dividend: 999
+    }
+    const payload = payloadFromForm(form, { isEdit: false })
+    expect(payload.adjusted_quantity).toBe(100)
+    expect(payload).not.toHaveProperty('total_dividend')
+    expect(payload.broker_account_id).toBeNull()
   })
 })

@@ -61,9 +61,9 @@ def validate_import_account(
         .first()
     )
     if account is None:
-        raise ValueError("Broker account not found")
+        raise ValueError("券商账户不存在")
     if account.broker != broker:
-        raise ValueError(f"Broker account belongs to {account.broker}, not {broker}")
+        raise ValueError(f"所选账户属于{account.broker}，不是{broker}")
     return account
 
 
@@ -96,10 +96,7 @@ def validate_source_file_account(
                 (ImportBatch.status == "COMPLETED")
                 | (
                     (ImportBatch.status == "PARTIAL")
-                    & (
-                        (ImportBatch.archived_count > 0)
-                        | (ImportBatch.imported_count > 0)
-                    )
+                    & ((ImportBatch.archived_count > 0) | (ImportBatch.imported_count > 0))
                 )
             ),
         )
@@ -189,9 +186,9 @@ def complete_import_batch(
     row_count = int(result["total_rows"])
     archived_count = int(archived_count)
     duplicate_rows = int(result["duplicate_rows"])
-    # imported_count 是**入账对象数**（交易+公司行动+税+现金事件），与"来源行"
-    # 不是一个单位：一条分红行会同时建 CA 和现金事件。批次的 imported_count
-    # 语义是"已入账的来源行"，所以要用非重复来源行的容量封顶。
+    # imported_count = **本批入账来源行数**（三家统一，#279：broker_import_common.
+    # booked_source_rows，含原地转正的旧归档行）。此前招商/东财传入账对象数、IBKR 传来源行数，
+    # 这里靠封顶调和两种单位；现在只是防御性封顶，不再承担换算。
     imported_count = min(max(0, row_count - duplicate_rows), int(imported_count))
     errors = [str(error) for error in result["errors"] if str(error).strip()]
     booked_source_rows = imported_count + duplicate_rows

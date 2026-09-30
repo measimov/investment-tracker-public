@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from types import SimpleNamespace
-from decimal import Decimal
 from ..database import get_db
 from ..models.transaction import Transaction
 from ..models.broker_account import BrokerAccount
@@ -19,18 +18,22 @@ from ..services.holding_service import (
     lock_security_timeline,
     recalculate_holdings,
     replay_account_buckets,
-    validate_no_oversell,
+    validate_account_sequence,
 )
 from ..core.deps import get_current_active_user
 from ..services.symbol_normalization import normalize_manual_symbol
-from ._ownership import ensure_record_is_mutable, get_owned_record, validate_owned_references
+from ..services.transfer_service import TransferConflict, create_transfer_pair
+from ._ownership import (
+    annotate_read_only,
+    ensure_record_is_mutable,
+    get_owned_record,
+    validate_owned_references,
+)
 
 router = APIRouter()
 
 
-IMMUTABLE_IMPORTED_TRANSACTION_DETAIL = (
-    "Imported transactions cannot be modified or deleted; correct the source import instead."
-)
+IMMUTABLE_IMPORTED_TRANSACTION_DETAIL = "导入的交易不能修改或删除；请更正来源对账单后重新导入"
 
 
 def _ensure_transaction_is_mutable(db: Session, user_id: int, transaction: Transaction) -> None:
@@ -38,7 +41,7 @@ def _ensure_transaction_is_mutable(db: Session, user_id: int, transaction: Trans
         db,
         user_id,
         transaction,
-        source_link_field="transaction_id",
+        kind="transaction",
         detail=IMMUTABLE_IMPORTED_TRANSACTION_DETAIL,
     )
 
@@ -53,25 +56,20 @@ def _validate_transaction_sequence(
     candidate,
     exclude_transaction_id: int = None,
 ):
-    query = db.query(Transaction).filter(
-        Transaction.user_id == user_id,
-        Transaction.symbol == candidate.symbol,
-        Transaction.market == candidate.market,
-    )
-    if candidate.broker_account_id is None:
-        query = query.filter(Transaction.broker_account_id.is_(None))
-    else:
-        query = query.filter(
-            Transaction.broker_account_id == candidate.broker_account_id
-        )
-    if exclude_transaction_id is not None:
-        query = query.filter(Transaction.id != exclude_transaction_id)
-    transactions = query.all()
-    transactions.append(candidate)
     try:
-        validate_no_oversell(transactions)
+        validate_account_sequence(
+            db,
+            user_id=user_id,
+            broker_account_id=candidate.broker_account_id,
+            symbol=candidate.symbol,
+            market=candidate.market,
+            candidates=[candidate],
+            exclude_transaction_ids=(
+                [exclude_transaction_id] if exclude_transaction_id is not None else ()
+            ),
+        )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _build_transaction_query(
@@ -103,7 +101,7 @@ def _build_transaction_query(
 def create_transaction(
     transaction: TransactionCreate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Create a new transaction and recalculate holdings for the authenticated user.
 
@@ -140,95 +138,32 @@ def create_transfer(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """账户间转仓：创建 TRANSFER_OUT/TRANSFER_IN 互指交易对，成本基础跟随迁移。
-
-    不产生任何盈亏或现金流；账户为 null 表示"未指定账户"桶。返回 [转出腿, 转入腿]。
-
-    校验策略：对完整时间线做两次严格的按账户重放（插入前基线 + 插入后）——
-    这同时覆盖了历史日期转仓（transfer_date 当天转出账户必须真有足够数量）
-    和转仓与后续交易的冲突（转出后未来卖出会超卖）。与所有时间线写入口共用
-    事务级 advisory lock 串行化并发。交易对写入与派生持仓重算在同一事务内提交。
+    """账户间转仓：创建 TRANSFER_OUT/TRANSFER_IN 互指交易对，成本基础跟随迁移
+    （不产生盈亏或现金流；账户为 null 表示"未指定账户"桶）。返回 [转出腿, 转入腿]。
+    校验与写入见 services/transfer_service.create_transfer_pair。
     """
     if transfer.from_broker_account_id == transfer.to_broker_account_id:
         raise HTTPException(status_code=422, detail="转出与转入账户不能相同")
     for account_id in (transfer.from_broker_account_id, transfer.to_broker_account_id):
         if account_id is not None:
-            get_owned_record(
-                db, BrokerAccount, account_id, current_user.id, "Broker account not found"
-            )
+            get_owned_record(db, BrokerAccount, account_id, current_user.id, "券商账户不存在")
 
     try:
-        # 与全部时间线写入口共用的事务级 advisory lock，串行化并发写。
-        lock_security_timeline(db, current_user.id, transfer.symbol, transfer.market)
-
-        # 基线：现有交易的账户归属必须自洽，否则转仓建立在降级合并桶上没有意义。
-        try:
-            baseline = replay_account_buckets(
-                db, current_user.id, transfer.symbol, transfer.market
-            )
-        except AccountReplayError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"现有交易的账户归属不一致，请先修正数据再转仓：{exc}",
-            ) from exc
-
-        source_state = baseline.get(transfer.from_broker_account_id)
-        if source_state is None or source_state['quantity'] <= 0:
-            raise HTTPException(status_code=422, detail="转出账户当前无该证券持仓")
-        # 成本未知的桶（期初建仓/转托管转入）转仓会生成零价腿：TransactionResponse 要求
-        # price>0，落库后 GET /transactions 直接 500。先补录成本再转（#174）
-        if source_state.get('unknown_cost_quantity', Decimal("0")) > 0 or source_state['avg_cost'] <= 0:
-            raise HTTPException(
-                status_code=422,
-                detail="转出账户桶含成本未知的持仓（期初建仓/转托管转入），转仓会生成零价腿；"
-                "请先在公司行动页补录成本再转仓",
-            )
-
-        common = {
-            "user_id": current_user.id,
-            "symbol": transfer.symbol,
-            "name": source_state['name'] or transfer.symbol,
-            "market": transfer.market,
-            "quantity": transfer.quantity,
-            # 转仓不产生盈亏；price 仅作展示口径，记录转出时的平均成本。
-            "price": source_state['avg_cost'],
-            "fee": Decimal("0"),
-            "transaction_date": transfer.transfer_date,
-            "currency": source_state['currency'],
-            "notes": transfer.notes,
-        }
-        out_leg = Transaction(
-            **common,
-            broker_account_id=transfer.from_broker_account_id,
-            transaction_type="TRANSFER_OUT",
-        )
-        db.add(out_leg)
-        db.flush()
-        in_leg = Transaction(
-            **common,
-            broker_account_id=transfer.to_broker_account_id,
-            transaction_type="TRANSFER_IN",
-            linked_transaction_id=out_leg.id,
-        )
-        db.add(in_leg)
-        db.flush()
-        out_leg.linked_transaction_id = in_leg.id
-        db.flush()
-
-        # 插入后重放：按 transfer_date 落在真实时间线里校验，转出账户当日
-        # 数量不足或与后续交易冲突都会在这里被拒绝。
-        try:
-            replay_account_buckets(db, current_user.id, transfer.symbol, transfer.market)
-        except AccountReplayError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"转仓无法成立：{exc}",
-            ) from exc
-
-        recalculate_holdings(
-            db, current_user.id, transfer.symbol, transfer.market, commit=False
+        out_leg, in_leg = create_transfer_pair(
+            db,
+            current_user.id,
+            symbol=transfer.symbol,
+            market=transfer.market,
+            quantity=transfer.quantity,
+            from_broker_account_id=transfer.from_broker_account_id,
+            to_broker_account_id=transfer.to_broker_account_id,
+            transfer_date=transfer.transfer_date,
+            notes=transfer.notes,
         )
         db.commit()
+    except TransferConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception:
         db.rollback()
         raise
@@ -241,14 +176,14 @@ def create_transfer(
 @router.get("", response_model=List[TransactionResponse])
 def get_transactions(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=10000),
+    limit: int = Query(100, ge=1, le=1000),
     symbol: Optional[str] = None,
     market: Optional[str] = None,
     transaction_type: Optional[str] = None,
     broker_account_id: Optional[int] = None,
     unassigned_account: bool = False,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Get list of transactions for the authenticated user with optional filters."""
     query = _build_transaction_query(
@@ -261,8 +196,13 @@ def get_transactions(
         unassigned_account=unassigned_account,
     )
 
-    transactions = query.order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).offset(skip).limit(limit).all()
-    return transactions
+    transactions = (
+        query.order_by(Transaction.transaction_date.desc(), Transaction.id.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return annotate_read_only(db, current_user.id, "transaction", transactions)
 
 
 @router.get("/count")
@@ -273,7 +213,7 @@ def get_transactions_count(
     broker_account_id: Optional[int] = None,
     unassigned_account: bool = False,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Get transaction count for the authenticated user with optional filters."""
     total = _build_transaction_query(
@@ -292,16 +232,17 @@ def get_transactions_count(
 def get_transaction(
     transaction_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Get a specific transaction by ID for the authenticated user."""
-    transaction = db.query(Transaction).filter(
-        Transaction.id == transaction_id,
-        Transaction.user_id == current_user.id
-    ).first()
+    transaction = (
+        db.query(Transaction)
+        .filter(Transaction.id == transaction_id, Transaction.user_id == current_user.id)
+        .first()
+    )
     if not transaction:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    return transaction
+        raise HTTPException(status_code=404, detail="交易不存在")
+    return annotate_read_only(db, current_user.id, "transaction", [transaction])[0]
 
 
 @router.put("/{transaction_id}", response_model=TransactionResponse)
@@ -309,7 +250,7 @@ def update_transaction(
     transaction_id: int,
     transaction_update: TransactionUpdate,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Update a transaction and recalculate holdings for the authenticated user.
 
@@ -323,12 +264,13 @@ def update_transaction(
         lock_record(db, "transaction-record", transaction_id)
 
         # 锁内重读：等待锁期间行可能被并发 update/delete。
-        db_transaction = db.query(Transaction).filter(
-            Transaction.id == transaction_id,
-            Transaction.user_id == current_user.id
-        ).first()
+        db_transaction = (
+            db.query(Transaction)
+            .filter(Transaction.id == transaction_id, Transaction.user_id == current_user.id)
+            .first()
+        )
         if not db_transaction:
-            raise HTTPException(status_code=404, detail="Transaction not found")
+            raise HTTPException(status_code=404, detail="交易不存在")
         db.refresh(db_transaction)
 
         _ensure_transaction_is_mutable(db, current_user.id, db_transaction)
@@ -368,10 +310,12 @@ def update_transaction(
         candidate = _transaction_candidate(**candidate_data)
 
         # 时间线锁：旧+新两键排序取锁
-        lock_keys = sorted({
-            (old_symbol, old_market),
-            (candidate.symbol, candidate.market),
-        })
+        lock_keys = sorted(
+            {
+                (old_symbol, old_market),
+                (candidate.symbol, candidate.market),
+            }
+        )
         for lock_symbol, lock_market in lock_keys:
             lock_security_timeline(db, current_user.id, lock_symbol, lock_market)
 
@@ -389,7 +333,10 @@ def update_transaction(
         recalculate_holdings(db, current_user.id, old_symbol, old_market, commit=False)
         if db_transaction.symbol != old_symbol or db_transaction.market != old_market:
             recalculate_holdings(
-                db, current_user.id, db_transaction.symbol, db_transaction.market,
+                db,
+                current_user.id,
+                db_transaction.symbol,
+                db_transaction.market,
                 commit=False,
             )
         db.commit()
@@ -405,7 +352,7 @@ def update_transaction(
 def delete_transaction(
     transaction_id: int,
     current_user: User = Depends(get_current_active_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Delete a transaction and recalculate holdings for the authenticated user.
 
@@ -413,27 +360,28 @@ def delete_transaction(
     先做一次无锁窥视只为确定要锁哪些记录 id；一切业务判断基于锁内重读。
     """
     # 无锁窥视：确定记录锁集合（转仓对需要锁两条腿）。
-    peek = db.query(
-        Transaction.id, Transaction.linked_transaction_id
-    ).filter(
-        Transaction.id == transaction_id,
-        Transaction.user_id == current_user.id
-    ).first()
+    peek = (
+        db.query(Transaction.id, Transaction.linked_transaction_id)
+        .filter(Transaction.id == transaction_id, Transaction.user_id == current_user.id)
+        .first()
+    )
     if not peek:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    record_ids = sorted({transaction_id} | (
-        {peek.linked_transaction_id} if peek.linked_transaction_id is not None else set()
-    ))
+        raise HTTPException(status_code=404, detail="交易不存在")
+    record_ids = sorted(
+        {transaction_id}
+        | ({peek.linked_transaction_id} if peek.linked_transaction_id is not None else set())
+    )
     for record_id in record_ids:
         lock_record(db, "transaction-record", record_id)
 
     # 锁内重读：等待锁期间行可能被并发修改或删除。
-    db_transaction = db.query(Transaction).filter(
-        Transaction.id == transaction_id,
-        Transaction.user_id == current_user.id
-    ).first()
+    db_transaction = (
+        db.query(Transaction)
+        .filter(Transaction.id == transaction_id, Transaction.user_id == current_user.id)
+        .first()
+    )
     if not db_transaction:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise HTTPException(status_code=404, detail="交易不存在")
     db.refresh(db_transaction)
 
     _ensure_transaction_is_mutable(db, current_user.id, db_transaction)
@@ -447,10 +395,14 @@ def delete_transaction(
         # 静默降级为合并桶。全程与重算同事务提交。
         try:
             lock_security_timeline(db, current_user.id, symbol, market)
-            linked = db.query(Transaction).filter(
-                Transaction.id == db_transaction.linked_transaction_id,
-                Transaction.user_id == current_user.id,
-            ).first()
+            linked = (
+                db.query(Transaction)
+                .filter(
+                    Transaction.id == db_transaction.linked_transaction_id,
+                    Transaction.user_id == current_user.id,
+                )
+                .first()
+            )
             if linked is not None:
                 db.delete(linked)
             db.delete(db_transaction)

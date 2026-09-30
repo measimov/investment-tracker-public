@@ -32,8 +32,8 @@ def _args(**kwargs):
 def files(tmp_path):
     made = {}
     for key, name in (
-        ("cmb", "招商_2026年对账单.pdf"),              # 刻意不带 cmb_ 前缀
-        ("eastmoney", "东财明细_2026.pdf"),             # 刻意不带 eastmoney_ 前缀
+        ("cmb", "招商_2026年对账单.pdf"),  # 刻意不带 cmb_ 前缀
+        ("eastmoney", "东财明细_2026.pdf"),  # 刻意不带 eastmoney_ 前缀
         ("ibkr-xlsx", "交易历史_2026.xlsx"),
         ("ibkr-activity", "U12345678.TRANSACTIONS.csv"),  # 合成账户号
     ):
@@ -115,8 +115,12 @@ def test_total_parse_failure_without_exception_fails_loudly(files, monkeypatch):
     monkeypatch.setitem(
         snap.PARSERS,
         "cmb",
-        (help_text, _stub([], 120, errors=[f"row {i}: 全崩" for i in range(120)]),
-         extract, suffixes),
+        (
+            help_text,
+            _stub([], 120, errors=[f"row {i}: 全崩" for i in range(120)]),
+            extract,
+            suffixes,
+        ),
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -127,9 +131,7 @@ def test_total_parse_failure_without_exception_fails_loudly(files, monkeypatch):
 def test_empty_source_file_fails_loudly(files, monkeypatch):
     _patch_all(monkeypatch, _stub([_Row("ok")], 1))
     help_text, _parse, extract, suffixes = snap.PARSERS["ibkr-xlsx"]
-    monkeypatch.setitem(
-        snap.PARSERS, "ibkr-xlsx", (help_text, _stub([], 0), extract, suffixes)
-    )
+    monkeypatch.setitem(snap.PARSERS, "ibkr-xlsx", (help_text, _stub([], 0), extract, suffixes))
 
     with pytest.raises(SystemExit) as excinfo:
         snap.snapshot(snap.collect_sources(_args(**files)))
@@ -207,7 +209,10 @@ def test_script_runs_as_a_real_program(tmp_path):
     env = {**os.environ, "PYTHONPATH": str(backend)}
     result = subprocess.run(
         [sys.executable, str(backend / "scripts" / "import_hash_snapshot.py")],
-        cwd=backend, env=env, capture_output=True, text=True,
+        cwd=backend,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode != 0, "一个样本都不给却成功退出 = 假绿"
     assert "一个样本都没给" in result.stderr
@@ -215,7 +220,10 @@ def test_script_runs_as_a_real_program(tmp_path):
     # --help 必须列出全部四个输入类别（IBKR 两种格式各自独立）
     helped = subprocess.run(
         [sys.executable, str(backend / "scripts" / "import_hash_snapshot.py"), "--help"],
-        cwd=backend, env=env, capture_output=True, text=True,
+        cwd=backend,
+        env=env,
+        capture_output=True,
+        text=True,
     )
     assert helped.returncode == 0
     for flag in ("--cmb", "--eastmoney", "--ibkr-xlsx", "--ibkr-activity"):

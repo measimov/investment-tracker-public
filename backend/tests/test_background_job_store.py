@@ -84,6 +84,7 @@ def test_job_state_is_persistent_deduplicated_and_atomically_claimed(job_type):
 
 def test_stale_jobs_are_interrupted_and_terminal_jobs_expire(job_type):
     job = create_or_get_active_job(job_type, 2, {"result": None})
+    assert claim_job(job["id"], job_type) is not None  # running：心跳失联才算执行进程已死
     now = datetime.now(timezone.utc)
     db = SessionLocal()
     try:
@@ -289,3 +290,58 @@ def test_history_runner_persists_progress_and_result(monkeypatch, clear_service_
     assert stored["completed"] == 1
     assert stored["progress_percent"] == 100
     assert stored["results"][0]["rows"] == 3
+
+
+def test_queued_jobs_are_not_judged_by_heartbeat(job_type):
+    """#272：排队期间没人刷新心跳。慢车道跨用户串行，排在后面的每周刷新排队超过
+    60 分钟是常态，不能被当成失联中断；只有排队超过 queued_ttl 才放弃。"""
+    job = create_or_get_active_job(job_type, 2, {"result": None})
+    now = datetime.now(timezone.utc)
+    db = SessionLocal()
+    try:
+        row = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+        row.heartbeat_at = now - timedelta(hours=3)
+        row.created_at = now - timedelta(hours=3)
+        db.commit()
+    finally:
+        db.close()
+
+    assert (
+        interrupt_stale_jobs(
+            now=now, stale_after=timedelta(hours=1), queued_ttl=timedelta(hours=24)
+        )
+        == 0
+    )
+    assert get_job(job["id"], job_type, 2)["status"] == "queued"
+
+    assert (
+        interrupt_stale_jobs(now=now, stale_after=timedelta(hours=1), queued_ttl=timedelta(hours=2))
+        == 1
+    )
+    interrupted = get_job(job["id"], job_type, 2)
+    assert interrupted["status"] == "interrupted"
+    assert "排队过久" in interrupted["error"]
+
+
+def test_requeued_after_failure_is_not_judged_by_queued_ttl(job_type):
+    """PR #297 评审：意外失败后退避重排的任务 created_at 不变；TTL 只管从没开始过的任务，
+    否则本应自动重试的那次会被误判成「排队过久」。"""
+    job = create_or_get_active_job(job_type, 2, {"result": None})
+    now = datetime.now(timezone.utc)
+    db = SessionLocal()
+    try:
+        row = db.query(BackgroundJob).filter(BackgroundJob.id == job["id"]).one()
+        row.created_at = now - timedelta(hours=30)
+        row.started_at = now - timedelta(hours=1)  # 跑过一次、失败后重排
+        row.heartbeat_at = now - timedelta(minutes=5)
+        db.commit()
+    finally:
+        db.close()
+
+    assert (
+        interrupt_stale_jobs(
+            now=now, stale_after=timedelta(hours=1), queued_ttl=timedelta(hours=24)
+        )
+        == 0
+    )
+    assert get_job(job["id"], job_type, 2)["status"] == "queued"

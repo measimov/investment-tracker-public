@@ -94,19 +94,30 @@ def test_progress_is_noop_after_takeover(db):
     assert taken is not None and taken["attempt_count"] == attempt + 1
 
     # 旧线程按自己的 attempt 回写：必须整条 no-op
-    assert set_job_progress(
-        claimed["id"], JOB_TYPE, required_attempt_count=attempt,
-        status="succeeded", stage="persist",
-    ) is None
+    assert (
+        set_job_progress(
+            claimed["id"],
+            JOB_TYPE,
+            required_attempt_count=attempt,
+            status="succeeded",
+            stage="persist",
+        )
+        is None
+    )
     row = _row(db, claimed["id"])
     assert row.status == "running"  # 接管者仍在跑，未被旧线程判为成功
     assert row.data.get("stage") is None
 
     # 接管者用新 attempt 回写正常生效
-    assert set_job_progress(
-        claimed["id"], JOB_TYPE, required_attempt_count=taken["attempt_count"],
-        stage="llm_analysis",
-    ) is not None
+    assert (
+        set_job_progress(
+            claimed["id"],
+            JOB_TYPE,
+            required_attempt_count=taken["attempt_count"],
+            stage="llm_analysis",
+        )
+        is not None
+    )
 
 
 def test_update_job_without_attempt_guard_keeps_old_behavior(db):
@@ -128,8 +139,9 @@ def test_heartbeat_renews_lease_during_long_body(db):
     claimed = _running_job(db)
     before = _row(db, claimed["id"]).lease_expires_at
 
-    with job_heartbeat(claimed["id"], JOB_TYPE, attempt_count=claimed["attempt_count"],
-                       interval_seconds=0.05):
+    with job_heartbeat(
+        claimed["id"], JOB_TYPE, attempt_count=claimed["attempt_count"], interval_seconds=0.05
+    ):
         time.sleep(0.3)  # 期间零业务回写
     after = _row(db, claimed["id"]).lease_expires_at
     assert after > before
@@ -188,10 +200,15 @@ def test_failure_path_is_noop_after_takeover(db):
     assert taken is not None and taken["attempt_count"] == old_attempt + 1
 
     # 旧 runner 事后抛异常
-    assert handle_job_failure(
-        claimed["id"], JOB_TYPE, "旧执行的异常",
-        required_attempt_count=old_attempt,
-    ) is None
+    assert (
+        handle_job_failure(
+            claimed["id"],
+            JOB_TYPE,
+            "旧执行的异常",
+            required_attempt_count=old_attempt,
+        )
+        is None
+    )
 
     row = _row(db, claimed["id"])
     assert row.status == "running"  # 接管者仍在跑
@@ -199,10 +216,15 @@ def test_failure_path_is_noop_after_takeover(db):
     assert row.attempt_count == old_attempt + 1
 
     # 接管者自己的失败照常走退避重试
-    assert handle_job_failure(
-        claimed["id"], JOB_TYPE, "接管者的异常",
-        required_attempt_count=taken["attempt_count"],
-    ) is not None
+    assert (
+        handle_job_failure(
+            claimed["id"],
+            JOB_TYPE,
+            "接管者的异常",
+            required_attempt_count=taken["attempt_count"],
+        )
+        is not None
+    )
     assert _row(db, claimed["id"]).error == "接管者的异常"
 
 
@@ -275,13 +297,15 @@ def test_inline_run_paths_pass_attempt(db, monkeypatch, module_name, run_name, e
     from app.services import job_runtime
 
     monkeypatch.setattr(
-        job_runtime, "handle_job_failure",
+        job_runtime,
+        "handle_job_failure",
         lambda job_id, jt, error, *, required_attempt_count=None: captured.update(
             attempt=required_attempt_count
         ),
     )
     monkeypatch.setattr(
-        jobs, execute_name,
+        jobs,
+        execute_name,
         lambda claimed: (_ for _ in ()).throw(RuntimeError("boom")),
     )
 
@@ -320,8 +344,10 @@ def test_every_inline_run_path_is_covered():
             continue
         module = importlib.import_module(f"app.services.{module_info.name}")
         for attr in dir(module):
-            if attr.startswith("run_") and attr.endswith("_job") and callable(
-                getattr(module, attr)
+            if (
+                attr.startswith("run_")
+                and attr.endswith("_job")
+                and callable(getattr(module, attr))
             ):
                 discovered.add((module_info.name, attr))
 

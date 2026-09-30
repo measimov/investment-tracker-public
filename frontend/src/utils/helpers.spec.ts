@@ -116,6 +116,16 @@ describe('formatDate', () => {
     expect(formatDate(null)).toBe(EMPTY)
     expect(formatDate('')).toBe(EMPTY)
   })
+
+  test('pure date strings are local dates (no UTC shift west of Greenwich)', () => {
+    const original = process.env.TZ
+    process.env.TZ = 'America/Los_Angeles'
+    try {
+      expect(formatDate('2026-01-05')).toBe('2026/01/05')
+    } finally {
+      process.env.TZ = original
+    }
+  })
 })
 
 describe('profitColor', () => {
@@ -123,5 +133,10 @@ describe('profitColor', () => {
     expect(profitColor(0)).toBe(COLOR.success)
     expect(profitColor(12.3)).toBe(COLOR.success)
     expect(profitColor(-0.01)).toBe(COLOR.danger)
+  })
+
+  test('missing values are not colored as gains', () => {
+    expect(profitColor(null)).toBe('')
+    expect(profitColor(undefined)).toBe('')
   })
 })

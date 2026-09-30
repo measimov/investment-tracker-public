@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.core.timeutil import local_today
 from app.database import SessionLocal
 from app.models.background_job import BackgroundJob
 from app.models.corporate_action import CorporateAction
@@ -30,7 +31,7 @@ RESET_MODELS = [
     SecurityRule,
 ]
 
-TODAY = date.today()
+TODAY = local_today()
 RECENT_EX = TODAY - timedelta(days=30)
 
 
@@ -39,9 +40,7 @@ def db():
     session = SessionLocal()
     try:
         reset_tables(session, RESET_MODELS)
-        session.query(BackgroundJob).filter(
-            BackgroundJob.job_type == "dividend_sync"
-        ).delete()
+        session.query(BackgroundJob).filter(BackgroundJob.job_type == "dividend_sync").delete()
         session.commit()
         yield session
         session.rollback()
@@ -73,18 +72,23 @@ def _announcement(**overrides):
 
 
 def _seed_holding(db, symbol="600036", market="A股", quantity=Decimal("1000")):
-    db.add(Holding(
-        user_id=1, symbol=symbol, name="招商银行", market=market,
-        quantity=quantity, avg_cost=Decimal("30"), total_cost=quantity * 30,
-        currency="CNY",
-    ))
+    db.add(
+        Holding(
+            user_id=1,
+            symbol=symbol,
+            name="招商银行",
+            market=market,
+            quantity=quantity,
+            avg_cost=Decimal("30"),
+            total_cost=quantity * 30,
+            currency="CNY",
+        )
+    )
     db.commit()
 
 
 def _patch_fetchers(monkeypatch, dividends=None, disclosures=None, floats=None):
-    monkeypatch.setattr(
-        svc, "fetch_dividend_announcements", lambda s, m: list(dividends or [])
-    )
+    monkeypatch.setattr(svc, "fetch_dividend_announcements", lambda s, m: list(dividends or []))
     monkeypatch.setattr(svc, "fetch_disclosure_dates", lambda s, m: list(disclosures or []))
     monkeypatch.setattr(svc, "fetch_share_floats", lambda s, m: list(floats or []))
 
@@ -97,15 +101,24 @@ def _patch_fetchers(monkeypatch, dividends=None, disclosures=None, floats=None):
 def test_only_implemented_announcements_become_suggestions(db, monkeypatch):
     """预案/股东提议不产生建议；只有"实施"且有除权日的行入选。"""
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
-    _patch_fetchers(monkeypatch, dividends=[
-        _announcement(),
-        _announcement(div_proc="预案", ex_date=RECENT_EX + timedelta(days=60)),
-        _announcement(div_proc="股东提议", ex_date=None),
-        _announcement(div_proc="实施", ex_date=None),  # 无除权日的实施行也跳过
-    ])
+    _patch_fetchers(
+        monkeypatch,
+        dividends=[
+            _announcement(),
+            _announcement(div_proc="预案", ex_date=RECENT_EX + timedelta(days=60)),
+            _announcement(div_proc="股东提议", ex_date=None),
+            _announcement(div_proc="实施", ex_date=None),  # 无除权日的实施行也跳过
+        ],
+    )
 
     result = svc.sync_dividends_for_user(db, 1)
 
@@ -122,8 +135,13 @@ def test_only_implemented_announcements_become_suggestions(db, monkeypatch):
 
 def test_position_bought_after_record_date_is_skipped(db, monkeypatch):
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=RECENT_EX + timedelta(days=5))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=RECENT_EX + timedelta(days=5),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
 
@@ -138,12 +156,24 @@ def test_record_date_quantity_keeps_account_breakdown(db, monkeypatch):
     _seed_holding(db)
     a1 = make_account(db, "券商A")
     a2 = make_account(db, "券商B")
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a1.id, quantity=Decimal("600"),
-                    transaction_date=date(2024, 1, 10))
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a2.id, quantity=Decimal("400"),
-                    transaction_date=date(2024, 2, 10))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a1.id,
+        quantity=Decimal("600"),
+        transaction_date=date(2024, 1, 10),
+    )
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a2.id,
+        quantity=Decimal("400"),
+        transaction_date=date(2024, 2, 10),
+    )
     db.commit()
 
     breakdown, basis = svc.quantity_on_record_date(
@@ -158,13 +188,26 @@ def test_account_replay_error_degrades_to_merged(db, monkeypatch):
     _seed_holding(db)
     a1 = make_account(db, "券商A")
     a2 = make_account(db, "券商B")
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a1.id, quantity=Decimal("1000"),
-                    transaction_date=date(2024, 1, 10))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a1.id,
+        quantity=Decimal("1000"),
+        transaction_date=date(2024, 1, 10),
+    )
     # 账户 B 无持仓却卖出 → per-account 重放矛盾
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a2.id, transaction_type="SELL",
-                    quantity=Decimal("200"), transaction_date=date(2024, 3, 1))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a2.id,
+        transaction_type="SELL",
+        quantity=Decimal("200"),
+        transaction_date=date(2024, 3, 1),
+    )
     db.commit()
 
     breakdown, basis = svc.quantity_on_record_date(
@@ -177,11 +220,23 @@ def test_account_replay_error_degrades_to_merged(db, monkeypatch):
 def test_sold_out_position_still_generates_suggestion(db, monkeypatch):
     """[评审回归] 登记日持有、随后卖清、当前持仓为零 → 仍生成建议。"""
     # 无 Holding 行：买入在登记日前、清仓卖出在除权日后
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_type="SELL", quantity=Decimal("1000"),
-                    transaction_date=RECENT_EX + timedelta(days=3))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_type="SELL",
+        quantity=Decimal("1000"),
+        transaction_date=RECENT_EX + timedelta(days=3),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
 
@@ -200,22 +255,38 @@ def test_multi_account_entitlement_splits_into_per_account_suggestions(db, monke
     _seed_holding(db)
     a1 = make_account(db, "券商A", commit=True)
     a2 = make_account(db, "券商B", commit=True)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a1.id, quantity=Decimal("600"),
-                    transaction_date=date(2024, 1, 10))
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a2.id, quantity=Decimal("400"),
-                    transaction_date=date(2024, 2, 10))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a1.id,
+        quantity=Decimal("600"),
+        transaction_date=date(2024, 1, 10),
+    )
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a2.id,
+        quantity=Decimal("400"),
+        transaction_date=date(2024, 2, 10),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
 
     svc.sync_dividends_for_user(db, 1)
 
-    suggestions = db.query(CorporateActionSuggestion).order_by(
-        CorporateActionSuggestion.broker_account_id
-    ).all()
-    assert [(s.broker_account_id, Decimal(str(s.record_date_quantity)))
-            for s in suggestions] == [(a1.id, Decimal("600")), (a2.id, Decimal("400"))]
+    suggestions = (
+        db.query(CorporateActionSuggestion)
+        .order_by(CorporateActionSuggestion.broker_account_id)
+        .all()
+    )
+    assert [(s.broker_account_id, Decimal(str(s.record_date_quantity))) for s in suggestions] == [
+        (a1.id, Decimal("600")),
+        (a2.id, Decimal("400")),
+    ]
 
     user = db.query(User).filter(User.id == 1).one()
     actions = [svc.accept_suggestion(db, user, s.id, {}) for s in suggestions]
@@ -235,10 +306,15 @@ def test_multi_account_entitlement_splits_into_per_account_suggestions(db, monke
 def _importer_style_dividend(db, *, lag_days=10, total=Decimal("1000"), tax=Decimal("0")):
     """模拟导入器写入的 CASH_DIVIDEND：ex_date=到账日（滞后），税前全额入账。"""
     action = CorporateAction(
-        user_id=1, symbol="600036", market="A股", action_type="CASH_DIVIDEND",
+        user_id=1,
+        symbol="600036",
+        market="A股",
+        action_type="CASH_DIVIDEND",
         ex_date=RECENT_EX + timedelta(days=lag_days),
         payment_date=RECENT_EX + timedelta(days=lag_days),
-        total_dividend=total, tax_withheld=tax, net_dividend=total - tax,
+        total_dividend=total,
+        tax_withheld=tax,
+        net_dividend=total - tax,
         currency="CNY",
     )
     db.add(action)
@@ -248,8 +324,14 @@ def _importer_style_dividend(db, *, lag_days=10, total=Decimal("1000"), tax=Deci
 
 def test_importer_recorded_dividend_matches_within_window(db, monkeypatch):
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     recorded = _importer_style_dividend(db, lag_days=10, total=Decimal("1000"))
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
 
@@ -264,8 +346,14 @@ def test_importer_recorded_dividend_matches_within_window(db, monkeypatch):
 
 def test_amount_over_tolerance_is_matched_with_diff(db, monkeypatch):
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     _importer_style_dividend(db, lag_days=10, total=Decimal("900"))  # 差 10% > 容差
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
 
@@ -281,36 +369,59 @@ def test_match_is_scoped_to_account(db, monkeypatch):
     _seed_holding(db)
     a1 = make_account(db, "券商A", commit=True)
     a2 = make_account(db, "券商B", commit=True)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a1.id, quantity=Decimal("600"),
-                    transaction_date=date(2024, 1, 10))
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a2.id, quantity=Decimal("400"),
-                    transaction_date=date(2024, 2, 10))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a1.id,
+        quantity=Decimal("600"),
+        transaction_date=date(2024, 1, 10),
+    )
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a2.id,
+        quantity=Decimal("400"),
+        transaction_date=date(2024, 2, 10),
+    )
     # 仅账户 A 的分红已由导入器入账
-    db.add(CorporateAction(
-        user_id=1, symbol="600036", market="A股", action_type="CASH_DIVIDEND",
-        broker_account_id=a1.id, ex_date=RECENT_EX + timedelta(days=10),
-        payment_date=RECENT_EX + timedelta(days=10),
-        total_dividend=Decimal("600"), tax_withheld=Decimal("0"),
-        net_dividend=Decimal("600"), currency="CNY",
-    ))
+    db.add(
+        CorporateAction(
+            user_id=1,
+            symbol="600036",
+            market="A股",
+            action_type="CASH_DIVIDEND",
+            broker_account_id=a1.id,
+            ex_date=RECENT_EX + timedelta(days=10),
+            payment_date=RECENT_EX + timedelta(days=10),
+            total_dividend=Decimal("600"),
+            tax_withheld=Decimal("0"),
+            net_dividend=Decimal("600"),
+            currency="CNY",
+        )
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
 
     svc.sync_dividends_for_user(db, 1)
 
-    by_account = {
-        s.broker_account_id: s.status
-        for s in db.query(CorporateActionSuggestion).all()
-    }
+    by_account = {s.broker_account_id: s.status for s in db.query(CorporateActionSuggestion).all()}
     assert by_account == {a1.id: "MATCHED", a2.id: "NEW"}
 
 
 def test_record_outside_window_stays_new(db, monkeypatch):
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     # 到账日滞后超出窗口（pay_date+30d 之外）
     _importer_style_dividend(db, lag_days=45)
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
@@ -329,12 +440,21 @@ def test_record_outside_window_stays_new(db, monkeypatch):
 def test_stock_dividend_ratio_is_parseable_by_semantics(db, monkeypatch):
     """送转建议的 distribution_ratio 必须能被 bonus_share_factor 解析。"""
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
-    _patch_fetchers(monkeypatch, dividends=[
-        _announcement(cash_div=None, cash_div_tax=None, stk_div=Decimal("0.35")),
-    ])
+    _patch_fetchers(
+        monkeypatch,
+        dividends=[
+            _announcement(cash_div=None, cash_div_tax=None, stk_div=Decimal("0.35")),
+        ],
+    )
 
     svc.sync_dividends_for_user(db, 1)
     s = db.query(CorporateActionSuggestion).one()
@@ -343,26 +463,34 @@ def test_stock_dividend_ratio_is_parseable_by_semantics(db, monkeypatch):
     assert s.broker_account_id is None
 
     from app.models.user import User
+
     user = db.query(User).filter(User.id == 1).one()
     action = svc.accept_suggestion(db, user, s.id, {})
     # 10:3.5 → 每股因子 1.35
     factor = bonus_share_factor(action, Decimal("1000"))
     assert factor == Decimal("1.35")
     # 同事务已重算持仓：1000 → 1350
-    holding = db.query(Holding).filter(
-        Holding.symbol == "600036", Holding.market == "A股"
-    ).all()
+    holding = db.query(Holding).filter(Holding.symbol == "600036", Holding.market == "A股").all()
     assert sum(Decimal(str(h.quantity)) for h in holding) == Decimal("1350")
 
 
 def test_cash_and_stock_in_one_announcement_split_into_two(db, monkeypatch):
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
-    _patch_fetchers(monkeypatch, dividends=[
-        _announcement(stk_div=Decimal("0.2")),
-    ])
+    _patch_fetchers(
+        monkeypatch,
+        dividends=[
+            _announcement(stk_div=Decimal("0.2")),
+        ],
+    )
 
     svc.sync_dividends_for_user(db, 1)
     types = {s.action_type for s in db.query(CorporateActionSuggestion).all()}
@@ -375,8 +503,14 @@ def test_accept_amounts_align_with_cash_dividend_amounts(db, monkeypatch):
     from app.services.portfolio.semantics import cash_dividend_amounts
 
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -404,8 +538,14 @@ def test_matched_suggestion_cannot_be_accepted(db, monkeypatch):
     from app.models.user import User
 
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     _importer_style_dividend(db, lag_days=10, total=Decimal("900"))  # 金额差匹配
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -424,8 +564,14 @@ def test_tax_exceeding_gross_is_rejected(db, monkeypatch):
     from app.models.user import User
 
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -447,8 +593,14 @@ def test_concurrent_accept_creates_single_action(db, monkeypatch):
     from app.models.user import User
 
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -477,9 +629,7 @@ def test_concurrent_accept_creates_single_action(db, monkeypatch):
         t.join(timeout=30)
 
     assert sorted(kind for kind, _ in outcomes) == ["conflict", "ok"]
-    assert (
-        db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count() == 1
-    )
+    assert db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count() == 1
 
 
 def test_concurrent_accept_vs_ignore_never_leaves_inconsistent_state(db, monkeypatch):
@@ -491,8 +641,14 @@ def test_concurrent_accept_vs_ignore_never_leaves_inconsistent_state(db, monkeyp
     from app.models.user import User
 
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -537,9 +693,7 @@ def test_concurrent_accept_vs_ignore_never_leaves_inconsistent_state(db, monkeyp
         ["accept_conflict", "ignore_ok"],
     )
     s = db.query(CorporateActionSuggestion).one()
-    action_count = db.query(CorporateAction).filter(
-        CorporateAction.symbol == "600036"
-    ).count()
+    action_count = db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count()
     if s.status == "ACCEPTED":
         assert action_count == 1 and s.created_corporate_action_id is not None
     else:
@@ -553,8 +707,14 @@ def test_accept_rechecks_ledger_inside_timeline_lock(db, monkeypatch):
     from app.models.user import User
 
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -573,9 +733,7 @@ def test_accept_rechecks_ledger_inside_timeline_lock(db, monkeypatch):
     assert s.status == "MATCHED"
     assert s.matched_corporate_action_id == recorded.id
     # 账本仍只有导入的那一条
-    assert db.query(CorporateAction).filter(
-        CorporateAction.symbol == "600036"
-    ).count() == 1
+    assert db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count() == 1
 
 
 def test_accept_recheck_uses_override_account(db, monkeypatch):
@@ -586,9 +744,15 @@ def test_accept_recheck_uses_override_account(db, monkeypatch):
     _seed_holding(db)
     a_src = make_account(db, "券商A", commit=True)
     a_dst = make_account(db, "券商X", commit=True)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a_src.id, quantity=Decimal("1000"),
-                    transaction_date=date(2024, 1, 10))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a_src.id,
+        quantity=Decimal("1000"),
+        transaction_date=date(2024, 1, 10),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -597,11 +761,17 @@ def test_accept_recheck_uses_override_account(db, monkeypatch):
 
     # 账本里同笔分红已记在账户 X（导入器风格）
     recorded = CorporateAction(
-        user_id=1, symbol="600036", market="A股", action_type="CASH_DIVIDEND",
-        broker_account_id=a_dst.id, ex_date=RECENT_EX + timedelta(days=10),
+        user_id=1,
+        symbol="600036",
+        market="A股",
+        action_type="CASH_DIVIDEND",
+        broker_account_id=a_dst.id,
+        ex_date=RECENT_EX + timedelta(days=10),
         payment_date=RECENT_EX + timedelta(days=10),
-        total_dividend=Decimal("1000"), tax_withheld=Decimal("0"),
-        net_dividend=Decimal("1000"), currency="CNY",
+        total_dividend=Decimal("1000"),
+        tax_withheld=Decimal("0"),
+        net_dividend=Decimal("1000"),
+        currency="CNY",
     )
     db.add(recorded)
     db.commit()
@@ -615,9 +785,7 @@ def test_accept_recheck_uses_override_account(db, monkeypatch):
     s = db.query(CorporateActionSuggestion).one()
     assert s.status == "MATCHED"
     assert s.matched_corporate_action_id == recorded.id
-    assert db.query(CorporateAction).filter(
-        CorporateAction.symbol == "600036"
-    ).count() == 1
+    assert db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count() == 1
 
 
 def test_concurrent_accept_vs_ledger_insert(db, monkeypatch):
@@ -631,8 +799,14 @@ def test_concurrent_accept_vs_ledger_insert(db, monkeypatch):
     from app.services.holding_service import lock_security_timeline
 
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -660,14 +834,20 @@ def test_concurrent_accept_vs_ledger_insert(db, monkeypatch):
         try:
             barrier.wait(timeout=10)
             lock_security_timeline(session, 1, "600036", "A股")
-            session.add(CorporateAction(
-                user_id=1, symbol="600036", market="A股",
-                action_type="CASH_DIVIDEND",
-                ex_date=RECENT_EX + timedelta(days=10),
-                payment_date=RECENT_EX + timedelta(days=10),
-                total_dividend=Decimal("1000"), tax_withheld=Decimal("0"),
-                net_dividend=Decimal("1000"), currency="CNY",
-            ))
+            session.add(
+                CorporateAction(
+                    user_id=1,
+                    symbol="600036",
+                    market="A股",
+                    action_type="CASH_DIVIDEND",
+                    ex_date=RECENT_EX + timedelta(days=10),
+                    payment_date=RECENT_EX + timedelta(days=10),
+                    total_dividend=Decimal("1000"),
+                    tax_withheld=Decimal("0"),
+                    net_dividend=Decimal("1000"),
+                    currency="CNY",
+                )
+            )
             session.commit()
             outcomes.append("insert_ok")
         finally:
@@ -682,9 +862,7 @@ def test_concurrent_accept_vs_ledger_insert(db, monkeypatch):
     assert "insert_ok" in outcomes
     db.expire_all()
     s = db.query(CorporateActionSuggestion).one()
-    action_count = db.query(CorporateAction).filter(
-        CorporateAction.symbol == "600036"
-    ).count()
+    action_count = db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count()
     if "accept_ok" in outcomes:
         # accept 先取得时间线锁：正常入账；导入随后写入 → 两条（导入侧
         # 判重是导入器职责，非 accept 可控）
@@ -710,8 +888,13 @@ def test_concurrent_event_upsert_is_atomic(db, monkeypatch):
         try:
             barrier.wait(timeout=10)
             svc.upsert_security_event(
-                session, "600036", "A股", "SHARE_UNLOCK", TODAY + timedelta(days=30),
-                "tushare-share_float", payload={"float_share": 100.0},
+                session,
+                "600036",
+                "A股",
+                "SHARE_UNLOCK",
+                TODAY + timedelta(days=30),
+                "tushare-share_float",
+                payload={"float_share": 100.0},
             )
             session.commit()
         except Exception as exc:  # noqa: BLE001 - 断言用
@@ -737,8 +920,14 @@ def test_concurrent_event_upsert_is_atomic(db, monkeypatch):
 
 def test_resync_is_idempotent_and_refreshes_revisions(db, monkeypatch):
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
@@ -762,6 +951,7 @@ def test_resync_is_idempotent_and_refreshes_revisions(db, monkeypatch):
 
     # [评审回归] ACCEPTED 同样不被重同步覆盖回 NEW/MATCHED
     from app.models.user import User
+
     svc.restore_suggestion(db, 1, s.id)
     user = db.query(User).filter(User.id == 1).one()
     action = svc.accept_suggestion(db, user, s.id, {})
@@ -778,12 +968,24 @@ def test_resync_removes_stale_suggestions(db, monkeypatch):
     _seed_holding(db)
     a1 = make_account(db, "券商A", commit=True)
     a2 = make_account(db, "券商B", commit=True)
-    txn_b = add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                            broker_account_id=a2.id, quantity=Decimal("400"),
-                            transaction_date=date(2024, 2, 10))
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    broker_account_id=a1.id, quantity=Decimal("600"),
-                    transaction_date=date(2024, 1, 10))
+    txn_b = add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a2.id,
+        quantity=Decimal("400"),
+        transaction_date=date(2024, 2, 10),
+    )
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=a1.id,
+        quantity=Decimal("600"),
+        transaction_date=date(2024, 1, 10),
+    )
     db.commit()
     txn_b_id = txn_b.id
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
@@ -812,8 +1014,14 @@ def test_resync_keeps_accepted_when_equity_disappears(db, monkeypatch):
     from app.models.user import User
 
     _seed_holding(db)
-    txn = add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                          transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    txn = add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     txn_id = txn.id
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
@@ -833,12 +1041,12 @@ def test_excluded_and_cash_management_symbols_are_skipped(db, monkeypatch):
     _seed_holding(db, symbol="511880")
     _seed_holding(db, symbol="600036")
     db.add(SecurityRule(user_id=1, rule_type="EXCLUDE", symbol="600036", market="A股"))
-    db.add(SecurityRule(user_id=1, rule_type="CASH_MANAGEMENT", symbol="511880",
-                        market="A股"))
+    db.add(SecurityRule(user_id=1, rule_type="CASH_MANAGEMENT", symbol="511880", market="A股"))
     db.commit()
     calls = []
     monkeypatch.setattr(
-        svc, "fetch_dividend_announcements",
+        svc,
+        "fetch_dividend_announcements",
         lambda s, m: calls.append(s) or [],
     )
 
@@ -869,8 +1077,14 @@ def test_single_symbol_failure_does_not_abort(db, monkeypatch):
     monkeypatch.setattr(svc, "fetch_dividend_announcements", fetch)
     monkeypatch.setattr(svc, "fetch_disclosure_dates", lambda s, m: [])
     monkeypatch.setattr(svc, "fetch_share_floats", lambda s, m: [])
-    add_transaction(db, symbol="600519", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600519",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
 
     result = svc.sync_dividends_for_user(db, 1)
@@ -886,24 +1100,31 @@ def test_single_symbol_failure_does_not_abort(db, monkeypatch):
 
 def test_events_upsert_and_plan_to_implemented_transition(db, monkeypatch):
     _seed_holding(db)
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
     db.commit()
     future_ex = TODAY + timedelta(days=20)
     disclosure = TODAY + timedelta(days=40)
     unlock = TODAY + timedelta(days=60)
 
-    plan_row = _announcement(
-        div_proc="预案", ex_date=future_ex, record_date=None, pay_date=None
-    )
+    plan_row = _announcement(div_proc="预案", ex_date=future_ex, record_date=None, pay_date=None)
     _patch_fetchers(
         monkeypatch,
         dividends=[plan_row],
         disclosures=[
             {"end_date": date(2026, 6, 30), "pre_date": disclosure, "actual_date": None},
             # 已实际披露的行不再是未来事件
-            {"end_date": date(2026, 3, 31), "pre_date": TODAY - timedelta(days=10),
-             "actual_date": TODAY - timedelta(days=8)},
+            {
+                "end_date": date(2026, 3, 31),
+                "pre_date": TODAY - timedelta(days=10),
+                "actual_date": TODAY - timedelta(days=8),
+            },
         ],
         floats=[
             {"float_date": unlock, "float_share": Decimal("100"), "float_ratio": Decimal("1.5")},
@@ -921,8 +1142,7 @@ def test_events_upsert_and_plan_to_implemented_transition(db, monkeypatch):
     # 预案 → 实施：同除权日再同步，事件刷新不重复，且开始产生建议
     _patch_fetchers(
         monkeypatch,
-        dividends=[_announcement(ex_date=future_ex,
-                                 record_date=future_ex - timedelta(days=1))],
+        dividends=[_announcement(ex_date=future_ex, record_date=future_ex - timedelta(days=1))],
     )
     result2 = svc.sync_dividends_for_user(db, 1)
     assert result2["events_upserted"] == 0
@@ -949,9 +1169,7 @@ def test_periodic_entry_silent_without_flag_or_token(db, monkeypatch):
 
     monkeypatch.setattr(jobs.settings, "tushare_token", "fake-token")
     assert jobs.enqueue_periodic_dividend_sync() == 1
-    job = db.query(BackgroundJob).filter(
-        BackgroundJob.job_type == "dividend_sync"
-    ).one()
+    job = db.query(BackgroundJob).filter(BackgroundJob.job_type == "dividend_sync").one()
     assert job.status == "queued"
 
 
@@ -960,17 +1178,89 @@ def test_periodic_entry_includes_sold_out_users(db, monkeypatch):
     from app.services import dividend_sync_jobs as jobs
 
     # 无任何 Holding 行：登记日前买入 + 近期清仓卖出
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_date=date(2024, 1, 10), quantity=Decimal("1000"))
-    add_transaction(db, symbol="600036", market="A股", currency="CNY",
-                    transaction_type="SELL", quantity=Decimal("1000"),
-                    transaction_date=TODAY - timedelta(days=10))
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_type="SELL",
+        quantity=Decimal("1000"),
+        transaction_date=TODAY - timedelta(days=10),
+    )
     db.commit()
     monkeypatch.setattr(jobs.settings, "dividend_sync_periodic_enabled", True)
     monkeypatch.setattr(jobs.settings, "tushare_token", "fake-token")
 
     assert jobs.enqueue_periodic_dividend_sync() == 1
-    job = db.query(BackgroundJob).filter(
-        BackgroundJob.job_type == "dividend_sync"
-    ).one()
+    job = db.query(BackgroundJob).filter(BackgroundJob.job_type == "dividend_sync").one()
     assert job.user_id == 1
+
+
+def test_periodic_entry_runs_weekly_by_db_state(db, monkeypatch):
+    """每小时 tick，但按库内上次入队时间一周只入队一次（重启不重跑）。"""
+    from datetime import datetime, timezone
+
+    from app.models.scheduled_task_state import ScheduledTaskState
+    from app.services import dividend_sync_jobs as jobs
+    from app.services import scheduled_state
+
+    db.query(ScheduledTaskState).filter_by(name=jobs.PERIODIC_TASK_NAME).delete()
+    db.commit()
+    _seed_holding(db)
+    monkeypatch.setattr(jobs.settings, "dividend_sync_periodic_enabled", True)
+    calls = []
+    monkeypatch.setattr(jobs, "enqueue_periodic_dividend_sync", lambda: calls.append(1) or 1)
+    try:
+        first = jobs.periodic_enqueue_dividend_sync()
+        second = jobs.periodic_enqueue_dividend_sync()
+        assert (first.status, second.status) == ("succeeded", "skipped")
+        assert len(calls) == 1
+
+        # 上次入队已满 7 天 → 再次入队
+        scheduled_state.mark_ran(
+            db,
+            jobs.PERIODIC_TASK_NAME,
+            now=datetime.now(timezone.utc) - jobs.PERIODIC_EVERY - timedelta(minutes=1),
+        )
+        assert jobs.periodic_enqueue_dividend_sync().status == "succeeded"
+        assert len(calls) == 2
+    finally:
+        db.query(ScheduledTaskState).filter_by(name=jobs.PERIODIC_TASK_NAME).delete()
+        db.commit()
+
+
+def test_periodic_enqueue_skips_inactive_users(db, monkeypatch):
+    from app.models.user import User
+    from app.services import dividend_sync_jobs as jobs
+
+    inactive = User(username="dividend_inactive", hashed_password="x", is_active=False)
+    db.add(inactive)
+    db.commit()
+    try:
+        db.add(
+            Holding(
+                user_id=inactive.id,
+                symbol="600036",
+                name="招商银行",
+                market="A股",
+                quantity=Decimal("100"),
+                avg_cost=Decimal("30"),
+                total_cost=Decimal("3000"),
+                currency="CNY",
+            )
+        )
+        db.commit()
+        monkeypatch.setattr(jobs.settings, "dividend_sync_periodic_enabled", True)
+        assert jobs.enqueue_periodic_dividend_sync() == 0
+    finally:
+        db.query(Holding).filter(Holding.user_id == inactive.id).delete()
+        db.query(User).filter(User.id == inactive.id).delete()
+        db.commit()

@@ -42,7 +42,11 @@ def test_service_getters_are_type_scoped():
         seed_security_rule(db, 1, "RELISTING", "01263", "港股", payload=PCT_RELISTING_PAYLOAD)
         seed_security_rule(db, 1, "NAME_OVERRIDE", "PCT", "新加坡股", payload={"name": "柏能集团"})
         seed_security_rule(
-            db, 1, "PRICE_GAP_EXEMPTION", "01263", "港股",
+            db,
+            1,
+            "PRICE_GAP_EXEMPTION",
+            "01263",
+            "港股",
             payload={"start_date": "2026-01-09", "end_date": None},
         )
         seed_security_rule(
@@ -65,9 +69,7 @@ def test_service_getters_are_type_scoped():
             }
         ]
         assert get_name_overrides(db, 1) == {("PCT", "新加坡股"): "柏能集团"}
-        assert get_price_gap_exemptions(db, 1) == [
-            ("01263", "港股", date(2026, 1, 9), None)
-        ]
+        assert get_price_gap_exemptions(db, 1) == [("01263", "港股", date(2026, 1, 9), None)]
         assert get_cmb_cash_business_map(db, 1) == {"银行转存": "DEPOSIT"}
         # 用户隔离
         assert get_excluded_symbols(db, 2) == set()
@@ -78,9 +80,17 @@ def test_service_getters_are_type_scoped():
 
 def _txn(db, symbol, market, txn_date, currency="HKD"):
     txn = Transaction(
-        user_id=1, broker_account_id=None, symbol=symbol, name=symbol, market=market,
-        transaction_type="BUY", quantity=Decimal("100"), price=Decimal("10"),
-        fee=Decimal("0"), transaction_date=txn_date, currency=currency,
+        user_id=1,
+        broker_account_id=None,
+        symbol=symbol,
+        name=symbol,
+        market=market,
+        transaction_type="BUY",
+        quantity=Decimal("100"),
+        price=Decimal("10"),
+        fee=Decimal("0"),
+        transaction_date=txn_date,
+        currency=currency,
     )
     db.add(txn)
     db.commit()
@@ -102,7 +112,11 @@ def test_price_gap_exemption_clamps_sync_targets():
         assert no_exemption["targets"][0]["end_date"] == date(2026, 5, 3)
 
         seed_security_rule(
-            db, 1, "PRICE_GAP_EXEMPTION", "01263", "港股",
+            db,
+            1,
+            "PRICE_GAP_EXEMPTION",
+            "01263",
+            "港股",
             payload={"start_date": "2026-01-09", "end_date": None},
         )
         clamped = get_history_sync_targets(db, 1, end_date=date(2026, 7, 1))
@@ -110,7 +124,11 @@ def test_price_gap_exemption_clamps_sync_targets():
 
         # 头部豁免钳起点
         seed_security_rule(
-            db, 1, "PRICE_GAP_EXEMPTION", "123266", "A股",
+            db,
+            1,
+            "PRICE_GAP_EXEMPTION",
+            "123266",
+            "A股",
             payload={"start_date": "2026-03-26", "end_date": "2026-04-06"},
         )
         _txn(db, "123266", "A股", date(2026, 3, 26), currency="CNY")
@@ -121,7 +139,11 @@ def test_price_gap_exemption_clamps_sync_targets():
 
         # 全区间豁免 → 目标消失
         seed_security_rule(
-            db, 1, "PRICE_GAP_EXEMPTION", "900926", "B股",
+            db,
+            1,
+            "PRICE_GAP_EXEMPTION",
+            "900926",
+            "B股",
             payload={"start_date": "2020-01-01", "end_date": None},
         )
         _txn(db, "900926", "B股", date(2026, 6, 1), currency="USD")
@@ -204,22 +226,8 @@ async def test_security_rules_api_crud_and_validation(monkeypatch):
             assert len(rows) == 1
             assert rows[0]["payload"]["new_symbol"] == "PCT"
 
-            deleted = await client.delete(
-                f"/api/security-rules/{rows[0]['id']}", headers=auth
-            )
+            deleted = await client.delete(f"/api/security-rules/{rows[0]['id']}", headers=auth)
             assert deleted.status_code == 204
-
-            # 兼容路由仍工作（EXCLUDE 视图）
-            excluded = await client.post(
-                "/api/excluded-securities",
-                headers=auth,
-                json={"symbol": "511880", "market": "A股"},
-            )
-            assert excluded.status_code == 201
-            via_rules = await client.get(
-                "/api/security-rules", headers=auth, params={"rule_type": "EXCLUDE"}
-            )
-            assert [r["symbol"] for r in via_rules.json()] == ["511880"]
     finally:
         user.hashed_password = original
         db.commit()
@@ -240,14 +248,16 @@ def test_ibkr_import_respects_exclude_rules(monkeypatch):
     reset_tables(db, (SecurityRule, IbkrActivityFlow, Holding, Transaction, BrokerAccount))
     try:
         account = BrokerAccount(
-            user_id=1, broker="IBKR", account_name="IBKR 排除测试",
-            account_number_masked="****7968", base_currency="USD",
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 排除测试",
+            account_number_masked="****7968",
+            base_currency="USD",
         )
         db.add(account)
         db.commit()
         db.refresh(account)
-        seed_security_rule(db, 1, "EXCLUDE", "FXE", "美股",
-                           note="行权衍生持仓，只做期权不留股票")
+        seed_security_rule(db, 1, "EXCLUDE", "FXE", "美股", note="行权衍生持仓，只做期权不留股票")
 
         csv_rows = (
             "Transaction History,Data,2026-03-23,U***67968,INVESCO EURO,买,FXE,"
@@ -255,20 +265,23 @@ def test_ibkr_import_respects_exclude_rules(monkeypatch):
             "Transaction History,Data,2026-05-07,U***67968,CNOOC LTD-H,买,883,"
             "1000.0,27.36,HKD,-3493.05,-2.79,-3499.52",
         )
-        header = "\n".join([
-            "Statement,Header,域名称,域值",
-            "总结,Header,域名称,域值",
-            "总结,Data,基础货币,USD",
-            "Transaction History,Header,日期,账户,说明,交易类型,代码,数量,价格,"
-            "Price Currency,总额,佣金,净额",
-        ])
+        header = "\n".join(
+            [
+                "Statement,Header,域名称,域值",
+                "总结,Header,域名称,域值",
+                "总结,Data,基础货币,USD",
+                "Transaction History,Header,日期,账户,说明,交易类型,代码,数量,价格,"
+                "Price Currency,总额,佣金,净额",
+            ]
+        )
         contents = (header + "\n" + "\n".join(csv_rows) + "\n").encode()
 
         # 预置孤儿来源行：与上传的 FXE 行同 hash、无 canonical 链接（owner 删过交易）
         parsed, _, _, _ = ibkr.parse_rows(contents, "orphan-probe.csv")
         fxe_hash = next(f.row_hash for f in parsed if f.raw_symbol == "FXE")
         orphan = ibkr.create_ibkr_activity_flow(
-            user_id=1, filename="legacy.csv",
+            user_id=1,
+            filename="legacy.csv",
             flow=next(f for f in parsed if f.raw_symbol == "FXE"),
             broker_account_id=account.id,
         )
@@ -284,12 +297,7 @@ def test_ibkr_import_respects_exclude_rules(monkeypatch):
         assert result["imported_transactions"] == 1  # 只有 00883
         assert db.query(Transaction).filter(Transaction.symbol == "FXE").count() == 0
         # 孤儿行按 hash 判重，不产生第二份归档
-        assert (
-            db.query(IbkrActivityFlow)
-            .filter(IbkrActivityFlow.row_hash == fxe_hash)
-            .count()
-            == 1
-        )
+        assert db.query(IbkrActivityFlow).filter(IbkrActivityFlow.row_hash == fxe_hash).count() == 1
         assert result["batch_status"] == "COMPLETED"  # 排除属预期跳过
     finally:
         reset_tables(db, (SecurityRule, IbkrActivityFlow, Holding, Transaction, BrokerAccount))
@@ -308,8 +316,11 @@ def test_ibkr_excluded_archive_keeps_real_skip_reason(monkeypatch):
     reset_tables(db, models)
     try:
         account = BrokerAccount(
-            user_id=1, broker="IBKR", account_name="IBKR 审计",
-            account_number_masked="****7968", base_currency="USD",
+            user_id=1,
+            broker="IBKR",
+            account_name="IBKR 审计",
+            account_number_masked="****7968",
+            base_currency="USD",
         )
         db.add(account)
         db.commit()
@@ -352,36 +363,68 @@ async def test_cmb_rule_cannot_bypass_uniqueness_via_market():
             )
             auth = {"Authorization": f"Bearer {token_resp.json()['access_token']}"}
             ok = await client.post(
-                "/api/security-rules", headers=auth,
-                json={"rule_type": "CMB_CASH_BUSINESS", "symbol": "银行转存",
-                      "payload": {"event_type": "DEPOSIT"}},
+                "/api/security-rules",
+                headers=auth,
+                json={
+                    "rule_type": "CMB_CASH_BUSINESS",
+                    "symbol": "银行转存",
+                    "payload": {"event_type": "DEPOSIT"},
+                },
             )
             assert ok.status_code == 201
             # 带 market 直接 422（而非借不同 market 生成第二条）
             bypass = await client.post(
-                "/api/security-rules", headers=auth,
-                json={"rule_type": "CMB_CASH_BUSINESS", "symbol": "银行转存",
-                      "market": "A股", "payload": {"event_type": "WITHDRAWAL"}},
+                "/api/security-rules",
+                headers=auth,
+                json={
+                    "rule_type": "CMB_CASH_BUSINESS",
+                    "symbol": "银行转存",
+                    "market": "A股",
+                    "payload": {"event_type": "WITHDRAWAL"},
+                },
             )
             assert bypass.status_code == 422
             # FX_IN 不在 CMB 允许类型
             fx = await client.post(
-                "/api/security-rules", headers=auth,
-                json={"rule_type": "CMB_CASH_BUSINESS", "symbol": "外汇兑换",
-                      "payload": {"event_type": "FX_IN"}},
+                "/api/security-rules",
+                headers=auth,
+                json={
+                    "rule_type": "CMB_CASH_BUSINESS",
+                    "symbol": "外汇兑换",
+                    "payload": {"event_type": "FX_IN"},
+                },
             )
             assert fx.status_code == 422
             # 畸形 payload 一律 422 而非 500
             for bad_payload in (
-                {"rule_type": "PRICE_GAP_EXEMPTION", "symbol": "X", "market": "A股",
-                 "payload": {"start_date": 123}},
-                {"rule_type": "PRICE_GAP_EXEMPTION", "symbol": "X", "market": "A股",
-                 "payload": {"start_date": "not-a-date"}},
-                {"rule_type": "RELISTING", "symbol": "X", "market": "A股",
-                 "payload": {"new_symbol": "Y", "new_market": [], "new_currency": "SGD",
-                             "old_currency": "HKD"}},
-                {"rule_type": "CMB_CASH_BUSINESS", "symbol": "怪业务",
-                 "payload": {"event_type": {}}},
+                {
+                    "rule_type": "PRICE_GAP_EXEMPTION",
+                    "symbol": "X",
+                    "market": "A股",
+                    "payload": {"start_date": 123},
+                },
+                {
+                    "rule_type": "PRICE_GAP_EXEMPTION",
+                    "symbol": "X",
+                    "market": "A股",
+                    "payload": {"start_date": "not-a-date"},
+                },
+                {
+                    "rule_type": "RELISTING",
+                    "symbol": "X",
+                    "market": "A股",
+                    "payload": {
+                        "new_symbol": "Y",
+                        "new_market": [],
+                        "new_currency": "SGD",
+                        "old_currency": "HKD",
+                    },
+                },
+                {
+                    "rule_type": "CMB_CASH_BUSINESS",
+                    "symbol": "怪业务",
+                    "payload": {"event_type": {}},
+                },
             ):
                 resp = await client.post("/api/security-rules", headers=auth, json=bad_payload)
                 assert resp.status_code == 422, (bad_payload, resp.status_code, resp.text)
@@ -415,21 +458,42 @@ async def test_nested_payload_fields_are_normalized():
 
             # 空白 new_symbol / 空白覆盖名 → 422
             for bad in (
-                {"rule_type": "RELISTING", "symbol": "01263", "market": "港股",
-                 "payload": {"new_symbol": "   ", "new_market": "新加坡股",
-                             "new_currency": "SGD", "old_currency": "HKD"}},
-                {"rule_type": "NAME_OVERRIDE", "symbol": "PCT", "market": "新加坡股",
-                 "payload": {"name": "   "}},
+                {
+                    "rule_type": "RELISTING",
+                    "symbol": "01263",
+                    "market": "港股",
+                    "payload": {
+                        "new_symbol": "   ",
+                        "new_market": "新加坡股",
+                        "new_currency": "SGD",
+                        "old_currency": "HKD",
+                    },
+                },
+                {
+                    "rule_type": "NAME_OVERRIDE",
+                    "symbol": "PCT",
+                    "market": "新加坡股",
+                    "payload": {"name": "   "},
+                },
             ):
                 resp = await client.post("/api/security-rules", headers=auth, json=bad)
                 assert resp.status_code == 422, (bad, resp.text)
 
             # 小写代码/币种入库即规范化为大写；市场 strip 后校验
             created = await client.post(
-                "/api/security-rules", headers=auth,
-                json={"rule_type": "RELISTING", "symbol": "01263", "market": "港股",
-                      "payload": {"new_symbol": " pct ", "new_market": " 新加坡股 ",
-                                  "new_currency": " sgd", "old_currency": "hkd "}},
+                "/api/security-rules",
+                headers=auth,
+                json={
+                    "rule_type": "RELISTING",
+                    "symbol": "01263",
+                    "market": "港股",
+                    "payload": {
+                        "new_symbol": " pct ",
+                        "new_market": " 新加坡股 ",
+                        "new_currency": " sgd",
+                        "old_currency": "hkd ",
+                    },
+                },
             )
             assert created.status_code == 201
             payload = created.json()["payload"]

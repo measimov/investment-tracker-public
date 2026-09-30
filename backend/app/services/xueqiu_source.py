@@ -40,6 +40,7 @@ from .stock_price_service import (
     price_result,
     quote_date_from_epoch_ms,
 )
+from .xueqiu_collector.cookie_health import effective_cookie_values
 
 logger = get_app_logger(__name__)
 
@@ -67,20 +68,20 @@ class XueqiuUnavailable(RuntimeError):
 
 
 def _cookies_from_json(raw: str) -> Dict[str, str]:
-    """把 `XUEQIU_COOKIES` 的 JSON 文本规整为 {name: value}。
+    """把 `XUEQIU_COOKIES` 的 JSON 文本规整为 {name: value}（解析规则唯一来源：
+    `cookie_health.effective_cookie_values`，与采集器、到期检查同一语义）。
 
     不能直接把解析结果丢给库的 `load_cookies`：它的 dict 分支排在 "cookies"
     键分支之前、对 dict 入参原样返回，于是 J2Team 形状的 dict 会变成一个名为
     "cookies" 的假 Cookie，请求照发但登录态为空。
     """
-    data = json.loads(raw)
-    if isinstance(data, dict) and "cookies" in data:
-        data = data["cookies"]
-    if isinstance(data, list):
-        return {str(item["name"]): str(item["value"]) for item in data}
-    if isinstance(data, dict):
-        return {str(key): str(value) for key, value in data.items()}
-    raise XueqiuUnavailable("XUEQIU_COOKIES 结构无法识别（需 {name: value} 或 J2Team 导出）")
+    try:
+        return effective_cookie_values(json.loads(raw))
+    except ValueError as exc:
+        # JSONDecodeError 也是 ValueError；它的 str 只含位置，不含原文
+        raise XueqiuUnavailable(
+            f"XUEQIU_COOKIES 无法解析（需 {{name: value}} 或 J2Team 导出）：{exc}"
+        ) from None
 
 
 def _import_library():
@@ -167,7 +168,9 @@ def reset_client() -> None:
 
 
 def is_configured() -> bool:
-    return bool((settings.xueqiu_cookies or "").strip() or (settings.xueqiu_cookie_file or "").strip())
+    return bool(
+        (settings.xueqiu_cookies or "").strip() or (settings.xueqiu_cookie_file or "").strip()
+    )
 
 
 def _call(method: str, *args: Any, **kwargs: Any) -> Any:
@@ -322,16 +325,18 @@ def fetch_holder_rows(symbol: str, market: str) -> List[Dict[str, Any]]:
         raise XueqiuUnavailable("雪球十大股东响应缺少报告期（times），无法构造幂等自然键")
     rows = []
     for rank, item in enumerate(data.get("items") or [], start=1):
-        rows.append({
-            "report_date": report_date,
-            "report_name": period.get("name"),
-            "holder_rank": rank,
-            "holder_name": item.get("holder_name"),
-            "held_num": item.get("held_num"),
-            "held_ratio": item.get("held_ratio"),
-            "chg": item.get("chg"),
-            "period_key": f"{report_date}|{rank:02d}",
-        })
+        rows.append(
+            {
+                "report_date": report_date,
+                "report_name": period.get("name"),
+                "holder_rank": rank,
+                "holder_name": item.get("holder_name"),
+                "held_num": item.get("held_num"),
+                "held_ratio": item.get("held_ratio"),
+                "chg": item.get("chg"),
+                "period_key": f"{report_date}|{rank:02d}",
+            }
+        )
     return rows
 
 

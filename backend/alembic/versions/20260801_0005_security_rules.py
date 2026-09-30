@@ -135,29 +135,58 @@ def upgrade() -> None:
     for user_id in user_ids:
         for symbol, market, note in SEED_CASH_MANAGEMENT:
             rows.append(
-                dict(user_id=user_id, rule_type="CASH_MANAGEMENT", symbol=symbol,
-                     market=market, payload=None, note=note)
+                dict(
+                    user_id=user_id,
+                    rule_type="CASH_MANAGEMENT",
+                    symbol=symbol,
+                    market=market,
+                    payload=None,
+                    note=note,
+                )
             )
         for symbol, market, payload, note in SEED_RELISTINGS:
             rows.append(
-                dict(user_id=user_id, rule_type="RELISTING", symbol=symbol,
-                     market=market, payload=payload, note=note)
+                dict(
+                    user_id=user_id,
+                    rule_type="RELISTING",
+                    symbol=symbol,
+                    market=market,
+                    payload=payload,
+                    note=note,
+                )
             )
         for symbol, market, payload, note in SEED_NAME_OVERRIDES:
             rows.append(
-                dict(user_id=user_id, rule_type="NAME_OVERRIDE", symbol=symbol,
-                     market=market, payload=payload, note=note)
+                dict(
+                    user_id=user_id,
+                    rule_type="NAME_OVERRIDE",
+                    symbol=symbol,
+                    market=market,
+                    payload=payload,
+                    note=note,
+                )
             )
         for symbol, market, payload, note in SEED_PRICE_GAPS:
             rows.append(
-                dict(user_id=user_id, rule_type="PRICE_GAP_EXEMPTION", symbol=symbol,
-                     market=market, payload=payload, note=note)
+                dict(
+                    user_id=user_id,
+                    rule_type="PRICE_GAP_EXEMPTION",
+                    symbol=symbol,
+                    market=market,
+                    payload=payload,
+                    note=note,
+                )
             )
         for business_name, event_type in SEED_CMB_CASH_BUSINESS:
             rows.append(
-                dict(user_id=user_id, rule_type="CMB_CASH_BUSINESS", symbol=business_name,
-                     market=None, payload={"event_type": event_type},
-                     note="招商对账单现金业务口径")
+                dict(
+                    user_id=user_id,
+                    rule_type="CMB_CASH_BUSINESS",
+                    symbol=business_name,
+                    market=None,
+                    payload={"event_type": event_type},
+                    note="招商对账单现金业务口径",
+                )
             )
     if rows:
         op.bulk_insert(table, rows)
