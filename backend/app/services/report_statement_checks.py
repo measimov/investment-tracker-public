@@ -35,7 +35,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from .payload_versions import versions_current
 
 # v5：EPS 与雅虎相差 >20% 且更晚报告比较列解释不了 → error（基本与摊薄各一条）
-STATEMENT_VALIDATION_VERSION = 5
+# v6：货币资金量级（money_cap_magnitude，#263）
+STATEMENT_VALIDATION_VERSION = 6
 
 IDENTITY_REL_TOL = 0.01
 CROSS_CHECK_REL_TOL = 0.01
@@ -44,6 +45,10 @@ COMPARATIVE_INFO_TOL = 0.01
 COMPARATIVE_SUSPECT_TOL = 0.05
 # 幅度守卫：总资产不可能小于归母权益的一半（拆数字行的总资产会小几个量级）
 HARD_MAGNITUDE_RATIO = 0.5
+# 货币资金占总资产的下限：低于它就是取错了行或列（附注号、单位行）。2026-09 生产全量 1,916 行
+# （港股 PDF 行、A 股资产负债表、雅虎行）里真实值最低 0.54%（重资产水电），错误值约 1e-6
+# （02313 2015/2016 取成附注号、03900 2016）——1e-4 比最低真实值低 50 倍，只拦数量级错误
+MONEY_CAP_MIN_SHARE = 1e-4
 # 「与更晚报告的比较列一致」的容差（雅虎口径差异 / 雅虎取了重列数的判据）
 DEFINITION_MATCH_TOL = 0.005
 # EPS 与雅虎的比值落在这个区间 = 单位差 100 倍（仙当元），判 error
@@ -336,6 +341,21 @@ def sanity_checks(row: Dict[str, Any]) -> List[Dict[str, Any]]:
                 else (
                     f"总资产 {total_assets:.0f} 不足归母权益 {equity:.0f} 的一半——像是数字被拆开或错列"
                 ),
+            }
+        )
+    money_cap = _num(row, "money_cap")
+    if money_cap is not None and money_cap > 0 and total_assets is not None and total_assets > 0:
+        ok = money_cap >= total_assets * MONEY_CAP_MIN_SHARE
+        # 不设 hard：只清洗货币资金本身，不连带总资产（fields 只写 money_cap）
+        checks.append(
+            {
+                "id": "money_cap_magnitude",
+                "severity": "error",
+                "status": "ok" if ok else "suspect",
+                "fields": ["money_cap"],
+                "detail": ""
+                if ok
+                else f"货币资金 {money_cap:.0f} 不足总资产 {total_assets:.0f} 的万分之一——像是取成了附注号或错列",
             }
         )
     if revenue is not None:

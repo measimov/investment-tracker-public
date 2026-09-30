@@ -975,3 +975,49 @@ def test_comparative_merge_carries_per_statement_build_metadata():
         "basic_eps": {"to_row": "r21"},
     }
     assert merged["build_version"] == prompts.STATEMENT_BUILD_VERSION
+
+
+@pytest.mark.parametrize(
+    "fixture, detail_label, expected",
+    [
+        ("hk_01133_20171231", "其中：利息支出", "241715596.09"),
+        ("hk_01133_20231231", "其中：利息費用", "200366923.11"),
+        ("hk_01133_20251231", "其中：利息費用", "141845408.66"),
+    ],
+)
+def test_cas_net_finance_cost_is_redirected_to_interest_expense(fixture, detail_label, expected):
+    """#264：中国准则利润表的「財務費用」是净额，int_exp 应取其下「其中：利息費用/支出」。"""
+    income = _real_income(fixture)
+    net = next(r for r in income.rows if "".join(r.label.split()).startswith("財務費用"))
+    fixed, repairs = statement_build.effective_mapping(
+        {"income": income}, {"income": {"int_exp": [net.row_id], "total_revenue": ["r1"]}}
+    )
+    target = next(r for r in income.rows if r.row_id == fixed["income"]["int_exp"][0])
+    assert "".join(target.label.split()).startswith(detail_label)
+    assert str(target.values[0]) == expected
+    assert repairs["int_exp"] == {
+        "reason": "net_finance_cost",
+        "from_row": net.row_id,
+        "to_row": target.row_id,
+    }
+    assert fixed["income"]["total_revenue"] == ["r1"]  # 其他科目不动
+
+
+def test_ifrs_finance_cost_is_not_redirected():
+    """国际准则港股的「財務費用」就是利息开支，下一行是汇兑等别的科目（00883）——不改。
+    已经指向明细行、或下一行不是「其中：利息…」、或明细行无数值时同样不动。"""
+    income = _real_income("hk_00883_20251231")
+    finance = next(r for r in income.rows if "".join(r.label.split()).startswith("財務費用"))
+    mapping = {"income": {"int_exp": [finance.row_id]}}
+    assert statement_build.effective_mapping({"income": income}, mapping) == (mapping, {})
+
+    cas = _real_income("hk_01133_20251231")
+    net_index = next(
+        i for i, r in enumerate(cas.rows) if "".join(r.label.split()).startswith("財務費用")
+    )
+    detail = cas.rows[net_index + 1]
+    already = {"income": {"int_exp": [detail.row_id]}}
+    assert statement_build.effective_mapping({"income": cas}, already) == (already, {})
+    # 多行映射（模型把两行都选了）不猜
+    both = {"income": {"int_exp": [cas.rows[net_index].row_id, detail.row_id]}}
+    assert statement_build.effective_mapping({"income": cas}, both) == (both, {})

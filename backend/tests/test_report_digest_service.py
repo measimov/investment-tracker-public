@@ -1824,3 +1824,32 @@ def test_plan_detailed_reports_completeness(monkeypatch):
 
     monkeypatch.setattr(report_fetchers, "edgar_lookup", lambda s: None)
     assert svc.plan_report_targets_detailed("ZZZZ", "美股")["complete"] is True
+
+
+def test_digest_gap_preview_is_read_only_and_matches_ensure_wording(db, monkeypatch):
+    """#289：快速分析（不补摘要）也要列出缺口；只读库里缓存的清单、不外呼，文案与
+    ensure_report_digests 一致（已完成的不列、待补的合并成一条、封顶的逐条）。"""
+    years = [2025, 2024, 2023]
+    _patch_pipeline(monkeypatch, years=years)
+    svc.ensure_report_digests(db, "600036", "A股", max_new=1)  # 只补最新一份
+    # 清单缓存写进库（预览只读这一行，不看 TTL）
+    _write_row(db, "report_target_plan", "current", {"status": "ok", "targets": _targets(years)})
+
+    def no_network(*args, **kwargs):  # 预览绝不外呼
+        raise AssertionError("digest_gap_preview 不应外呼")
+
+    monkeypatch.setattr(svc, "cached_report_targets_detailed", no_network)
+    monkeypatch.setattr(svc, "plan_report_targets_detailed", no_network)
+    gaps = svc.digest_gap_preview(db, "600036", "A股")
+    assert gaps == ["以下报告期尚未生成摘要（本次为快速分析，未补齐）：20241231、20231231"]
+
+    # 清单检索不完整：首条如实说明
+    _write_row(
+        db, "report_target_plan", "current", {"status": "partial", "targets": _targets(years)}
+    )
+    assert svc.digest_gap_preview(db, "600036", "A股")[0].startswith("年报清单检索失败或不完整")
+
+
+def test_digest_gap_preview_without_cached_plan(db):
+    gaps = svc.digest_gap_preview(db, "600036", "A股")
+    assert len(gaps) == 1 and "年报清单尚未检索" in gaps[0]

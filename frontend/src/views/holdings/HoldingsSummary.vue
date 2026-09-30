@@ -16,15 +16,16 @@ defineProps<{ table: HoldingsTableFeature }>()
       class="summary-alert"
       :title="`${table.unpricedCount} 只持仓暂无价格或缺汇率，已同时从总成本与总市值中剔除（口径自洽）`"
     />
+    <!-- 手机上单列（与仪表盘一致）：两列放不下七位数金额，22px 基准下会在小数点处折行 -->
     <el-row :gutter="20" class="summary-row">
-      <el-col :xs="12" :sm="12" :lg="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="summary-item summary-cost">
           <div class="summary-label">总成本</div>
           <div class="summary-value">{{ formatCurrency(table.totalCostCNY) }}</div>
           <div class="summary-sub-value">{{ formatCurrency(table.totalCostUSD, 'USD') }}</div>
         </div>
       </el-col>
-      <el-col :xs="12" :sm="12" :lg="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="summary-item summary-market">
           <div class="summary-label">总市值</div>
           <div class="summary-value">{{ formatCurrency(table.totalMarketValueCNY) }}</div>
@@ -33,7 +34,7 @@ defineProps<{ table: HoldingsTableFeature }>()
           </div>
         </div>
       </el-col>
-      <el-col :xs="12" :sm="12" :lg="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="summary-item summary-profit">
           <div class="summary-label">
             浮动盈亏
@@ -57,7 +58,7 @@ defineProps<{ table: HoldingsTableFeature }>()
           </div>
         </div>
       </el-col>
-      <el-col :xs="12" :sm="12" :lg="6">
+      <el-col :xs="24" :sm="12" :lg="6">
         <div class="summary-item summary-rate">
           <div class="summary-label">浮动收益率</div>
           <div class="summary-value" :style="{ color: profitColor(table.totalProfitRate) }">

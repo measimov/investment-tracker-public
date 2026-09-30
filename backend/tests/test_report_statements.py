@@ -1323,3 +1323,60 @@ def test_running_report_title_glued_into_a_data_row_is_stripped():
 )
 def test_eps_kind_line(line, kind):
     assert bool(rs._EPS_KIND_LINE_RE.match(line)) is kind
+
+
+def test_split_two_digit_note_is_glued_back_on_02313_2016():
+    """#263：「現 金及現金等價物 2 6 2,105,184 1,815,678」的附注号 26 被字距拆成两个一位数，
+    此前按列序取成本期 2、上期 6（×千元 = 2000 / 6000 元）。同一份报表另有三行同形。"""
+    statements = rs.locate_statements(_pages("hk_02313_20161231"), report_type="annual")
+    by_label = {
+        (kind, "".join(row.label.split())): row
+        for kind, statement in statements.items()
+        for row in statement.rows
+    }
+    cases = {
+        ("balance", "現金及現金等價物Cashandcashequivalents"): ("26", ["2105184", "1815678"]),
+        ("balance", "遞延稅項資產Deferredtaxassets"): ("31", ["3629", "4981"]),
+        ("balance", "遞延稅項負債Deferredtaxliabilities"): ("31", ["1833", None]),
+    }
+    for key, (note, values) in cases.items():
+        row = by_label[key]
+        assert row.note == note, key
+        assert [str(v) if v is not None else None for v in row.values] == values, key
+    loss = next(
+        row
+        for (kind, label), row in by_label.items()
+        if kind == "income" and label.endswith("profitorloss")
+    )
+    assert loss.note == "23" and loss.values == [None, Decimal("-6402")]
+
+
+@pytest.mark.parametrize(
+    "tokens, expected, glued",
+    [
+        # 生产抽取行里观察到的真实形态（00148 2020-2023 年报、00728 2025 中报）
+        (["2", "4", "3,068", "2,577"], 2, ["24", "3,068", "2,577"]),
+        (["3", "0", "3,044", "4,478"], 2, ["30", "3,044", "4,478"]),
+        (["2", "0", "0.25", "0.24"], 2, ["20", "0.25", "0.24"]),
+        (["2", "3", "–", "(6,402)"], 2, ["23", "–", "(6,402)"]),
+        # 三列表（多一列美元折算）同理
+        (["1", "5", "10", "20", "3"], 3, ["15", "10", "20", "3"]),
+    ],
+)
+def test_glue_split_note_on_observed_shapes(tokens, expected, glued):
+    assert rs._glue_split_note(tokens, expected) == glued
+
+
+@pytest.mark.parametrize(
+    "tokens, expected",
+    [
+        (["2", "6", "2,105,184", "1,815,678"], 0),  # 列数未知：不猜
+        (["26", "2,105,184", "1,815,678"], 2),  # 附注号完整：交给 _split_leading_note
+        (["12", "6", "2,105", "1,815"], 2),  # 首 token 两位数：不是被拆开的附注号
+        (["2", "6", "2,105"], 2),  # 只多 1 个：不动
+        (["1", "2", "3", "4"], 3),  # 三列表多 1 个：不动
+        (["2", "6"], 2),  # 恰好两列的合法小数值
+    ],
+)
+def test_glue_split_note_leaves_other_shapes_alone(tokens, expected):
+    assert rs._glue_split_note(tokens, expected) == tokens

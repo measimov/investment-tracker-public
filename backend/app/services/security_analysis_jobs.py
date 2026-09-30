@@ -208,9 +208,17 @@ STATEMENT_LLM_FIELDS: Dict[str, tuple] = {
 }
 
 
+# 无白名单（整行送模型）的数据集里语义有歧义、必须剔除的字段（#289）：Tushare fina_indicator 的
+# gross_margin 是**毛利额**，毛利率是 grossprofit_margin（%）——两者并存时模型会把前者当毛利率
+STATEMENT_LLM_DROPPED_FIELDS: Dict[str, tuple] = {"fina_indicator": ("gross_margin",)}
+
+
 def _compact_statement_rows(dataset: str, rows: list) -> list:
     fields = STATEMENT_LLM_FIELDS.get(dataset)
     if not fields:
+        dropped = STATEMENT_LLM_DROPPED_FIELDS.get(dataset)
+        if dropped:
+            return [{k: v for k, v in row.items() if k not in dropped} for row in rows]
         return rows
     if dataset == "report_statements":
         from .report_statement_checks import restated_fields, scrub_suspect_fields
@@ -351,7 +359,8 @@ def build_analysis_input(
     )
     market_semantics = {
         "A股": (
-            "fina_indicator=财务指标(按报告期)；forecast=业绩预告；express=业绩快报；"
+            "fina_indicator=财务指标(按报告期；毛利率看 grossprofit_margin，单位 %)；"
+            "forecast=业绩预告；express=业绩快报；"
             "daily_basic=最新估值快照(pe/pb/股息率)；dividend_history=分红送股历史"
             "(div_proc=实施为已落地)；fina_audit=审计意见；pledge_stat=股权质押统计；"
             "stk_holdertrade=重要股东增减持；income/balancesheet/cashflow=三大报表"
@@ -374,7 +383,8 @@ def build_analysis_input(
             "比较或计算增速，跨年结论以预计算指标为准；"
             "validation_status=suspect 表示该期科目校验存疑、存疑科目已置空由雅虎补缺，"
             "对应期见 profile_data_gaps)；yahoo_fundamentals=雅虎年度核心科目(报告币种见"
-            "行内 currency 字段，公司间不一致；非官方接口、仅近 3-5 年，只作补缺)；"
+            "行内 currency 字段，公司间不一致；非官方接口、仅近 3-5 年，只作补缺——同一期两源"
+            "数值不一致时(如资本开支、自由现金流)以 report_statements 为准，不得混用两源)；"
             "report_digests=披露易年报全文的 AI 摘要；本市场无审计意见/质押/增减持/解禁"
             "数据源，风险只能来自年报摘要——年报未设「主要風險」章节时该项为空，须如实说明；"
         ),
@@ -614,6 +624,15 @@ def analyze_one(
         except Exception as exc:
             logger.warning("报表抽取保底失败 %s/%s: %s", symbol, market, str(exc)[:150])
             digest_gaps = digest_gaps + ["[报表抽取] 管线异常，本次分析未包含 PDF 报表科目"]
+    else:
+        # 快速模式不补摘要，但缺口照样要让模型知道（只读库、不外呼，#289）
+        try:
+            from .report_digest_service import digest_gap_preview
+
+            digest_gaps = digest_gap_preview(db, symbol, market)
+        except Exception as exc:
+            logger.warning("摘要缺口预览失败 %s/%s: %s", symbol, market, str(exc)[:150])
+            digest_gaps = ["财报摘要的覆盖范围未能核对（本次为快速分析，未补齐摘要）"]
 
     # 3/6 商业画像与同业名单顺带刷新（内部吞错，失败降级为缓存/空）
     stage("business_profile", completed=2)

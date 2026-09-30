@@ -23,6 +23,42 @@
 
 招商证券当前支持的正式导入来源是电子对账单的已解密 PDF 工作副本；邮件原件应另行完整保留。
 
+## 界面预览
+
+> 截图与动图来自演示库：账户、交易与行情为**虚构数据**；标的详情页（600900）的档案、公告与 AI 分析
+> 由系统从公开数据源真实抓取生成。完整演示视频见 Release 附件，生成方法见 [docs/media](docs/media/README.md)。
+
+![看板导览：仪表盘 → 持仓 → 收益曲线](docs/media/tour.gif)
+
+| 仪表盘 | 持仓 |
+|---|---|
+| ![仪表盘](docs/media/dashboard.png) | ![持仓](docs/media/holdings.png) |
+| **收益曲线与风险指标** | **标的研究：AI 分析** |
+| ![统计分析](docs/media/statistics.png) | ![AI 分析](docs/media/security-analysis.png) |
+| **券商对账单导入预览** | **月末对账差异定位** |
+| ![导入预览](docs/media/import-preview.png) | ![对账差异](docs/media/reconciliation.png) |
+
+<details>
+<summary>更多截图（基本面、报表、公告、交易、格雷厄姆准则、观察清单、手机端）</summary>
+
+![标的研究：基本面 → 报表 → 公告](docs/media/research.gif)
+
+| 基本面与格雷厄姆准则 | 三大报表 |
+|---|---|
+| ![基本面](docs/media/security-fundamentals.png) | ![报表](docs/media/security-statements.png) |
+| **官方公告** | **交易记录** |
+| ![公告](docs/media/security-announcements.png) | ![交易记录](docs/media/transactions.png) |
+| **格雷厄姆防御型准则** | **观察清单** |
+| ![格雷厄姆准则](docs/media/security-graham.png) | ![观察清单](docs/media/watchlist.png) |
+
+<p>
+  <img src="docs/media/mobile-dashboard.png" width="240" alt="手机端仪表盘">
+  <img src="docs/media/mobile-holdings.png" width="240" alt="手机端持仓">
+  <img src="docs/media/mobile-security.png" width="240" alt="手机端标的详情">
+</p>
+
+</details>
+
 ## 技术栈
 
 - 后端：FastAPI、SQLAlchemy、Alembic、PostgreSQL、Pandas

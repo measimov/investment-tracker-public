@@ -347,6 +347,16 @@ describe('构建层标注（PR-A：EPS 折元 / 小计修复 / 已重列）', ()
     })
     expect(buildNotesText(dropped)).toContain('行 r33（附注号 14）→ 弃用（由雅虎补缺）')
   })
+
+  it('中国准则利息费用（构建 v3）：净额財務費用改指其中利息费用', () => {
+    const notes = buildNotes({
+      ...pdf2025,
+      repaired_fields: {
+        int_exp: { reason: 'net_finance_cost', from_row: 'r9', to_row: 'r10', to_value: 141845408 }
+      }
+    })
+    expect(buildNotesText(notes)).toContain('行 r9（財務費用净额）→ 行 r10（其中：利息费用）')
+  })
 })
 
 describe('currencySwitchText（报告币种切换点）', () => {

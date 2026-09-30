@@ -32,7 +32,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 # v10：币种包裹的每股金额（「HK$4.889港元」「人民幣0.67元」「(0.1481)港元」）解析为数值、币种进
 #      context；独占一行的「基本 Basic」「攤薄」附到其后数值行的 context；页边报告名排进数据行
 #      （「二零二零年年報 基 本 …」）时剥掉报告名
-STATEMENT_EXTRACTOR_VERSION = 10
+# v11：被空格拆开的两位附注号（「現金及現金等價物 2 6 2,105,184 1,815,678」）在列数已确认时粘回
+#      再剥（#263：货币资金曾被取成 2 千元，00728 2025 中报 EPS 取成附注号 20）
+STATEMENT_EXTRACTOR_VERSION = 11
 STATEMENT_KINDS = ("income", "balance", "cashflow")
 
 # 报表标题核心（繁/简；港股「綜合」= A股「合并」）。income 同时覆盖损益表与全面收益表
@@ -587,6 +589,25 @@ def _is_year_only_row(values: List[Optional[Decimal]]) -> bool:
 _LEADING_NOTE_RE = re.compile(r"^\d{1,2}(?:\([a-z]\))?$")
 
 
+_SINGLE_DIGIT_RE = re.compile(r"^\d$")
+
+
+def _glue_split_note(tokens: List[str], expected: int) -> List[str]:
+    """两位附注号被 PDF 字距拆成两个一位数（「現 金及現金等價物 2 6 2,105,184 1,815,678」，02313
+    2016；00148 2020-2023、00728 2025 中报同形）：token 数比已确认列数**恰好多 2** 且前两个都是
+    一位纯数字时粘成一个附注号，交给 `_split_leading_note` 剥掉。列数已确认时多出两个 token
+    没有别的合法解释（列数未知不动）；生产全部 34,892 行抽取行里命中 22 行、全部是附注号，
+    「列数 + 2」而前两个不是一位数的 43 行不受影响（#263）。"""
+    if (
+        expected
+        and len(tokens) == expected + 2
+        and _SINGLE_DIGIT_RE.match(tokens[0])
+        and _SINGLE_DIGIT_RE.match(tokens[1])
+    ):
+        return [tokens[0] + tokens[1], *tokens[2:]]
+    return tokens
+
+
 def _split_leading_note(tokens: List[str], expected: int) -> Tuple[str, List[str]]:
     """附注号常紧贴数值列（「物業、設備及器材 17 149,905 80,185」）。**只认一条判据**：token 数
     比已确认的列数恰好多一个且首 token 是附注号形态（1-2 位整数，可带 (a)）。列数已吻合的行
@@ -799,7 +820,7 @@ def _parse_block(block: _Block) -> ParsedStatement:
     final_counts: Dict[int, int] = {}
     for label, note, tokens, ctx, offset in raw_rows:
         if not note:
-            note, tokens = _split_leading_note(tokens, expected)
+            note, tokens = _split_leading_note(_glue_split_note(tokens, expected), expected)
         values = [parse_number(t) for t in tokens]
         if _is_year_only_row(values):
             continue

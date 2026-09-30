@@ -162,14 +162,48 @@ def repair_eps_note_mapping(
     return fixed, repairs
 
 
+# 中国会计准则利润表（财政部报表格式）：「財務費用」是净额（利息费用 − 利息收入 ± 汇兑损益），
+# 其下固定列「其中：利息費用 / 利息收入」。国际准则港股的「財務費用/財務成本」本身就是利息开支，
+# 其下一行是汇兑、减值等别的科目——只在紧邻下一行是「其中：利息…」时才认定为中国准则净额口径
+_NET_FINANCE_COST_RE = re.compile(r"^(財務費用|财务费用)")
+_INTEREST_SUB_LINE_RE = re.compile(r"^其中[:：]?利息(費用|费用|支出)")
+
+
+def repair_int_exp_mapping(
+    income: Optional[ParsedStatement], income_mapping: Dict[str, List[str]]
+) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
+    """int_exp 映射到中国准则的净额「財務費用」、且紧接下一行是「其中：利息費用/支出」→ 改指该
+    明细行（#264：利息覆盖倍数的分母应是利息费用，净额会被利息收入冲减、被汇兑损益扭曲）。
+    必须锚定「其中：」且紧邻：同表营业总成本里还有金融子公司的「△利息支出」「利息支出」。
+    2026-09 生产 103 份含「財務費用」行的报告里，其下紧跟「其中：利息…」的全部是中国准则报表。"""
+    if income is None or not income_mapping:
+        return income_mapping, {}
+    ids = list(income_mapping.get("int_exp") or [])
+    index = {row.row_id: i for i, row in enumerate(income.rows)}
+    if len(ids) != 1 or ids[0] not in index:
+        return income_mapping, {}
+    i = index[ids[0]]
+    if not _NET_FINANCE_COST_RE.match(_squash(income.rows[i].label)) or i + 1 >= len(income.rows):
+        return income_mapping, {}
+    detail = income.rows[i + 1]
+    if not _INTEREST_SUB_LINE_RE.match(_squash(detail.label)):
+        return income_mapping, {}
+    if not any(value is not None for value in detail.values):
+        return income_mapping, {}
+    return {**income_mapping, "int_exp": [detail.row_id]}, {
+        "int_exp": {"reason": "net_finance_cost", "from_row": ids[0], "to_row": detail.row_id}
+    }
+
+
 def effective_mapping(
     located: Dict[str, ParsedStatement], mapping: Dict[str, Dict[str, List[str]]]
 ) -> Tuple[Dict[str, Dict[str, List[str]]], Dict[str, Dict[str, Any]]]:
     """存储的 LLM 映射 → 构建时实际使用的映射（确定性修复在这里统一生效：EPS 单位证据与
-    会计期行取数看到的是同一份映射）。"""
-    income_mapping, repairs = repair_eps_note_mapping(
-        located.get("income"), mapping.get("income") or {}
-    )
+    会计期行取数看到的是同一份映射）。修复都在损益表上，返回 (映射, {科目: 修复记录})。"""
+    income = located.get("income")
+    income_mapping, repairs = repair_eps_note_mapping(income, mapping.get("income") or {})
+    income_mapping, interest_repairs = repair_int_exp_mapping(income, income_mapping)
+    repairs = {**repairs, **interest_repairs}
     if not repairs:
         return mapping, {}
     return {**mapping, "income": income_mapping}, repairs
@@ -433,7 +467,7 @@ def build_period_rows(
     `eps_unit`：`propagate_eps_units` 给这份报告的 EPS 单位；缺省时只看本报告自己的标注。
     构建步骤（`STATEMENT_BUILD_VERSION` 覆盖的全部口径）：EPS 附注号守卫（映射修复）→ 取数 →
     每股指标按单位折元 → 夹层权益按行名取值 → 分项合计推导 → 资产小计修复 → FCF → 硬失败 → 校验。"""
-    mapping, eps_repairs = effective_mapping(located, mapping)
+    mapping, income_repairs = effective_mapping(located, mapping)
     if eps_unit is None:
         income = located.get("income")
         row_ids = _eps_row_ids(mapping)
@@ -502,12 +536,13 @@ def build_period_rows(
                         "basis": eps_unit.get("basis"),
                     }
                 row[field] = _decimal_to_number(value)
-            if kind == "income" and eps_repairs:
-                # 附注号守卫：映射修复对本表每一列都生效，各会计期行都记一笔（比较期按表合并时随损益表走）
+            if kind == "income" and income_repairs:
+                # 映射修复（EPS 附注号守卫、中国准则利息费用）对本表每一列都生效，各会计期行都记一笔
+                # （比较期按表合并时随损益表走）
                 row.setdefault("repaired_fields", {}).update(
                     {
                         field: {**repair, "to_value": row.get(field)}
-                        for field, repair in eps_repairs.items()
+                        for field, repair in income_repairs.items()
                     }
                 )
             if kind == "balance":

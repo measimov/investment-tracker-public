@@ -439,3 +439,26 @@ def test_total_equity_identity_is_one_sided():
     # 其他恒等式仍是双边：总资产比分项多也存疑
     assets = {"total_assets": 120.0, "total_nca": 60.0, "total_cur_assets": 40.0}
     assert checks.validate_period_row(assets)["status"] == "suspect"
+
+
+def test_money_cap_magnitude_flags_only_the_cash_field():
+    """#263：货币资金取成附注号（02313 2016：2,000 元 vs 总资产约 150 亿）时，校验只把货币资金判
+    存疑并清洗，不连带总资产（不设 hard）；真实值最低约 0.5%，远高于阈值。"""
+    bad = {"money_cap": 2_000.0, "total_assets": 15_000_000_000.0, "total_liab": 3_000_000_000.0}
+    validation = checks.validate_period_row(bad)
+    check = next(c for c in validation["checks"] if c["id"] == "money_cap_magnitude")
+    assert check["status"] == "suspect" and not check.get("hard")
+    assert validation["suspect_fields"] == ["money_cap"] and not validation.get("row_level")
+    scrubbed = checks.scrub_suspect_fields({**bad, "validation": validation})
+    assert scrubbed["money_cap"] is None and scrubbed["total_assets"] == 15_000_000_000.0
+    # 重资产公司的真实低比例（600900：约 0.54%）不受影响
+    heavy = {"money_cap": 4_585_856_068.0, "total_assets": 559_000_000_000.0}
+    check = next(
+        c for c in checks.validate_period_row(heavy)["checks"] if c["id"] == "money_cap_magnitude"
+    )
+    assert check["status"] == "ok"
+    # 缺总资产或货币资金为 0/缺失：不判
+    assert all(
+        c["id"] != "money_cap_magnitude"
+        for c in checks.validate_period_row({"money_cap": 0.0, "total_assets": 1.0})["checks"]
+    )

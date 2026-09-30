@@ -12,7 +12,7 @@
 import io
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pdfplumber
 import requests
@@ -528,6 +528,59 @@ def _newest_of_each_kind(targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return kept
 
 
+_CAPPED_GAP_TEXT = {
+    "digest_capped": "摘要生成失败（已封顶）",
+    "section_capped": "报告下载或章节抽取失败（已封顶）",
+}
+_PLAN_INCOMPLETE_GAP = "年报清单检索失败或不完整（数据源故障），本轮覆盖范围不可信"
+
+
+def _target_digest_state(
+    db: Session, symbol: str, market: str, target: Dict[str, Any], tier: str
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """一个计划报告期的摘要状态：ok / digest_capped / section_capped / todo，连同当前有效的
+    摘要载荷（版本或指纹过期视为无）。补齐（ensure_report_digests）与只读预览
+    （digest_gap_preview）共用这一处判定。"""
+    digest_row = load_profile_row(db, symbol, market, "report_digest", target["period_key"])
+    payload = digest_row.payload if digest_row else None
+    if payload and not _digest_is_current(payload, source_fingerprint(target), tier):
+        payload = None
+    if payload and payload.get("status") == "ok":
+        return "ok", payload
+    if payload and int(payload.get("attempts") or 0) >= MAX_ATTEMPTS:
+        return "digest_capped", payload
+    if _section_permanently_failed(db, symbol, market, target):
+        return "section_capped", payload
+    return "todo", payload
+
+
+def digest_gap_preview(db: Session, symbol: str, market: str) -> List[str]:
+    """只读库、不外呼的摘要缺口（快速分析不补摘要时用，#289）：按库里缓存的年报清单（不看
+    TTL）逐期判定，文案与 ensure_report_digests 的 gaps 一致。此前快速模式整段跳过，输入里
+    没有任何缺口说明，模型会把「摘要没补」读成「该年份无可说」。"""
+    row = load_profile_row(db, symbol, market, "report_target_plan", "current")
+    plan = row.payload if row else None
+    if not plan:
+        return ["年报清单尚未检索，财报摘要的覆盖范围未知（本次为快速分析，未补齐摘要）"]
+    targets = list(plan.get("targets") or [])
+    tiers = assign_digest_tiers(targets)
+    gaps: List[str] = []
+    pending: List[str] = []
+    for target in targets:
+        state, _ = _target_digest_state(
+            db, symbol, market, target, tiers.get(target["period_key"], "B")
+        )
+        if state in _CAPPED_GAP_TEXT:
+            gaps.append(f"{target['end_date']} {_CAPPED_GAP_TEXT[state]}")
+        elif state == "todo":
+            pending.append(target["end_date"])
+    if pending:
+        gaps.insert(0, "以下报告期尚未生成摘要（本次为快速分析，未补齐）：" + "、".join(pending))
+    if plan.get("status") == "partial":
+        gaps.insert(0, _PLAN_INCOMPLETE_GAP)
+    return gaps
+
+
 def ensure_report_digests(
     db: Session, symbol: str, market: str, *, max_new: int, newest_only: bool = False
 ) -> Dict[str, Any]:
@@ -580,27 +633,20 @@ def ensure_report_digests(
         "fatal": None,
     }
     if result["plan_incomplete"]:
-        result["gaps"].insert(0, "年报清单检索失败或不完整（数据源故障），本轮覆盖范围不可信")
+        result["gaps"].insert(0, _PLAN_INCOMPLETE_GAP)
     for target in targets:
         period_key = target["period_key"]
         fingerprint = source_fingerprint(target)
         tier = tiers.get(period_key, "B")
-        digest_row = load_profile_row(db, symbol, market, "report_digest", period_key)
-        payload = digest_row.payload if digest_row else None
-        if payload and not _digest_is_current(payload, fingerprint, tier):
-            payload = None
-        if payload and payload.get("status") == "ok":
+        state, payload = _target_digest_state(db, symbol, market, target, tier)
+        if state == "ok":
             result["completed"] += 1
             continue
-        if payload and int(payload.get("attempts") or 0) >= MAX_ATTEMPTS:
-            result["permanently_failed"] += 1
-            result["gaps"].append(f"{target['end_date']} 摘要生成失败（已封顶）")
-            continue
-        if _section_permanently_failed(db, symbol, market, target):
+        if state in _CAPPED_GAP_TEXT:
             # 历史封顶失败：零成本跳过（不消耗 attempted、不计本轮 failed），
             # 但作为**结果**计入 permanently_failed——见结构注释
             result["permanently_failed"] += 1
-            result["gaps"].append(f"{target['end_date']} 报告下载或章节抽取失败（已封顶）")
+            result["gaps"].append(f"{target['end_date']} {_CAPPED_GAP_TEXT[state]}")
             continue
         if result["attempted"] >= max_new:
             # 本轮成本护栏用光：如实记下是哪些报告期还没补

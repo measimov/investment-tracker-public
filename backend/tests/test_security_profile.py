@@ -2113,7 +2113,8 @@ def test_analysis_stage_callback_failure_does_not_break_analysis(db, monkeypatch
 
 
 def test_analyze_one_skips_digests_when_max_new_zero(db, monkeypatch):
-    """批量 fast 模式的前提：digest_max_new=0 时完全不进摘要管线。"""
+    """批量 fast 模式的前提：digest_max_new=0 时完全不进摘要管线（不补摘要、不外呼）；
+    但缺口照样由只读预览列出（#289）——库里没有清单缓存时如实说「清单尚未检索」。"""
     _patch_fetch(monkeypatch, {"fina_indicator": [{"end_date": "20251231", "roe": 15.0}]})
     monkeypatch.setattr(
         jobs,
@@ -2130,7 +2131,7 @@ def test_analyze_one_skips_digests_when_max_new_zero(db, monkeypatch):
     monkeypatch.setattr(digest_svc, "ensure_report_digests", explode)
     outcome = jobs.analyze_one(db, "600036", "A股", digest_max_new=0)
     assert outcome["status"] == "succeeded"
-    assert outcome["digest_gaps"] == []
+    assert len(outcome["digest_gaps"]) == 1 and "年报清单尚未检索" in outcome["digest_gaps"][0]
 
 
 def test_graham_inputs_take_annual_rows_not_recent_periods(db_session=None):
@@ -2406,3 +2407,46 @@ def test_analysis_job_input_carries_chinese_graham_labels(db, monkeypatch):
     assert graham["criteria"][0]["name_zh"] == "流动比率"
     assert graham["criteria"][0]["verdict_zh"] == "达标"
     assert "正文用语" in seen["messages"][0]["content"]
+
+
+def test_fast_analysis_still_reports_digest_gaps_and_drops_gross_margin_amount(db, monkeypatch):
+    """#289：①快速模式（digest_max_new=0，批量默认）不补摘要，但缺口照样进输入（只读预览）；
+    ②Tushare fina_indicator 的 gross_margin 是毛利**额**，与毛利率 grossprofit_margin 并存会
+    误导模型——送模型前剔除，并在 data_semantics 说明毛利率字段。"""
+    from app.services import report_digest_service as digest_svc
+
+    captured = []
+
+    def chat(messages, **kw):
+        captured.append(messages[1]["content"])
+        return {"content": VALID_LLM_OUTPUT, "model": "m", "usage": {}}
+
+    datasets = {
+        "fina_indicator": [
+            {
+                "end_date": "20251231",
+                "roe": 15.0,
+                "gross_margin": 8.1e10,
+                "grossprofit_margin": 31.5,
+            }
+        ]
+    }
+    _run_job(db, monkeypatch, chat=chat, datasets=datasets)  # 默认路径（补摘要）顺带装好桩
+    monkeypatch.setattr(
+        digest_svc,
+        "digest_gap_preview",
+        lambda db_, s, m: ["以下报告期尚未生成摘要（快速）：20241231"],
+    )
+    monkeypatch.setattr(
+        digest_svc,
+        "ensure_report_digests",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("快速模式不应补摘要")),
+    )
+    captured.clear()
+    result = jobs.analyze_one(db, "600036", "A股", digest_max_new=0)
+    assert result["status"] == "succeeded", result
+    payload = json.loads(captured[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    assert payload["report_digest_gaps"] == ["以下报告期尚未生成摘要（快速）：20241231"]
+    row = payload["profile"]["fina_indicator"][0]
+    assert "gross_margin" not in row and row["grossprofit_margin"] == 31.5
+    assert "grossprofit_margin" in payload["meta"]["data_semantics"]

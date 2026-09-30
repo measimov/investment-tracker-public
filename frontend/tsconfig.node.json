@@ -3,7 +3,9 @@
     "vite.config.*",
     "vitest.config.*",
     "playwright.config.*",
+    "playwright.demo.config.*",
     "e2e/**/*",
+    "demo/**/*",
     "env.d.ts",
     "src/utils/dateRange.ts"
   ],

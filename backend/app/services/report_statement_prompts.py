@@ -23,7 +23,8 @@ STATEMENT_PROMPT_VERSION = 5
 # 修复、夹层权益、重列标记）。与抽取器/prompt 解耦——改构建逻辑只需
 # `rebuild_report_statements` 零下载零 LLM 从已存抽取行重建，不必重抽 PDF 或重跑映射
 # v2：EPS 附注号守卫（basic/diluted_eps 映射到「每股盈利 13」小标题 → 改指基本/摊薄行或丢弃）
-STATEMENT_BUILD_VERSION = 2
+# v3：中国准则 int_exp 由净额「財務費用」改指其下「其中：利息費用/支出」（#264）
+STATEMENT_BUILD_VERSION = 3
 
 # 目标科目：与 report_fetchers.YAHOO_HK_FIELD_MAP / earnings_quality.pivot_rows_to_statements
 # 对齐（同名 = 同口径），下游利润质量/格雷厄姆/分析输入零改动即可消费

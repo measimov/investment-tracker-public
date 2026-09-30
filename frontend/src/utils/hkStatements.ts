@@ -204,7 +204,8 @@ function fieldsWithReason(row: StatementRow, reasons: Set<string>): string[] {
 }
 
 /**
- * 构建层标注：EPS 以仙列示已折元（eps_unit）、映射修复（repaired_fields：资产小计 / EPS 附注号）、
+ * 构建层标注：EPS 以仙列示已折元（eps_unit）、映射修复（repaired_fields：资产小计 / EPS 附注号 /
+ * 中国准则利息费用）、
  * 已重列与雅虎口径不同（validation.checks[].reason，校验 v4）。都是 info——不置空、不算存疑，只供展示。
  */
 export function buildNotes(row: StatementRow): BuildNotes {
@@ -217,6 +218,13 @@ export function buildNotes(row: StatementRow): BuildNotes {
       return {
         field,
         text: `${fieldLabel(field)}：行 ${item.from_row}（附注号 ${item.note_number}）→ ${to}`
+      }
+    }
+    if (item.reason === 'net_finance_cost') {
+      // 构建 v3：中国准则的「財務費用」是净额（被利息收入冲减），改取其下「其中：利息費用」
+      return {
+        field,
+        text: `${fieldLabel(field)}：行 ${item.from_row}（財務費用净额）→ 行 ${item.to_row}（其中：利息费用）`
       }
     }
     const from = item.from_row ? `行 ${item.from_row}` : '未映射'
