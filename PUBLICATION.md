@@ -35,9 +35,10 @@ Public-only adaptations:
   filings; they do not contain broker statements or user portfolio data.
 - Treat the squashed `20260728_0001_initial_schema.py` as a fresh pre-v1.0
   baseline; it is not an in-place upgrade from the first public snapshot.
-- The private repository depends on the private `xueqiu-market` package
-  (雪球 quotes / A-share fundamentals / opinion matching). The public snapshot
-  drops that requirement and the CI/Docker credential plumbing for it; the
+- For the current snapshot, the private repository depended on the private
+  `xueqiu-market` package (雪球 quotes / A-share fundamentals / opinion matching).
+  This public snapshot drops that requirement and the CI/Docker credential
+  plumbing for it; the
   `xueqiu_source` wrapper degrades explicitly (`XueqiuUnavailable`) when the
   package is not installed, and every dependent feature reports the data
   source as unavailable instead of failing silently.
@@ -52,3 +53,27 @@ Public-only adaptations:
   regenerated for those URLs with the original signing script.
 - The `xueqiu-collector` compose service builds from the same backend image
   without BuildKit secrets.
+
+## Next sync: optional Xueqiu client
+
+When syncing a source revision with `backend/requirements-xueqiu.txt` and
+`WITH_XUEQIU`, use its optional-client path instead of replaying the historical
+dependency removal above:
+
+- Keep both requirements files and the conditional Docker installation branch.
+  Core installation uses `requirements.txt`; only the optional file references
+  the private client. Dependency URLs must not contain credentials.
+- Set `WITH_XUEQIU: "0"` for both backend and collector builds in the public
+  Compose file. Keep build credentials and Compose secret bindings out of the
+  public deployment; no private repository access is needed for core builds.
+- Keep the upstream CI check that the client is absent and the tests for that
+  configuration. Do not add credential setup or manually remove a dependency
+  from the core requirements file.
+- Preserve explicit unavailability for client-dependent data sources. Existing
+  historical opinions remain readable; capability checks and administrator
+  setup access must not be replaced with unconditional hiding.
+
+Validate the resulting sanitized snapshot with an actual no-client installation,
+core Docker build, and its normal backend/frontend checks before publishing.
+This section records the next-sync procedure; it does not change the current
+snapshot source above or publish a new application snapshot.
