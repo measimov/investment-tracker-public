@@ -36,11 +36,11 @@ TOKEN_U = "SYNTH_U_1234567890"
 SECRET_VALUES = (TOKEN_A, TOKEN_AT, TOKEN_R, TOKEN_U)
 
 
-def j2team(*, a_days=12.0, at_days=12.0, a_value=TOKEN_A, drop=()):
+def j2team(*, a_days=12.0, at_days=12.0, a_value=TOKEN_A, drop=(), now=NOW):
     cookies = [
         {
             "domain": ".xueqiu.com",
-            "expirationDate": NOW + a_days * DAY,
+            "expirationDate": now + a_days * DAY,
             "hostOnly": False,
             "httpOnly": True,
             "name": "xq_a_token",
@@ -53,7 +53,7 @@ def j2team(*, a_days=12.0, at_days=12.0, a_value=TOKEN_A, drop=()):
         },
         {
             "domain": ".xueqiu.com",
-            "expirationDate": NOW + at_days * DAY,
+            "expirationDate": now + at_days * DAY,
             "name": "xqat",
             "path": "/",
             "value": TOKEN_AT,
@@ -745,7 +745,9 @@ def test_raw_json_string_body_not_echoed(clients, cookie_file):
 
 def test_api_bad_expiry_is_422_and_get_stays_200(clients, cookie_file):
     admin_client = clients["admin"]
-    good = admin_client.put("/api/xueqiu-collector/cookie", json={"content": j2team()})
+    good = admin_client.put(
+        "/api/xueqiu-collector/cookie", json={"content": j2team(now=time.time())}
+    )
     assert good.status_code == 200
     before = cookie_file.read_bytes()
     bad = json.dumps(
