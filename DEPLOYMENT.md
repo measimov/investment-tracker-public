@@ -30,7 +30,7 @@
 
 | 项目 | 要求 |
 | --- | --- |
-| Docker | Docker Engine |
+| Docker | Docker Engine，构建需启用 BuildKit（Compose v2 默认启用） |
 | Compose | `docker compose`（v2 插件）或独立二进制 `docker-compose` v2，二选一 |
 | 数据库 | 外部 PostgreSQL 16，部署主机与容器网络都能访问；账号需有建表权限（迁移由 Alembic 执行） |
 | 端口 | 80/443 空闲，或在 `.env` 里改 `FRONTEND_HTTP_PORT` / `FRONTEND_HTTPS_PORT` |
@@ -39,10 +39,13 @@
 
 ### 雪球客户端库（可选）
 
-私有部署使用的雪球行情/基本面客户端库 `xueqiu-market` 不在公开仓库中，`backend/requirements.txt`
-也不包含它。应用对缺库是**显式降级**的：所有依赖该库的雪球入口（美股行情的雪球兜底、A股
-`xueqiu_*` 档案数据集、港/美股代码到雪球代码的映射）都会报「雪球库 xueqiu-market 未安装」
-并跳过，其他数据源与功能不受影响。内置雪球发言采集器（`xueqiu-collector` 服务）不依赖该库。
+`backend/requirements.txt` 只含核心依赖，无需私有仓权限；
+`requirements-xueqiu.txt` 保留可选的 `xueqiu-market` 客户端依赖，URL 不带凭证。
+公开 Compose 的 backend 与采集器均设置 `WITH_XUEQIU: "0"`，没有构建 secret，
+默认构建不需要 GitHub token。Dockerfile 保留可选安装分支，拥有客户端访问权的部署可自行启用。
+
+未安装客户端时，雪球行情与 A股雪球档案入口显式报告不可用；本地符号规则、
+内置采集器和已有历史观点仍可使用。CI 在无客户端的干净环境运行后端全套及前端检查。
 
 ---
 
@@ -94,6 +97,7 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `BACKEND_LOG_DIR` | `./backend/logs` | 后端日志的宿主目录，挂到容器 `/app/logs`；须可被 uid 10001 写入 |
 | `NGINX_LOG_DIR` | `./logs/nginx` | nginx 访问/错误日志的宿主目录 |
 | `XUEQIU_COOKIE_HOST_DIR` | `./backend/secrets` | 雪球 Cookie 文件所在宿主**目录**，挂到容器 `/app/secrets`（backend 可写、采集器只读）；须授权给 uid 10001，见 [8.1](#81-cookie-更新流程) |
+| `REPORT_CACHE_HOST_DIR` | `./backend/cache/reports` | 原始报告文件缓存（巨潮/披露易 PDF、EDGAR 主文档）的宿主目录，只挂到 backend 的 `/app/cache/reports`；须可被 uid 10001 写入（授权同 [4.3](#43-日志目录权限后端容器非-root)）。`REPORT_CACHE_DIR`（容器内路径，默认 `/app/cache/reports`，不存在或不可写即关闭）、`REPORT_CACHE_MAX_GB`（8）、`REPORT_CACHE_UNREFERENCED_DAYS`（30）控制生命周期，见第 6 节 |
 
 ### 安全与会话
 
@@ -155,10 +159,20 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `LLM_REPORT_API_KEY` | 空 | DeepSeek / OpenAI 兼容接口的 key；留空 = 依赖 LLM 的功能（AI 复盘、标的分析、财报摘要、港股报表抽取、观点摘要）不可用，AI 复盘接口返回 409、定期计划静默跳过 |
-| `LLM_REPORT_BASE_URL` | `https://api.deepseek.com` | 接口地址 |
-| `LLM_REPORT_MODEL` | `deepseek-flash` | 模型名 |
-| `LLM_REPORT_TIMEOUT_SECONDS` | `120` | 单次调用超时 |
+| `LLM_REPORT_API_KEY` | 空 | 主渠道（DeepSeek 官方 / OpenAI 兼容接口）的 key；未配置时跳过主渠道 |
+| `LLM_REPORT_BASE_URL` | `https://api.deepseek.com` | 主渠道接口地址 |
+| `LLM_REPORT_MODEL` | `deepseek-flash` | 主渠道模型名 |
+| `LLM_ARK_API_KEY` | 空 | 火山方舟备用渠道的 key；未配置时跳过 |
+| `LLM_ARK_BASE_URL` | `https://ark.cn-beijing.volces.com/api/v3` | 火山方舟接口地址 |
+| `LLM_ARK_MODEL` | `deepseek-v4-1-flash-260910` | 火山方舟 DeepSeek V4.1 Flash 模型名 |
+| `LLM_BAILIAN_API_KEY` | 空 | 阿里云百炼备用渠道的 key；未配置时跳过 |
+| `LLM_BAILIAN_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 百炼接口地址；可覆盖为业务空间专属地址 |
+| `LLM_BAILIAN_MODEL` | `deepseek-v4.1-flash` | 百炼 DeepSeek V4.1 Flash 模型名 |
+| `LLM_OPENROUTER_API_KEY` | 空 | OpenRouter 备用渠道的 key；未配置时跳过 |
+| `LLM_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter 接口地址 |
+| `LLM_OPENROUTER_MODEL` | `deepseek/deepseek-v4.1-flash` | OpenRouter DeepSeek V4.1 Flash 模型名 |
+| `LLM_REPORT_TIMEOUT_SECONDS` | `120` | 每个渠道的单次网络等待上限；还受剩余整体预算限制 |
+| `LLM_FALLBACK_BUDGET_SECONDS` | `240` | 每次 LLM 调用跨渠道共享的网络等待预算；耗尽即结束，不保证四个渠道都能尝试 |
 | `LLM_REPORT_MAX_OUTPUT_TOKENS` | `16384` | 输出额度（推理 token 与输出共享）；长报告被截断或为空时调大 |
 | `STATEMENT_MAX_OUTPUT_TOKENS` | `32768` | 港股报表科目映射单独的输出额度；`finish_reason=length`、内容为空时调大 |
 | `SECURITY_ANALYSIS_MAX_OUTPUT_TOKENS` | `32768` | 标的分析（单只/批量）单独的输出额度；任务报「LLM 输出被截断（finish_reason=length）」时调大 |
@@ -166,6 +180,38 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `SECURITY_ANALYSIS_FRESHNESS_HOURS` | `24` | 批量分析跳过该时长内已分析过的标的 |
 | `SECURITY_ANALYSIS_BATCH_PAUSE_SECONDS` | `5` | 批量分析标的之间的停顿 |
 | `SECURITY_ANALYSIS_BATCH_MAX_SECONDS` | `14400` | 批量任务墙钟上限（心跳护栏） |
+
+默认按 **DeepSeek 官方 → 火山方舟 → 阿里云百炼 → OpenRouter** 自动切换，每次 LLM 调用各渠道
+最多请求一次。任何一个渠道配置了 key 即可启用 LLM；四个 key 全为空才关闭 AI 复盘、标的分析、
+财报摘要、港股报表抽取与观点摘要，此时 AI 复盘接口返回 409，定期计划静默跳过。
+
+HTTP `401/402/403/408/429`、`5xx` 与网络连接/超时错误会切换到下一个已配置渠道。`400/404/422`
+中的参数或模型 ID 错误，以及 `finish_reason=length`、拒答与业务 JSON 解析/校验失败直接报错。
+HTTP 200 的空输出不跨渠道切换；`finish_reason=insufficient_system_resource` 保留为瞬时错误，
+摘要和报表管线不累加永久失败次数，服务恢复后可再次执行。
+单个后台 job 一旦成功命中某渠道，后续调用和 worker 重试从该渠道开始，仅向后切换，
+不回访更前的渠道；新 job 重新从官方开始。认证或余额失败只在该 job 内禁用渠道，
+瞬时失败不会加入持久禁用名单，当前起点及后级渠道在下一次 worker 重试时仍可尝试，
+不会永久关闭渠道。既有 JSON 字段保存安全的 `generation_meta` 与 `llm_route`，不保存 key 或原始
+错误响应；这次路由改动没有数据库迁移，也不要求补跑已有报告。
+
+百炼默认沿用本机历史评测使用的 DashScope 域名，官方仍支持存量业务；自 2026-09-30 起该域名
+不再支持新特性。需要时将 `LLM_BAILIAN_BASE_URL` 覆盖为
+`https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`，API Key 与域名须属于同一
+地域。参见[百炼接入域名说明](https://help.aliyun.com/zh/model-studio/regions/)。
+
+启用备用渠道时先按 [5.2](#52-定备份范围并备份) 备份数据库与 `.env`，再复用部署机已有的私有
+凭据文件：`~/.config/investment-tracker/volcengine/ark-api-key.env` 的 `ARK_API_KEY` 对应
+`LLM_ARK_API_KEY`，`~/.config/investment-tracker/aliyun/dashscope-api-key.env` 的
+`DASHSCOPE_API_KEY` 对应 `LLM_BAILIAN_API_KEY`，
+`~/.config/investment-tracker/openrouter/api-key.env` 的 `OPENROUTER_API_KEY` 对应
+`LLM_OPENROUTER_API_KEY`。key 只写入本机
+被 gitignore 排除、权限为 `0600` 的 `.env`，不得打印、写入数据库或提交仓库。改完 `.env` 后执行
+`docker compose up -d backend` 重建 backend；在启用业务任务前，对四个渠道分别用小输入做最小
+探针，要求输出简短 JSON、设置 `max_tokens=32768` 上限，确认鉴权、模型 ID、JSON 模式与参数
+兼容性。输出上限不等于实际生成长度，应明确要求短输出控制调用成本。
+
+2026-10-01 已用同一小输入、`temperature=0.3`、`max_tokens=32768` 与 `response_format={"type":"json_object"}` 完成四渠道短 JSON 探针，均成功且实际模型与上表一致，共消耗 490 tokens；这只确认 API 兼容性，不代表财报分析质量评测。
 
 ### 后台任务与周期任务
 
@@ -190,7 +236,7 @@ cp .env.example .env    # 然后按分组填写；.env 已 gitignore
 | `SECURITY_INDUSTRY_REFRESH_DAYS` | `30` | 行业分类新鲜度：超过该天数的行才重拉 |
 | `DIVIDEND_SYNC_LOOKBACK_DAYS` | `365` | 分红公告同步回看天数 |
 | `DIVIDEND_SYNC_MATCH_WINDOW_DAYS` | `30` | 分红建议与已入账股息的判重窗口 |
-| `DIVIDEND_SYNC_PERIODIC_ENABLED` | `false` | 分红公告每周自动同步；开启前确认 Tushare 积分配额充足 |
+| `DIVIDEND_SYNC_PERIODIC_ENABLED` | `false` | 分红公告每日自动同步；A/B 股每标的 3 次 Tushare 查询（股息、披露计划、解禁），开启前确认积分配额；港股只下载未缓存表格 |
 | `QUOTE_AUTO_REFRESH_ENABLED` | `true` | 交易时段每 15 分钟刷新持仓与自选实时价 |
 | `PRICE_TAIL_SYNC_ENABLED` | `true` | A股/B股/美股日线尾部每小时检查、落后才补 |
 | `DAILY_BASIC_REFRESH_ENABLED` | `true` | A股估值快照每个交易日 18:00 后刷新 |
@@ -305,8 +351,8 @@ multipart 开销）；普通 API 代理超时 300s。
   | 基准指数尾部补齐 | 24 小时 | 需 `TUSHARE_TOKEN` |
   | 港交所每日行情报表（港股官方收盘价） | 6 小时 | `HKEX_DAYQUOT_SYNC_ENABLED` |
   | 标的全集 | 6 小时检查，按 `SECURITY_CATALOG_SYNC_INTERVAL_HOURS` 判新鲜 | `SECURITY_CATALOG_SYNC_ENABLED` |
-  | AI 复盘定期计划调度 | 1 小时 | 需 `LLM_REPORT_API_KEY` |
-  | 分红公告同步 | 1 小时检查，距上次入队满 7 天才入队（记在库里，重启不重跑） | `DIVIDEND_SYNC_PERIODIC_ENABLED`（默认关） |
+  | AI 复盘定期计划调度 | 1 小时 | 任一 LLM 渠道配置了 key |
+  | 分红公告同步 | 1 小时检查，距上次入队满 24 小时才入队（记在库里，重启不重跑） | `DIVIDEND_SYNC_PERIODIC_ENABLED`（默认关） |
   | 告警检查（推送见[第 10 节](#10-告警通知)） | 10 分钟 | `ALERT_CHECK_ENABLED`；推送需 `NOTIFY_URLS` |
   | 持仓与自选实时价 | 15 分钟，只刷处于交易时段的市场 | `QUOTE_AUTO_REFRESH_ENABLED` |
   | A股/B股/美股日线尾部 | 1 小时检查，落后于最近已完成交易日才补 | `PRICE_TAIL_SYNC_ENABLED`；需 `TUSHARE_TOKEN`（美股可退 Tiingo/腾讯） |
@@ -323,11 +369,12 @@ multipart 开销）；普通 API 代理超时 300s。
   | 实时价 | 交易时段每 15 分钟；各市场收盘后约 30 分钟内再补一次（周期刷新不看新鲜度窗口） | 活跃用户持仓（数量>0）∪ 自选，同一标的只请求一次 | `holdings` / `watchlist_items` 的现价、行情日期、来源（只存最新，不存盘中序列） | A/B/港股走腾讯；美股盘中优先 Tiingo IEX（免费档约 50 次/小时） |
   | 日线收盘 | 每小时检查，只补落后的标的 | A股/B股/美股的持仓 ∪ 自选（港股走港交所日报） | `security_prices` | Tushare，每标的一次增量请求 |
   | A股估值快照 | 每个交易日 18:00 后一次 | A股持仓 ∪ 自选 | `security_profile_data`（daily_basic，保留 30 行） | Tushare 一次全市场请求 |
-  | 分红公告 | 每周 | 持仓 ∪ 近一年交易过的标的 | `corporate_action_suggestions`（只生成建议） | Tushare / 披露易 |
+  | 分红公告 | 每日 | 持仓 ∪ 近一年交易过的标的 | `corporate_action_suggestions`（只生成建议） | Tushare / 披露易 |
   | 档案 + 最新财报摘要 | 每周凌晨 | 持仓 ∪ 自选；档案 6 天内同步过的跳过；摘要只补最新一期年报/中报 | `security_profile_data` | Tushare/EDGAR/雅虎；每只每年约 2 次 LLM |
   | 观点摘要 | 每周凌晨 | 持仓 ∪ 自选中有雪球发言的标的，无新发言跳过 | `security_opinion_summaries` | LLM |
   | AI 分析 | 不自动 | 有更新的财报数据时持仓页标「可能过期」 | — | — |
   | 官方公告 | 每 30 分钟增量（回看 2 天）；首次回溯 `ANNOUNCEMENT_BACKFILL_DAYS`（365）天，单 tick 最多 5 只，建议上线后先跑 `manage.py sync-announcements` | 持仓 ∪ 自选（A/B/港/美；B 股按 orgId 对应的 A 股代码检索，ETF 无官方源跳过） | `security_announcements`（一份文件一行，同日同类合并成事件） | 巨潮/披露易限速 1 秒/请求，EDGAR 每只一次；无 LLM |
+  | 原始报告缓存清理 | 每日一次（`prune_report_cache`） | 缓存目录全部文件 | 本地磁盘（`REPORT_CACHE_HOST_DIR`） | 无外呼；无人引用且超过 `REPORT_CACHE_UNREFERENCED_DAYS` 天没用的删除，总量超过 `REPORT_CACHE_MAX_GB` 按最近使用时间删 |
 
   盘中不落盘分钟级价格：没有读取方，持仓与自选行上的最新价就是唯一消费点。前端持仓页、仪表盘、
   观察清单在页面可见时每 5 分钟重读一次数据库（不触发外部请求）。
@@ -459,8 +506,11 @@ backend 与 xueqiu-collector 是同一个 Dockerfile 的两个服务，这一条
 授权命令**让 Compose 自己解析路径**，一次性起个 root 容器 chown 挂载点：
 
 ```bash
-docker compose run --rm --user root backend chown -R 10001:10001 /app/logs
+docker compose run --rm --user root backend chown -R 10001:10001 /app/logs /app/cache/reports
 ```
+
+`/app/cache/reports` 是原始报告文件缓存（`REPORT_CACHE_HOST_DIR`）。没授权时后端照常运行，只是缓存
+关闭（日志里一条「原始报告缓存目录不可用」），财报重跑仍从网上下载。
 
 首次部署与升级都是这一条，也不必先建目录——bind mount 会自动创建宿主目录（root 所有），这条
 命令紧接着把它改对。
@@ -512,9 +562,8 @@ curl --cacert certs/lan/fullchain.pem https://<app-host>/health
   [8.1](#81-cookie-更新流程) 给 Cookie 目录授权一次，之后在「雪球观点」页的采集器卡片点「更新 Cookie」
   粘贴或上传即可，见 [雪球运维](#8-雪球运维)。
 - **Tushare**：`TUSHARE_TOKEN` 可留空；此时不能主动从 Tushare 刷新行情，A/B 股分红公告与基本面档案同步也不可用（港股分红同步走披露易，不受影响）。
-- **AI 功能**：填 `LLM_REPORT_API_KEY`。留空时 AI 复盘和标的分析接口保持禁用，定期计划不会调用外部模型。
-  启用后，生成报告、追问和标的分析会把相应的账本或公开行情输入发送给 `LLM_REPORT_BASE_URL`
-  指向的外部服务；上线前应确认数据范围、供应商条款和隐私要求。
+- **AI 功能**：配置任一 LLM 渠道的 key；备用渠道启用流程见 [LLM 与标的分析](#llm-与标的分析)。
+  启用后，生成报告、追问和标的分析会把相应的账本或公开行情输入发送给配置的外部 LLM 服务。
 - 改完 `.env` 后 `docker compose up -d` 重建配置有变化的容器（雪球 Cookie 两个服务都读）。
 
 ### 4.7 可选：启用雪球采集器
@@ -593,6 +642,21 @@ git diff "$OLD" origin/main -- backend/app/services | grep -E '^[-+][A-Z_]+_VERS
 
 ### 5.2 定备份范围并备份
 
+修改环境变量前，先备份 `.env`；它与备份文件都包含凭据，权限须为 `0600` 并保持被 gitignore
+排除。`backups/` 已排除，以下命令只复制文件，不打印其内容：
+
+```bash
+umask 077
+mkdir -p backups
+LLM_ENV_BACKUP="./backups/.env.before_upgrade_$(date +%Y%m%d_%H%M%S).local"
+cp .env "$LLM_ENV_BACKUP"
+chmod 600 .env "$LLM_ENV_BACKUP"
+git check-ignore --quiet .env
+git check-ignore --quiet "$LLM_ENV_BACKUP"
+```
+
+确认备份存在、权限正确且 `git check-ignore` 成功后，再按下表备份数据库。
+
 | 情况 | 备份范围 |
 | --- | --- |
 | 数据库实例**专用**于本应用 | 整库：`BACKUP_MODE=postgres ./backup.sh` |
@@ -650,6 +714,10 @@ docker compose build
 ```
 
 构建期间旧容器照常服务。`.env.example` 有新增变量时，对照着补进 `.env`。
+构建失败必须停止升级，不能继续下一步。`BUILD_SHA` 是运行时配置，旧镜像也可能因加载新的
+`.env` 而在 `/health` 中显示新提交号；升级前记录旧容器的镜像 ID，启动后核对运行容器使用的
+镜像 ID 与本次成功构建的镜像一致，并检查本次改动对应的代码或行为。版本号和健康检查通过
+不能单独证明新代码已经上线；有数据库迁移时还要核对 `alembic current`。
 
 ### 5.5 停后端与采集器 → 迁移 → 启动 → 健康检查
 
@@ -663,7 +731,7 @@ crontab 里它的两行并确认没有正在运行的实例——迁移 `…_002
 docker compose stop backend xueqiu-collector
 # 日志目录权限（首次从 root 镜像升级到非 root 镜像时必需；之后执行也无害）。
 # 必须先停旧后端再 chown：仍在运行的 root 容器会在日志轮转时重新建出 root-owned 文件
-docker compose run --rm --user root backend chown -R 10001:10001 /app/logs
+docker compose run --rm --user root backend chown -R 10001:10001 /app/logs /app/cache/reports
 docker compose run --rm backend alembic upgrade head
 docker compose up -d
 docker compose ps
@@ -738,17 +806,104 @@ docker compose up -d --remove-orphans
 旧版本的行就被视为过期。下面按「改了什么 → 跑什么」列出。命令都在运行中的 backend 容器里执行
 （`docker compose exec -T backend python <命令>`，长任务见第 7 节的后台写法）。
 
+### 6.1 原始财报文件持久化
+
+已实现并随 PR #382 合入：`report_fetchers._download_guarded` 通过
+`report_cache.cached_download` **先读本地原件，未命中才下载并写入缓存**。范围是巨潮/披露易
+PDF 和 EDGAR 主文档（通常为 HTML），报表抽取、章节节选、财报摘要和 ADS 封面解析复用下载入口。
+原件保存在宿主目录，重启或重建 backend 容器后仍在；采集器不挂载这个目录。
+
+| 配置/位置 | 默认值或含义 |
+| --- | --- |
+| `REPORT_CACHE_HOST_DIR` | 宿主 `./backend/cache/reports`，相对于部署仓库根目录 |
+| `REPORT_CACHE_DIR` | 容器 `/app/cache/reports`，由 backend 读写；改容器路径时须同步挂载目标 |
+| `REPORT_CACHE_MAX_GB` | `8`，代码按 `8 × 1024³` 字节计算，即 8 GiB；周期清理时执行上限 |
+| `REPORT_CACHE_UNREFERENCED_DAYS` | `30`，无人引用且超过此天数未使用的条目可删除 |
+| 写入权限 | backend 的 uid 10001 必须可写，授权步骤见 4.3 |
+
+根目录不存在或不可写时，应用会记录缓存关闭并继续联网下载；应用自身不会创建缓存根目录。
+缓存写入失败也不使已经成功的下载失败。因此，服务健康不等于缓存已启用，须用下面的命令检查。
+
+**磁盘结构与命中规则**：完整 URL 的 SHA256 是文件名，前两位作为子目录：
+
+```text
+backend/cache/reports/
+└── <URL 哈希前两位>/
+    ├── <URL 的 SHA256>.bin    # 原始 PDF 或 HTML 字节，不是解析结果
+    └── <URL 的 SHA256>.json   # url、source、bytes、内容 sha256、stored_at
+```
+
+写入时先元数据后正文，每个文件通过同目录临时文件原子替换；读取检查 URL、正文长度及 PDF
+文件头，不通过就视为未命中。元数据记录内容 SHA256，但当前读取路径**不重新计算内容哈希**。
+命中会更新正文的 mtime，作为最近使用时间。当前缓存按 URL 复用，没有同 URL 的远端更新探测；
+修订报告使用新 URL 时产生新条目。
+
+**保留与清理**：worker 注册的 `prune_report_cache` 每 24 小时执行一次，受周期任务总开关控制。
+“被引用”按活跃用户持仓与自选标的，以及数据库 `security_profile_data` 中
+`report_statement_extract` / `report_section` / `report_digest` 的 `source_url` 判断，
+不是仅根据文件年龄或“是否属于十年窗口”判断。
+
+1. 无人引用且超过 30 天没用的删除；被引用的条目不因这条年龄规则被删除。
+2. 总量仍超上限时，先删无人引用的，再删被引用的；同一类中最久没用的先删。
+   **被引用不代表永久保留，上限也不是每次下载时立即执行的硬配额。**
+3. 缺正文/元数据的孤儿条目计入用量，超过一小时宽限期后删除；残留临时文件超过一小时也会清理。
+
+查看与清理命令（本机安装的是独立 `docker-compose` v2；其他主机可用 `docker compose`）：
+
+```bash
+docker-compose exec -T backend python manage.py report-cache
+docker-compose exec -T backend python manage.py report-cache --prune --dry-run
+# 确认预演结果后才实际清理
+docker-compose exec -T backend python manage.py report-cache --prune
+```
+
+**2026-10-01 本机只读核对**（运行版本 `ad06dc2`；以下是时点快照，不是固定容量或验收阈值）：
+
+| 项目 | 实测 |
+| --- | --- |
+| 挂载 | 宿主仓库 `backend/cache/reports` → backend `/app/cache/reports`，可写，缓存已启用 |
+| 原件数量 | 425 份：巨潮 257、披露易 155、EDGAR 13；每份均有 `.bin` 与 `.json` |
+| 正文与元数据合计 | 2,855,894,562 字节，约 2.86 GB / 2.66 GiB |
+| 引用覆盖 | 562 个当前被引用 URL 中，397 个已有原件；另有 28 个缓存 URL 不在当前引用集合中 |
+| 元数据与正文长度检查 | 未发现异常；本次没有逐文件重算内容 SHA256 |
+| 清理预演 | 孤儿、过期无人引用、超容量删除均为 0，未执行实际删除 |
+
+还有 **165 个被引用 URL 未在缓存中**，不能据此宣称历史报告已全部持久化。缓存按下载按需填充，
+已有数据库抽取结果不会自动反向生成 PDF，也没有因开启缓存就自动补齐全部原件的步骤。
+未缓存的原件在下次需要下载的任务中获取；本次核对没有主动补下载或重跑付费模型。
+
+**升级与迁移注意事项**：
+
+- 保持宿主挂载目录，解析器升级后仍可读旧原件；命中仅省掉原件下载，报告清单查询、解析及必要的
+  LLM 映射/摘要调用仍按各自任务执行。下表中的“重下载”成本仅适用于缓存未命中的文件。
+- 数据库备份不包含这个目录。换主机时如需保留原件，另行复制整个目录（`.bin` 与 `.json` 一起），
+  保留 mtime，并重新确认目标容器 uid 10001 可写。完整复制时应暂停会下载/清理缓存的 backend，
+  避免在元数据与正文两次写入之间复制到半套文件。
+- 删除缓存不会删除数据库中的报表行、摘要或账本，但会失去这份本地原件；重新获取依赖原站仍可用。
+  需要长期证据留存时，应额外归档，不能把会淘汰的缓存当成永久备份。
+- 本机部署、环境变量来源及备份核对记录另存于
+  `backups/deployment-handoff-2026-10-01.json`（本地私有文件，不入 Git；可能含凭据，仅限本机受限访问）。
+
+### 6.2 版本变化与部署后任务
+
 | 改动（5.1 的 grep 结果） | 所在文件 | 跑什么 | 成本 |
 | --- | --- | --- | --- |
+| 港股摘要纳入最新中报（#289） | `report_digest_service.py` / `report_digest_prompts.py` | 无结构迁移、无需使年报摘要失效；既有清单缓存到期后会纳入中报。需要立即补齐时，先对受影响标的调用 `cached_report_targets_detailed(..., force_refresh=True)` 刷新清单并检查完整性，再通过既有「补齐财报摘要」任务生成缺失期 | 每个标的最多新增一份最新中报；年报与既有有效摘要继续命中缓存。补齐前确认实际缺口与模型调用上限，不全量重跑。港股中报保留 `interim` 身份，数字核对使用 H1，缺少 H1 时不套用全年 Yahoo 数据 |
 | `STATEMENT_EXTRACTOR_VERSION` 或 `STATEMENT_PROMPT_VERSION` | `report_statements.py` / `report_statement_prompts.py` | `scripts/rerun_report_statements.py --all`（先 `--dry-run` 看份数）；同时升了构建/校验版本也只跑这一条（重抽时按当前构建与校验口径写行） | prompt 升版：零下载、每份一次 LLM。抽取器升版：每份都重下载重定位（约 15–20 秒/份，约 300 份 ≈ 1.5 小时），但**解析结果与存量逐字节相同的沿用旧映射、不调 LLM**（输出 `mapping_reused`），只有解析真的变了的报告才重新映射（每份约 5k 输入 + 4k 输出 token）。跑完前该版本的全部港股报表行都隐藏（页面显示「待重抽」、分析回退雅虎），部署后立即跑。可按标的分组并行、中断后重跑即续跑；披露易 504/超时是瞬时错误，重跑即可 |
 | `STATEMENT_BUILD_VERSION` | `report_statement_prompts.py` | `scripts/rebuild_report_statements.py --all --report`（可先加 `--dry-run`） | 零下载零 LLM，分钟级；`--report` 按标的输出前后对比 |
 | `STATEMENT_VALIDATION_VERSION` | `report_statement_checks.py` | `scripts/revalidate_report_statements.py --all` | 零下载零 LLM，分钟级 |
 | 抽取器 v11 + 构建 v3 + 校验 v6（2026-09，#263/#264） | `report_statements.py`（被拆开的两位附注号）/ `report_statement_build.py`（中国准则 int_exp）/ `report_statement_checks.py`（货币资金量级） | 只跑 `scripts/rerun_report_statements.py --all`：重抽后 `ensure` 前后顺带重建与重校验 | 重下载全部港股年报/中报 PDF（约 300 份，限速 1 秒/份，1 小时量级）；只有解析结果变化的报告重调 LLM（上线前全量扫描为 6 份：00148 三年、00728 2025 中报、02313 2016/2021），其余沿用旧映射；int_exp 修复预计改 02333/01133 共 17 份 |
-| `SECTION_EXTRACTOR_VERSION` 或 `DIGEST_PROMPT_VERSION` | `report_sections.py` / `report_digest_prompts.py` | 先确认 `scripts/report_extraction_audit.py --fixtures` 的 boilerplate 归零（在开发检出里跑：固件在 `backend/tests/fixtures/`，镜像不带 tests；容器里可用 `--live` 抽查库内节选），再 `scripts/rerun_report_digests.py --all`（先 `--dry-run`） | 最贵：A股/港股/美股年报重下载 + 每份一次 LLM。商业画像按输入指纹自动重算，不用单独跑 |
+| 抽取器 v12 + 构建 v4（2026-09，#339/#341/#342/#343） | `report_statements.py`（全角破折號「－」为空值、小数尾数粘合走生产路径）/ `report_statement_build.py`（所得税带符号、比较期派生记录与同源替换、证据带版本）/ `report_statement_service.py`（旧 prompt 下的失败不封顶；收入行判据放宽后「无收入行」旧映射重映射） | 只跑 `scripts/rerun_report_statements.py --all`；上线前用 `scripts/statement_reparse_diff.py --cache-dir <目录>` 对全部存量抽取记录做只读重解析对比（结果贴 PR） | 同 v11：重下载约 300 份；只有解析结果变化的报告重调 LLM（份数见 PR 的重解析对比） |
+| 抽取器 v13（2026-10，#379） | `report_statements.py`（逗号前空格、列数与附注明确时的前导数字断字） | 无表迁移。部署前先 `scripts/rerun_report_statements.py --all --dry-run`；部署后用同一脚本 `--all` 推进旧版抽取记录，不能只升级 03900。版本门禁在升级完成前会隐藏旧版报表行；逐标的核对完成数、失败、`mapping_reused` 与存疑项，中断重跑可续跑 | 优先使用已有原始 PDF 缓存，缺失的才下载；结构与旧版相同的沿用映射、零 LLM，变化的报告才重映射。开发时 295 份成功抽取中有 149 份本地原文可用，离线比较各报表及相邻页，仅 03900 2016 年报的 4 行断字金额变化；其余 146 份尚未离线复核，部署前须补齐比较并核定实际模型调用上限，不把抽取器升版当成全量模型重跑 |
+| 重抽脚本有效待办计数（#383） | `scripts/rerun_report_statements.py` | 无迁移、无重建。执行 `--all --dry-run` 核对有效过期数与单列的计划外遗留。只有最近完整计划内的过期记录进入待办；完整计划未知时仍保守统计，历史不删除 | 纯 DB 只读预览，零下载、零 LLM；计划外遗留不作为缓存升级尚未完成的依据，不能通过删失败记录让计数归零 |
+| `SECTION_EXTRACTOR_VERSIONS`（分市场）或 `DIGEST_PROMPT_VERSION` | `report_sections.py` / `report_digest_prompts.py` | 先确认 `scripts/report_extraction_audit.py --fixtures` 的 boilerplate 归零（在开发检出里跑：固件在 `backend/tests/fixtures/`，镜像不带 tests；容器里可用 `--live` 抽查库内节选），再 `scripts/rerun_report_digests.py --all`（先 `--dry-run`；只升了某个市场的抽取器版本就加 `--market`） | prompt 升版最贵：每份一次 LLM。抽取器升版：受影响市场的年报全部重下载重抽节选，但**节选与旧版本逐字节相同的沿用旧摘要、不调 LLM**（输出 `reused`），只有节选真的变了的才重新生成。商业画像按输入指纹自动重算，不用单独跑 |
+| 抽取器 v6（2026-09，#340/#344/#345，三个市场）+ 摘要生命周期（#346/#347）+ 商业画像财务输入（#348） | `report_sections.py` / `report_digest_service.py` / `report_fetchers.py` / `hk_report_catalog.py` / `business_profile_service.py` | `scripts/rerun_report_digests.py --all --max-new 12`（可按 `--market` 分批；中断重跑即续跑）。商业画像不用单独跑：画像输入变了（财务输入改为年度行），下次分析或回填时每只标的自动重算一次 | 按 PR 的生产只读重抽对比：A股 重新生成约 167 份、沿用 10 份，港股 81 份、沿用 34 份，美股 11 份；合计约 410 万输入 + 86 万输出 token（约 14 元）；另每只标的商业画像重算一次。A股 业务节选改为有边界的「主营业务分析」小节、89 份新抽到风险小节，所以 A股 几乎全部重跑 |
+| 摘要 prompt v3 + 画像 prompt v3（2026-09，#289 数字口径与核对） | `report_digest_prompts.py` / `business_profile_prompts.py` / `report_digest_qa.py` | 与上一行（抽取器 v6）**合并为一次** `scripts/rerun_report_digests.py --all --max-new 12`（prompt 升版后「节选未变沿用旧摘要」不再适用，全部重新生成）；数字核对在读取摘要时按当前报表现算，零 LLM、不落库 | 全部约 300 份摘要各一次 LLM（约 17 元）；商业画像下次分析/回填时每只自动重算一次 |
+| 数字 QA v3 + 画像 prompt v4（2026-10，#385/#388/#386/#289） | `report_digest_qa.py` / `business_profile_prompts.py` / 分析输入 | `scripts/refresh_business_profiles.py` 默认只读预览；加 `--apply` 刷新过期存量画像（版本/输入指纹续跑）。随后重跑受影响标的分析，详见 [事实输入修复与验收](docs/ANALYSIS_FACTUAL_INTEGRITY.md)。无需摘要/报表全量重抽、账本升级或持仓重建 | QA 读取时核对，零 LLM；每个过期画像一次 LLM（本轮隔离快照 45 个）。主分析重跑按标的另计；旧报告保留 |
 | 迁移 `20260928_0034`（自选加入价列） | `watchlist_price_service.py` | 可选：`manage.py backfill-watchlist-added-price --dry-run` 看能补几条，再去掉 `--dry-run`；不跑也行，日线尾部同步每轮都会顺带回填（历史补到加入日之前后自动补上） | 纯查库，秒级；加入超过 3 天的存量条目按加入日收盘补；加入日前后确实没有行情时退到加入后首个收盘，再没有就用下一次报价，不会永久为空 |
 | 迁移 `20260929_0038`（官方公告表）首次部署，或 `ANNOUNCEMENT_CLASSIFIER_VERSION` | `announcement_sync.py` / `announcement_classifier.py` | 首次部署：`manage.py sync-announcements`（按水位首次回溯 365 天；`--days N` 忽略水位、`--symbol S --market M` 只跑一只）。分类器升版：`manage.py reclassify-announcements`（`--all` 全部重算） | 首次回溯约 50 只标的 5–15 分钟（巨潮每只约 3–10 页、披露易每只 7 个 60 天窗口、EDGAR 每只一次），无 LLM；重分类零外呼、秒级 |
-| `EDGAR_PIVOT_VERSION` | `earnings_quality.py` | 重新同步美股档案（下方命令） | 只打 EDGAR，无 LLM；每只几秒 |
-| `ADS_PARSER_VERSION`，或新增 ADS 换算比的迁移（`…_0023_ads_ratio`） | `ads_ratio_service.py` | `scripts/sync_ads_ratios.py --all`（`--force` 忽略缓存重解析） | 每只 20-F 发行人下载一次年报主文档，无 LLM |
+| `EDGAR_PIVOT_VERSION`（现为 5。v4：报告币种逐期判定、不再生成只有时点事实的季度占位行、EPS/股息概念链调整，#351；v5：季度身份按期末日——后续季报里上一季度的比较数不再另起一行，#359；拆股前申报的 EPS 按已证实的拆股因子折成最新股本口径并在行上记依据，#289） | `edgar_facts.py` | 重新同步美股档案（下方命令）；同步时顺带删掉库里旧的季度占位行与重复季度行，季度额度腾给真实季度（v4 生产 NFLX 实测 PE 27.25 → 21.83；v5 SNDK 去掉 3 行重复季度、补回 3 个真实季度，NFLX 盈利增长 +486.4% → +5763.6%） | 只打 EDGAR，无 LLM；每只几秒 |
+| `ADS_PARSER_VERSION`（现为 3：封面脚注数字不再当 ADS 数量，10-K 申报人也解析封面，#352），或新增 ADS 换算比的迁移（`…_0023_ads_ratio`） | `ads_ratio_service.py` | `scripts/sync_ads_ratios.py --all`（`--force` 忽略缓存重解析）；10-K 封面明确没有 ADS 的记 `no_ads`（按 1:1），登记了 ADS 却解析不出比例的记 `not_found`、封面无法识别的记 `cover_unknown`（两者估值 indeterminate，可在特例规则填 ADS_RATIO；cover_unknown 每份年报最多重试 3 次，脚本输出里计入未得到换算比） | 每只美股（20-F 与 10-K）每份年报下载一次主文档，无 LLM |
 | 标的全集加载逻辑 | `security_catalog_service.py` | 周期任务自动跑；要立即生效：`manage.py sync-security-catalog` | 约 1 分钟 |
 | 新增行业分类的迁移（`…_0031_security_industries`），或行业来源/映射逻辑（SIC 映射表、东方财富解析） | `security_industry_service.py` | 首次部署：`manage.py sync-security-industries`（周期任务启动时也会跑，手动是为了立刻看到结果并核对输出的失败来源）；改映射后加 `--force` 重拉全部 | 持仓∪自选范围：Tushare stock_basic 一次 + 每只美股一次 EDGAR submissions + 东方财富每 20 只一次请求，秒级到分钟级，无 LLM；未取得行业的标的逐个列出，可在特例规则里补「行业分类」 |
 | `HKEX_DIVIDEND_PARSER_VERSION`，或新增港股分红同步的迁移（`…_0032_hk_dividend_forms`） | `hkex_dividend_source.py` / `hk_adjustment_factors.py` | 不需要立即跑：用户在公司行动页点「同步分红公告」时下载缺失的表格，解析器升版在下次同步时从缓存原文重解析并写回（清单窗口外的旧行也写回），零下载；港股复权因子要立即刷新：`manage.py recompute-hk-adj-factors`（只用已缓存的表格，零网络；旧版本缓存行在内存里按原文重解析，不必先同步）。v2（EF002/EF003、報告期末「不適用」、撤回股息公告）按 2026-09-28 生产缓存离线重放：18 份未解析 → 0，被挂起的 10 只标的只剩 00878（无期间特別股息的撤回公告，按设计整标的挂起，需人工忽略旧建议） | 首次同步每只港股下载其 2021 年起的全部现金股息表格（每份约 100KB、披露易限速 1 秒/份，常见 5–20 份/只），之后只下新表格；复权重算秒级 |
@@ -760,6 +915,10 @@ docker compose up -d --remove-orphans
 | 迁移 `20260929_0036`（特例规则代码归一，#278） | `schemas/security_rule.py`、`symbol_normalization.py` | 不用跑任务。迁移把存量规则的证券代码按手工入口口径归一（港股纯数字补零到 5 位、大写；RELISTING 的新代码按新市场归一；CMB 业务名不动），此前「700」这类港股规则静默不生效，迁移后开始生效。**看迁移输出**：归一后与已有规则撞键的行不改不删、逐条列出，到「账户数据 → 特例规则」删掉重复的一条 | 秒级 |
 | 迁移 `20260929_0039`（RELISTING payload 归一补丁，#312 复审） | `security_rules` | 不用跑任务。跑过旧版 0036 的库里，撞键 RELISTING 行的 `payload.new_symbol` 没有补零，这里补上；已归一的行原样不动（在新库上是空操作） | 秒级 |
 | 迁移 `20260930_0040`（导入备注清理，#286） | `broker_import_common.import_note` | 不用跑任务。交易/公司行动/现金事件备注里的机器前缀（`scope=…; row=…`、`业务=…`、`hash=…` 这类键值段）去掉，只留「招商对账单导入 · 业务名 · 说明」形式；IBKR 转板合成交易的标记备注不动（重导判重靠它）。只改展示文本，不影响 row_hash 与判重 | 秒级 |
+| 招商现金判重 v16，或已证实的跨文件回购现金重复 | `cmb_fund_flow_importer.py` / `cash_duplicate_repair.py` | 新导入自动归档疑似现金行待逐笔确认；存量不自动改账，使用 `scripts/repair_cash_duplicates.py --user-id <ID> --pair <DUP_SOURCE>:<KEEP_SOURCE> --out ../backups/cash-plan.json` 只读审阅，在恢复库应用与双跑指标、验证现金和二次执行零动作后再维护期执行。先修复重复现金，再生成历史税款升级计划；详见 [现金判重与清理](docs/CASH_DUPLICATE_REPAIR.md) | 纯 DB、无下载无 LLM；无 schema/env 变化，保留来源文件与 hash，只合并已核实的派生现金事实 |
+| 迁移 `20261001_0042`（预计/实收分离）与到账关联 | `dividend_receipt_upgrade.py` / `upgrade_dividend_receipts.py` | 三份 PR 完整合入后部署。结构迁移不改历史金额；恢复库先固定日期/价格/汇率跑 metrics，再生成只读 receipt plan、逐条核对来源及现金差额，应用并验证原计划重跑零改动。生产停写后重新生成当前计划再执行；来源不明记录保持旧计算并显式待核实。详见 [0042 升级流程](docs/DIVIDEND_ACCOUNTING.md#0042-历史实收升级与部署顺序) | 纯 DB，无外呼/下载/LLM、无新增 env；移除公告估算会改变历史收益和现金，不能只降 schema 回滚 |
+| B 股建议权益与币种核对（2026-10，#376 部分） | `dividend_sync_service.py` | 无表迁移。部署后通过既有每日分红同步或「同步分红公告」刷新 NEW/MATCHED 建议，逐笔检查权益数量变化。原公告登记日保留；成交持仓截止除息日前，避免把交收日当成交截止日。ACCEPTED/IGNORED 按原保护保留，不自动改实际账本 | 无 LLM、无新数据源。Tushare 的人民币公告金额保留原币；与外币实收比较时改为币种待核对，不报跨币种差额。发行人换算率、实际派发外币和实收关联仍需原始来源；本补丁不代表 #376 全项完成 |
+| 迁移 `20261001_0041`（实际扣税日现金事实，#374），或招商/东财/IBKR 税款入账口径 | `dividend_tax_service.py` / `dividend_tax_upgrade.py` | 先备份、恢复库 `alembic upgrade head`，再 `scripts/upgrade_dividend_tax_events.py --user-id <ID> --anchor <EVENT>:<BROKER_SNAPSHOT> --out ../backups/tax-plan.json` 只读审阅；用 `--apply-reviewed-plan` 在恢复库验证日期、原 hash、现金与冻结 metrics；重跑零新增后，生产维护期重新备份、停 backend/collector 写入，执行结构迁移和当前无阻断计划。现金既有差异默认阻断，具体流程见 [股息口径](docs/DIVIDEND_ACCOUNTING.md#日期独立的股息税374) | 纯 DB、无下载无 LLM，秒级；schema 本身不改金额，数据升级会改变历史收益，回滚须恢复 DB 备份及旧镜像 |
 | 收益/统计口径 | `services/statistics/`、`services/portfolio/` | 5.3 / 5.7 的 metrics 快照对比 | 只读 |
 | 无风险利率（参考利率表，迁移 `…_0030_reference_rates` 首次部署） | `reference_rate_service.py` | 周期任务（12 小时）首次按最早交易日自动回填 SHIBOR 3M 与美国国库券 3M；要立即生效：`manage.py sync-reference-rates`。夏普/索提诺从此按 SHIBOR 3M 逐期扣除（此前为 0），metrics 快照对比时这两项与 `risk_free_rate` 的变化是预期的 | 中国货币网与美国财政部每年各一次请求 |
 | 汇率历史（官方中间价回填，迁移 `…_0027_exchange_rate_checks` 首次部署） | `exchange_rate_service.py`、`chinamoney_source.py` | 先取 metrics 快照 → `scripts/backfill_official_fx.py --start <最早交易日> --dry-run` 看将改写/新写/停用的行数 → 去掉 `--dry-run` 执行 → 再取快照对比（差异应全部来自汇率变化）。日常刷新由周期任务完成，只回看 15 天 | 中国货币网每年一次请求；**会改变历史人民币折算**（此前早于首条汇率的日期按最新汇率折算） |
@@ -798,8 +957,9 @@ PY
 - **批量分析有 24 小时新鲜度**：持仓页「一键分析」会跳过 `SECURITY_ANALYSIS_FRESHNESS_HOURS`
   内已分析过的标的。数据任务跑完想全部重出，可以在标的详情页逐个重新分析，或用 API
   `POST /api/securities/analysis-batch-jobs?force=true`（Bearer token 见 `POST /api/auth/token`）。
-- 需要 LLM 的任务在 `LLM_REPORT_API_KEY` 为空时直接报错退出；无效 key / 欠费 / 限流属于致命错误，
-  脚本会停下并说明原因，修好后重跑即可续上。
+- 需要 LLM 的任务在全部渠道 key 为空时直接报错退出；无效 key、欠费与限流按
+  [LLM 路由规则](#llm-与标的分析) 切换备用渠道。所有已配置渠道失败或网络等待预算耗尽时，
+  脚本停下并说明原因，修好后重跑即可续上。
 
 ---
 
@@ -1077,7 +1237,10 @@ PY
 
 ## 9. 备份与恢复
 
-运行数据全部在 PostgreSQL 里。`data/` 目录与 Excel 导出都不能替代数据库备份。
+账本、报表行、摘要等结构化运行数据保存在 PostgreSQL 里。`data/` 目录与 Excel 导出都不能替代数据库备份。
+这里的数据库备份不包含宿主上的原始财报缓存、TLS 证书、雪球 Cookie 和 `.env`。
+原始财报缓存如需随迁移保留，按 [6.1](#61-原始财报文件持久化) 单独复制；凭证与配置按各自的
+安全存储方式保存，不把明文值写进交接文档或 Git。
 
 ### 9.1 `backup.sh`
 
@@ -1356,7 +1519,7 @@ SEC 拒绝了不合规的 User-Agent。在 `.env` 设置 `EDGAR_USER_AGENT="your
 ### LLM 输出为空或被截断（日志里 `finish_reason=length`）
 
 推理 token 与输出共享额度，大报表或长分析会把额度吃穿，返回空内容或半截输出（半截内容不会被
-当成结果使用，一律报「LLM 输出被截断」失败）。港股报表映射调大 `STATEMENT_MAX_OUTPUT_TOKENS`，
+当成结果使用，一律报「LLM 输出被截断」失败，也不会触发跨渠道切换）。港股报表映射调大 `STATEMENT_MAX_OUTPUT_TOKENS`，
 标的分析调大 `SECURITY_ANALYSIS_MAX_OUTPUT_TOKENS`，复盘/财报摘要/观点摘要调大
 `LLM_REPORT_MAX_OUTPUT_TOKENS`，然后
 `docker compose up -d backend`（`restart` 不会重读环境变量）。

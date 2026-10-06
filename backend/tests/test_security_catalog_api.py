@@ -11,6 +11,7 @@ from app.database import SessionLocal
 from app.main import app
 from app.models.holding import Holding
 from app.models.security_catalog import SecurityCatalogEntry, SecurityCatalogSync
+from app.models.security_rule import SecurityRule
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.models.watchlist_item import WatchlistItem
@@ -18,7 +19,14 @@ from app.services import security_catalog_service as svc
 
 from .helpers import reset_tables
 
-RESET_MODELS = [WatchlistItem, Holding, Transaction, SecurityCatalogEntry, SecurityCatalogSync]
+RESET_MODELS = [
+    WatchlistItem,
+    Holding,
+    Transaction,
+    SecurityCatalogEntry,
+    SecurityCatalogSync,
+    SecurityRule,
+]
 PASSWORD = "catalog-api-password"
 
 
@@ -59,6 +67,83 @@ async def _auth(client, username="demo"):
 
 def _client():
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver")
+
+
+@pytest.mark.anyio
+async def test_holdings_use_user_override_then_catalog_without_changing_ledger(db, api_users):
+    uid = api_users["demo"]
+    for symbol, name in (("600690", "XD海尔智"), ("600305", "XD恒顺醋"), ("688999", "ST示例")):
+        db.add(
+            Holding(
+                user_id=uid,
+                symbol=symbol,
+                market="A股",
+                name=name,
+                quantity=Decimal("100"),
+                avg_cost=Decimal("10"),
+                total_cost=Decimal("1000"),
+                currency="CNY",
+            )
+        )
+    svc.upsert_catalog_rows(
+        db,
+        [
+            svc.CatalogRow(symbol="600690", market="A股", name="海尔智家"),
+            svc.CatalogRow(symbol="600305", market="A股", name="恒顺醋业"),
+        ],
+        source="test",
+    )
+    db.add_all(
+        [
+            SecurityRule(
+                user_id=uid,
+                rule_type="NAME_OVERRIDE",
+                symbol="600305",
+                market="A股",
+                payload={"name": "我的恒顺"},
+            ),
+            SecurityRule(
+                user_id=api_users["admin"],
+                rule_type="NAME_OVERRIDE",
+                symbol="600690",
+                market="A股",
+                payload={"name": "其他用户名称"},
+            ),
+        ]
+    )
+    from tests.helpers import add_transaction
+
+    txn = add_transaction(
+        db,
+        user_id=uid,
+        symbol="600690",
+        market="A股",
+        name="XD海尔智",
+        transaction_type="BUY",
+        quantity=Decimal("100"),
+        price=Decimal("10"),
+        transaction_date=date(2026, 8, 21),
+    )
+    db.commit()
+    before = [
+        (row.id, row.name, row.quantity, row.total_cost)
+        for row in db.query(Holding).order_by(Holding.id)
+    ]
+    async with _client() as client:
+        auth = await _auth(client)
+        response = await client.get("/api/holdings", headers=auth)
+        assert response.status_code == 200, response.text
+        assert {row["symbol"]: row["name"] for row in response.json()} == {
+            "600690": "海尔智家",
+            "600305": "我的恒顺",
+            "688999": "ST示例",
+        }
+    db.expire_all()
+    assert [
+        (row.id, row.name, row.quantity, row.total_cost)
+        for row in db.query(Holding).order_by(Holding.id)
+    ] == before
+    assert db.get(Transaction, txn.id).name == "XD海尔智"
 
 
 def _seed_catalog(db):

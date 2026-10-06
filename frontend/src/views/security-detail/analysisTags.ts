@@ -1,3 +1,5 @@
+import type { OutputAdjustment, RiskLevelAdjustment } from '@/types'
+
 /**
  * AI 分析标签的褒贬配色（#221）：按后端 `security_analysis_prompts.ALLOWED_TAGS` 白名单分
  * 正面 / 负面 / 中性。纯函数、无 view 依赖——持仓页 AI 列复用同一份，两处配色不会分叉。
@@ -72,11 +74,7 @@ export function riskLabel(level: string | null | undefined): string {
 }
 
 /** 后端 `security_analyses.risk_level_adjusted`：风险等级按市场下限上调的记录 */
-export interface RiskLevelAdjustment {
-  from: string
-  to: string
-  reason?: string | null
-}
+export type { RiskLevelAdjustment } from '@/types'
 
 /**
  * 风险标签旁的上调提示：模型给出的等级低于市场下限（港股 medium）时后端上调并留痕，
@@ -91,18 +89,11 @@ export function riskAdjustmentText(
 }
 
 /** 后端 `security_analyses.output_adjustments`：解析层对模型输出的调整记录（#287） */
-export interface OutputAdjustment {
-  type: string
-  tag?: string
-  from?: string
-  to?: string
-  reason?: string
-  dropped?: string[]
-  sections?: string[]
-}
+export type { OutputAdjustment } from '@/types'
 
 /**
- * 「已调整」提示：标签被归一/丢弃/截断、补了免责声明时，把记录合成一句话；
+ * 「已调整」提示：标签被归一/丢弃/截断、与预计算数据矛盾被去掉（#265）、补了免责声明时，
+ * 把记录合成一句话；
  * 仅有额外章节这类不影响内容的记录不提示。无记录（旧分析行）返回 null。
  */
 export function outputAdjustmentText(
@@ -125,6 +116,13 @@ export function outputAdjustmentText(
   if (dropped.length) parts.push(`丢弃不合规标签：${dropped.join('、')}`)
   if (truncated.length) parts.push(`标签超过 4 个，去掉：${truncated.join('、')}`)
   if (normalized.length) parts.push(`标签归一：${normalized.join('、')}`)
+  const bySignal = adjustments
+    .filter((item) => item.type === 'tag_dropped_by_signal' && item.tag)
+    .map((item) => (item.reason ? `${item.tag}（${item.reason}）` : (item.tag as string)))
+  if (bySignal.length) parts.push(`与数据不符，去掉：${bySignal.join('、')}`)
+  if (adjustments.some((item) => item.type === 'tag_signal_conflict')) {
+    parts.push('标签与数据有矛盾，但去掉后将无标签，已保留原标签')
+  }
   if (adjustments.some((item) => item.type === 'disclaimer_appended')) parts.push('补上免责声明')
   return parts.length ? `解析时已按规则调整：${parts.join('；')}` : null
 }

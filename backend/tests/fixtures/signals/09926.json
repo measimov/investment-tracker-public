@@ -1,0 +1,576 @@
+{
+ "symbol": "09926",
+ "market": "港股",
+ "exported_from": "production (read-only), 2026-09-30",
+ "annual": {
+  "report_statements": [
+   {
+    "end_date": "20251231",
+    "fp": "FY",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 3056275000.0,
+    "n_income_attr_p": -1113025000.0,
+    "basic_eps": -1.23,
+    "accounts_receiv": 1021666000.0,
+    "inventories": 931616000.0,
+    "money_cap": 8822414000.0,
+    "total_hldr_eqy_exc_min_int": 9047894000.0,
+    "total_debt": 4540521000.0,
+    "lt_borr": 3954853000.0,
+    "st_borr": 585668000.0,
+    "n_cashflow_act": -947628000.0,
+    "capex": -776905000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 16000440000.0,
+    "free_cashflow": -1724533000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20241231",
+    "fp": "FY",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 2123944000.0,
+    "n_income_attr_p": -514515000.0,
+    "basic_eps": -0.6,
+    "accounts_receiv": 524911000.0,
+    "inventories": 706533000.0,
+    "money_cap": 6918065000.0,
+    "total_hldr_eqy_exc_min_int": 6813953000.0,
+    "total_debt": 3941588000.0,
+    "lt_borr": 3406128000.0,
+    "st_borr": 535460000.0,
+    "n_cashflow_act": -527615000.0,
+    "capex": -585771000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 12754965000.0,
+    "free_cashflow": -1113386000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20231231",
+    "fp": "FY",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 4526253000.0,
+    "n_income_attr_p": 2028300000.0,
+    "basic_eps": 2.42,
+    "accounts_receiv": 295563000.0,
+    "inventories": 391868000.0,
+    "money_cap": 1542313000.0,
+    "total_hldr_eqy_exc_min_int": 4692339000.0,
+    "total_debt": 2967783000.0,
+    "lt_borr": 2577270000.0,
+    "st_borr": 390513000.0,
+    "n_cashflow_act": 2467773000.0,
+    "capex": -719382000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 9181090000.0,
+    "free_cashflow": 1748391000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20221231",
+    "fp": "FY",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 837656000.0,
+    "n_income_attr_p": -1168393000.0,
+    "basic_eps": -1.42,
+    "accounts_receiv": 271046000.0,
+    "inventories": 341832000.0,
+    "money_cap": 2092388000.0,
+    "total_hldr_eqy_exc_min_int": 2635627000.0,
+    "total_debt": 1867257000.0,
+    "lt_borr": 1421278000.0,
+    "st_borr": 445979000.0,
+    "n_cashflow_act": -1240413000.0,
+    "capex": -775642000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 5495948000.0,
+    "free_cashflow": -2016055000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20211231",
+    "fp": "FY",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 225626000.0,
+    "n_income_attr_p": -1074933000.0,
+    "basic_eps": -1.32,
+    "accounts_receiv": 101849000.0,
+    "inventories": 196619000.0,
+    "money_cap": 2641625000.0,
+    "total_hldr_eqy_exc_min_int": 3164056000.0,
+    "total_debt": 849331000.0,
+    "lt_borr": 803733000.0,
+    "st_borr": 45598000.0,
+    "n_cashflow_act": -1001238000.0,
+    "capex": -712126000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4805789000.0,
+    "free_cashflow": -1713364000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20201231",
+    "fp": "FY",
+    "currency": "CNY",
+    "is_comparative": false,
+    "n_income_attr_p": -1177051000.0,
+    "basic_eps": -1.65,
+    "inventories": 61235000.0,
+    "money_cap": 2684499000.0,
+    "total_hldr_eqy_exc_min_int": 3185546000.0,
+    "total_debt": 192425000.0,
+    "lt_borr": 178614000.0,
+    "st_borr": 13811000.0,
+    "n_cashflow_act": -617775000.0,
+    "capex": -444262000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 3856169000.0,
+    "free_cashflow": -1062037000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20191231",
+    "fp": "FY",
+    "currency": "CNY",
+    "is_comparative": true,
+    "total_revenue": 70879000.0,
+    "n_income_attr_p": -335386000.0,
+    "basic_eps": -2.74,
+    "inventories": 15523000.0,
+    "money_cap": 1186044000.0,
+    "total_hldr_eqy_exc_min_int": -6353000.0,
+    "total_debt": 211375000.0,
+    "lt_borr": 173280000.0,
+    "st_borr": 38095000.0,
+    "n_cashflow_act": -219595000.0,
+    "capex": -136273000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 1672939000.0,
+    "free_cashflow": -355868000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   }
+  ],
+  "yahoo_fundamentals": [
+   {
+    "end_date": "20251231",
+    "fp": "FY",
+    "currency": "CNY",
+    "free_cashflow": -1734736000.0,
+    "total_debt": 4556025000.0,
+    "capex": -787108000.0,
+    "inventories": 931616000.0,
+    "money_cap": 8778865000.0,
+    "n_income_attr_p": -1113025000.0,
+    "n_cashflow_act": -947628000.0,
+    "accounts_receiv": 1021666000.0,
+    "total_revenue": 3056275000.0,
+    "total_hldr_eqy_exc_min_int": 9047894000.0,
+    "total_assets": 16000440000.0
+   },
+   {
+    "end_date": "20241231",
+    "fp": "FY",
+    "currency": "CNY",
+    "free_cashflow": -1121349000.0,
+    "total_debt": 3951927000.0,
+    "capex": -593734000.0,
+    "inventories": 706533000.0,
+    "money_cap": 6889904000.0,
+    "n_income_attr_p": -514515000.0,
+    "n_cashflow_act": -527615000.0,
+    "accounts_receiv": 524911000.0,
+    "total_revenue": 2123944000.0,
+    "total_hldr_eqy_exc_min_int": 6813953000.0,
+    "basic_eps": -0.6,
+    "total_assets": 12754965000.0
+   },
+   {
+    "end_date": "20231231",
+    "fp": "FY",
+    "currency": "CNY",
+    "free_cashflow": 1588283000.0,
+    "total_debt": 2990902000.0,
+    "capex": -879490000.0,
+    "inventories": 391868000.0,
+    "money_cap": 4030243000.0,
+    "n_income_attr_p": 2028300000.0,
+    "n_cashflow_act": 2467773000.0,
+    "accounts_receiv": 295563000.0,
+    "total_revenue": 4526253000.0,
+    "total_hldr_eqy_exc_min_int": 4692339000.0,
+    "basic_eps": 2.42,
+    "total_assets": 9181090000.0
+   },
+   {
+    "end_date": "20221231",
+    "fp": "FY",
+    "currency": "CNY",
+    "free_cashflow": -2042911000.0,
+    "total_debt": 1879109000.0,
+    "capex": -802498000.0,
+    "inventories": 341832000.0,
+    "money_cap": 2092482000.0,
+    "n_income_attr_p": -1168393000.0,
+    "n_cashflow_act": -1240413000.0,
+    "accounts_receiv": 271046000.0,
+    "total_revenue": 837656000.0,
+    "total_hldr_eqy_exc_min_int": 2635627000.0,
+    "basic_eps": -1.42,
+    "total_assets": 5495948000.0
+   },
+   {
+    "end_date": "20211231",
+    "fp": "FY",
+    "currency": "CNY",
+    "basic_eps": -1.32
+   }
+  ]
+ },
+ "interim": {
+  "report_statements": [
+   {
+    "end_date": "20250630",
+    "fp": "H1",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 1411539000.0,
+    "n_income_attr_p": -570081000.0,
+    "basic_eps": -0.64,
+    "accounts_receiv": 809095000.0,
+    "inventories": 847455000.0,
+    "money_cap": 6592983000.0,
+    "total_hldr_eqy_exc_min_int": 6435276000.0,
+    "total_debt": 4528014000.0,
+    "lt_borr": 4013567000.0,
+    "st_borr": 514447000.0,
+    "n_cashflow_act": -227505000.0,
+    "capex": -447164000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 13287753000.0,
+    "free_cashflow": -674669000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20240630",
+    "fp": "H1",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 1024744000.0,
+    "n_income_attr_p": -238590000.0,
+    "basic_eps": -0.28,
+    "accounts_receiv": 463377000.0,
+    "inventories": 500366000.0,
+    "money_cap": 2487349000.0,
+    "total_hldr_eqy_exc_min_int": 5226163000.0,
+    "total_debt": 3302289000.0,
+    "lt_borr": 3029673000.0,
+    "st_borr": 272616000.0,
+    "n_cashflow_act": -346503000.0,
+    "capex": -244791000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 10459315000.0,
+    "free_cashflow": -591294000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20230630",
+    "fp": "H1",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 3676859000.0,
+    "n_income_attr_p": 2525045000.0,
+    "basic_eps": 3.01,
+    "accounts_receiv": 248368000.0,
+    "inventories": 287709000.0,
+    "money_cap": 4285141000.0,
+    "total_hldr_eqy_exc_min_int": 5173525000.0,
+    "total_debt": 2524738000.0,
+    "lt_borr": 2220711000.0,
+    "st_borr": 304027000.0,
+    "n_cashflow_act": 2871241000.0,
+    "capex": -348457000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 9010086000.0,
+    "free_cashflow": 2522784000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20220630",
+    "fp": "H1",
+    "currency": "CNY",
+    "is_comparative": false,
+    "total_revenue": 163135000.0,
+    "n_income_attr_p": -630434000.0,
+    "basic_eps": -0.77,
+    "accounts_receiv": 295163000.0,
+    "inventories": 301239000.0,
+    "money_cap": 2220684000.0,
+    "total_hldr_eqy_exc_min_int": 2608374000.0,
+    "total_debt": 1317384000.0,
+    "lt_borr": 1127207000.0,
+    "st_borr": 190177000.0,
+    "n_cashflow_act": -580675000.0,
+    "capex": -297051000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4982181000.0,
+    "free_cashflow": -877726000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   }
+  ]
+ },
+ "dividend_rows": [],
+ "daily_basic": [],
+ "graham": {
+  "status": "ok",
+  "criteria": [
+   {
+    "criterion": "current_ratio",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "lt_debt_vs_net_current_assets",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_stability",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "dividend_record",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_growth",
+    "verdict": "indeterminate",
+    "basis": {}
+   },
+   {
+    "criterion": "pe",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "pb_or_product",
+    "verdict": "fail",
+    "basis": {
+     "price": 106.3,
+     "price_currency": "HKD",
+     "price_date": "2026-09-29",
+     "implied_shares": 904898374,
+     "share_ratio": null,
+     "bvps": 11.635301,
+     "equity": 9047894000.0,
+     "equity_currency": "CNY"
+    }
+   }
+  ]
+ }
+}

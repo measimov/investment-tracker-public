@@ -518,9 +518,10 @@ def test_eastmoney_import_creates_transactions_and_corporate_actions(monkeypatch
         action = db.query(CorporateAction).one()
         assert action.symbol == "600001"
         assert action.action_type == "CASH_DIVIDEND"
-        assert action.total_dividend == Decimal("100.00000000")
-        assert action.tax_withheld == Decimal("10.00000000")
-        assert action.net_dividend == Decimal("90.00000000")
+        assert action.total_dividend is None
+        assert action.amount_basis == "NET_ONLY"
+        assert action.tax_withheld is None
+        assert action.net_dividend == Decimal("100.00000000")
         assert action.broker_account_id == account.id
         assert action.import_batch_id == result["import_batch_id"]
 
@@ -530,7 +531,8 @@ def test_eastmoney_import_creates_transactions_and_corporate_actions(monkeypatch
         assert {flow.broker_account_id for flow in flows} == {account.id}
         assert {flow.import_batch_id for flow in flows} == {result["import_batch_id"]}
         assert {flow.statement_type for flow in flows} == {"stock"}
-        assert sum(flow.corporate_action_id == action.id for flow in flows) == 2
+        assert sum(flow.corporate_action_id == action.id for flow in flows) == 1
+        assert sum(flow.cash_event_id is not None for flow in flows) == 1
 
         first_batch = db.get(ImportBatch, result["import_batch_id"])
         assert first_batch.source_sha256 == hashlib.sha256(contents).hexdigest()
@@ -702,10 +704,10 @@ def test_eastmoney_tax_requires_exactly_one_account_dividend_candidate(monkeypat
             broker_account_id=account.id,
         )
 
-        assert result["imported_tax_adjustments"] == 0
+        assert result["imported_tax_adjustments"] == 1
         assert result["archived_source_rows"] == 1
-        assert result["batch_status"] == "PARTIAL"
-        assert any("no account-scoped dividend" in error for error in result["errors"])
+        assert result["batch_status"] == "COMPLETED"
+        assert result["errors"] == []
         actions = db.query(CorporateAction).order_by(CorporateAction.ex_date).all()
         assert [action.tax_withheld for action in actions] == [
             Decimal("0E-8"),
@@ -714,7 +716,7 @@ def test_eastmoney_tax_requires_exactly_one_account_dividend_candidate(monkeypat
         source = db.query(BrokerFundFlow).one()
         assert source.corporate_action_id is None
         batch = db.get(ImportBatch, result["import_batch_id"])
-        assert batch.imported_count == 0
+        assert batch.imported_count == 1
         assert batch.archived_count == 1
     finally:
         db.close()
@@ -936,7 +938,7 @@ def test_eastmoney_parser_version_tracks_booking_semantics():
     """
     from app.services.eastmoney_statement_importer import PARSER_VERSION
 
-    assert PARSER_VERSION == "8"
+    assert PARSER_VERSION == "9"
 
 
 def test_excluded_security_archives_rows_and_passes_snapshot_gate(monkeypatch):
@@ -1064,10 +1066,10 @@ def test_eastmoney_unattributed_tax_is_recovered_on_reimport(monkeypatch):
             db, 1, b"%PDF-1", "eastmoney.pdf", broker_account_id=account.id
         )
 
-        assert first["imported_tax_adjustments"] == 0
+        assert first["imported_tax_adjustments"] == 1
         orphan = db.query(BrokerFundFlow).one()
         orphan_id = orphan.id
-        assert orphan.skip_reason == "unattributed_tax"
+        assert orphan.skip_reason is None
         assert orphan.corporate_action_id is None
 
         # 第二次：补上同标的股息
@@ -1076,15 +1078,16 @@ def test_eastmoney_unattributed_tax_is_recovered_on_reimport(monkeypatch):
             db, 1, b"%PDF-2", "eastmoney.pdf", broker_account_id=account.id
         )
 
-        assert second["imported_tax_adjustments"] == 1
+        assert second["imported_tax_adjustments"] == 0
         action = db.query(CorporateAction).one()
-        assert action.tax_withheld == Decimal("10.00000000")
-        assert action.net_dividend == Decimal("90.00000000")
+        assert action.tax_withheld is None
+        assert action.net_dividend == Decimal("100.00000000")
 
         recovered = db.query(BrokerFundFlow).filter_by(row_hash=orphan.row_hash).one()
         assert recovered.id == orphan_id, "必须就地转正，不得插新行"
         assert recovered.skip_reason is None
-        assert recovered.corporate_action_id == action.id
+        assert recovered.corporate_action_id is None
+        assert recovered.cash_event_id is not None
     finally:
         db.close()
 
@@ -1103,14 +1106,14 @@ def test_eastmoney_recovered_tax_is_not_applied_twice(monkeypatch):
         import_eastmoney_statement(db, 1, b"%PDF-2", "eastmoney.pdf", broker_account_id=account.id)
 
         action = db.query(CorporateAction).one()
-        assert action.tax_withheld == Decimal("10.00000000")
+        assert action.tax_withheld is None
 
         third = import_eastmoney_statement(
             db, 1, b"%PDF-3", "eastmoney.pdf", broker_account_id=account.id
         )
 
         db.refresh(action)
-        assert action.tax_withheld == Decimal("10.00000000"), "重导不得叠加税额"
+        assert action.tax_withheld is None, "重导不得叠加税额"
         assert third["imported_tax_adjustments"] == 0
     finally:
         db.close()
@@ -1141,6 +1144,11 @@ def test_eastmoney_legacy_hash_orphan_is_recovered_in_place(monkeypatch):
         probe = db.query(BrokerFundFlow).one()
         current_hash = probe.row_hash
         legacy_hash = hashlib.sha256(b"legacy-form-of-this-tax-row").hexdigest()
+
+        old_event_id = probe.cash_event_id
+        probe.cash_event_id = None
+        db.flush()
+        db.query(CashEvent).filter_by(id=old_event_id).delete()
 
         # 造"历史孤儿"：归档行以 legacy hash 存档，且已被迁移回填标记
         db.execute(
@@ -1173,7 +1181,7 @@ def test_eastmoney_legacy_hash_orphan_is_recovered_in_place(monkeypatch):
 
         assert result["imported_tax_adjustments"] == 1
         action = db.query(CorporateAction).one()
-        assert action.tax_withheld == Decimal("10.00000000")
+        assert action.tax_withheld is None
 
         tax_sources = (
             db.query(BrokerFundFlow)
@@ -1184,7 +1192,8 @@ def test_eastmoney_legacy_hash_orphan_is_recovered_in_place(monkeypatch):
             f"两种 hash 合计只应有一条税来源，实际 {len(tax_sources)} 条（旧孤儿未被复用）"
         )
         assert tax_sources[0].id == orphan_id, "必须在原行转正"
-        assert tax_sources[0].corporate_action_id == action.id
+        assert tax_sources[0].corporate_action_id is None
+        assert tax_sources[0].cash_event_id is not None
         assert tax_sources[0].skip_reason is None
     finally:
         db.close()

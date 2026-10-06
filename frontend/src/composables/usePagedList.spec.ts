@@ -10,13 +10,56 @@ import { usePagedList } from './usePagedList'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((r) => {
+  let reject!: (reason: Error) => void
+  const promise = new Promise<T>((r, fail) => {
     resolve = r
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 describe('usePagedList', () => {
+  it('首次失败保持未知，成功空结果及后续失败仍保留曾加载状态', async () => {
+    const fetchPage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('初载失败'))
+      .mockResolvedValueOnce({ items: [], total: 0 })
+      .mockRejectedValueOnce(new Error('刷新失败'))
+    const list = usePagedList<number>({ failureMessage: '加载失败', fetchPage })
+    await list.load()
+    expect(list.hasLoaded.value).toBe(false)
+    expect(list.loadError.value).toBe(true)
+    await list.search()
+    expect(list.hasLoaded.value).toBe(true)
+    expect(list.loadError.value).toBe(false)
+    expect(list.pagination.total).toBe(0)
+    await list.load()
+    expect(list.hasLoaded.value).toBe(true)
+    expect(list.loadError.value).toBe(true)
+    expect(list.items.value).toEqual([])
+  })
+
+  it('过期失败不得污染较新成功的状态、结果或提示', async () => {
+    const old = deferred<{ items: number[]; total: number }>()
+    const latest = deferred<{ items: number[]; total: number }>()
+    const pending = [old, latest]
+    const before = vi.mocked(showApiError).mock.calls.length
+    const list = usePagedList<number>({
+      failureMessage: '加载失败',
+      fetchPage: () => pending.shift()!.promise
+    })
+    const a = list.load()
+    const b = list.search()
+    latest.resolve({ items: [1], total: 1 })
+    await b
+    old.reject(new Error('过期失败'))
+    await a
+    expect(list.items.value).toEqual([1])
+    expect(list.hasLoaded.value).toBe(true)
+    expect(list.loadError.value).toBe(false)
+    expect(vi.mocked(showApiError).mock.calls.length).toBe(before)
+  })
+
   it('当前页超出总页数时回到最后一页并重取', async () => {
     const calls: number[] = []
     const list = usePagedList<number>({

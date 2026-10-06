@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { validateForm } from '@/utils/validateForm'
 /**
  * 公司行动新增/编辑对话框（#284：由 RecordsTab 拆出）。按类型动态必填与字段映射；
  * 行 ↔ 表单 ↔ 请求体的换算是 shared.ts 的纯函数（formFromAction / payloadFromForm，有 spec）。
@@ -53,23 +54,38 @@ const notPositive = (value: unknown) =>
   value === null || value === undefined || value === '' || !(Number(value) > 0)
 
 const rules: Record<string, FormItemRule[]> = {
-  symbol: [{ required: true, message: '请输入股票代码', trigger: 'blur' }],
+  symbol: [{ required: true, message: '请输入标的代码', trigger: 'blur' }],
   market: [{ required: true, message: '请选择市场', trigger: 'change' }],
   action_type: [{ required: true, message: '请选择行动类型', trigger: 'change' }],
   ex_date: [{ required: true, message: '请选择除权除息日', trigger: 'change' }],
-  total_dividend: [requiredWhen(['CASH_DIVIDEND'], notPositive, '请输入股息总额（大于 0）')],
+  total_dividend: [
+    requiredWhen(
+      ['CASH_DIVIDEND'],
+      (v) => form.amount_basis !== 'NET_ONLY' && notPositive(v),
+      '请输入股息总额（大于 0）'
+    )
+  ],
+  payment_date: [requiredWhen(['CASH_DIVIDEND'], (v) => !v, '请选择实际到账日')],
+  receipt_confirmed: [requiredWhen(['CASH_DIVIDEND'], (v) => v !== true, '请确认已核对到账凭证')],
+  net_dividend: [
+    requiredWhen(
+      ['CASH_DIVIDEND'],
+      (v) => form.amount_basis === 'NET_ONLY' && notPositive(v),
+      '请输入净到账额'
+    )
+  ],
   broker_account_id: [
     requiredWhen(
-      ['OPENING_POSITION'],
+      ['OPENING_POSITION', 'CASH_DIVIDEND'],
       (value) => value === null || value === undefined || value === '',
-      '期初建仓必须选择账户'
+      '请为到账股息或期初建仓选择账户'
     )
   ],
   opening_quantity: [requiredWhen(['OPENING_POSITION'], notPositive, '请输入数量（大于 0）')]
 }
 
 const netDividendPreview = computed(() =>
-  form.total_dividend === null
+  form.total_dividend === null || form.tax_withheld === null
     ? null
     : cashDividendAmounts({ total_dividend: form.total_dividend, tax_withheld: form.tax_withheld })
         .net
@@ -119,7 +135,7 @@ function handleActionTypeChange() {
 }
 
 async function handleSubmit() {
-  const valid = await formRef.value?.validate()
+  const valid = await validateForm(formRef.value)
   if (!valid) return
 
   submitting.value = true
@@ -127,10 +143,10 @@ async function handleSubmit() {
     const payload = payloadFromForm(form, { isEdit: isEdit.value })
     if (isEdit.value) {
       await api.updateCorporateAction(form.id as number, payload)
-      ElMessage.success('更新成功')
+      ElMessage.success('公司行动记录已更新')
     } else {
       await api.createCorporateAction(payload)
-      ElMessage.success('创建成功')
+      ElMessage.success('公司行动记录已新增')
     }
     dialogVisible.value = false
     emit('saved')
@@ -149,21 +165,22 @@ defineExpose({ openAdd, openEdit })
     v-model="dialogVisible"
     :title="isEdit ? '编辑公司行动' : '新增公司行动'"
     width="720px"
+    :close-on-click-modal="false"
   >
     <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
       <!-- 基本信息 -->
       <el-divider content-position="left">基本信息</el-divider>
 
       <el-form-item
-        label="券商账户"
+        label="账户"
         prop="broker_account_id"
-        :required="form.action_type === 'OPENING_POSITION'"
+        :required="['OPENING_POSITION', 'CASH_DIVIDEND'].includes(form.action_type)"
       >
         <el-select
           v-model="form.broker_account_id"
           :placeholder="
-            form.action_type === 'OPENING_POSITION'
-              ? '必选：建仓数量加入该账户'
+            ['OPENING_POSITION', 'CASH_DIVIDEND'].includes(form.action_type)
+              ? '必选：按实际来源归属账户'
               : '可选；历史记录请按实际来源归属'
           "
           clearable
@@ -177,7 +194,7 @@ defineExpose({ openAdd, openEdit })
         </el-select>
       </el-form-item>
 
-      <el-form-item label="股票代码" prop="symbol">
+      <el-form-item label="标的代码" prop="symbol">
         <SecuritySelect
           v-model="form.symbol"
           :market="form.market"
@@ -224,13 +241,44 @@ defineExpose({ openAdd, openEdit })
 
       <!-- 现金股息专用字段 -->
       <template v-if="form.action_type === 'CASH_DIVIDEND'">
-        <el-divider content-position="left">现金股息</el-divider>
+        <el-divider content-position="left">实际到账股息</el-divider>
+        <el-form-item label="实际到账日" prop="payment_date" required>
+          <el-date-picker
+            v-model="form.payment_date"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="以券商凭证为准"
+          />
+        </el-form-item>
+        <el-form-item label="金额依据">
+          <el-radio-group v-model="form.amount_basis">
+            <el-radio value="GROSS_NET">税前额及税额已知</el-radio>
+            <el-radio value="NET_ONLY">仅净到账额已知</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item
+          v-if="form.amount_basis === 'NET_ONLY'"
+          label="实际净到账"
+          prop="net_dividend"
+          required
+        >
+          <el-input-number v-model="form.net_dividend" :min="0" :precision="2" />
+          <div class="form-tip">税前金额、税额待核实；实收金额正常计入。</div>
+        </el-form-item>
+        <el-form-item label="到账确认" prop="receipt_confirmed" required>
+          <el-checkbox v-model="form.receipt_confirmed">已核对券商凭证，确认实际到账</el-checkbox>
+        </el-form-item>
 
         <el-form-item label="每股股息" prop="dividend_per_share">
           <el-input-number v-model="form.dividend_per_share" :min="0" />
         </el-form-item>
 
-        <el-form-item label="股息总额" prop="total_dividend" required>
+        <el-form-item
+          v-if="form.amount_basis === 'GROSS_NET'"
+          label="股息总额"
+          prop="total_dividend"
+          required
+        >
           <el-input-number
             v-model="form.total_dividend"
             :min="0"
@@ -240,7 +288,7 @@ defineExpose({ openAdd, openEdit })
           <div class="form-tip">税前总额；统计与对账按总额计入，只填每股不会计入任何金额</div>
         </el-form-item>
 
-        <el-form-item label="预扣税额" prop="tax_withheld">
+        <el-form-item v-if="form.amount_basis === 'GROSS_NET'" label="预扣税额" prop="tax_withheld">
           <div class="tax-inputs">
             <el-input-number
               v-model="form.tax_withheld"
@@ -262,13 +310,10 @@ defineExpose({ openAdd, openEdit })
             />
             <span>%</span>
           </div>
-          <div class="form-tip">
-            填实际被预扣的税额；输入税率会按「股息总额 × 税率」算出税额。A
-            股券商到账通常为税前全额，税额留空即为 0。
-          </div>
+          <div class="form-tip">填写实际税额，明确免税填 0。未知税额请选「仅净到账额已知」。</div>
         </el-form-item>
 
-        <el-form-item label="税后净额">
+        <el-form-item v-if="form.amount_basis === 'GROSS_NET'" label="税后净额">
           <span class="net-preview">
             {{
               netDividendPreview === null

@@ -2,42 +2,78 @@
   <div class="account-data-page">
     <section class="page-intro">
       <div>
-        <h1>账户数据</h1>
-        <p>把券商账户、现金活动和月末核对放在一起，先保证数据可信，再看收益。</p>
+        <h1 class="page-title">账户数据</h1>
+        <p class="page-description">
+          把券商账户、现金活动和月末核对放在一起，先保证数据可信，再看收益。
+        </p>
       </div>
-      <el-button :icon="Refresh" :loading="refreshing" @click="refreshAll">刷新数据</el-button>
+      <NButton :loading="refreshing" aria-label="刷新账户数据" @click="refreshAll"
+        >刷新数据</NButton
+      >
     </section>
 
     <div class="summary-grid">
       <div class="summary-item">
         <span>券商账户</span>
-        <strong>{{ accounts.length }}</strong>
-        <small>{{ activeAccountCount }} 个启用</small>
+        <strong>{{ accountsLoaded ? countLabel(accounts) : '—' }}</strong>
+        <small
+          >{{
+            accountsLoaded
+              ? `${activeAccountCount} 个启用${isAtListLimit(accounts) ? '（仅已加载账户）' : ''}`
+              : '尚未确认账户'
+          }}{{ accountsState.status !== 'ready' && accountsLoaded ? ' · 上次成功数据' : '' }}</small
+        >
       </div>
       <div class="summary-item">
         <span>现金事件</span>
-        <strong>{{ countLabel(cashEvents) }}</strong>
-        <small>入金、出金及账户费用</small>
+        <strong>{{ loaded.cash ? countLabel(cashEvents) : '—' }}</strong>
+        <small
+          >入金、出金及账户费用{{
+            (loading.cash || errors.cash) && loaded.cash ? ' · 上次成功数据' : ''
+          }}</small
+        >
       </div>
       <div class="summary-item">
         <span>最近导入</span>
         <strong class="summary-date">{{ latestBatchDate }}</strong>
-        <small>{{ countLabel(importBatches) }} 个可追溯批次</small>
+        <small
+          >{{ loaded.batches ? countLabel(importBatches) : '—' }} 个可追溯批次{{
+            (loading.batches || errors.batches) && loaded.batches ? ' · 上次成功数据' : ''
+          }}</small
+        >
       </div>
       <div class="summary-item">
         <span>月末核对</span>
-        <strong>{{ reconciliation.matched }}/{{ reconciliation.total }}</strong>
-        <small>个账户最近一次核对持仓一致；自动快照不核验现金</small>
+        <strong>{{
+          accountsLoaded && loaded.snapshots
+            ? `${reconciliation.matched}/${reconciliation.total}`
+            : '—'
+        }}</strong>
+        <small
+          >个账户最近一次核对持仓一致；自动快照不核验现金{{
+            (accountsState.status !== 'ready' || loading.snapshots || errors.snapshots) &&
+            accountsLoaded &&
+            loaded.snapshots
+              ? ' · 上次成功数据'
+              : ''
+          }}</small
+        >
       </div>
     </div>
 
-    <el-card shadow="never" class="content-card">
+    <section class="content-card" aria-label="账户数据明细">
       <el-tabs v-model="activeTab" class="data-tabs">
         <el-tab-pane name="accounts">
           <template #label>
             <span class="tab-label"><Wallet />账户</span>
           </template>
-          <AccountsTab :accounts="accounts" :loading="loading.accounts" :reload="loadAccounts" />
+          <AccountsTab
+            :accounts="accounts"
+            :loading="accountsState.status === 'loading'"
+            :has-loaded="accountsLoaded"
+            :load-error="accountsState.status === 'error'"
+            :reload="loadAccounts"
+          />
         </el-tab-pane>
 
         <el-tab-pane name="cash">
@@ -47,7 +83,10 @@
           <CashEventsTab
             :cash-events="cashEvents"
             :accounts="accounts"
+            :accounts-status="accountsState.status"
             :loading="loading.cash"
+            :has-loaded="loaded.cash"
+            :load-error="errors.cash"
             :reload="loadCashEvents"
           />
         </el-tab-pane>
@@ -59,7 +98,11 @@
           <ImportBatchesTab
             :import-batches="importBatches"
             :accounts="accounts"
+            :accounts-status="accountsState.status"
             :loading="loading.batches"
+            :has-loaded="loaded.batches"
+            :load-error="errors.batches"
+            :reload="loadImportBatches"
           />
         </el-tab-pane>
 
@@ -70,7 +113,10 @@
           <ReconciliationTab
             :snapshots="snapshots"
             :accounts="accounts"
+            :accounts-status="accountsState.status"
             :loading="loading.snapshots"
+            :has-loaded="loaded.snapshots"
+            :load-error="errors.snapshots"
             :reload="loadSnapshots"
           />
         </el-tab-pane>
@@ -82,15 +128,18 @@
           <SecurityRulesTab ref="rulesTab" />
         </el-tab-pane>
       </el-tabs>
-    </el-card>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
 import { showApiError } from '@/utils/showApiError'
 import { computed, onMounted, reactive, ref, type Ref } from 'vue'
-import { CircleCheck, Coin, Files, Refresh, Remove, Wallet } from '@element-plus/icons-vue'
+import { CircleCheck, Coins as Coin, Files, CircleMinus as Remove, Wallet } from '@lucide/vue'
 import api from '@/api'
+import { NButton } from 'naive-ui'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import { useBrokerAccounts } from '@/composables/useBrokerAccounts'
 import { formatDate } from '@/utils/helpers'
 import AccountsTab from './account-data/AccountsTab.vue'
 import CashEventsTab from './account-data/CashEventsTab.vue'
@@ -101,7 +150,6 @@ import {
   isAtListLimit,
   LIST_LIMIT,
   reconciledAccountSummary,
-  type AccountRow,
   type CashEventRow,
   type ImportBatchRow,
   type SnapshotRow
@@ -115,17 +163,24 @@ const countLabel = (rows: readonly unknown[]) =>
 // 装载。各 tab 的表格/弹窗/CRUD 在 account-data/ 下的页面私有子组件里；
 // 特例规则不进汇总卡，其数据完全归子组件所有（refreshAll 经 ref 触发）。
 const activeTab = ref('accounts')
-const accounts = ref<AccountRow[]>([])
+const { state: accountsState, load: loadBrokerAccounts } = useBrokerAccounts()
+const accountsLoaded = ref(false)
+const loadAccounts = async () => {
+  await loadBrokerAccounts()
+  if (accountsState.status === 'ready') accountsLoaded.value = true
+}
+const accounts = computed(() => accountsState.accounts)
 const cashEvents = ref<CashEventRow[]>([])
 const importBatches = ref<ImportBatchRow[]>([])
 const snapshots = ref<SnapshotRow[]>([])
 const refreshing = ref(false)
 const loading = reactive({
-  accounts: false,
   cash: false,
   batches: false,
   snapshots: false
 })
+const loaded = reactive({ cash: false, batches: false, snapshots: false })
+const errors = reactive({ cash: false, batches: false, snapshots: false })
 const rulesTab = ref<InstanceType<typeof SecurityRulesTab>>()
 
 const activeAccountCount = computed(
@@ -133,6 +188,7 @@ const activeAccountCount = computed(
 )
 const reconciliation = computed(() => reconciledAccountSummary(accounts.value, snapshots.value))
 const latestBatchDate = computed(() => {
+  if (!loaded.batches) return '—'
   const dates = importBatches.value
     .map((item) => item.created_at)
     .filter(Boolean)
@@ -149,19 +205,26 @@ function makeLoader<T>(
   fetcher: () => Promise<{ data: T[] }>,
   failureMessage: string
 ) {
+  const requests = useLatestRequest()
   return async () => {
+    const token = requests.begin()
     loading[loadingKey] = true
     try {
-      target.value = (await fetcher()).data
+      const response = await fetcher()
+      if (!requests.isCurrent(token)) return
+      target.value = response.data
+      loaded[loadingKey] = true
+      errors[loadingKey] = false
     } catch (error) {
+      if (!requests.isCurrent(token)) return
+      errors[loadingKey] = true
       showApiError(error, failureMessage)
     } finally {
-      loading[loadingKey] = false
+      if (requests.isCurrent(token)) loading[loadingKey] = false
     }
   }
 }
 
-const loadAccounts = makeLoader('accounts', accounts, () => api.getBrokerAccounts(), '账户加载失败')
 const loadCashEvents = makeLoader(
   'cash',
   cashEvents,
@@ -199,6 +262,7 @@ onMounted(refreshAll)
 <style scoped>
 .account-data-page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
 }
 
@@ -210,16 +274,8 @@ onMounted(refreshAll)
 }
 
 .page-intro h1 {
-  margin: 0;
   color: var(--app-text);
-  font-size: 22px;
-  font-weight: 700;
   letter-spacing: -0.02em;
-}
-
-.page-intro p:last-child {
-  margin: 7px 0 0;
-  color: var(--app-text-soft);
 }
 
 .summary-grid {
@@ -233,14 +289,13 @@ onMounted(refreshAll)
   gap: 5px;
   min-width: 0;
   padding: 18px 20px;
-  border: 1px solid var(--app-border-soft);
-  border-radius: var(--app-radius);
-  background: var(--app-surface);
+  border-top: 1px solid var(--app-border);
+  background: var(--app-surface-muted);
 }
 
 .summary-item span,
 .summary-item small {
-  color: var(--app-text-soft);
+  color: var(--app-text-muted);
 }
 
 .summary-item strong {
@@ -257,8 +312,10 @@ onMounted(refreshAll)
   white-space: nowrap;
 }
 
-.content-card :deep(.el-card__body) {
-  padding-top: 8px;
+.content-card {
+  min-width: 0;
+  border-top: 1px solid var(--app-border);
+  padding-top: 12px;
 }
 
 .data-tabs :deep(.el-tabs__header) {
@@ -275,6 +332,124 @@ onMounted(refreshAll)
   width: 16px;
 }
 
+.account-data-page :deep(.toolbar-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.account-data-page :deep(.section-toolbar) {
+  align-items: flex-start;
+  gap: 20px;
+}
+.account-data-page :deep(.section-toolbar h2) {
+  font-size: 20px;
+  font-weight: 600;
+}
+.account-data-page :deep(.section-toolbar p) {
+  max-width: 76ch;
+  line-height: 1.7;
+}
+.account-data-page :deep(.n-data-table) {
+  font-variant-numeric: tabular-nums;
+}
+.account-data-page :deep(.n-data-table-td) {
+  overflow-wrap: anywhere;
+}
+.account-data-page :deep(.primary-cell) {
+  display: grid;
+  gap: 4px;
+}
+.account-data-page :deep(.primary-cell strong) {
+  font-weight: 600;
+}
+.account-data-page :deep(.primary-cell span),
+.account-data-page :deep(.read-note) {
+  color: var(--app-text-muted);
+}
+.account-data-page :deep(.read-note) {
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 10px 0 14px;
+}
+.account-data-page :deep(.read-alert) {
+  margin-bottom: 14px;
+}
+.account-data-page :deep(.row-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.account-data-page :deep(.row-actions .n-button) {
+  min-height: 24px;
+}
+.account-data-page :deep(.filter-field),
+.account-data-page :deep(.native-filters label) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--app-text-muted);
+  font-size: 13px;
+}
+.account-data-page :deep(.compact-filter),
+.account-data-page :deep(.native-filters) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 0 0 16px;
+}
+.account-data-page :deep(select) {
+  font: inherit;
+  color: var(--app-text);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-inner);
+  min-height: 36px;
+  max-width: 100%;
+  padding: 0 30px 0 10px;
+}
+.account-data-page :deep(.read-details summary) {
+  cursor: pointer;
+  min-height: 24px;
+  line-height: 24px;
+  color: var(--app-primary-strong);
+}
+.account-data-page :deep(.read-details p) {
+  margin: 6px 0;
+  color: var(--app-text-muted);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.account-data-page :deep(.diff-status-button) {
+  border: 0;
+  background: none;
+  padding: 0;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+}
+.account-data-page :deep(.diff-status-button:focus-visible),
+.account-data-page :deep(select:focus-visible),
+.account-data-page :deep(.read-details summary:focus-visible) {
+  outline: 2px solid var(--app-primary-strong);
+  outline-offset: 3px;
+}
+@media (min-width: 1025px) {
+  .account-data-page {
+    gap: var(--app-space-md);
+  }
+  .summary-item {
+    padding: var(--app-space-sm) var(--app-space-md);
+  }
+  .summary-item strong:not(.summary-date) {
+    font-size: var(--app-number-secondary);
+  }
+  .data-tabs :deep(.el-tabs__header) {
+    margin-bottom: var(--app-space-sm);
+  }
+}
 @media (max-width: 900px) {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -282,6 +457,50 @@ onMounted(refreshAll)
 }
 
 @media (max-width: 640px) {
+  .account-data-page :deep(.mobile-card-head) {
+    align-items: flex-start;
+  }
+  .account-data-page :deep(.mobile-card-symbol),
+  .account-data-page :deep(.mobile-card-name) {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+  .account-data-page :deep(.mobile-card-meta) {
+    display: grid;
+    gap: 6px;
+  }
+  .account-data-page :deep(.mobile-card-meta > *) {
+    border: 0;
+    padding: 0;
+    overflow-wrap: anywhere;
+  }
+  .account-data-page :deep(.mobile-card-actions .n-button) {
+    min-width: 44px;
+  }
+  .account-data-page :deep(.mobile-card-actions .n-button),
+  .account-data-page :deep(.diff-status-button),
+  .account-data-page :deep(.toolbar-actions .n-button),
+  .account-data-page :deep(.section-toolbar > .n-button) {
+    min-height: 44px;
+  }
+  .account-data-page :deep(.read-details summary) {
+    min-height: 44px;
+    line-height: 44px;
+  }
+  .account-data-page :deep(select) {
+    min-height: 44px;
+    min-width: 0;
+    flex: 1;
+  }
+  .account-data-page :deep(.filter-field),
+  .account-data-page :deep(.native-filters label) {
+    width: 100%;
+  }
+  .account-data-page :deep(.compact-filter) {
+    gap: 10px;
+  }
   .account-data-page {
     gap: 16px;
   }
@@ -292,8 +511,9 @@ onMounted(refreshAll)
     gap: 12px;
   }
 
-  .page-intro > .el-button {
-    width: 100%;
+  .page-intro :deep(.n-button) {
+    align-self: flex-start;
+    min-height: 44px;
   }
 
   .summary-grid {
@@ -304,22 +524,36 @@ onMounted(refreshAll)
     padding: 14px;
   }
 
-  .summary-item strong {
-    font-size: 21px;
-  }
-
   .summary-item small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .content-card :deep(.el-card__body) {
-    padding: 8px 14px 16px;
+    white-space: normal;
   }
 
   .data-tabs :deep(.el-tabs__nav-wrap) {
     overflow-x: auto;
+  }
+}
+</style>
+
+<style>
+/* 本页保留的成熟表单在 body 挂载，只限定这组实际对话框。 */
+.account-form-dialog {
+  --el-text-color-placeholder: var(--app-text-soft);
+}
+.account-form-dialog .el-form-item__content {
+  min-width: 0;
+}
+.account-form-dialog .el-select,
+.account-form-dialog .el-date-editor {
+  max-width: 100%;
+}
+@media (max-width: 640px) {
+  .account-form-dialog .el-input__wrapper,
+  .account-form-dialog .el-select__wrapper {
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .account-form-dialog .el-button {
+    min-height: 44px;
   }
 }
 </style>

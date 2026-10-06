@@ -30,6 +30,7 @@ from .api import (
     security_profiles,
     watchlist,
     xueqiu_collector,
+    capabilities,
 )
 from .core.logging import configure_logging, get_app_logger
 from .services.background_job_store import cleanup_expired_jobs, interrupt_stale_jobs
@@ -91,6 +92,7 @@ app.add_middleware(ProxyHeadersMiddleware, settings=settings)
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(capabilities.router)
 app.include_router(users.router)
 app.include_router(transactions.router, prefix="/api/transactions", tags=["Transactions"])
 app.include_router(holdings.router, prefix="/api/holdings", tags=["Holdings"])

@@ -11,10 +11,12 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from .fx import ExchangeRateLookup, convert_on_date
+from .fx import ExchangeRateLookup, convert_on_date, dividend_tax_cash_flow
 from .semantics import (
     bonus_share_factor,
     cash_dividend_amounts,
+    dividend_cash_date,
+    is_received_dividend,
     OPENING_POSITION,
     opening_position_lot,
     rights_issue_lot,
@@ -39,7 +41,7 @@ def get_current_price(
 
 def corporate_action_curve_date(action) -> date:
     if action.action_type == "CASH_DIVIDEND":
-        return action.payment_date or action.ex_date
+        return dividend_cash_date(action)
     return action.ex_date
 
 
@@ -436,10 +438,17 @@ def build_return_curve(
     fallback_currency: Callable[[str], str],
     today: date,
     opening_fx_date: Optional[date] = None,
+    dividend_tax_events: Sequence[Any] = (),
 ) -> Tuple[List[Dict[str, Any]], str, Dict[str, Any]]:
     """opening_fx_date：期初市值折本币所用的汇率日期，缺省为 start_date（统计页口径不变）。
     区间损益传「起点前一天」——期初是上一日收盘时点的本币价值，否则起点当天的汇率变动在期初与
     期末两边同时用新汇率而被抵消，汇兑损益恒为 0（PR #214 评审 P2）。"""
+    corporate_actions = [
+        action
+        for action in corporate_actions
+        if action.action_type != "CASH_DIVIDEND"
+        or is_received_dividend(action, min(end_date, today))
+    ]
     curve_dates, calculation_level = select_curve_dates(
         price_maps,
         transactions,
@@ -447,6 +456,17 @@ def build_return_curve(
         start_date,
         end_date,
     )
+    curve_dates = sorted(
+        set(curve_dates)
+        | {
+            event.event_date
+            for event in dividend_tax_events
+            if start_date <= event.event_date <= end_date
+        }
+    )
+    taxes_by_date = defaultdict(list)
+    for event in dividend_tax_events:
+        taxes_by_date[event.event_date].append(event)
     if not curve_dates:
         return [], calculation_level, {"invalid_position_events": [], "terminal_positions": []}
 
@@ -507,6 +527,7 @@ def build_return_curve(
     cumulative_factor = Decimal("1")
     peak_factor = Decimal("1")
     curve = []
+    missing_tax_rates = set()
 
     for current_date in curve_dates:
         use_current_price_snapshot = current_date == end_date and end_date >= today
@@ -552,6 +573,14 @@ def build_return_curve(
                     estimated_inflow_events=estimated_inflow_events,
                     deferred_inflows=deferred_inflows,
                 )
+
+        for event in taxes_by_date.get(current_date, []):
+            flow = dividend_tax_cash_flow(event, rate_lookup)
+            if flow is None:
+                missing_tax_rates.add(event.currency)
+                continue
+            cash_out_cny += flow[1]
+            dividend_income_today_cny += flow[1]
 
         daily_transactions = sorted(
             transactions_by_date.get(current_date, []),
@@ -732,5 +761,10 @@ def build_return_curve(
             # 到达当天无价可估的份额挂起，在首个能定价的日子（valued_on）按该价补记流入，
             # valued=False = 直到区间末仍无任何可用价格（此时它也不在市值里）
             "estimated_inflow_events": estimated_inflow_events,
+            **(
+                {"missing_tax_rate_currencies": sorted(missing_tax_rates)}
+                if missing_tax_rates
+                else {}
+            ),
         },
     )

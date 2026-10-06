@@ -17,6 +17,7 @@ from .auth_session import AuthSession
 from .broker_account import BrokerAccount
 from .import_batch import ImportBatch
 from .cash_event import CashEvent
+from .dividend_tax_allocation import DividendTaxAllocation
 from .reconciliation_snapshot import ReconciliationSnapshot
 from .security_rule import SecurityRule
 from .llm_report import LlmReport, LlmReportMessage, LlmReportSchedule
@@ -61,6 +62,7 @@ __all__ = [
     "BrokerAccount",
     "ImportBatch",
     "CashEvent",
+    "DividendTaxAllocation",
     "ReconciliationSnapshot",
     "SecurityRule",
     "LlmReport",

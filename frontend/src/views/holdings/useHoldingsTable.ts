@@ -14,14 +14,13 @@ import api from '@/api'
 import { useHoldingsStore, type Holding } from '@/stores/holdings'
 import { useExchangeRates } from '@/composables/useExchangeRates'
 import { useRefreshPrices } from '@/composables/useRefreshPrices'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import { useBrokerAccounts } from '@/composables/useBrokerAccounts'
 import { profitColor, todayLocalISODate, toNumber } from '@/utils/helpers'
-import type { BrokerAccount } from '@/types'
-import {
-  UNASSIGNED_ACCOUNT,
-  accountLabel as accountLabelOf,
-  type UnassignedAccount
-} from '@/utils/labels'
+import { UNASSIGNED_ACCOUNT, type UnassignedAccount } from '@/utils/labels'
 import { showApiError } from '@/utils/showApiError'
+import { getApiErrorMessage } from '@/utils/apiErrors'
+import { paramsKey } from '@/utils/cacheKey'
 import {
   buildMarketSubtotals,
   describePrice,
@@ -103,16 +102,20 @@ export function useHoldingsTable({
   tagSourceOf?: (row: { symbol: string; market: string }) => HoldingTagSource
 }) {
   const holdingsStore = useHoldingsStore()
+  const accounts = useBrokerAccounts()
   const { convertToCNY, convertToUSD, hasRate } = useExchangeRates()
   const { refreshPrices: runPriceRefresh, notifyRefreshResult } = useRefreshPrices(isUnmounted)
 
   const state = reactive({
     holdings: [] as Holding[],
     loading: false,
+    loadError: null as string | null,
     refreshing: false,
     selectedMarket: '',
     selectedAccount: '' as '' | UnassignedAccount | number,
-    brokerAccounts: [] as BrokerAccount[],
+    get brokerAccounts() {
+      return accounts.state.accounts
+    },
     currentPrices: {} as Record<string, number | null>,
     // 现价默认只读；同一时刻最多一只标的处于编辑态（键 = symbol:market）
     // 正在编辑现价的**行**（row.key）。按账户视图里同一标的有多行，共用 symbol:market
@@ -146,18 +149,8 @@ export function useHoldingsTable({
     return state.holdings.filter((h) => h.broker_account_id === state.selectedAccount)
   })
 
-  // 已删除账户显示统一文案（此前显示成「账户#12」）
-  const accountLabel = (accountId: number | null | undefined) =>
-    accountLabelOf(state.brokerAccounts, accountId)
-
-  async function loadBrokerAccounts() {
-    try {
-      const response = await api.getBrokerAccounts({ limit: 1000 })
-      state.brokerAccounts = response.data
-    } catch (error) {
-      showApiError(error, '加载券商账户失败')
-    }
-  }
+  const accountLabel = accounts.label
+  const loadBrokerAccounts = accounts.load
 
   // 价格键与统计页一致：symbol:market（同代码跨市场不串价）
   function priceKey(row: { symbol: string; market: string }) {
@@ -368,12 +361,17 @@ export function useHoldingsTable({
   }
 
   // silent：自动重读（useAutoReload）用——不转圈、不弹错，失败向上抛由调用方静默
+  const holdingsRequest = useLatestRequest()
   async function loadHoldings(options: { force?: boolean; silent?: boolean } = {}) {
+    const token = holdingsRequest.begin()
     if (!options.silent) state.loading = true
     try {
-      state.holdings = await holdingsStore.fetchHoldings(currentParams(), {
+      const holdings = await holdingsStore.fetchHoldings(currentParams(), {
         force: options?.force === true
       })
+      if (!holdingsRequest.isCurrent(token)) return
+      state.loadError = null
+      state.holdings = holdings
 
       // Initialize current prices from persisted market prices only.
       state.holdings.forEach((h) => {
@@ -384,34 +382,46 @@ export function useHoldingsTable({
         }
       })
     } catch (error) {
+      if (!holdingsRequest.isCurrent(token)) return
       if (options.silent) throw error
+      state.loadError = getApiErrorMessage(error, '加载持仓数据失败')
       showApiError(error, '加载持仓数据失败')
     } finally {
-      if (!options.silent) state.loading = false
+      if (holdingsRequest.isCurrent(token)) state.loading = false
     }
   }
 
   // 价格按标的（symbol:market）共享。后端 PUT /holdings/{id}/price 本就按 user+symbol+market
   // 更新该标的在所有账户的持仓，所以只发**一次**请求（取任一账户行即可）。逐账户循环提交会在
   // 连续改价时让旧批次的后续请求把新价格覆盖回去（PR #216 评审 P2）
-  async function savePriceToDatabase(row: HoldingRow) {
-    const price = state.currentPrices[`${row.symbol}:${row.market}`]
+  // 最新在途目标只用于比较用户意图；不参与价格展示或估值。
+  const pendingPrices = new Map<string, { price: number }>()
+  async function savePriceToDatabase(row: HoldingRow, price: number) {
+    const key = priceKey(row)
     const representative = row.accounts[0]
     if (!price || price <= 0 || !representative) return
+    const pending = { price }
+    pendingPrices.set(key, pending)
     try {
-      await holdingsStore.updateHoldingPrice(
-        representative.id,
-        price,
-        `${row.symbol}:${row.market}`
-      )
+      await holdingsStore.updateHoldingPrice(representative.id, price, key)
       // store 已按序号守卫用服务端整行回填缓存（含 price_source=manual、行情日清空）；
-      // 从缓存取回让「手工」标立刻出现。只换行数据，不重置 currentPrices——
-      // 其他标的可能还有在飞的改价。
-      if (!isUnmounted()) {
-        state.holdings = await holdingsStore.fetchHoldings(currentParams())
+      // 草稿不参与估值；仅从已确认缓存同步该标的，其他标的可能还在保存。
+      if (isUnmounted()) return
+      const params = currentParams()
+      await holdingsStore.fetchHoldings(params)
+      if (isUnmounted()) return
+      const confirmed = holdingsStore.cache[paramsKey(params)]
+      if (!confirmed) return
+      const pricedHolding = confirmed.find((holding) => priceKey(holding) === key)
+      if (pricedHolding) {
+        const savedPrice = toNumber(pricedHolding.current_price)
+        state.currentPrices[key] = savedPrice > 0 ? savedPrice : null
       }
+      if (paramsKey(params) === paramsKey(currentParams())) state.holdings = confirmed
     } catch (error) {
       showApiError(error, { prefix: `保存 ${row.symbol} 价格失败` })
+    } finally {
+      if (pendingPrices.get(key) === pending) pendingPrices.delete(key)
     }
   }
 
@@ -436,9 +446,9 @@ export function useHoldingsTable({
     if (state.editingRowKey !== row.key) return
     const draft = state.priceDraft
     cancelPriceEdit()
-    if (draft === null || !(draft > 0) || draft === state.currentPrices[key]) return
-    state.currentPrices[key] = draft
-    await savePriceToDatabase(row)
+    const lastTarget = pendingPrices.get(key)?.price ?? state.currentPrices[key]
+    if (draft === null || !(draft > 0) || draft === lastTarget) return
+    await savePriceToDatabase(row, draft)
   }
 
   function weightOf(row: HoldingRow): number | null {
@@ -468,7 +478,7 @@ export function useHoldingsTable({
     } catch (error) {
       loadingMsg.close()
       if (isUnmounted()) return
-      showApiError(error, '刷新股价失败')
+      showApiError(error, '刷新价格失败')
       console.error('Refresh error:', error)
     } finally {
       if (!isUnmounted()) state.refreshing = false
@@ -476,7 +486,7 @@ export function useHoldingsTable({
   }
 
   function getProfitColor(row: HoldingRow) {
-    return profitColor(profitOf(row) ?? 0)
+    return profitColor(profitOf(row))
   }
 
   return reactive({

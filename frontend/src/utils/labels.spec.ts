@@ -16,6 +16,14 @@ const accounts = [
 ]
 
 describe('account labels（#284：全站一份）', () => {
+  it('账户未加载或加载失败不意味着账户已删除，已知账户仍可展示', () => {
+    expect(accountLabel([], 1, { status: 'loading' })).toBe('账户加载中')
+    expect(accountLabel([], 1, { status: 'error' })).toBe('账户暂不可用')
+    expect(accountLabel([], 1, { status: 'ready' })).toBe(DELETED_ACCOUNT_LABEL)
+    expect(accountLabel(accounts, 1, { status: 'error' })).toBe('招商主账户')
+    expect(accountLabel([], null, { status: 'loading' })).toBe(UNASSIGNED_ACCOUNT_LABEL)
+  })
+
   it('表格用简称，空 id 为未指定账户，找不到为已删除账户', () => {
     expect(accountLabel(accounts, 1)).toBe('招商主账户')
     expect(accountLabel(accounts, '1')).toBe('招商主账户')

@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from app.database import SessionLocal
+from app.models.cash_event import CashEvent
 from app.models.corporate_action import CorporateAction
 from app.models.exchange_rate import ExchangeRate
 from app.models.holding import Holding
@@ -15,7 +16,7 @@ from app.services.statistics import calculate_period_pnl
 from app.services.statistics.period_pnl import period_start, summarize_curve
 from tests.helpers import add_transaction, reset_tables
 
-RESET_MODELS = (SecurityPrice, Holding, CorporateAction, Transaction, ExchangeRate)
+RESET_MODELS = (CashEvent, SecurityPrice, Holding, CorporateAction, Transaction, ExchangeRate)
 TODAY = date(2026, 9, 26)
 
 

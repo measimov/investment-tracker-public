@@ -1,5 +1,9 @@
 <template>
-  <v-chart :option="option" autoresize />
+  <v-chart
+    :update-options="{ notMerge: false, replaceMerge: ['series'] }"
+    :option="fontOption"
+    autoresize
+  />
 </template>
 
 <script setup lang="ts">
@@ -7,12 +11,30 @@
 // 由 Dashboard 以 defineAsyncComponent 引入，数据到齐后才下载（#285）
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { PieChart } from 'echarts/charts'
+import { PieChart, type PieSeriesOption } from 'echarts/charts'
 import { TitleComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
+import { useChartFontOption } from '@/composables/useChartFontOption'
 import type { EChartsCoreOption } from 'echarts/core'
 
 use([CanvasRenderer, PieChart, TitleComponent, TooltipComponent, LegendComponent])
 
-defineProps<{ option: EChartsCoreOption }>()
+const props = defineProps<{ option: EChartsCoreOption }>()
+const fontOption = useChartFontOption(
+  (fonts) => ({
+    ...props.option,
+    series: (props.option.series as PieSeriesOption[]).map((series) => ({
+      ...series,
+      label: {
+        ...series.label,
+        rich: {
+          ...series.label?.rich,
+          name: { ...series.label?.rich?.name, fontFamily: fonts.text },
+          value: { ...series.label?.rich?.value, fontFamily: fonts.number }
+        }
+      }
+    }))
+  }),
+  { serifNumbers: true }
+)
 </script>

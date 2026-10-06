@@ -42,6 +42,7 @@ defineExpose({ open })
     width="min(640px, 94vw)"
     :close-on-click-modal="false"
     data-testid="xueqiu-cookie-dialog"
+    class="opinion-cookie-dialog"
     @closed="close"
   >
     <el-alert
@@ -105,6 +106,7 @@ defineExpose({ open })
         type="textarea"
         :rows="6"
         :disabled="Boolean(state.fileName) || state.submitting"
+        aria-label="雪球 Cookie 内容"
         autocomplete="off"
         spellcheck="false"
         placeholder="粘贴浏览器插件（如 J2Team Cookies）导出的 JSON，或开发者工具里复制的 Cookie 请求头（xq_a_token=…; xqat=…）"
@@ -208,5 +210,25 @@ defineExpose({ open })
   gap: 8px;
   margin: 8px 0;
   flex-wrap: wrap;
+}
+</style>
+
+<style>
+.opinion-cookie-dialog .el-textarea__inner::placeholder {
+  color: var(--app-text-soft);
+}
+@media (max-width: 640px) {
+  .opinion-cookie-dialog .el-button {
+    min-height: 44px;
+  }
+  .opinion-cookie-dialog .el-checkbox {
+    height: auto;
+    min-height: 44px;
+    white-space: normal;
+  }
+  .opinion-cookie-dialog .el-checkbox__label {
+    white-space: normal;
+    line-height: 1.7;
+  }
 }
 </style>

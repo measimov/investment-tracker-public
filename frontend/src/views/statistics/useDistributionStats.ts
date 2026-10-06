@@ -1,23 +1,33 @@
+import { useChartColors } from '@/styles/chartTheme'
 /**
  * 分布统计 feature（市场分布/时间趋势/持仓排行/概览摘要）：
  * 四个只读统计块 + 饼图/柱图 option。
  */
 
-import { computed, reactive } from 'vue'
+import { computed, getCurrentScope, onScopeDispose, reactive } from 'vue'
 import api from '@/api'
-import { formatNumber } from '@/utils/helpers'
+import { formatCurrency, formatNumber } from '@/utils/helpers'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import { getApiErrorMessage } from '@/utils/apiErrors'
 import { showApiError } from '@/utils/showApiError'
-import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR, chartTooltipCurrency } from '@/styles/tokens'
+import { CHART_FONT_FAMILY } from '@/styles/tokens'
+import { formatAmountTick } from './format'
 import type { MarketStat } from '@/types'
 import type { ProfitLossItem, SummaryStats, TimeStat } from './types'
 
 export function useDistributionStats() {
+  const chartColors = useChartColors()
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const state = reactive({
     marketStats: [] as MarketStat[],
     timeStats: [] as TimeStat[],
     profitLossData: [] as ProfitLossItem[],
     summaryStats: {} as SummaryStats,
-    timeGroupBy: 'month'
+    timeGroupBy: 'month',
+    timeResultGroupBy: 'month',
+    marketStatus: { loading: false, loaded: false, error: '' },
+    timeStatus: { loading: false, loaded: false, error: '' },
+    profitLossStatus: { loading: false, loaded: false, error: '' }
   })
 
   // 统计块加载器：fetch 返回错误而不自己弹窗，由调用方决定怎么提示——页面首次加载时四块一起失败
@@ -33,18 +43,38 @@ export function useDistributionStats() {
     assign: (data: T) => void,
     fetcher: () => Promise<{ data: T }>,
     label: string,
-    { silent = false }: { silent?: boolean } = {}
+    {
+      silent = false,
+      status
+    }: { silent?: boolean; status?: { loading: boolean; loaded: boolean; error: string } } = {}
   ): StatsBlock {
+    let requestSequence = 0
+    if (getCurrentScope()) onScopeDispose(() => ++requestSequence)
     return {
       label,
       silent,
       fetch: async () => {
+        const sequence = ++requestSequence
+        if (status) {
+          status.loading = true
+          status.error = ''
+        }
         try {
-          assign((await fetcher()).data)
+          const response = await fetcher()
+          if (sequence !== requestSequence) return null
+          assign(response.data)
+          if (status) {
+            status.loaded = true
+            status.error = ''
+          }
           return null
         } catch (error) {
+          if (sequence !== requestSequence) return null
+          if (status) status.error = getApiErrorMessage(error, `加载${label}失败`)
           if (silent) console.error(`加载${label}失败`, error)
           return error
+        } finally {
+          if (sequence === requestSequence && status) status.loading = false
         }
       }
     }
@@ -53,17 +83,27 @@ export function useDistributionStats() {
   const marketBlock = makeStatsBlock<MarketStat[]>(
     (data) => (state.marketStats = data),
     () => api.getStatsByMarket(),
-    '市场统计'
+    '市场统计',
+    { status: state.marketStatus }
   )
+  let requestedTimeGroupBy = state.timeGroupBy
   const timeBlock = makeStatsBlock<TimeStat[]>(
-    (data) => (state.timeStats = data),
-    () => api.getStatsByTime(state.timeGroupBy),
-    '时间统计'
+    (data) => {
+      state.timeStats = data
+      state.timeResultGroupBy = requestedTimeGroupBy
+    },
+    () => {
+      requestedTimeGroupBy = state.timeGroupBy
+      return api.getStatsByTime(requestedTimeGroupBy)
+    },
+    '时间统计',
+    { status: state.timeStatus }
   )
   const profitLossBlock = makeStatsBlock<ProfitLossItem[]>(
     (data) => (state.profitLossData = data),
     () => api.getHoldingsCostBreakdown(),
-    '持仓成本分布'
+    '持仓成本分布',
+    { status: state.profitLossStatus }
   )
   const summaryBlock = makeStatsBlock<SummaryStats>(
     (data) => (state.summaryStats = data),
@@ -96,34 +136,52 @@ export function useDistributionStats() {
   )
 
   const marketChartOption = computed(() => ({
-    color: CHART_PALETTE,
-    textStyle: { fontFamily: CHART_FONT_FAMILY },
+    color: chartColors.value.marketPalette,
+    animation: !reducedMotion.value,
+    textStyle: { fontFamily: CHART_FONT_FAMILY, color: chartColors.value.text },
     tooltip: {
+      backgroundColor: chartColors.value.surface,
+      borderColor: chartColors.value.border,
+      textStyle: { color: chartColors.value.text },
       trigger: 'item',
       formatter: (params: { name: string; value: number; percent: number }) =>
-        `${params.name}: ${chartTooltipCurrency(params.value)} (${params.percent}%)`
+        `${params.name}: ${formatCurrency(params.value)} (${formatNumber(params.percent, 1)}%)`
     },
-    legend: { bottom: 0, left: 'center' },
+    legend: {
+      textStyle: { color: chartColors.value.muted },
+      bottom: 0,
+      left: 'center'
+    },
     series: [
       {
         type: 'pie',
+        percentPrecision: 1,
         radius: ['42%', '68%'],
         center: ['50%', '44%'],
-        avoidLabelOverlap: false,
+        avoidLabelOverlap: true,
         itemStyle: {
-          borderRadius: 10,
-          borderColor: '#fff',
+          borderRadius: 0,
+          borderColor: chartColors.value.surface,
           borderWidth: 2
         },
+        labelLine: { length: 4, length2: 4 },
         label: {
+          color: chartColors.value.text,
           show: true,
-          formatter: '{b}: {d}%'
+          alignTo: 'edge',
+          edgeDistance: 4,
+          bleedMargin: 8,
+          distanceToLabelLine: 2,
+          fontSize: 12,
+          formatter: (params: { name: string; percent: number }) =>
+            `${params.name}\n${formatNumber(params.percent, 1)}%`
         },
         emphasis: {
+          scale: false,
           label: {
             show: true,
-            fontSize: 16,
-            fontWeight: 'bold'
+            fontSize: 12,
+            fontWeight: 'normal'
           }
         },
         data: state.marketStats.map((item) => ({
@@ -140,15 +198,20 @@ export function useDistributionStats() {
     const sellAmounts = state.timeStats.map((item) => item.sell_amount)
 
     return {
-      textStyle: { fontFamily: CHART_FONT_FAMILY },
+      animation: !reducedMotion.value,
+      textStyle: { fontFamily: CHART_FONT_FAMILY, color: chartColors.value.text },
       tooltip: {
+        backgroundColor: chartColors.value.surface,
+        borderColor: chartColors.value.border,
+        textStyle: { color: chartColors.value.text },
         trigger: 'axis',
         axisPointer: {
           type: 'shadow'
         },
-        valueFormatter: (value: number | string) => chartTooltipCurrency(value)
+        valueFormatter: (value: number | string) => formatCurrency(value)
       },
       legend: {
+        textStyle: { color: chartColors.value.muted },
         data: ['买入金额', '卖出金额']
       },
       grid: {
@@ -158,14 +221,19 @@ export function useDistributionStats() {
         containLabel: true
       },
       xAxis: {
+        axisLine: { lineStyle: { color: chartColors.value.border } },
+        axisLabel: { color: chartColors.value.muted },
         type: 'category',
         data: periods
       },
       yAxis: {
+        splitLine: { lineStyle: { color: chartColors.value.separator } },
         type: 'value',
+        name: '人民币',
+        splitNumber: 3,
         axisLabel: {
-          // 千分位（此前 ¥1000000 一长串）
-          formatter: (value: number) => `¥${formatNumber(value, 0)}`
+          color: chartColors.value.muted,
+          formatter: formatAmountTick
         }
       },
       series: [
@@ -174,7 +242,7 @@ export function useDistributionStats() {
           type: 'bar',
           data: buyAmounts,
           itemStyle: {
-            color: COLOR.success
+            color: chartColors.value.success
           }
         },
         {
@@ -182,7 +250,7 @@ export function useDistributionStats() {
           type: 'bar',
           data: sellAmounts,
           itemStyle: {
-            color: COLOR.danger
+            color: chartColors.value.danger
           }
         }
       ]

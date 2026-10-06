@@ -5,7 +5,7 @@ describe('cardTone', () => {
   it('缺值为中性，不再被当成绿', () => {
     expect(cardTone(null)).toBe('summary-card-neutral')
     expect(cardTone(undefined)).toBe('summary-card-neutral')
-    expect(cardTone(0)).toBe('summary-card-success')
+    expect(cardTone(0)).toBe('summary-card-neutral')
     expect(cardTone(-1)).toBe('summary-card-danger')
     expect(cardTone('12.5')).toBe('summary-card-success')
   })

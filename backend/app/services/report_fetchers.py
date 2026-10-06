@@ -20,6 +20,7 @@ import urllib3
 import urllib3.connection
 
 from ..core.logging import get_app_logger
+from . import report_cache
 from .http_source import throttle as _throttle
 
 logger = get_app_logger(__name__)
@@ -118,10 +119,26 @@ def cninfo_org_id(symbol: str, *, strict: bool = False) -> Optional[str]:
     return None
 
 
+def cninfo_local_date(ann_ts: Any) -> str:
+    """巨潮公告时间戳（毫秒）→ 业务时区日期 YYYY-MM-DD；缺失返回空串。"""
+    if not ann_ts:
+        return ""
+    from datetime import datetime, timezone
+
+    from ..core.timeutil import business_timezone
+
+    moment = datetime.fromtimestamp(int(ann_ts) / 1000, tz=timezone.utc)
+    return moment.astimezone(business_timezone()).date().isoformat()
+
+
 def cninfo_search_reports(symbol: str, *, report_type: str, se_date: str) -> List[Dict[str, Any]]:
     """检索年报/半年报公告列表（含修订版与摘要，由调用方过滤）。
 
-    返回 [{title, ann_date(YYYY-MM-DD), url, adjunct_size_kb}]，按公告时间倒序。
+    返回 [{title, ann_date(YYYY-MM-DD), ann_date_local, url, adjunct_size_kb}]，按公告时间倒序。
+
+    `ann_date` 是 UTC 日期（北京时间零点的公告会早一天，#346-4），但它是摘要缓存
+    `source_fingerprint` 的组成部分——直接改会让全部 A股 摘要指纹失效、全量重烧 LLM，所以
+    原样保留；按业务时区换算的日期另给 `ann_date_local`，只供展示与「标题无年份」的年份兜底。
     """
     org_id = cninfo_org_id(symbol)
     stock = f"{symbol},{org_id}" if org_id else symbol
@@ -156,6 +173,7 @@ def cninfo_search_reports(symbol: str, *, report_type: str, se_date: str) -> Lis
                 {
                     "title": str(row.get("announcementTitle") or ""),
                     "ann_date": ann_date,
+                    "ann_date_local": cninfo_local_date(ann_ts),
                     "url": f"{_CNINFO_STATIC}/{adjunct}",
                     "adjunct_size_kb": row.get("adjunctSize"),
                 }
@@ -220,6 +238,22 @@ def download_report_pdf(url: str, *, source: str = "cninfo") -> bytes:
         if source == "hkexnews"
         else (_CNINFO_HEADERS, _CNINFO_MIN_INTERVAL_SECONDS)
     )
+    return _download_guarded(url, headers, source=source, interval=interval)
+
+
+def _download_guarded(url: str, headers: Dict[str, str], *, source: str, interval: float) -> bytes:
+    """按站点限速的流式下载：墙钟总时长 + 最低速率看门狗，慢连接换新连接重试一次。
+    PDF（巨潮/披露易）与 EDGAR 主文档共用（#345：EDGAR 曾是一次性 `requests.get`，读完才查
+    大小上限、也没有墙钟看门狗，涓流会让整轮摘要卡死）。"""
+    # 原始报告本地缓存（report_cache）：解析规则升版重跑时命中本地，不再重新下载；未命中才联网
+    return report_cache.cached_download(
+        url, source, lambda: _download_with_retry(url, headers, source=source, interval=interval)
+    )
+
+
+def _download_with_retry(
+    url: str, headers: Dict[str, str], *, source: str, interval: float
+) -> bytes:
     last_error: Optional[requests.Timeout] = None
     for _attempt in range(PDF_DOWNLOAD_ATTEMPTS):
         _throttle(source, interval)
@@ -489,39 +523,77 @@ def clear_edgar_submissions_cache() -> None:
 EDGAR_ANNUAL_FORMS = ("10-K", "20-F")
 
 
-def edgar_recent_annual_filings(cik: int, *, limit: int = 10) -> List[Dict[str, Any]]:
-    """近 N 份年报：[{form, accession, primary_document, filing_date, report_date}]。"""
-    submissions = edgar_submissions(cik)
-    recent = (submissions.get("filings") or {}).get("recent") or {}
-    forms = recent.get("form") or []
-    filings = []
+class EdgarListingIncomplete(Exception):
+    """年报清单没读全（`filings.files` 的某一页取不到）：`filings` 是已读到的部分。"""
+
+    def __init__(self, message: str, filings: List[Dict[str, Any]]):
+        super().__init__(message)
+        self.filings = filings
+
+
+def _annual_filings_in(columns: Dict[str, Any], limit: int, out: List[Dict[str, Any]]) -> None:
+    forms = columns.get("form") or []
     for index, form in enumerate(forms):
+        if len(out) >= limit:
+            return
         if form not in EDGAR_ANNUAL_FORMS:
             continue
-        filings.append(
+        out.append(
             {
                 "form": str(form),
-                "accession": str(recent["accessionNumber"][index]),
-                "primary_document": str(recent["primaryDocument"][index]),
-                "filing_date": str(recent["filingDate"][index]),
-                "report_date": str(recent["reportDate"][index]),
+                "accession": str(columns["accessionNumber"][index]),
+                "primary_document": str(columns["primaryDocument"][index]),
+                "filing_date": str(columns["filingDate"][index]),
+                "report_date": str(columns["reportDate"][index]),
             }
         )
+
+
+def edgar_recent_annual_filings(cik: int, *, limit: int = 10) -> List[Dict[str, Any]]:
+    """近 N 份年报：[{form, accession, primary_document, filing_date, report_date}]。
+
+    submissions 的 `filings.recent` 只保证「至少一年或 1000 条」，更早的申报在 `filings.files`
+    分页里（#346-1：Form 4 / 6-K / 424B 多的发行人，recent 里可能只剩三份年报，十年覆盖静默
+    缩水却标成完整）。recent 不够 limit 份时逐页读取；某页读不到抛 `EdgarListingIncomplete`
+    （带已读到的部分），调用方按不完整清单处理，不得当成「只有这几份」。
+    """
+    submissions = edgar_submissions(cik)
+    filings_block = submissions.get("filings") or {}
+    filings: List[Dict[str, Any]] = []
+    _annual_filings_in(filings_block.get("recent") or {}, limit, filings)
+    for page in filings_block.get("files") or []:
         if len(filings) >= limit:
             break
+        name = str((page or {}).get("name") or "")
+        if not name:
+            continue
+        try:
+            columns = _edgar_get_json(f"https://data.sec.gov/submissions/{name}")
+        except Exception as exc:  # noqa: BLE001 - 如实报不完整
+            raise EdgarListingIncomplete(
+                f"EDGAR 申报分页 {name} 获取失败: {str(exc)[:120]}", filings
+            ) from exc
+        _annual_filings_in(columns, limit, filings)
     return filings
+
+
+def edgar_filing_url(cik: Any, accession: str, document: str) -> str:
+    """filing 主文档的下载 URL（原始报告缓存按它识别文件）。"""
+    accession_nodash = str(accession).replace("-", "")
+    return f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{document}"
 
 
 def edgar_download_filing(cik: int, accession: str, document: str) -> str:
     """下载 filing 主文档（HTML 文本）。"""
-    accession_nodash = accession.replace("-", "")
-    url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{document}"
-    _throttle("edgar", _EDGAR_MIN_INTERVAL_SECONDS)
-    response = requests.get(url, headers=_edgar_headers(), timeout=60)
-    response.raise_for_status()
-    if len(response.content) > PDF_MAX_BYTES:
-        raise ValueError("10-K 文档超过大小上限")
-    return response.text
+    url = edgar_filing_url(cik, accession, document)
+    raw = _download_guarded(
+        url, _edgar_headers(), source="edgar", interval=_EDGAR_MIN_INTERVAL_SECONDS
+    )
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # 老申报是 cp1252/latin-1：按 cp1252 解（HTML 实体之外的弯引号/破折号都在这个码页里）
+        return raw.decode("cp1252", errors="replace")
 
 
 def edgar_same_sic_companies(sic: str, *, limit: int = 100) -> List[Dict[str, Any]]:

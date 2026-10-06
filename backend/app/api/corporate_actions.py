@@ -1,10 +1,11 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
-from sqlalchemy import tuple_
+from sqlalchemy import case, func, tuple_
 from sqlalchemy.orm import Session
 from typing import Any, Dict, List, Optional
 from datetime import date, timedelta
 from decimal import Decimal
 from ..services.symbol_normalization import normalize_manual_symbol
+from ..services.security_catalog_service import display_names
 from ..database import get_db
 from ..models.corporate_action import CorporateAction
 from ..models.corporate_action_suggestion import CorporateActionSuggestion
@@ -28,8 +29,21 @@ from ..schemas.corporate_action_suggestion import (
     SecurityEventResponse,
     SuggestionAccept,
     SuggestionResponse,
+    SuggestionReceiptsUpdate,
 )
 from ..services.corporate_action_service import summarize_cash_dividends
+from ..services.dividend_receipt_rules import validate_receipt_input
+from ..services.dividend_receipt_service import (
+    reconcile_manual_receipt,
+    validate_existing_receipt_links,
+)
+from ..services.portfolio.semantics import is_received_dividend
+from ..services.dividend_forecast_service import forecast_details, forecast_summary
+from ..services.broker_import_common import lock_broker_import
+from ..services.dividend_tax_service import (
+    load_dividend_tax_events,
+    validate_existing_tax_allocations,
+)
 from ..services.dividend_sync_jobs import (
     get_dividend_sync_job,
     run_dividend_sync_job,
@@ -40,6 +54,7 @@ from ..services.dividend_sync_service import (
     accept_suggestion,
     ignore_suggestion,
     restore_suggestion,
+    superseded_suggestion_date,
 )
 from ..services.holding_service import lock_record, lock_security_timeline, recalculate_holdings
 from ..core.deps import get_current_active_user
@@ -126,10 +141,18 @@ def _build_corporate_action_query(
         query = query.filter(CorporateAction.market == market)
     if action_type:
         query = query.filter(CorporateAction.action_type == action_type)
+    # Cash dividends use the same cash date as the curve, XIRR and reconciliation.
+    scope_date = case(
+        (
+            CorporateAction.action_type == "CASH_DIVIDEND",
+            func.coalesce(CorporateAction.payment_date, CorporateAction.ex_date),
+        ),
+        else_=CorporateAction.ex_date,
+    )
     if start_date:
-        query = query.filter(CorporateAction.ex_date >= start_date)
+        query = query.filter(scope_date >= start_date)
     if end_date:
-        query = query.filter(CorporateAction.ex_date <= end_date)
+        query = query.filter(scope_date <= end_date)
     if unassigned_account:
         query = query.filter(CorporateAction.broker_account_id.is_(None))
     elif broker_account_id is not None:
@@ -159,12 +182,18 @@ def create_corporate_action(
     """
     action_data = action.model_dump()
     try:
+        validate_receipt_input(action_data, confirmed=action.receipt_confirmed)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        lock_broker_import(db, current_user.id)
         # 与交易/转仓写入口共用时间线锁；写入与重算同事务提交。
         lock_security_timeline(db, current_user.id, action.symbol, action.market)
         validate_owned_references(db, current_user.id, action_data)
         db_action = CorporateAction(**action_data, user_id=current_user.id)
         db.add(db_action)
         db.flush()
+        reconcile_manual_receipt(db, db_action)
 
         # 如果是会影响持仓的公司行动，重新计算持仓
         if action.action_type in QUANTITY_ACTION_TYPES:
@@ -290,7 +319,17 @@ def get_corporate_actions_summary(
         broker_account_id=broker_account_id,
         unassigned_account=unassigned_account,
     )
-    return summarize_cash_dividends(db, query.all())
+    tax_events = load_dividend_tax_events(
+        db,
+        current_user.id,
+        symbol=symbol,
+        market=market,
+        start_date=start_date,
+        end_date=end_date,
+        broker_account_id=broker_account_id,
+        unassigned_account=unassigned_account,
+    )
+    return summarize_cash_dividends(db, query.all(), tax_events=tax_events)
 
 
 @router.get("/{action_id:int}", response_model=CorporateActionResponse)
@@ -324,6 +363,7 @@ def update_corporate_action(
     """
     update_data = action_update.model_dump(exclude_unset=True)
     try:
+        lock_broker_import(db, current_user.id)
         lock_record(db, "corporate-action-record", action_id)
 
         db_action = (
@@ -360,9 +400,57 @@ def update_corporate_action(
             lock_security_timeline(db, current_user.id, lock_symbol, lock_market)
         validate_owned_references(db, current_user.id, update_data)
         if update_data.get("action_type", old_action_type) == "CASH_DIVIDEND":
-            _apply_cash_dividend_update_rules(db_action, update_data)
+            if (
+                action_update.receipt_confirmed
+                or old_action_type != "CASH_DIVIDEND"
+                or (
+                    db_action.amount_basis != "LEGACY"
+                    and any(key != "notes" for key in update_data)
+                )
+            ):
+                merged = {
+                    field: getattr(db_action, field, None)
+                    for field in (
+                        "action_type",
+                        "payment_date",
+                        "broker_account_id",
+                        "total_dividend",
+                        "tax_withheld",
+                        "tax_rate",
+                        "net_dividend",
+                        "amount_basis",
+                    )
+                }
+                merged.update(update_data)
+                if "net_dividend" not in update_data and any(
+                    k in update_data for k in ("total_dividend", "tax_withheld", "tax_rate")
+                ):
+                    merged["net_dividend"] = None
+                if (
+                    update_data.get("tax_rate") is not None
+                    and update_data.get("tax_withheld") is None
+                ):
+                    merged["tax_withheld"] = derive_tax_withheld(
+                        merged["total_dividend"], update_data["tax_rate"]
+                    )
+                try:
+                    validate_receipt_input(merged, confirmed=action_update.receipt_confirmed)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+                update_data.update(merged)
+            elif db_action.receipt_status == "UNVERIFIED":
+                raise HTTPException(
+                    status_code=409, detail="历史待核实股息须按实际凭证确认到账后才能修改"
+                )
+            elif db_action.amount_basis == "LEGACY":
+                _apply_cash_dividend_update_rules(db_action, update_data)
         for field, value in update_data.items():
             setattr(db_action, field, value)
+        validate_existing_receipt_links(db, db_action)
+        validate_existing_tax_allocations(db, action=db_action)
+        if action_update.receipt_confirmed:
+            db.flush()
+            reconcile_manual_receipt(db, db_action)
         # 合并后的有效记录与创建入口同一套数量字段校验（#270）：此前 PATCH 可以清空
         # split_ratio 或写入不可解析的比例，重放静默 no-op
         try:
@@ -409,6 +497,7 @@ def update_opening_position_cost(
     """
     update_data = payload.model_dump(exclude_unset=True)
     try:
+        lock_broker_import(db, current_user.id)
         lock_record(db, "corporate-action-record", action_id)
         db_action = (
             db.query(CorporateAction)
@@ -461,6 +550,7 @@ def delete_corporate_action(
     锁序：记录锁 → 锁内重读 → 时间线锁。
     """
     try:
+        lock_broker_import(db, current_user.id)
         lock_record(db, "corporate-action-record", action_id)
 
         db_action = (
@@ -478,6 +568,32 @@ def delete_corporate_action(
         market = db_action.market
         action_type = db_action.action_type
 
+        linked_suggestions = (
+            db.query(CorporateActionSuggestion)
+            .filter(
+                CorporateActionSuggestion.user_id == current_user.id,
+                (CorporateActionSuggestion.created_corporate_action_id == action_id)
+                | (CorporateActionSuggestion.matched_corporate_action_id == action_id)
+                | (CorporateActionSuggestion.id == db_action.dividend_suggestion_id),
+            )
+            .order_by(CorporateActionSuggestion.id)
+            .all()
+        )
+        for suggestion in linked_suggestions:
+            lock_record(db, "ca-suggestion-record", suggestion.id)
+            db.refresh(suggestion)
+            suggestion.receipt_complete = False
+            if suggestion.status in ("ACCEPTED", "MATCHED"):
+                if superseded_suggestion_date(suggestion):
+                    # 行动已删除，旧接受版本也失效；仅恢复有效修订版本。
+                    db.delete(suggestion)
+                    continue
+                suggestion.status = "NEW"
+                suggestion.match_detail = None
+            if suggestion.created_corporate_action_id == action_id:
+                suggestion.created_corporate_action_id = None
+            if suggestion.matched_corporate_action_id == action_id:
+                suggestion.matched_corporate_action_id = None
         lock_security_timeline(db, current_user.id, symbol, market)
         db.delete(db_action)
         db.flush()
@@ -532,7 +648,8 @@ def get_dividend_sync_status(
 
 @router.get("/suggestions", response_model=List[SuggestionResponse])
 def list_suggestions(
-    status: Optional[str] = Query(None, description="按状态筛选；缺省为 NEW+MATCHED"),
+    status: Optional[str] = Query(None, description="按状态筛选；缺省排除已忽略建议"),
+    pending_only: bool = Query(False, description="分页前筛选尚待处理的预计及送转"),
     symbol: Optional[str] = Query(None),
     market: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
@@ -546,12 +663,46 @@ def list_suggestions(
     if status:
         query = query.filter(CorporateActionSuggestion.status == status.upper())
     else:
-        query = query.filter(CorporateActionSuggestion.status.in_(["NEW", "MATCHED"]))
+        query = query.filter(CorporateActionSuggestion.status != "IGNORED")
     if symbol and symbol.strip():
         query = query.filter(CorporateActionSuggestion.symbol == symbol.strip())
     if market:
         query = query.filter(CorporateActionSuggestion.market == market)
-    return query.order_by(CorporateActionSuggestion.ex_date.desc()).offset(skip).limit(limit).all()
+    query = query.order_by(CorporateActionSuggestion.ex_date.desc())
+    if pending_only:
+        rows = query.all()
+        details = forecast_details(db, current_user.id, rows)
+        rows = [
+            r
+            for r in rows
+            if (
+                details.get(r.id, {}).get("receipt_state") not in ("RECEIVED", "INACTIVE")
+                if r.action_type == "CASH_DIVIDEND"
+                else r.status == "NEW"
+            )
+        ][skip : skip + limit]
+    else:
+        rows = query.offset(skip).limit(limit).all()
+        details = forecast_details(db, current_user.id, rows)
+    unnamed = [(row.symbol, row.market) for row in rows if not row.name]
+    names = display_names(db, current_user.id, unnamed)
+    return [
+        SuggestionResponse.model_validate(row).model_copy(
+            update={
+                **details.get(row.id, {}),
+                "name": row.name or names.get((row.symbol, row.market)),
+            }
+        )
+        for row in rows
+    ]
+
+
+@router.get("/suggestions/forecast-summary")
+def get_dividend_forecast_summary(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return forecast_summary(db, current_user.id)
 
 
 @router.get("/suggestions/count")
@@ -559,16 +710,17 @@ def count_suggestions(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ) -> Dict[str, int]:
-    """待处理建议计数（NEW 徽标）。"""
+    """待处理预计与送转计数，与默认清单同口径。"""
     total = (
         db.query(CorporateActionSuggestion)
         .filter(
             CorporateActionSuggestion.user_id == current_user.id,
             CorporateActionSuggestion.status == "NEW",
+            CorporateActionSuggestion.action_type != "CASH_DIVIDEND",
         )
         .count()
     )
-    return {"total": total}
+    return {"total": total + forecast_summary(db, current_user.id)["pending_count"]}
 
 
 @router.post("/suggestions/{suggestion_id}/accept", response_model=CorporateActionResponse)
@@ -680,3 +832,108 @@ def list_security_events(
             tuple_(SecurityEvent.symbol, SecurityEvent.market).in_([(s, m) for s, m in held])
         )
     return query.order_by(SecurityEvent.event_date.asc()).all()
+
+
+@router.get(
+    "/suggestions/{suggestion_id:int}/receipts", response_model=List[CorporateActionResponse]
+)
+def list_suggestion_receipts(
+    suggestion_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    suggestion = get_owned_record(
+        db, CorporateActionSuggestion, suggestion_id, current_user.id, "分红建议不存在"
+    )
+    if suggestion.broker_account_id is None:
+        return []
+    rows = (
+        db.query(CorporateAction)
+        .filter(
+            CorporateAction.user_id == current_user.id,
+            CorporateAction.broker_account_id == suggestion.broker_account_id,
+            CorporateAction.symbol == suggestion.symbol,
+            CorporateAction.market == suggestion.market,
+            CorporateAction.action_type == "CASH_DIVIDEND",
+            (CorporateAction.dividend_suggestion_id.is_(None))
+            | (CorporateAction.dividend_suggestion_id == suggestion.id),
+        )
+        .order_by(CorporateAction.payment_date.desc(), CorporateAction.id.desc())
+        .all()
+    )
+    return [a for a in rows if is_received_dividend(a, local_today())]
+
+
+@router.put("/suggestions/{suggestion_id:int}/receipts", response_model=SuggestionResponse)
+def update_suggestion_receipts(
+    suggestion_id: int,
+    payload: SuggestionReceiptsUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        lock_broker_import(db, current_user.id)
+        lock_record(db, "ca-suggestion-record", suggestion_id)
+        suggestion = get_owned_record(
+            db, CorporateActionSuggestion, suggestion_id, current_user.id, "分红建议不存在"
+        )
+        db.refresh(suggestion)
+        if suggestion.updated_at != payload.expected_updated_at:
+            raise HTTPException(status_code=409, detail="分红建议已更新，请刷新后重新核对")
+        if (
+            suggestion.action_type != "CASH_DIVIDEND"
+            or suggestion.status == "IGNORED"
+            or superseded_suggestion_date(suggestion)
+        ):
+            raise HTTPException(status_code=409, detail="仅有效现金分红公告可核对到账关联")
+        if suggestion.broker_account_id is None:
+            raise HTTPException(
+                status_code=409, detail="公告尚无明确账户，请先补齐权益日账本账户并重新同步"
+            )
+        selected = set(payload.receipt_ids)
+        if payload.receipt_complete and not selected:
+            raise HTTPException(status_code=422, detail="确认全部到账前至少关联一笔实际到账记录")
+        rows = (
+            db.query(CorporateAction)
+            .filter(
+                CorporateAction.user_id == current_user.id,
+                (CorporateAction.id.in_(selected))
+                | (CorporateAction.dividend_suggestion_id == suggestion.id),
+            )
+            .order_by(CorporateAction.id)
+            .all()
+        )
+        if selected - {a.id for a in rows}:
+            raise HTTPException(status_code=404, detail="所选到账记录不存在")
+        for action in rows:
+            lock_record(db, "corporate-action-record", action.id)
+            db.refresh(action)
+            if action.id in selected:
+                if (
+                    not is_received_dividend(action, local_today())
+                    or (action.broker_account_id, action.symbol, action.market)
+                    != (suggestion.broker_account_id, suggestion.symbol, suggestion.market)
+                    or action.dividend_suggestion_id not in (None, suggestion.id)
+                ):
+                    raise HTTPException(
+                        status_code=409, detail="到账记录须属同一账户和证券，且未关联其他公告"
+                    )
+                action.dividend_suggestion_id = suggestion.id
+            elif action.dividend_suggestion_id == suggestion.id:
+                action.dividend_suggestion_id = None
+        suggestion.receipt_complete = payload.receipt_complete
+        suggestion.match_detail = {
+            **(suggestion.match_detail or {}),
+            "receipt_links_reviewed": True,
+        }
+        # Explicitly bump even when reviewing the same selection (optimistic UI concurrency).
+        from datetime import datetime, timezone
+
+        suggestion.updated_at = datetime.now(timezone.utc)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return SuggestionResponse.model_validate(suggestion).model_copy(
+        update=forecast_details(db, current_user.id, [suggestion])[suggestion.id]
+    )

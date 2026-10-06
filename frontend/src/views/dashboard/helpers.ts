@@ -4,15 +4,7 @@
 
 import type { PeriodPnlSummary } from '@/types'
 
-export type CardTone = 'summary-card-success' | 'summary-card-danger' | 'summary-card-neutral'
-
-/** 盈亏卡色调；缺值（如「无法计算」的期间）为中性——此前 Number(null) >= 0 被当成绿 */
-export function cardTone(value: number | string | null | undefined): CardTone {
-  if (value === null || value === undefined || value === '') return 'summary-card-neutral'
-  const numeric = Number(value)
-  if (Number.isNaN(numeric)) return 'summary-card-neutral'
-  return numeric >= 0 ? 'summary-card-success' : 'summary-card-danger'
-}
+export { cardTone } from '@/utils/helpers'
 
 /**
  * 期间损益是否打「估算」：期初基准陈旧（status=estimated），或区间内有按估值

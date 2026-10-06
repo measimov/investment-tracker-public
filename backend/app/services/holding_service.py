@@ -7,6 +7,8 @@ from ..core.logging import get_app_logger
 from ..models.transaction import Transaction
 from ..models.holding import Holding
 from ..models.corporate_action import CorporateAction
+from .market_data_service import infer_price_currency
+from .security_catalog_service import infer_b_share_currency, infer_hk_currency
 from .portfolio.semantics import (
     action_has_ratio,
     apply_action_quantity,
@@ -542,7 +544,12 @@ def recalculate_holdings(
     return None
 
 
-def _new_bucket_state():
+def _new_bucket_state(symbol, market):
+    currency = infer_price_currency(market)
+    if market == "B股":
+        currency = infer_b_share_currency(symbol) or currency
+    elif market == "港股":
+        currency = infer_hk_currency(symbol)[0] or currency
     return {
         "quantity": Decimal("0"),
         "avg_cost": Decimal("0"),
@@ -550,7 +557,8 @@ def _new_bucket_state():
         # 成本未知的份额（期初建仓/转托管转入，#174）：avg_cost/total_cost 对这部分是估计值
         "unknown_cost_quantity": Decimal("0"),
         "name": None,
-        "currency": "CNY",
+        "currency": currency,
+        "currency_known": False,
     }
 
 
@@ -595,7 +603,7 @@ def _replay_events(events, symbol, market, *, per_account):
 
     def bucket(account_id):
         if account_id not in buckets:
-            buckets[account_id] = _new_bucket_state()
+            buckets[account_id] = _new_bucket_state(symbol, market)
         return buckets[account_id]
 
     for event in events:
@@ -629,7 +637,13 @@ def _replay_events(events, symbol, market, *, per_account):
                         state["avg_cost"] = Decimal("0")
                         state["total_cost"] = Decimal("0")
                         state["unknown_cost_quantity"] = Decimal("0")
-                    pending_transfers[txn.id] = (move_qty, moved_cost, moved_unknown)
+                    pending_transfers[txn.id] = (
+                        move_qty,
+                        moved_cost,
+                        moved_unknown,
+                        state["currency"],
+                        state["name"],
+                    )
                 else:  # TRANSFER_IN
                     entry = pending_transfers.pop(txn.linked_transaction_id, None)
                     if entry is None:
@@ -637,7 +651,7 @@ def _replay_events(events, symbol, market, *, per_account):
                             f"transfer in id={txn.id} has no processed linked "
                             f"transfer-out (linked={txn.linked_transaction_id})"
                         )
-                    move_qty, moved_cost, moved_unknown = entry
+                    move_qty, moved_cost, moved_unknown, currency, name = entry
                     state = bucket(txn.broker_account_id)
                     new_quantity = state["quantity"] + move_qty
                     state["total_cost"] = state["quantity"] * state["avg_cost"] + moved_cost
@@ -646,6 +660,11 @@ def _replay_events(events, symbol, market, *, per_account):
                     )
                     state["quantity"] = new_quantity
                     state["unknown_cost_quantity"] += moved_unknown
+                    if not state["currency_known"]:
+                        state["currency"] = currency
+                        state["currency_known"] = True
+                    if not state["name"]:
+                        state["name"] = name
                 continue
 
             account_id = txn.broker_account_id if per_account else None
@@ -691,6 +710,7 @@ def _replay_events(events, symbol, market, *, per_account):
             if txn.name:
                 state["name"] = txn.name
             state["currency"] = txn.currency
+            state["currency_known"] = True
 
         elif event["type"] == "corporate_action":
             action = event["data"]
@@ -736,6 +756,9 @@ def _replay_events(events, symbol, market, *, per_account):
                     state["avg_cost"] = (
                         state["total_cost"] / new_quantity if new_quantity > 0 else Decimal("0")
                     )
+                    if action.currency and not state["currency_known"]:
+                        state["currency"] = action.currency
+                        state["currency_known"] = True
 
             elif action_type == "RIGHTS_ISSUE":
                 lot = rights_issue_lot(action)
@@ -758,8 +781,7 @@ def _replay_events(events, symbol, market, *, per_account):
                 for state in affected:
                     if action.name:
                         state["name"] = action.name
-                    if action.currency:
-                        state["currency"] = action.currency
+                    # Quantity actions cannot replace a known trading currency.
 
     if per_account and pending_transfers:
         raise _AccountReplayFallback(

@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { useXueqiuCapabilitiesStore } from '../stores/xueqiuCapabilities'
 import { ElMessage } from 'element-plus'
 import { MARKETS } from '../utils/securities'
 
@@ -163,6 +164,14 @@ router.beforeEach(async (to, from, next) => {
       ElMessage.error('您没有访问该页面的权限')
       next('/')
       return
+    }
+    if (to.name === 'Opinions' && !authStore.isAdmin) {
+      const capabilities = useXueqiuCapabilitiesStore()
+      await capabilities.load()
+      if (!capabilities.showOpinions) {
+        next('/')
+        return
+      }
     }
   } else {
     // Route doesn't require auth (e.g., login page)

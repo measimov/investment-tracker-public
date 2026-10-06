@@ -21,11 +21,13 @@ export function useTransactionsList() {
     market: string
     transaction_type: string
     account: '' | UnassignedAccount | number
+    dateRange: [string, string] | null
   }>({
     symbol: '',
     market: '',
     transaction_type: '',
-    account: ''
+    account: '',
+    dateRange: null
   })
 
   function buildQueryParams() {
@@ -38,6 +40,10 @@ export function useTransactionsList() {
       params.unassigned_account = true
     } else if (filters.account !== '' && filters.account != null) {
       params.broker_account_id = filters.account
+    }
+    if (filters.dateRange) {
+      params.start_date = filters.dateRange[0]
+      params.end_date = filters.dateRange[1]
     }
     return params
   }
@@ -63,6 +69,7 @@ export function useTransactionsList() {
     filters.market = ''
     filters.transaction_type = ''
     filters.account = ''
+    filters.dateRange = null
     handleSearch()
   }
 
@@ -74,13 +81,15 @@ export function useTransactionsList() {
         : '确定要删除这条交易记录吗？',
     confirmText: '删除',
     request: (row) => transactionsStore.deleteTransaction(row.id),
-    successMessage: '删除成功',
+    successMessage: '交易记录已删除',
     failureMessage: '删除失败',
     reload: () => loadTransactions()
   })
 
   return reactive({
     loading: list.loading,
+    loadError: list.loadError,
+    hasLoaded: list.hasLoaded,
     transactions: list.items,
     pagination: list.pagination,
     filters,

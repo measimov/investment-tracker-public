@@ -1,0 +1,277 @@
+{
+  "at": "2026-10-02T15:54:44.764Z",
+  "baseURL": "http://127.0.0.1:4318",
+  "browser": "148.0.7778.96",
+  "method": "Synthetic data; real UI actions; model snapshots are assertions only. One fresh browser context per test. No force clicks.",
+  "cases": [
+    {
+      "variant": "element",
+      "test": "financial-display",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "search-reset-and-no-results",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "sample-count-control",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "account-and-inclusive-date-boundaries",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "profit-sorting-keeps-unknown-last",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "expand-and-row-edit",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "empty-validation-and-price-precision",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "cancel-reopen-resets-draft-and-validation",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "backdrop-keeps-entered-draft",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "dialog-keyboard-focus-and-cancel-return",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "escape-dismissal-and-focus-return",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "element",
+      "test": "mobile-scroll-and-edit-reachability",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "financial-display",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "search-reset-and-no-results",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "sample-count-control",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "account-and-inclusive-date-boundaries",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "profit-sorting-keeps-unknown-last",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "expand-and-row-edit",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "empty-validation-and-price-precision",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "cancel-reopen-resets-draft-and-validation",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "backdrop-keeps-entered-draft",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "dialog-keyboard-focus-and-cancel-return",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "escape-dismissal-and-focus-return",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "naive",
+      "test": "mobile-scroll-and-edit-reachability",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:49:43.355Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "financial-display",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "search-reset-and-no-results",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "sample-count-control",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "account-and-inclusive-date-boundaries",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "profit-sorting-keeps-unknown-last",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "expand-and-row-edit",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "empty-validation-and-price-precision",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "cancel-reopen-resets-draft-and-validation",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "backdrop-keeps-entered-draft",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "dialog-keyboard-focus-and-cancel-return",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "escape-dismissal-and-focus-return",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    },
+    {
+      "variant": "nuxt",
+      "test": "mobile-scroll-and-edit-reachability",
+      "status": "passed",
+      "pageErrors": [],
+      "verifiedAt": "2026-10-02T15:54:04.831Z"
+    }
+  ],
+  "verificationBatches": [
+    {
+      "at": "2026-10-02T15:49:43.355Z",
+      "variants": [
+        "element",
+        "naive"
+      ],
+      "note": "Frozen sources unchanged after complete passing run"
+    },
+    {
+      "at": "2026-10-02T15:54:04.831Z",
+      "variants": [
+        "nuxt"
+      ],
+      "note": "Rerun after SelectItemText/typeahead adaptation and rebuild"
+    }
+  ]
+}

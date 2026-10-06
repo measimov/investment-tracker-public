@@ -7,12 +7,16 @@ import { reactive, ref } from 'vue'
 import api from '@/api'
 import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { usePagedList } from '@/composables/usePagedList'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import { getApiErrorMessage } from '@/utils/apiErrors'
 import type { CorporateAction, SecuritySearchItem } from '@/types'
 import { UNASSIGNED_ACCOUNT, type UnassignedAccount } from '@/utils/labels'
 
 export interface ActionsSummary {
   total_count?: number
   cash_dividends?: {
+    legacy_unreviewed_count?: number
+    amounts_incomplete_count?: number
     total_dividend?: number
     total_tax?: number
     net_dividend?: number
@@ -23,6 +27,10 @@ export interface ActionsSummary {
 
 export function useCorporateActionsList() {
   const summary = ref<ActionsSummary | null>(null)
+  const summaryLoading = ref(false)
+  const summaryError = ref('')
+  const summaryHasLoaded = ref(false)
+  const summaryRequest = useLatestRequest()
   const filters = reactive<{
     account: '' | UnassignedAccount | number
     symbol: string
@@ -69,19 +77,27 @@ export function useCorporateActionsList() {
     }
   })
 
-  async function loadSummary(params: Record<string, unknown> = {}) {
+  async function loadSummary(params: Record<string, unknown>, token: number) {
     try {
       const response = await api.getCorporateActionsSummary(params)
+      if (!summaryRequest.isCurrent(token)) return
       summary.value = response.data
+      summaryHasLoaded.value = true
     } catch (error) {
-      summary.value = null
-      console.error('加载统计失败', error)
+      if (summaryRequest.isCurrent(token))
+        summaryError.value = getApiErrorMessage(error, '加载公司行动汇总失败')
+    } finally {
+      if (summaryRequest.isCurrent(token)) summaryLoading.value = false
     }
   }
 
   async function loadActions() {
+    const params = buildQueryParams()
+    const token = summaryRequest.begin()
+    summaryLoading.value = true
+    summaryError.value = ''
     await list.load()
-    loadSummary(buildQueryParams())
+    if (summaryRequest.isCurrent(token)) await loadSummary(params, token)
   }
 
   function handleSearch() {
@@ -114,16 +130,21 @@ export function useCorporateActionsList() {
     message: '确定要删除这条公司行动记录吗？',
     confirmText: '删除',
     request: (row) => api.deleteCorporateAction(row.id),
-    successMessage: '删除成功',
+    successMessage: '公司行动记录已删除',
     failureMessage: '删除失败',
     reload: () => loadActions()
   })
 
   return reactive({
     loading: list.loading,
+    loadError: list.loadError,
+    hasLoaded: list.hasLoaded,
     actions: list.items,
     pagination: list.pagination,
     summary,
+    summaryLoading,
+    summaryError,
+    summaryHasLoaded,
     filters,
     loadActions,
     handleSearch,

@@ -1,0 +1,108 @@
+@import 'tailwindcss';
+@import '@nuxt/ui';
+@import '../shared/shell.css';
+
+@theme static {
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --color-clay-50: #faf4f0;
+  --color-clay-100: #f2e8e1;
+  --color-clay-200: #e6cdbf;
+  --color-clay-300: #d6aa95;
+  --color-clay-400: #c17c60;
+  --color-clay-500: #a6533c;
+  --color-clay-600: #934731;
+  --color-clay-700: #7a3928;
+  --color-clay-800: #633125;
+  --color-clay-900: #522b22;
+  --color-clay-950: #2e1510;
+}
+
+:root {
+  --ui-primary: #a6533c;
+  --ui-bg: #fff;
+  --ui-bg-elevated: #faf9f5;
+  --ui-bg-muted: #f5f3ed;
+  --ui-border: #e5e1d8;
+  --ui-border-accented: #b8b1a5;
+  --ui-text: #242321;
+  --ui-text-highlighted: #242321;
+  --ui-text-toned: #5f5b53;
+  --ui-text-muted: #6b665d;
+  --ui-radius: 0.375rem;
+}
+
+body {
+  background: #faf9f5;
+}
+.nuxt-holdings-table {
+  height: 560px;
+}
+.nuxt-holdings-table table {
+  width: 100%;
+  min-width: 996px;
+  table-layout: fixed;
+}
+.nuxt-holdings-table th {
+  background: #f5f3ed;
+  color: #5f5b53;
+  font-size: 13px;
+  font-weight: 500;
+}
+.nuxt-holdings-table th,
+.nuxt-holdings-table td {
+  padding: 12px;
+}
+.nuxt-holdings-table td {
+  vertical-align: top;
+}
+.nuxt-holdings-table .expand-cell {
+  padding: 12px 3px;
+}
+.nuxt-holdings-table .numeric-heading {
+  text-align: right;
+}
+.nuxt-holdings-table [data-pinned='right'] {
+  background: #fff;
+  border-left: 1px solid #e5e1d8;
+}
+.nuxt-holdings-table th[data-pinned='right'] {
+  background: #f5f3ed;
+}
+.nuxt-holdings-table .profit-sort {
+  padding: 0;
+  justify-content: flex-end;
+  font-size: 13px;
+}
+.nuxt-holdings-table .expanded-detail {
+  white-space: normal;
+}
+.nuxt-date-input {
+  width: 100%;
+}
+.nuxt-date-input [data-slot='trailing'] {
+  padding-right: 3px;
+}
+.nuxt-date-button {
+  padding: 3px;
+  font-size: 12px;
+}
+.nuxt-trade-overlay {
+  z-index: 40;
+}
+.nuxt-trade-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-width: 560px;
+  z-index: 50;
+}
+.nuxt-popup {
+  z-index: 60;
+}
+.nuxt-trade-modal .dialog-fields > * {
+  min-width: 0;
+}
+.nuxt-trade-modal .dialog-fields [data-slot='root'],
+.nuxt-trade-modal .dialog-fields [data-slot='base'],
+.nuxt-trade-modal .dialog-fields input {
+  width: 100%;
+}

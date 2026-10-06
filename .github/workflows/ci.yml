@@ -38,6 +38,10 @@ jobs:
           # ruff 固定版本：格式化输出随版本变，未固定时上游一发版 format --check 就会无故变红
           pip install -r backend/requirements.txt pytest ruff==0.16.0
 
+      # 无私有依赖的干净环境跑全套，覆盖行情链、档案、告警和采集器降级。
+      - name: Verify optional Xueqiu client is absent
+        run: python -c "import importlib.util; assert importlib.util.find_spec('xueqiu_market') is None"
+
       - name: Lint backend
         run: ruff check backend
 

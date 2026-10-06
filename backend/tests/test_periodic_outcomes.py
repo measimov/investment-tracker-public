@@ -42,6 +42,7 @@ EXPECTED_TASKS = {
     "send_event_notifications",
     "enqueue_weekly_data_refresh",
     "sync_announcements",
+    "prune_report_cache",
 }
 REGISTERED = {entry[3]: entry[0] for entry in list(job_worker._periodic_tasks)}
 

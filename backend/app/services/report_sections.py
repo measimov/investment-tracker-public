@@ -9,6 +9,7 @@ A股年报按证监会准则有标准章节结构：
 ① 节标题正则；② 目录页码法；③ 关键词窗口保底。
 """
 
+import html as html_lib
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -25,13 +26,30 @@ from typing import Dict, List, Optional, Tuple
 #      iXBRL <ix:header> 整块剔除（实测泄漏 18k 字符 XBRL 上下文）、英文特征词
 #      评分。**必须与 v3 分开**：v3 只改了中文侧，若共用版本号，#118 合入后
 #      已按 v3 缓存的 10-K 节选会直接命中旧缓存，这些美股修复对存量完全无效。
-SECTION_EXTRACTOR_VERSION = 5
+# v6 = 分市场（#340/#344/#345，2026-09）：港股双语册剔英文行时保留金额行（此前 MD&A 数字
+#      全部丢失）、正文起点按原文分页（港股章节首页被跳过）；A股/港股边界表补 ESG/公司治理/
+#      董事履历与「(页码)(公司名) 第X章 标题」页眉、A股 风险小节认编号前缀；美股 HTML 实体
+#      先 unescape、各类破折号/nbsp 归一、`Items 1 and 2`、20-F 存储上限提高
+SECTION_EXTRACTOR_VERSION = 6
+# 分市场版本：**分市场的修复各自 bump**。共用一个版本号时，只修了一侧也会让另两侧的全部
+# 摘要缓存失效重烧；反过来，两侧修复先后合入而共用版本号，会让先合入那一侧的缓存挡住后一侧
+# 的修复。缓存命中一律按 `section_extractor_version(market)` 判定
+SECTION_EXTRACTOR_VERSIONS: Dict[str, int] = {"A股": 6, "港股": 6, "美股": 6}
 
-# 存储上限：纯防御（防解析失控写爆 JSONB），正常章节远不会触及。
+
+def section_extractor_version(market: str) -> int:
+    """该市场章节抽取逻辑的当前版本（未登记的市场按全局版本）。"""
+    return SECTION_EXTRACTOR_VERSIONS.get(market, SECTION_EXTRACTOR_VERSION)
+
+
+# 存储上限：纯防御（防解析失控写爆 JSONB）。
 # **不是**预算控制点——预算只在 digest 期做一次，见 budget_section。
 # 此前 50k 的抽取期硬切造成"双重截断"：digest 取的"尾部"其实是 50k 切点前的
 # 内容而非章节真尾，而 风险要点/展望 两个字段恰恰依赖真尾部。
-SECTION_STORE_MAX_CHARS = 200_000
+# 20-F 的风险因素与业务章节常规超过 20 万字（#345：BABA 风险 35 万字、PDD 30 万字），
+# 20 万字的上限砍掉了中概股最关键的 VIE / 中国监管 / ADS 风险——提到 60 万字；真超过时
+# 保留头 + 真尾（`_truncate`），被截掉的小节名写进 `truncated_subsections`
+SECTION_STORE_MAX_CHARS = 600_000
 TRUNCATION_MARK = "……[已截断]"
 
 # 章节内容置信度阈值：低于此值即推进下一级回退。
@@ -273,12 +291,22 @@ def _score_with(signals: Dict[str, Tuple[str, ...]], text: str) -> Tuple[float, 
     return round(score, 3), flags
 
 
+# 超过存储上限时保留的尾部比例：章节真尾（风险章节的末几类风险、MD&A 的展望）不能丢
+_TRUNCATE_TAIL_RATIO = 0.3
+
+
 def _truncate(text: str) -> Tuple[str, bool]:
-    """仅防御性存储上限；正常章节原样返回（预算控制在 digest 期做）。"""
+    """仅防御性存储上限；正常章节原样返回（预算控制在 digest 期做）。超限时保留头部 + 真尾，
+    中段写明省略了多少字（#345：只保留头部时，20-F 风险因素后半截——恰是 VIE/ADS 风险——
+    被整段砍掉，`budget_section` 的「真尾」实际是截断点）。"""
     text = text.strip()
     if len(text) <= SECTION_STORE_MAX_CHARS:
         return text, False
-    return text[:SECTION_STORE_MAX_CHARS] + TRUNCATION_MARK, True
+    tail = int(SECTION_STORE_MAX_CHARS * _TRUNCATE_TAIL_RATIO)
+    head = SECTION_STORE_MAX_CHARS - tail
+    omitted = len(text) - head - tail
+    marker = f"\n{TRUNCATION_MARK}（中段省略 {omitted} 字）\n"
+    return text[:head] + marker + text[-tail:], True
 
 
 def _find_section_by_headers(text: str, title_tiers: List[List[str]]) -> Optional[str]:
@@ -325,6 +353,10 @@ _BOUNDARY_TITLES: Tuple[str, ...] = (
     "董事、监事、高级管理人员",
     "公司治理",
     "环境和社会责任",
+    # #344：600036 的 ESG 章（约 2 万字）曾整章并进 MD&A
+    "环境、社会与治理",
+    "环境、社会及治理",
+    "环境和社会",
     "财务报告",
     "备查文件目录",
     "董事会报告",
@@ -348,6 +380,13 @@ _BOUNDARY_TITLES: Tuple[str, ...] = (
     "業務回顧及展望",
     "業務回顧",
     "董事及高級管理層",
+    # #344：02156 的 MD&A / 风险小节曾吞进整段董事履历（约 6 千字，风险节 73% 是履历）
+    "董事及高級管理層的履歷詳情",
+    "董事及高級管理層履歷",
+    "董事及高級管理人員",
+    "董事及高級管理人員履歷",
+    "董事履歷",
+    "企業管治",
     "董事會報告",
     "企業管治報告",
     "環境、社會及管治報告",
@@ -368,12 +407,30 @@ _BOUNDARY_TITLE_SET = frozenset(_BOUNDARY_TITLES)
 _TRAILING_ASCII_RE = re.compile(r"[\sA-Za-z&,'’.\-–—/()]+$")
 
 
+# 「(页码)(公司名) 第X章 标题 (页码)」形态的页眉/章首（#344：600036 每页页眉都是
+# 「18 招商银行股份有限公司 第三章 管理层讨论与分析」）：只要行内是「第X章/节 + 短标题」，
+# 该标题就是顶层章节边界——不必逐个登记进边界表。标题不得含句读（正文里「详见第六节重要
+# 事项。」之类的引用不是标题）
+_NUMBERED_CHAPTER_RE = re.compile(
+    rf"^(?:[^\s，。；：:]{{1,40}}\s+)?第\s*[{_CN_NUM}]+\s*[章节]\s*"
+    r"(?P<title>[^\s，。；：:、][^，。；：:]{1,19})$"
+)
+
+
 def _normalize_heading_line(raw: str) -> str:
     """剥掉页码前后缀与并排的英文译名，得到候选标题。"""
     text = re.sub(r"^\d{1,4}\s+", "", raw.strip())
     text = re.sub(r"\s+\d{1,4}$", "", text).strip()
     text = _TRAILING_ASCII_RE.sub("", text).strip()
     return text
+
+
+def _numbered_chapter_title(heading: str) -> Optional[str]:
+    """「第X章 标题」（可带公司名前缀）→ 标题；不是编号章首返回 None。"""
+    found = _NUMBERED_CHAPTER_RE.match(heading)
+    if not found:
+        return None
+    return found.group("title").strip()
 
 
 def _heading_occurrences(line_normalized: str) -> List[Tuple[int, int, str]]:
@@ -389,9 +446,14 @@ def _heading_occurrences(line_normalized: str) -> List[Tuple[int, int, str]]:
     occurrences: List[Tuple[int, int, str]] = []
     for match in re.finditer(r"^[ \t]*(?P<line>\S[^\n]*)$", line_normalized, re.MULTILINE):
         stripped = _normalize_heading_line(match.group("line"))
-        if not stripped or len(stripped) > 24:
+        if not stripped:
             continue
-        if stripped in _BOUNDARY_TITLE_SET:
+        numbered = _numbered_chapter_title(stripped) if len(stripped) <= 64 else None
+        if numbered:
+            stripped = numbered
+        elif len(stripped) > 24:
+            continue
+        if numbered or stripped in _BOUNDARY_TITLE_SET:
             occurrences.append((match.start("line"), match.end("line"), stripped))
     return occurrences
 
@@ -420,17 +482,82 @@ def _toc_zone_end(occurrences: List[Tuple[int, int, str]], total_chars: int) -> 
     return toc_end if len(seen) >= 5 else 0
 
 
+# 同一定位方式下最多比较的候选数（首个候选内容置信度不够时依次往后找）
+MAX_SECTION_CANDIDATES = 12
+
+
+def _first_confident(name: Optional[str], candidates) -> Optional[str]:
+    """候选正文按出现顺序：返回首个内容置信度达标的；都不达标返回第一个（行为同旧实现）。
+
+    只取第一个命中的旧做法，在首个命中恰好落在目录/登记信息页里时就交出一段垃圾——例如 A股
+    新版年报的「主营业务的变化情况 无变更」（第二节登记信息，业务关键词的第一次出现）、
+    紫金 601899 前几页的中英文目录。判据是内容而不是位置：首个候选达标时结果与旧实现一致。"""
+    first: Optional[str] = None
+    first_listing: Optional[str] = None
+    for index, body in enumerate(candidates):
+        if index >= MAX_SECTION_CANDIDATES:
+            break
+        if name is not None and looks_like_listing(body):
+            # 目录式清单开头的候选（紫金 601899 第 6 页的分目录「报告期内公司所处行业情况 /
+            # 报告期内公司从事的业务情况 / …」之后紧跟董事长致辞，整段照样命中特征词）
+            if first_listing is None:
+                first_listing = body
+            continue
+        if first is None:
+            first = body
+        if name is None:
+            return body
+        confidence, _ = score_section(name, body)
+        if confidence >= SECTION_MIN_CONFIDENCE:
+            return body
+    return first if first is not None else first_listing
+
+
+# 目录式清单：开头若干行全是短行、没有句读、没有金额（表格行带金额，不算）
+_LISTING_LINES = 8
+_LISTING_MAX_LINE_CHARS = 30
+
+
+def looks_like_listing(body: str) -> bool:
+    lines = [line.strip() for line in body.split("\n") if line.strip()][:_LISTING_LINES]
+    if len(lines) < _LISTING_LINES:
+        return False
+    return all(
+        len(line) <= _LISTING_MAX_LINE_CHARS
+        and not re.search(r"[。，；,;]", line)
+        and not has_amount_token(line)
+        for line in lines
+    )
+
+
 def _find_section_by_bare_heading(
-    line_normalized: str, titles: List[str], *, body_start: int
+    line_normalized: str,
+    title_tiers: List[List[str]],
+    *,
+    body_start: int,
+    name: Optional[str] = None,
 ) -> Optional[str]:
     """①.5 独立标题行：无「第X节」编号时的确定性定位。
 
-    起点取正文区首个命中标题；终点取其后**首个不同**顶层标题（跳过同名
-    页眉重复）。相比关键词窗口的 50k 盲窗，这里边界是真实的。
+    起点取正文区命中标题；终点取其后**首个不同**顶层标题（跳过同名
+    页眉重复）。相比关键词窗口的 50k 盲窗，这里边界是真实的。候选**按标题优先级分档**、
+    档内按出现顺序，取首个内容置信度达标的（`_first_confident`）——低档标题更早出现时
+    （紫金 601899 第 6 页目录里的「经营情况讨论与分析」）不能抢在高档标题的正文前面。
     """
+    return _first_confident(
+        name,
+        (
+            body
+            for titles in title_tiers
+            for body in _bare_heading_candidates(line_normalized, titles, body_start=body_start)
+        ),
+    )
+
+
+def _bare_heading_candidates(line_normalized: str, titles: List[str], *, body_start: int):
     occurrences = _heading_occurrences(line_normalized)
     if not occurrences:
-        return None
+        return
     # 目录区里每个章节名同样独占一行，必须先跳过，否则切出的是目录残段
     toc_end = _toc_zone_end(occurrences, len(line_normalized))
     body_start = max(body_start, toc_end)
@@ -449,14 +576,15 @@ def _find_section_by_bare_heading(
                 break
         body = line_normalized[end:section_end]
         if len(body.strip()) >= 200:
-            return body
-    return None
+            yield body
 
 
 RISK_SECTION_MAX_CHARS = 20_000
 
 # 小节标题行允许的尾随内容：空白、页码、序号、中英文标点——**不含汉字**
 _HEADING_TRAILER = r"[ \t\d.．、,，:：;；()（）\[\]【】\-—–_]{0,8}"
+# 小节编号前缀：「（四）」「四、」「(四) 」「4.」「3.2.1 」
+_SUBSECTION_NUMBER = rf"(?:[（(]?[{_CN_NUM}\d]{{1,3}}[)）、.．]\s*|\d+(?:\.\d+){{1,3}}\s+)?"
 
 
 def _find_section_by_subsection_heading(
@@ -477,7 +605,9 @@ def _find_section_by_subsection_heading(
     toc_end = _toc_zone_end(occurrences, len(line_normalized))
     start_at = max(body_start, toc_end)
     for title in titles:
-        pattern = rf"^[ \t]*{re.escape(title)}{_HEADING_TRAILER}$"
+        # 允许小节编号前缀（#344：A股 实际写法是「（四）可能面对的风险」「四、可能面对的风险」，
+        # 只认裸标题时两份 A股 固件的风险小节都是 None）
+        pattern = rf"^[ \t]*{_SUBSECTION_NUMBER}{re.escape(title)}{_HEADING_TRAILER}$"
         for match in re.finditer(pattern, line_normalized, re.MULTILINE):
             if match.start() < start_at:
                 continue
@@ -564,7 +694,9 @@ def _running_header_titles(
     return frozenset(skip)
 
 
-def _find_section_by_keyword(text: str, keywords: List[str]) -> Optional[str]:
+def _find_section_by_keyword(
+    text: str, keywords: List[str], name: Optional[str] = None
+) -> Optional[str]:
     """③ 关键词窗口保底：正文中首次出现处起取窗口。
 
     终点优先取其后**首个与关键词所在章节不同**的顶层标题（银行与港股常把业务
@@ -576,27 +708,32 @@ def _find_section_by_keyword(text: str, keywords: List[str]) -> Optional[str]:
     `主席報告` 的页眉，只剩年报第 5 页）。这里与 `_find_section_by_bare_heading`
     同法，先认出关键词落在哪个顶层章节，再跳过它自己的重复页眉。
     """
+    return _first_confident(name, _keyword_candidates(text, keywords))
+
+
+def _keyword_candidates(text: str, keywords: List[str]):
+    """关键词窗口候选：按关键词优先级、再按出现顺序。"""
     normalized = text.replace("\x0c", "\n")  # 等长替换，偏移与 text 一致
     occurrences = _heading_occurrences(normalized)
     toc_end = _toc_zone_end(occurrences, len(normalized))
+    # 跳过前 3 页（封面/目录），避免命中目录行
+    body_start = toc_end
+    pages = text.split("\x0c")
+    if len(pages) > 3:
+        body_start = max(body_start, len("\x0c".join(pages[:3])))
     for keyword in keywords:
-        # 跳过前 3 页（封面/目录），避免命中目录行
-        body_start = toc_end
-        pages = text.split("\x0c")
-        if len(pages) > 3:
-            body_start = max(body_start, len("\x0c".join(pages[:3])))
         position = text.find(keyword, body_start)
-        if position < 0:
-            continue
-        skip = _running_header_titles(occurrences, position, toc_end)
-        for start, _, title in occurrences:
-            if start <= position or title in skip:
-                continue  # 未到起点，或本章页眉的重复出现
-            return text[position : min(start, position + KEYWORD_WINDOW_CHARS)]
-        # 保底窗口仍限长：这是"不知道章节边界在哪"的情况，取无限长
-        # 只会把后续所有章节都吞进来
-        return text[position : position + KEYWORD_WINDOW_CHARS]
-    return None
+        while position >= 0:
+            skip = _running_header_titles(occurrences, position, toc_end)
+            end = position + KEYWORD_WINDOW_CHARS
+            for start, _, title in occurrences:
+                if start <= position or title in skip:
+                    continue  # 未到起点，或本章页眉的重复出现
+                end = min(start, end)
+                break
+            # 找不到边界时保底窗口仍限长：取无限长只会把后续所有章节都吞进来
+            yield text[position:end]
+            position = text.find(keyword, end)
 
 
 _CJK_RE = re.compile(r"[一-鿿]")
@@ -610,6 +747,14 @@ def cjk_ratio(text: str) -> float:
     return len(_CJK_RE.findall(compact)) / len(compact)
 
 
+# 金额/比例 token：千分位数、小数、百分比（纯整数不算——年份、页码、附注号满篇都是）
+_AMOUNT_TOKEN_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d+(?:\.\d+)?\s?%")
+
+
+def has_amount_token(line: str) -> bool:
+    return bool(_AMOUNT_TOKEN_RE.search(line))
+
+
 def strip_english_lines(text: str, *, min_cjk_ratio: float = 0.15) -> Tuple[str, bool]:
     """双语年报剔除纯英文行；返回 (文本, 是否判定为双语)。
 
@@ -619,12 +764,26 @@ def strip_english_lines(text: str, *, min_cjk_ratio: float = 0.15) -> Tuple[str,
 
     只做**行级**过滤：pdfplumber 把双栏排版合并成同一行时，该行中英混杂但
     含中文，予以保留——宁可留噪声也不切碎正文。
+
+    **带金额/比例的行一律保留**（#340）：pdfplumber 处理双栏双语版式时，中文栏里的阿拉伯
+    数字（Latin 字体）常被并到英文行上，双语表格的数值列也只出现在英文标签那一行（「收入
+    REVENUE 5 15,099,076 12,639,332」中文占比同样低于阈值）。此前按中文占比一刀切，02156 的
+    MD&A 原文 360 个金额/百分比抽出后一个不剩，正文变成「收入約人民幣 / 百萬元」。判断是否
+    双语册时同样不把这些行算作「被删行」（09618 单语裁页固件曾因三列数字行被误判为双语）。
     """
     if cjk_ratio(text) < 0.05:
         return text, False  # 纯英文报告
     lines = text.split("\n")
-    kept = [line for line in lines if not line.strip() or cjk_ratio(line) >= min_cjk_ratio]
-    dropped = len(lines) - len(kept)
+    kept: List[str] = []
+    dropped = 0
+    for line in lines:
+        if not line.strip() or cjk_ratio(line) >= min_cjk_ratio or has_amount_token(line):
+            kept.append(line)
+            continue
+        dropped += 1
+        if "\x0c" in line:
+            # 分页符挂在被删的英文行上：留住它，正文起点与目录页码法都按页数算
+            kept.append("\x0c" * line.count("\x0c"))
     # 丢弃行数占比过低说明本来就不是双语册，不做改动（避免误删表格数字行）
     if dropped < len(lines) * 0.15:
         return text, False
@@ -635,15 +794,23 @@ def _flatten(title_tiers: List[List[str]]) -> List[str]:
     return [title for tier in title_tiers for title in tier]
 
 
-def _body_start_offset(line_normalized: str, *, skip_pages: int = 3) -> int:
-    """正文起点（跳过封面/目录若干页）的字符偏移。"""
-    pages = line_normalized.split("\n\n")  # 归一后分页符已成 \n，用页数近似
-    del pages
-    parts = line_normalized.split("\x0c")
+# 正文起点跳过的页数：封面、目录、公司资料。紫金 601899 的杂志式年报目录在第 4 页
+# （「34 管理层讨论与分析」），腾讯 00700 的 MD&A 从第 8 页开始——5 页两头兼顾
+BODY_SKIP_PAGES = 5
+
+
+def _body_start_offset(text: str, *, skip_pages: int = BODY_SKIP_PAGES) -> int:
+    """正文起点（跳过封面/目录若干页）的字符偏移。
+
+    必须传**原文**（含 \x0c 分页符）：原文与 line_normalized 等长，偏移一致。此前调用方
+    传的是已把 \x0c 替换成 \n 的 line_normalized，分页分支永远走不到，总是退回「跳过前
+    5% 或 200 行」——这个切点常落在某页中间甚至越过目标章节的首页（#344：00700 2025 的
+    MD&A 标题在第 8 页页首，行数切点落在第 9 页，丢掉 MD&A 第一页整张全年损益对比表）。"""
+    parts = text.split("\x0c")
     if len(parts) > skip_pages:
         return len("\x0c".join(parts[:skip_pages]))
-    # 归一后已无 \x0c：按行数近似跳过前 5% 或 200 行
-    lines = line_normalized.split("\n")
+    # 没有分页符（单页文本或构造输入）：按行数近似跳过前 5% 或 200 行
+    lines = text.split("\n")
     if len(lines) <= 50:
         return 0
     head = min(len(lines) // 20, 200)
@@ -654,7 +821,7 @@ def _extract_one(
     name: str, line_normalized: str, text: str, title_tiers: List[List[str]]
 ) -> Optional[SectionResult]:
     """三级回退 + 内容置信度守门员；全部不合格时返回最后一次尝试的低置信结果。"""
-    body_start = _body_start_offset(line_normalized)
+    body_start = _body_start_offset(text)
     if name == "risk_factors":
         # 只认独占一行的小节标题，**不设关键词盲窗兜底**：抽不到就是没披露
         attempts = [
@@ -671,12 +838,15 @@ def _extract_one(
             (
                 "bare_heading",
                 lambda: _find_section_by_bare_heading(
-                    line_normalized, _flatten(title_tiers), body_start=body_start
+                    line_normalized, title_tiers, body_start=body_start, name=name
                 ),
             ),
             ("toc_pages", lambda: _find_section_by_toc(text, _flatten(title_tiers))),
             # 关键词窗口依赖原文 \x0c 跳过目录页
-            ("keyword_window", lambda: _find_section_by_keyword(text, _flatten(title_tiers))),
+            (
+                "keyword_window",
+                lambda: _find_section_by_keyword(text, _flatten(title_tiers), name=name),
+            ),
         ]
     # 风险章节没有"低置信也先用着"这一说：它只有一条定位路径，达不到阈值
     # 就是没定位到。返回低置信结果的话 _ensure_section 照样落库并送去摘要。
@@ -756,18 +926,30 @@ _HTML_DROP_BLOCKS_RE = re.compile(
     r"<(script|style|ix:header|ix:hidden)\b[^>]*>.*?</\1>|<!--.*?-->",
     re.IGNORECASE | re.DOTALL,
 )
-_HTML_ENTITY = {
-    "&nbsp;": " ",
-    "&amp;": "&",
-    "&lt;": "<",
-    "&gt;": ">",
-    "&#160;": " ",
-    "&#8217;": "'",
-    "&#8220;": '"',
-    "&#8221;": '"',
-    "&#8211;": "-",
-    "&#8212;": "-",
-}
+# 剥完标签后的字符归一（#345）：此前只认几个十进制实体，`&mdash;`/`&ndash;`/`&#151;`（老 EDGAR
+# 常用的 cp1252 码位）/`&#x2014;`/`&#xa0;` 一律被换成空格或原样残留，Item 标题的分隔符就此
+# 消失，business/risk/mdna 全部定位失败并按确定性失败封顶。先 html.unescape（HTML5 规则，
+# 含 cp1252 码位），再把各类破折号、不换行空格、弯引号归一成 ASCII
+_CHAR_NORMALIZE = str.maketrans(
+    {
+        "\xa0": " ",
+        "\u2002": " ",
+        "\u2003": " ",
+        "\u2009": " ",
+        "\u200b": "",
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+    }
+)
 
 
 # 目标 Item：起始标题 → 正文标题关键词 → 终止标题候选。
@@ -788,43 +970,51 @@ def _spaced_phrase(phrase: str) -> re.Pattern:
     return re.compile(r"\s*".join(_spaced(word) for word in phrase.split()), re.I)
 
 
-_ITEM = _spaced("item")
+# 「Items 1 and 2. Business」（油气/REIT 常见）：item 可带复数 s
+_ITEM = _spaced("item") + r"(?:\s*s)?"
+# Item 编号后的分隔符：句点、冒号、连字符（各类破折号已归一成「-」），或空白后紧跟标题文字
+# （「Item 1 Business」）
+_SEP = r"\s*(?:[\.:\-]|\s(?=[a-z]))"
 _RISK_FACTORS = r"\s*".join((_spaced("risk"), _spaced("factors")))
 _US_FORM_ITEMS: Dict[str, Dict[str, Tuple[str, Tuple[str, ...], Tuple[str, ...]]]] = {
     "10-K": {
         "business": (
-            rf"^[ \t]*{_ITEM}\s*1\s*[\.:—-]",
+            rf"^[ \t]*{_ITEM}\s*1(?:\s*(?:and|&)\s*2)?{_SEP}",
             ("business",),
-            (rf"^[ \t]*{_ITEM}\s*1a\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*2\s*[\.:—-]"),
+            (
+                rf"^[ \t]*{_ITEM}\s*1a{_SEP}",
+                rf"^[ \t]*{_ITEM}\s*2{_SEP}",
+                rf"^[ \t]*{_ITEM}\s*3{_SEP}",
+            ),
         ),
         "risk_factors": (
-            rf"^[ \t]*{_ITEM}\s*1a\s*[\.:—-]",
+            rf"^[ \t]*{_ITEM}\s*1a{_SEP}",
             ("risk factors",),
-            (rf"^[ \t]*{_ITEM}\s*1b\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*2\s*[\.:—-]"),
+            (rf"^[ \t]*{_ITEM}\s*1b{_SEP}", rf"^[ \t]*{_ITEM}\s*2{_SEP}"),
         ),
         "mdna": (
-            rf"^[ \t]*{_ITEM}\s*7\s*[\.:—-]",
+            rf"^[ \t]*{_ITEM}\s*7{_SEP}",
             ("management's discussion", "management s discussion"),
-            (rf"^[ \t]*{_ITEM}\s*7a\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*8\s*[\.:—-]"),
+            (rf"^[ \t]*{_ITEM}\s*7a{_SEP}", rf"^[ \t]*{_ITEM}\s*8{_SEP}"),
         ),
     },
     "20-F": {
         "business": (
-            rf"^[ \t]*{_ITEM}\s*4\s*[\.:—-]",
+            rf"^[ \t]*{_ITEM}\s*4{_SEP}",
             ("information on the company",),
-            (rf"^[ \t]*{_ITEM}\s*4a\s*[\.:—-]", rf"^[ \t]*{_ITEM}\s*5\s*[\.:—-]"),
+            (rf"^[ \t]*{_ITEM}\s*4a{_SEP}", rf"^[ \t]*{_ITEM}\s*5{_SEP}"),
         ),
         # 风险因素在 Item 3.D 之下；先认 "D. Risk Factors" 小节标题，
         # 认不到才退回整个 Item 3（含选录财务数据，噪声但不致命）
         "risk_factors": (
             rf"^[ \t]*[a-e]\s*[\.:]\s*{_RISK_FACTORS}",
             ("risk factors",),
-            (rf"^[ \t]*{_ITEM}\s*4\s*[\.:—-]",),
+            (rf"^[ \t]*{_ITEM}\s*4{_SEP}",),
         ),
         "mdna": (
-            rf"^[ \t]*{_ITEM}\s*5\s*[\.:—-]",
+            rf"^[ \t]*{_ITEM}\s*5{_SEP}",
             ("operating and financial review",),
-            (rf"^[ \t]*{_ITEM}\s*6\s*[\.:—-]",),
+            (rf"^[ \t]*{_ITEM}\s*6{_SEP}",),
         ),
     },
 }
@@ -836,13 +1026,12 @@ US_ITEM_MIN_CHARS = 500
 
 def html_to_text(html: str) -> str:
     """粗剥 HTML（不引新依赖）：先整块剔除非正文块，再块级标签转换行、
-    其余剥除、常见实体解码。"""
+    其余剥除，最后按 HTML5 规则解码全部实体并归一破折号/空白/引号。"""
     text = _HTML_DROP_BLOCKS_RE.sub(" ", html)
     text = _HTML_BLOCK_TAGS_RE.sub("\n", text)
     text = _HTML_TAG_RE.sub(" ", text)
-    for entity, replacement in _HTML_ENTITY.items():
-        text = text.replace(entity, replacement)
-    text = re.sub(r"&#\d+;|&[a-zA-Z]+;", " ", text)
+    # 标签已剥完才解码：「&lt;」解出的「<」不会再被当成标签
+    text = html_lib.unescape(text).translate(_CHAR_NORMALIZE)
     return re.sub(r"[ \t]{2,}", " ", text)
 
 

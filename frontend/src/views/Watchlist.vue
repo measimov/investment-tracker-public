@@ -1,209 +1,62 @@
 <template>
   <div class="watchlist-page">
-    <el-card class="watchlist-card">
-      <template #header>
-        <div class="page-header">
-          <span>观察清单</span>
-          <div class="header-actions">
-            <el-button
-              type="primary"
-              :icon="Plus"
-              data-testid="add-watchlist-button"
-              @click="openAddDialog"
-            >
-              添加观察
-            </el-button>
-          </div>
-        </div>
-      </template>
-
-      <el-alert
-        title="纳入观察但未持仓的标的：点击代码进入标的档案（AI 分析、财报摘要、格雷厄姆准则对观察标的同样可用）。准则达标为防御型投资者标准的预计算结果，不可判定 = 数据源边界而非不达标。"
-        type="info"
-        :closable="false"
-        show-icon
-        class="watchlist-note"
-      />
-
-      <div v-if="!isMobileView" class="responsive-table desktop-data-table">
-        <el-table :data="items" v-loading="loading" stripe row-key="id">
-          <template #empty>
-            <el-empty description="暂无观察标的；点击右上角添加" :image-size="88" />
-          </template>
-          <el-table-column label="代码" width="130">
-            <template #default="{ row }">
-              <el-link type="primary" :underline="false" @click="openSecurityDetail(row)">
-                {{ row.symbol }}
-              </el-link>
-              <el-tooltip v-if="announcements.badgeFor(row)" placement="top">
-                <template #content>
-                  <div v-for="line in announcements.badgeFor(row)!.lines" :key="line">
-                    {{ line }}
-                  </div>
-                </template>
-                <el-tag
-                  type="danger"
-                  size="small"
-                  effect="plain"
-                  class="announcement-badge"
-                  data-testid="watchlist-announcement-badge"
-                >
-                  {{ announcements.badgeFor(row)!.text }}
-                </el-tag>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
-          <el-table-column prop="market" label="市场" width="90" />
-          <el-table-column label="现价" width="130" align="right">
-            <template #default="{ row }">
-              <template v-if="priceInfoOf(row)">
-                <el-tooltip placement="top">
-                  <template #content>
-                    <div v-for="line in priceInfoOf(row)!.tooltip" :key="line">{{ line }}</div>
-                  </template>
-                  <div data-testid="watchlist-price">
-                    <div class="num">{{ formatPrice(row.current_price) }}</div>
-                    <div class="cell-sub" :class="{ 'is-stale': priceInfoOf(row)!.stale }">
-                      {{ priceInfoOf(row)!.label }}
-                    </div>
-                  </div>
-                </el-tooltip>
-              </template>
-              <el-tooltip v-else :content="missingChangeReason({ current_price: null })">
-                <span class="muted">{{ EMPTY }}</span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="加入以来" width="110" align="right">
-            <template #default="{ row }">
-              <el-tooltip v-if="changeOf(row)" placement="top">
-                <template #content>
-                  <div v-for="line in changeOf(row)!.tooltip" :key="line">{{ line }}</div>
-                </template>
-                <span
-                  class="num"
-                  :class="`change-${changeOf(row)!.direction}`"
-                  data-testid="watchlist-change"
-                >
-                  {{ changeOf(row)!.text }}
-                </span>
-              </el-tooltip>
-              <el-tooltip v-else :content="missingChangeReason(row)">
-                <span class="muted">{{ EMPTY }}</span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column prop="note" label="观察理由" min-width="220" show-overflow-tooltip />
-          <el-table-column label="格雷厄姆准则" min-width="150">
-            <template #default="{ row }">
-              <el-tooltip
-                v-if="row.graham_summary"
-                :content="`达标 ${row.graham_summary.passed} / 不达标 ${row.graham_summary.failed} / 不可判定 ${row.graham_summary.indeterminate}（数据年度 ${row.graham_summary.as_of_year}，详情见标的档案）`"
-              >
-                <el-tag :type="grahamTagType(row.graham_summary)" size="small" effect="plain">
-                  达标 {{ row.graham_summary.passed }}/{{ row.graham_summary.total }}
-                </el-tag>
-              </el-tooltip>
-              <el-tooltip v-else content="生成 AI 分析或同步档案后可见准则判定">
-                <span class="muted">未同步档案</span>
-              </el-tooltip>
-            </template>
-          </el-table-column>
-          <el-table-column label="加入日期" width="110">
-            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="130" fixed="right">
-            <template #default="{ row }">
-              <el-button type="primary" size="small" text @click="openEditDialog(row)"
-                >编辑</el-button
-              >
-              <el-button type="danger" size="small" text @click="removeItem(row)">移除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+    <header class="watchlist-header">
+      <div>
+        <h1 class="page-title">观察清单</h1>
+        <p class="page-scope page-description">
+          {{
+            loading
+              ? '正在加载观察标的'
+              : !hasLoaded
+                ? '观察标的尚未确认'
+                : `${items.length} 个观察标的${loadError ? ' · 上次成功加载' : ''}`
+          }}
+        </p>
       </div>
-
-      <div v-else v-loading="loading" class="mobile-card-list">
-        <article
-          v-for="row in items"
-          :key="row.id"
-          class="mobile-card"
-          data-testid="watchlist-card"
+      <div class="header-actions">
+        <NButton
+          aria-label="重新加载"
+          :loading="loading"
+          :disabled="loading"
+          @click="loadWatchlist()"
+          >重新加载</NButton
         >
-          <div class="mobile-card-head">
-            <button
-              type="button"
-              class="mobile-card-title mobile-card-title-link"
-              @click="openSecurityDetail(row)"
-            >
-              <span class="mobile-card-symbol">
-                {{ row.symbol }}
-                <el-icon class="mobile-card-title-chevron"><ArrowRight /></el-icon>
-              </span>
-              <span v-if="row.name" class="mobile-card-name">{{ row.name }}</span>
-            </button>
-            <div class="mobile-card-tags">
-              <el-tag size="small" effect="plain">{{ row.market }}</el-tag>
-              <el-tag
-                v-if="announcements.badgeFor(row)"
-                type="danger"
-                size="small"
-                effect="plain"
-                data-testid="watchlist-card-announcement"
-              >
-                {{ announcements.badgeFor(row)!.text }}
-              </el-tag>
-              <el-tag
-                v-if="row.graham_summary"
-                :type="grahamTagType(row.graham_summary)"
-                size="small"
-                effect="plain"
-              >
-                达标 {{ row.graham_summary.passed }}/{{ row.graham_summary.total }}
-              </el-tag>
-            </div>
-          </div>
-          <div v-if="row.note" class="mobile-card-meta">
-            <span>{{ row.note }}</span>
-          </div>
-          <div class="mobile-card-meta">
-            <span>
-              现价 <span class="num">{{ formatPrice(row.current_price) }}</span>
-              <template v-if="priceInfoOf(row)">（{{ priceInfoOf(row)!.label }}）</template>
-            </span>
-            <span v-if="changeOf(row)">
-              加入以来
-              <span class="num" :class="`change-${changeOf(row)!.direction}`">
-                {{ changeOf(row)!.text }}
-              </span>
-            </span>
-          </div>
-          <div class="mobile-card-meta">
-            <span>加入 {{ formatDate(row.created_at) }}</span>
-          </div>
-          <div class="mobile-card-actions">
-            <el-button type="primary" size="small" text @click="openEditDialog(row)"
-              >编辑</el-button
-            >
-            <el-button type="danger" size="small" text @click="removeItem(row)">移除</el-button>
-          </div>
-        </article>
-        <el-empty
-          v-if="!loading && items.length === 0"
-          description="暂无观察标的"
-          :image-size="88"
-        />
+        <NButton type="primary" data-testid="add-watchlist-button" @click="openAddDialog"
+          >添加观察</NButton
+        >
       </div>
-    </el-card>
-
+    </header>
+    <p class="watchlist-note">跟踪未持仓标的的价格、观察理由与研究进展。</p>
+    <NAlert
+      v-if="loadError"
+      type="warning"
+      :bordered="false"
+      class="load-warning"
+      title="观察清单加载失败"
+    >
+      {{
+        hasLoaded ? '显示上次成功加载的观察标的，尚未确认最新结果。' : '尚未确认观察标的，请重试。'
+      }}
+      <NButton text type="primary" :disabled="loading" @click="loadWatchlist()">重试加载</NButton>
+    </NAlert>
+    <WatchlistTable
+      :items="items"
+      :loading="loading"
+      :empty-description="emptyDescription"
+      :badge-for="announcements.badgeFor"
+      @edit="openEditDialog"
+      @remove="removeItem"
+    />
     <el-dialog
       v-model="dialogVisible"
       :title="editingId === null ? '添加观察标的' : '编辑观察标的'"
       width="480px"
+      class="watchlist-dialog"
+      :style="{ '--el-text-color-placeholder': 'var(--app-text-soft)' }"
+      :close-on-click-modal="false"
     >
       <el-form :model="form" :rules="rules" ref="formRef" label-width="90px">
-        <el-form-item label="股票代码" prop="symbol">
+        <el-form-item label="标的代码" prop="symbol">
           <SecuritySelect
             v-model="form.symbol"
             :market="form.market"
@@ -253,18 +106,15 @@
 <script setup lang="ts">
 import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { showApiError } from '@/utils/showApiError'
-import { ref, reactive, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { NAlert, NButton } from 'naive-ui'
+import WatchlistTable from './watchlist/WatchlistTable.vue'
+import { useLatestRequest } from '@/composables/useLatestRequest'
 import { ElMessage, type FormInstance } from 'element-plus'
-import { ArrowRight, Plus } from '@element-plus/icons-vue'
 import api from '../api'
 import SecuritySelect from '../components/SecuritySelect.vue'
 import { useAutoReload } from '../composables/useAutoReload'
 import { useRecentAnnouncements } from '../composables/useRecentAnnouncements'
-import { useMediaQuery } from '../composables/useMediaQuery'
-import { EMPTY, formatDate, formatPrice, todayLocalISODate } from '../utils/helpers'
-import { describePrice } from './holdings/display'
-import { describeChangeSinceAdded, missingChangeReason } from './watchlist/priceChange'
 import {
   MARKETS,
   freeTextFormPatch,
@@ -273,9 +123,19 @@ import {
 } from '../utils/securities'
 import type { SecurityResolveResponse, SecuritySearchItem, WatchlistItem } from '../types'
 
-const router = useRouter()
-const isMobileView = useMediaQuery('(max-width: 640px)')
 const loading = ref(false)
+const hasLoaded = ref(false)
+const loadError = ref(false)
+const latestRequest = useLatestRequest()
+const emptyDescription = computed(() =>
+  loading.value
+    ? '正在加载观察标的'
+    : loadError.value
+      ? '观察清单暂不可用，请重试'
+      : !hasLoaded.value
+        ? '观察标的尚未加载'
+        : '暂无观察标的；点击添加观察'
+)
 const items = ref<WatchlistItem[]>([])
 const dialogVisible = ref(false)
 const submitting = ref(false)
@@ -287,54 +147,28 @@ const form = reactive({ symbol: '', market: '', name: '', note: '' })
 const announcements = useRecentAnnouncements()
 
 const rules = {
-  symbol: [{ required: true, message: '请输入股票代码', trigger: 'blur' }],
+  symbol: [{ required: true, message: '请输入标的代码', trigger: 'blur' }],
   market: [{ required: true, message: '请选择市场', trigger: 'change' }]
 }
 
-// 准则摘要 tag 配色：全部达标且无不达标才绿；有不达标 warning（哪怕达标数更多——
-// 「达标 5/7」里有 2 项不达标不该显示成绿色）；其余（含全部不可判定）info
-function grahamTagType(summary: Record<string, unknown>) {
-  const passed = Number(summary.passed || 0)
-  const failed = Number(summary.failed || 0)
-  if (failed > 0) return 'warning'
-  if (passed > 0) return 'success'
-  return 'info'
-}
-
-function priceInfoOf(row: WatchlistItem) {
-  return describePrice(
-    {
-      price:
-        row.current_price === null || row.current_price === undefined
-          ? null
-          : Number(row.current_price),
-      priceAsOf: row.price_as_of,
-      priceUpdatedAt: row.price_updated_at,
-      priceSource: row.price_source
-    },
-    todayLocalISODate()
-  )
-}
-
-function changeOf(row: WatchlistItem) {
-  return describeChangeSinceAdded(row)
-}
-
-function openSecurityDetail(row: WatchlistItem) {
-  router.push(`/securities/${encodeURIComponent(row.market)}/${encodeURIComponent(row.symbol)}`)
-}
-
 async function loadWatchlist(options: { silent?: boolean } = {}) {
-  // 自动重读静默进行：不转圈、不弹错（失败保留当前数据，下一轮再试）
+  const request = latestRequest.begin()
+  // 自动重读保留静默约定，不转圈、不弹错；迟到结果不能覆盖之后的手动重载。
   if (!options.silent) loading.value = true
   try {
-    const response = await api.getWatchlist()
+    const response = await api.getWatchlist({ skipGlobalErrorNotification: options.silent })
+    if (!latestRequest.isCurrent(request)) return
     items.value = response.data
+    hasLoaded.value = true
+    loadError.value = false
   } catch (error) {
+    if (!latestRequest.isCurrent(request)) return
     if (options.silent) throw error
+    loadError.value = true
     showApiError(error, '加载观察清单失败')
   } finally {
-    if (!options.silent) loading.value = false
+    // 最新静默读取可能接管尚未完成的手动读取；它结束时同样需要解除加载状态。
+    if (latestRequest.isCurrent(request)) loading.value = false
   }
 }
 
@@ -373,6 +207,7 @@ function openEditDialog(row: WatchlistItem) {
     name: row.name || '',
     note: row.note || ''
   })
+  formRef.value?.clearValidate()
   dialogVisible.value = true
 }
 
@@ -394,7 +229,7 @@ async function handleSubmit() {
         name: form.name || null,
         note: form.note || null
       })
-      ElMessage.success('已更新')
+      ElMessage.success('观察标的已更新')
     }
     dialogVisible.value = false
     await loadWatchlist()
@@ -407,10 +242,11 @@ async function handleSubmit() {
 
 const removeItem = makeConfirmedAction<WatchlistItem>({
   title: '移出观察',
+  confirmText: '移出观察',
   message: (row) => `确定把 ${row.symbol} 移出观察清单吗？标的档案与已生成的分析不受影响。`,
   request: (row) => api.removeWatchlistItem(row.id),
   successMessage: '已移出观察清单',
-  failureMessage: '移除失败',
+  failureMessage: '移出观察失败',
   reload: () => loadWatchlist()
 })
 
@@ -421,48 +257,62 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.announcement-badge {
-  margin-left: 6px;
-  cursor: help;
-}
-
 .watchlist-page {
   width: 100%;
 }
-
-.watchlist-card {
-  overflow: hidden;
+.watchlist-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  margin-bottom: 24px;
 }
-
+.header-actions {
+  display: flex;
+  gap: 10px;
+}
 .watchlist-note {
-  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--app-text-muted);
+  max-width: 80ch;
+  margin: 0 0 24px;
 }
-
-.muted {
-  color: var(--app-text-soft);
-  font-size: 12px;
+.load-warning {
+  margin-bottom: 20px;
 }
-
-.cell-sub {
-  color: var(--app-text-soft);
-  font-size: 12px;
+.load-warning :deep(.n-button) {
+  margin-left: 12px;
 }
-
-.cell-sub.is-stale {
-  color: var(--app-warning);
+@media (min-width: 1025px) {
+  .watchlist-header {
+    margin-bottom: var(--app-space-md);
+  }
+  .watchlist-note {
+    margin-bottom: var(--app-space-sm);
+  }
 }
-
-.change-up {
-  color: var(--app-success);
-}
-
-.change-down {
-  color: var(--app-danger);
-}
-
-@media (max-width: 900px) {
+@media (max-width: 640px) {
+  .watchlist-header {
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 18px;
+  }
   .header-actions {
     width: 100%;
+  }
+  .header-actions :deep(.n-button) {
+    min-height: 44px;
+  }
+  .watchlist-note {
+    margin-bottom: 20px;
+  }
+  :deep(.watchlist-dialog .el-input__wrapper),
+  :deep(.watchlist-dialog .el-select__wrapper) {
+    min-height: 44px;
+  }
+  :deep(.watchlist-dialog .el-input__inner) {
+    height: 40px;
   }
 }
 </style>

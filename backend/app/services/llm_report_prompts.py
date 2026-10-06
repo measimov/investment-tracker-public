@@ -66,6 +66,8 @@ def build_chat_messages(
     question: str,
 ) -> List[Dict[str, str]]:
     """追问上下文 = 报告全文 + 生成时的账本数据 + 近若干轮历史 + 新问题。"""
+    # Routing provenance is stored alongside the snapshot, not part of the ledger input.
+    input_payload = {key: value for key, value in input_payload.items() if key != "generation_meta"}
     context = (
         "以下是已生成的复盘报告全文与生成时使用的账本数据，后续问题均基于它们讨论。\n\n"
         f"# 报告\n\n{report_content}\n\n# 账本数据\n\n```json\n{serialize_input(input_payload)}\n```"

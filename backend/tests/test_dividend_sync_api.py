@@ -15,6 +15,7 @@ from app.models.corporate_action import CorporateAction
 from app.models.corporate_action_suggestion import CorporateActionSuggestion
 from app.models.holding import Holding
 from app.models.security_event import SecurityEvent
+from app.models.security_catalog import SecurityCatalogEntry
 from app.models.transaction import Transaction
 from app.models.user import User
 
@@ -227,7 +228,12 @@ async def test_accept_explicit_null_account_clears_attribution(api_users):
         user_auth = await _auth(client, "demo")
 
         # 显式 null → 归属清空
-        s1 = _seed_suggestion(api_users["demo"], broker_account_id=account_id)
+        s1 = _seed_suggestion(
+            api_users["demo"],
+            broker_account_id=account_id,
+            action_type="STOCK_DIVIDEND",
+            stk_div_per_share=Decimal("0.1"),
+        )
         cleared = await client.post(
             f"/api/corporate-actions/suggestions/{s1}/accept",
             json={"broker_account_id": None},
@@ -240,6 +246,8 @@ async def test_accept_explicit_null_account_clears_attribution(api_users):
         s2 = _seed_suggestion(
             api_users["demo"],
             broker_account_id=account_id,
+            action_type="STOCK_DIVIDEND",
+            stk_div_per_share=Decimal("0.1"),
             symbol="600519",
             ex_date=TODAY - timedelta(days=100),
             pay_date=TODAY - timedelta(days=99),
@@ -266,7 +274,7 @@ async def test_accept_rejects_tax_over_gross(api_users):
             headers=user_auth,
         )
         assert rejected.status_code == 409
-        assert "不能超过" in rejected.json()["detail"]
+        assert "不能通过接受公告" in rejected.json()["detail"]
 
     db = SessionLocal()
     try:
@@ -288,33 +296,13 @@ async def test_accept_creates_action_and_rejects_double_accept(api_users):
             json={"tax_withheld": "100"},
             headers=user_auth,
         )
-        assert accepted.status_code == 200
-        action = accepted.json()
-        assert action["action_type"] == "CASH_DIVIDEND"
-        assert float(action["total_dividend"]) == 1000.0
-        assert float(action["tax_withheld"]) == 100.0
-        assert float(action["net_dividend"]) == 900.0
-        assert "分红公告建议" in action["notes"]
-
-        # 建议状态翻转 + 关联账本记录
-        detail = await client.get(
-            "/api/corporate-actions/suggestions?status=ACCEPTED", headers=user_auth
-        )
-        row = detail.json()[0]
-        assert row["created_corporate_action_id"] == action["id"]
-
-        # 重复接受 → 409；已接受的不能忽略 → 409
-        double = await client.post(
-            f"/api/corporate-actions/suggestions/{suggestion_id}/accept",
-            json={},
-            headers=user_auth,
-        )
-        assert double.status_code == 409
-        ignore = await client.post(
-            f"/api/corporate-actions/suggestions/{suggestion_id}/ignore",
-            headers=user_auth,
-        )
-        assert ignore.status_code == 409
+        assert accepted.status_code == 409
+        assert "不能通过接受公告" in accepted.json()["detail"]
+        detail = await client.get("/api/corporate-actions/suggestions", headers=user_auth)
+        assert detail.json()[0]["status"] == "NEW"
+        assert detail.json()[0]["created_corporate_action_id"] is None
+        actions = await client.get("/api/corporate-actions", headers=user_auth)
+        assert actions.json() == []
 
 
 @pytest.mark.anyio
@@ -413,3 +401,88 @@ async def test_security_events_filtered_by_holdings(api_users):
             headers=user_auth,
         )
         assert len(by_symbol.json()) == 1
+
+
+@pytest.mark.anyio
+async def test_suggestion_names_are_read_only_scoped_and_paginated(api_users):
+    user_id = api_users["demo"]
+    specs = [
+        ("UI-CATALOG", "美股", None, "目录展示名"),
+        ("UI-SAME", "A股", None, "当前用户A股名"),
+        ("UI-SAME", "港股", None, "当前用户港股名"),
+        ("UI-OTHER", "美股", None, None),
+        ("UI-UNKNOWN", "美股", None, None),
+        ("UI-CATALOG", "美股", "公告既有名", "公告既有名"),
+    ]
+    ids = [
+        _seed_suggestion(
+            user_id,
+            symbol=symbol,
+            market=market,
+            name=name,
+            ex_date=TODAY - timedelta(days=20 + index),
+            estimated_total_dividend=Decimal("123.456789"),
+        )
+        for index, (symbol, market, name, _) in enumerate(specs)
+    ]
+    db = SessionLocal()
+    try:
+        db.add(
+            SecurityCatalogEntry(
+                symbol="UI-CATALOG", market="美股", name="目录展示名", source="test-fixture"
+            )
+        )
+        for owner, symbol, market, name in [
+            (user_id, "UI-SAME", "A股", "当前用户A股名"),
+            (user_id, "UI-SAME", "港股", "当前用户港股名"),
+            (api_users["admin"], "UI-OTHER", "美股", "另一用户私有名"),
+        ]:
+            db.add(
+                Holding(
+                    user_id=owner,
+                    symbol=symbol,
+                    market=market,
+                    name=name,
+                    quantity=Decimal("1"),
+                    avg_cost=Decimal("1"),
+                    total_cost=Decimal("1"),
+                )
+            )
+        db.commit()
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            auth = await _auth(client, "demo")
+            listed = await client.get("/api/corporate-actions/suggestions", headers=auth)
+            assert listed.status_code == 200
+            rows = listed.json()
+            assert [row["id"] for row in rows] == ids
+            assert [row["name"] for row in rows] == [spec[3] for spec in specs]
+            assert all(
+                Decimal(row["estimated_total_dividend"]) == Decimal("123.456789")
+                and Decimal(row["cash_div_pre_tax"]) == Decimal("1.0")
+                for row in rows
+            )
+            page = await client.get(
+                "/api/corporate-actions/suggestions?skip=1&limit=2", headers=auth
+            )
+            assert page.status_code == 200
+            assert page.json() == rows[1:3]
+            pending_page = await client.get(
+                "/api/corporate-actions/suggestions?pending_only=true&skip=1&limit=2",
+                headers=auth,
+            )
+            assert pending_page.status_code == 200
+            assert pending_page.json() == rows[1:3]
+        db.expire_all()
+        stored = (
+            db.query(CorporateActionSuggestion).filter(CorporateActionSuggestion.id.in_(ids)).all()
+        )
+        assert {row.id: row.name for row in stored} == {
+            row_id: spec[2] for row_id, spec in zip(ids, specs)
+        }
+    finally:
+        db.query(SecurityCatalogEntry).filter(
+            SecurityCatalogEntry.symbol == "UI-CATALOG", SecurityCatalogEntry.market == "美股"
+        ).delete()
+        db.commit()
+        db.close()

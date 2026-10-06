@@ -3,10 +3,22 @@ import {
   grahamBasisText,
   grahamPriceText,
   grahamSupplementText,
-  grahamSupplementTitle
+  grahamSupplementTitle,
+  grahamSummaryTagType
 } from './grahamFormat'
 
 describe('grahamFormat', () => {
+  it('缺失或不可判定不算全部达标，清单与详情使用同一规则', () => {
+    expect(grahamSummaryTagType({ passed: 3, failed: 0, total: 7 })).toBe('info')
+    expect(grahamSummaryTagType({ passed: 7, failed: 0, total: 7 })).toBe('success')
+    expect(grahamSummaryTagType({ passed: 3, failed: 0, criteria: Array(7).fill({}) })).toBe('info')
+    expect(grahamSummaryTagType({ passed: 7, failed: 0, criteria: Array(7).fill({}) })).toBe(
+      'success'
+    )
+    expect(grahamSummaryTagType({ passed: 7, failed: 1, total: 7 })).toBe('warning')
+    expect(grahamSummaryTagType({})).toBe('info')
+  })
+
   it('TTM 构成、每股盈利与价格日期', () => {
     const text = grahamBasisText({
       label: 'TTM = 20251231 年报 + 20260630 中报 − 上年同期中报',

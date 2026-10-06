@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const API = 'http://127.0.0.1:18100'
+const API = process.env.DEMO_API_URL || 'http://127.0.0.1:18100'
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const MEDIA_DIR = path.resolve(HERE, '../../docs/media')
 const VIDEO_DIR = path.resolve(HERE, '../demo-output/videos')
@@ -41,6 +41,7 @@ async function settle(page: Page) {
   await page.waitForLoadState('networkidle')
   await expect(page.locator('.el-loading-mask:visible')).toHaveCount(0, { timeout: 30000 })
   await expect(page.locator('.el-skeleton:visible')).toHaveCount(0, { timeout: 30000 })
+  await expect(page.locator('.n-skeleton:visible')).toHaveCount(0, { timeout: 30000 })
   await page.waitForTimeout(900) // echarts 入场动画
 }
 
@@ -70,14 +71,13 @@ test.describe('截图', () => {
     await page.goto('/statistics')
     await expect(page.locator('canvas').first()).toBeVisible({ timeout: 60000 })
     await settle(page)
-    // 收益曲线与风险指标在第二屏：页面在内层容器里滚动，用 scrollIntoView 定位到卡片顶部
-    await page
-      .getByText('证券组合 TTWR 与风险指标')
-      .evaluate((el) => el.closest('.el-card')?.scrollIntoView({ block: 'start' }))
     await shot(page, 'statistics')
 
     await page.goto('/transactions')
     await shot(page, 'transactions')
+
+    await page.goto('/corporate-actions')
+    await shot(page, 'corporate-actions')
 
     await page.goto('/watchlist')
     await shot(page, 'watchlist')
@@ -117,6 +117,9 @@ test.describe('截图', () => {
     for (const [route, name] of [
       ['/', 'mobile-dashboard'],
       ['/holdings', 'mobile-holdings'],
+      ['/transactions', 'mobile-transactions'],
+      ['/statistics', 'mobile-statistics'],
+      ['/corporate-actions', 'mobile-corporate-actions'],
       [RESEARCH, 'mobile-security']
     ]) {
       await page.goto(route)
@@ -124,6 +127,47 @@ test.describe('截图', () => {
     }
     await context.close()
   })
+})
+
+test('截图：明确虚构的研究阅读样例', async ({ browser }) => {
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(MEDIA_DIR, 'research-reading-fixture.json'), 'utf8')
+  )
+  for (const [width, dpr, name] of [
+    [1440, 1, 'research-reading'],
+    [393, 2, 'mobile-research-reading']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await page.route('**/api/securities/**/analysis', (route) =>
+      route.fulfill({ json: fixture.analysis })
+    )
+    await page.route('**/api/securities/**/profile', (route) =>
+      route.fulfill({ json: fixture.profile })
+    )
+    await page.route('**/api/watchlist/contains**', (route) =>
+      route.fulfill({ json: { watching: false } })
+    )
+    await page.goto('/securities/A股/UI-RESEARCH')
+    await expect(page.getByTestId('business-profile-section')).toContainText(
+      fixture.profile.business.profile.商业模式
+    )
+    await settle(page)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
 })
 
 // ---------------------------------------------------------------- 视频 ---
@@ -193,10 +237,22 @@ test.describe('视频', () => {
       await settle(page)
       await page.mouse.move(640, 300, { steps: 20 })
       await page.waitForTimeout(1200)
-      await glideClick(page, page.locator('.el-menu-item', { hasText: '当前持仓' }).first())
+      await glideClick(
+        page,
+        page
+          .getByRole('navigation', { name: '主导航' })
+          .getByRole('link', { name: '当前持仓', exact: true })
+          .first()
+      )
       await settle(page)
       await page.waitForTimeout(1200)
-      await glideClick(page, page.locator('.el-menu-item', { hasText: '统计分析' }).first())
+      await glideClick(
+        page,
+        page
+          .getByRole('navigation', { name: '主导航' })
+          .getByRole('link', { name: '统计分析', exact: true })
+          .first()
+      )
       await settle(page)
       await smoothScroll(page, 500)
       await page.waitForTimeout(1500)
@@ -223,7 +279,12 @@ test.describe('视频', () => {
       await settle(page)
       await page.waitForTimeout(1500)
       for (const menu of ['当前持仓', '统计分析', '交易记录']) {
-        await glideClick(page, page.locator('.el-menu-item', { hasText: menu }).first())
+        await glideClick(
+          page,
+          page
+            .getByRole('navigation', { name: '主导航' })
+            .getByRole('link', { name: menu, exact: true })
+        )
         await settle(page)
         await smoothScroll(page, 400)
         await page.waitForTimeout(1200)
@@ -292,3 +353,362 @@ async function openReconciliationDiff(page: Page, options: { glide?: boolean } =
   await click(page.getByRole('button', { name: /有差异，查看差异明细/ }).first())
   await expect(page.locator('.el-dialog', { hasText: '对账比对详情' })).toBeVisible()
 }
+
+test('截图：明确虚构的AI复盘阅读样例', async ({ browser }) => {
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(MEDIA_DIR, 'reports-reading-fixture.json'), 'utf8')
+  )
+  for (const [width, dpr, name] of [
+    [1440, 1, 'reports-reading'],
+    [393, 2, 'mobile-reports-reading']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage()
+    const errors: string[] = []
+    const writes: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await page.route('**/api/llm-reports**', (route) => {
+      const req = route.request()
+      if (req.method() !== 'GET') {
+        writes.push(req.url())
+        return route.abort()
+      }
+      const pathname = new URL(req.url()).pathname
+      if (pathname.endsWith('/schedule')) return route.fulfill({ json: fixture.schedule })
+      if (pathname === '/api/llm-reports') return route.fulfill({ json: fixture.reports })
+      return route.fulfill({ json: fixture.details[pathname.split('/').at(-1)!] })
+    })
+    await page.goto('/reports')
+    await expect(page.locator('.report-detail')).toContainText('虚构账本复盘')
+    await settle(page)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    expect(writes).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
+})
+
+test('截图：观察清单演示账本', async ({ browser }) => {
+  for (const [width, dpr, name] of [
+    [1440, 1, 'watchlist'],
+    [393, 2, 'mobile-watchlist']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await page.goto('/watchlist')
+    await expect(page.getByRole('main')).toContainText('NVDA')
+    await settle(page)
+    await expect(page.locator('.n-spin-body:visible')).toHaveCount(0)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
+})
+test('截图：汇率演示账本', async ({ browser }) => {
+  for (const [width, dpr, name] of [
+    [1440, 1, 'exchange-rates'],
+    [393, 2, 'mobile-exchange-rates']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await page.goto('/exchange-rates')
+    await expect(page.getByRole('main')).toContainText('USD')
+    await settle(page)
+    await expect(page.locator('.n-spin-body:visible')).toHaveCount(0)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
+})
+
+test('截图：账户数据演示账本', async ({ browser }) => {
+  for (const [width, dpr, name] of [
+    [1440, 1, 'account-data'],
+    [393, 2, 'mobile-account-data']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage()
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await page.goto('/account-data')
+    await expect(page.getByRole('main')).toContainText('IBKR')
+    await settle(page)
+    await expect(page.locator('.n-spin-body:visible')).toHaveCount(0)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
+})
+
+test('截图：观点明确虚构阅读样例', async ({ browser }) => {
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(MEDIA_DIR, 'opinions-ui-fixture.json'), 'utf8')
+  )
+  for (const [width, dpr, name] of [
+    [1440, 1, 'opinions'],
+    [393, 2, 'mobile-opinions']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage(),
+      errors: string[] = [],
+      blocked: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await context.route('**/*', (route) => {
+      const req = route.request(),
+        url = new URL(req.url())
+      if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (req.method() !== 'GET' && url.pathname !== '/api/auth/refresh') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (url.pathname === '/api/capabilities')
+        return route.fulfill({
+          json: {
+            opinions: { available: true, reason: 'history' },
+            xueqiu_symbol_feed: { available: false, reason: 'unconfigured' }
+          }
+        })
+      if (url.pathname === '/api/securities/opinion-summaries')
+        return route.fulfill({ json: fixture.summaries })
+      if (url.pathname === '/api/securities/opinion-feed')
+        return route.fulfill({ json: fixture.feed })
+      if (url.pathname === '/api/xueqiu-collector/status')
+        return route.fulfill({ json: fixture.collector })
+      return route.continue()
+    })
+    await page.goto('/opinions')
+    await expect(page.getByTestId('opinion-symbols-table')).toContainText('UI明确虚构长证券名称')
+    await settle(page)
+    await expect(page.locator('.n-spin-body:visible')).toHaveCount(0)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    expect(blocked).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    if (width === 393) {
+      await page.getByRole('tab', { name: '作者动态', exact: true }).click()
+      const author = page
+        .getByTestId('opinion-author-feed')
+        .getByRole('button', { name: /UI明确虚构作者与组合/ })
+      await author.focus()
+      await page.keyboard.press('Enter')
+      await expect(author).toHaveAttribute('aria-expanded', 'true')
+      await settle(page)
+      await page.screenshot({ path: path.join(MEDIA_DIR, 'mobile-opinions-authors.png') })
+      expect(errors).toEqual([])
+      expect(blocked).toEqual([])
+    }
+    await context.close()
+  }
+})
+
+test('截图：用户管理明确虚构样例', async ({ browser }) => {
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(MEDIA_DIR, 'user-management-ui-fixture.json'), 'utf8')
+  )
+  for (const [width, dpr, name] of [
+    [1440, 1, 'user-management'],
+    [393, 2, 'mobile-user-management']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage(),
+      errors: string[] = [],
+      blocked: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await context.route('**/*', (route) => {
+      const req = route.request(),
+        url = new URL(req.url())
+      if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (req.method() !== 'GET' && url.pathname !== '/api/auth/refresh') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (url.pathname === '/api/auth/me')
+        return route.fulfill({ json: { ...fixture.users[1], id: 2 } })
+      if (url.pathname === '/api/users') return route.fulfill({ json: fixture.users })
+      return route.continue()
+    })
+    await page.goto('/admin/users')
+    await expect(page.getByRole('region', { name: '用户列表', exact: true })).toContainText(
+      fixture.users[0].username
+    )
+    await settle(page)
+    await expect(page.locator('.n-spin-body:visible')).toHaveCount(0)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    expect(blocked).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
+})
+
+test('截图：管理员持仓明确虚构样例', async ({ browser }) => {
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(MEDIA_DIR, 'admin-holdings-ui-fixture.json'), 'utf8')
+  )
+  for (const [width, dpr, name] of [
+    [1440, 1, 'admin-holdings'],
+    [393, 2, 'mobile-admin-holdings']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage(),
+      errors: string[] = [],
+      blocked: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await context.route('**/*', (route) => {
+      const req = route.request(),
+        url = new URL(req.url())
+      if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (req.method() !== 'GET' && url.pathname !== '/api/auth/refresh') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (url.pathname === '/api/auth/me')
+        return route.fulfill({ json: { ...fixture.users[1], id: 2 } })
+      if (url.pathname === '/api/users') return route.fulfill({ json: fixture.users })
+      if (url.pathname === '/api/holdings/admin/all')
+        return route.fulfill({ json: fixture.holdings })
+      if (url.pathname === '/api/exchange-rates/latest')
+        return route.fulfill({ json: fixture.rates })
+      return route.continue()
+    })
+    await page.goto('/admin/holdings')
+    await expect(page.getByRole('region', { name: '管理员持仓明细', exact: true })).toContainText(
+      fixture.users[0].username
+    )
+    await settle(page)
+    await expect(page.locator('.n-spin-body:visible')).toHaveCount(0)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    expect(blocked).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
+})
+test('截图：系统告警明确虚构样例', async ({ browser }) => {
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(MEDIA_DIR, 'system-alerts-ui-fixture.json'), 'utf8')
+  )
+  for (const [width, dpr, name] of [
+    [1440, 1, 'system-alerts'],
+    [393, 2, 'mobile-system-alerts']
+  ] as const) {
+    const context = await browser.newContext({
+      viewport: { width, height: 852 },
+      deviceScaleFactor: dpr,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      reducedMotion: 'reduce'
+    })
+    const page = await context.newPage(),
+      errors: string[] = [],
+      blocked: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+    page.on('requestfailed', (request) => errors.push(request.url()))
+    await signIn(page)
+    await context.route('**/*', (route) => {
+      const req = route.request(),
+        url = new URL(req.url())
+      if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (req.method() !== 'GET' && url.pathname !== '/api/auth/refresh') {
+        blocked.push(url.pathname)
+        return route.abort()
+      }
+      if (url.pathname === '/api/auth/me')
+        return route.fulfill({
+          json: { id: 2, username: 'demo', email: null, is_admin: true, is_active: true }
+        })
+      if (url.pathname === '/api/notifications/alerts')
+        return route.fulfill({ json: fixture.alerts })
+      if (url.pathname === '/api/notifications/events')
+        return route.fulfill({ json: fixture.events })
+      return route.continue()
+    })
+    await page.goto('/admin/alerts')
+    await expect(page.getByRole('region', { name: '当前告警', exact: true })).toContainText(
+      'UI明确虚构critical告警'
+    )
+    await settle(page)
+    await expect(page.locator('.n-spin-body:visible')).toHaveCount(0)
+    await expect(page.getByText('连接已中断', { exact: true })).toHaveCount(0)
+    expect(errors).toEqual([])
+    expect(blocked).toEqual([])
+    await page.screenshot({ path: path.join(MEDIA_DIR, `${name}.png`) })
+    await context.close()
+  }
+})

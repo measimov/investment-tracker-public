@@ -1,5 +1,6 @@
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Column,
     Date,
@@ -66,6 +67,7 @@ class CorporateActionSuggestion(Base):
     estimated_total_dividend = Column(Numeric(18, 8), comment="税前推算总额")
 
     status = Column(String(20), nullable=False, default="NEW", server_default="NEW", index=True)
+    receipt_complete = Column(Boolean, nullable=False, default=False, server_default="false")
     matched_corporate_action_id = Column(
         Integer,
         ForeignKey("corporate_actions.id", ondelete="SET NULL"),

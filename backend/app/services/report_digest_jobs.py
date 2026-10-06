@@ -16,7 +16,7 @@ from .background_job_store import (
 from ..database import SessionLocal
 from .job_runtime import run_job_inline
 from .job_worker import register_runner
-from .report_digest_service import ensure_report_digests
+from .report_digest_service import all_attempts_failed, ensure_report_digests
 from .report_statement_service import STATEMENT_MARKETS, attach_statement_outcome
 from .security_analysis_jobs import AnalysisBusyError
 
@@ -40,6 +40,17 @@ def start_report_backfill_job(user_id: int, symbol: str, market: str) -> Dict[st
             active_job=job,
         )
     return job
+
+
+def backfill_failure_message(result: Dict[str, Any]) -> Optional[str]:
+    """单标的回填的失败判定（无 fatal 时）：None = 成功。"""
+    if result.get("plan_incomplete"):
+        return "年报清单检索失败或不完整（数据源故障），本轮覆盖范围不可信"
+    if all_attempts_failed(result):
+        return f"本轮尝试的 {result['failed']} 份报告全部失败：" + "；".join(
+            (result.get("gaps") or [])[:3]
+        )
+    return None
 
 
 def execute_report_backfill_job(claimed: Dict[str, Any]) -> None:
@@ -81,6 +92,20 @@ def execute_report_backfill_job(claimed: Dict[str, Any]) -> None:
                 JOB_TYPE,
                 status="failed",
                 error=message[:300],
+                data_updates={"result": result},
+                required_status="running",
+                required_attempt_count=attempt,
+            )
+            return
+        failure = backfill_failure_message(result)
+        if failure:
+            # 与批量回填同一契约（#347-5）：清单不完整、或本轮尝试全部失败（generated=0 且
+            # failed>0）不得记成功——此前单标的回填照样 succeeded，前端弹绿色「回填完成」
+            update_job(
+                job_id,
+                JOB_TYPE,
+                status="failed",
+                error=failure[:300],
                 data_updates={"result": result},
                 required_status="running",
                 required_attempt_count=attempt,

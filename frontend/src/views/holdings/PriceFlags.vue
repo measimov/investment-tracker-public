@@ -1,29 +1,30 @@
 <script setup lang="ts">
+import { NTag } from 'naive-ui'
 /** 现价旁的「手工 / 陈价」标记（#284：桌面表格与移动卡片共用）。 */
 defineProps<{ info: { manual?: boolean; stale?: boolean } | null | undefined }>()
 </script>
 
 <template>
-  <el-tag
+  <NTag
     v-if="info?.manual"
-    type="info"
+    type="default"
     size="small"
-    effect="plain"
+    :bordered="true"
     class="price-flag"
     data-testid="price-manual-tag"
   >
     手工
-  </el-tag>
-  <el-tag
+  </NTag>
+  <NTag
     v-if="info?.stale"
     type="warning"
     size="small"
-    effect="plain"
+    :bordered="true"
     class="price-flag"
     data-testid="price-stale-tag"
   >
     陈价
-  </el-tag>
+  </NTag>
 </template>
 
 <style scoped>

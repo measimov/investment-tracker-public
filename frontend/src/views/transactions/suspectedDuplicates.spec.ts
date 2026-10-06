@@ -58,6 +58,8 @@ describe('suspectedDuplicates', () => {
   it('股息/预扣税行不按成交价展示', () => {
     expect(isSuspectedCashRow(sample({ transaction_type: 'CASH_DIVIDEND' }))).toBe(true)
     expect(isSuspectedCashRow(sample({ transaction_type: 'DIVIDEND_TAX' }))).toBe(true)
+    expect(isSuspectedCashRow(sample({ transaction_type: 'TRANSFER_OUT' }))).toBe(true)
+    expect(suspectedRowTypeLabel('TRANSFER_OUT')).toBe('资金转出')
     expect(isSuspectedCashRow(sample())).toBe(false)
   })
 })

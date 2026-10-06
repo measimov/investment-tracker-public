@@ -1,0 +1,701 @@
+{
+ "symbol": "00799",
+ "market": "港股",
+ "exported_from": "production (read-only), 2026-09-30",
+ "annual": {
+  "report_statements": [
+   {
+    "end_date": "20251231",
+    "fp": "FY",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 5497009000.0,
+    "n_income_attr_p": 580493000.0,
+    "basic_eps": 0.5102,
+    "accounts_receiv": 176836000.0,
+    "inventories": 5348000.0,
+    "money_cap": 2414275000.0,
+    "total_hldr_eqy_exc_min_int": 3456344000.0,
+    "n_cashflow_act": 682763000.0,
+    "capex": -156320000.0,
+    "div_paid_owners": 229915000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4654043000.0,
+    "free_cashflow": 526443000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20241231",
+    "fp": "FY",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 5737114000.0,
+    "n_income_attr_p": 580676000.0,
+    "basic_eps": 0.5061,
+    "accounts_receiv": 183652000.0,
+    "inventories": 409000.0,
+    "money_cap": 2245666000.0,
+    "total_hldr_eqy_exc_min_int": 3121069000.0,
+    "n_cashflow_act": 1120857000.0,
+    "capex": -133875000.0,
+    "div_paid_owners": 97410000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4418656000.0,
+    "free_cashflow": 986982000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20231231",
+    "fp": "FY",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 5265911000.0,
+    "n_income_attr_p": 73053000.0,
+    "basic_eps": 0.0625,
+    "accounts_receiv": 119237000.0,
+    "inventories": 433000.0,
+    "money_cap": 1469752000.0,
+    "total_hldr_eqy_exc_min_int": 2734763000.0,
+    "n_cashflow_act": 128577000.0,
+    "capex": -133926000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 3697437000.0,
+    "free_cashflow": -5349000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20221231",
+    "fp": "FY",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 4591327000.0,
+    "n_income_attr_p": -503589000.0,
+    "basic_eps": -0.4329,
+    "accounts_receiv": 70627000.0,
+    "inventories": 578000.0,
+    "money_cap": 1581832000.0,
+    "total_hldr_eqy_exc_min_int": 2711867000.0,
+    "n_cashflow_act": -98239000.0,
+    "capex": -134407000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 3636137000.0,
+    "free_cashflow": -232646000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20211231",
+    "fp": "FY",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 6050894000.0,
+    "n_income_attr_p": 370438000.0,
+    "basic_eps": 0.3158,
+    "accounts_receiv": 59754000.0,
+    "inventories": 2326000.0,
+    "money_cap": 1949971000.0,
+    "total_hldr_eqy_exc_min_int": 3313456000.0,
+    "n_cashflow_act": 660263000.0,
+    "capex": -128344000.0,
+    "div_paid_owners": 798460000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4454192000.0,
+    "free_cashflow": 531919000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20201231",
+    "fp": "FY",
+    "currency": "USD",
+    "is_comparative": false,
+    "total_revenue": 704128000.0,
+    "n_income_attr_p": 270234000.0,
+    "basic_eps": 0.2223,
+    "accounts_receiv": 13723000.0,
+    "inventories": 237000.0,
+    "money_cap": 280236000.0,
+    "total_hldr_eqy_exc_min_int": 497670000.0,
+    "n_cashflow_act": 167714000.0,
+    "capex": -4310000.0,
+    "div_paid_owners": 106177000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 629582000.0,
+    "free_cashflow": 163404000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20191231",
+    "fp": "FY",
+    "currency": "USD",
+    "is_comparative": false,
+    "total_revenue": 667648000.0,
+    "n_income_attr_p": 164794000.0,
+    "basic_eps": 0.1319,
+    "accounts_receiv": 12444000.0,
+    "inventories": 318000.0,
+    "money_cap": 307086000.0,
+    "total_hldr_eqy_exc_min_int": 374605000.0,
+    "n_cashflow_act": 126942000.0,
+    "capex": -5143000.0,
+    "div_paid_owners": 47389000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 476531000.0,
+    "free_cashflow": 121799000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20181231",
+    "fp": "FY",
+    "currency": "USD",
+    "is_comparative": false,
+    "total_revenue": 748785000.0,
+    "n_income_attr_p": 189177000.0,
+    "basic_eps": 0.1467,
+    "accounts_receiv": 9397000.0,
+    "inventories": 280000.0,
+    "money_cap": 287547000.0,
+    "total_hldr_eqy_exc_min_int": 282603000.0,
+    "n_cashflow_act": 239224000.0,
+    "capex": -5087000.0,
+    "div_paid_owners": 52120000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 399413000.0,
+    "free_cashflow": 234137000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20171231",
+    "fp": "FY",
+    "currency": "USD",
+    "is_comparative": false,
+    "total_revenue": 607253000.0,
+    "n_income_attr_p": 156026000.0,
+    "basic_eps": 0.1172,
+    "accounts_receiv": 13091000.0,
+    "inventories": 126000.0,
+    "money_cap": 221892000.0,
+    "total_hldr_eqy_exc_min_int": 229173000.0,
+    "n_cashflow_act": 172236000.0,
+    "capex": -2370000.0,
+    "div_paid_owners": 83939000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 318467000.0,
+    "free_cashflow": 169866000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20161231",
+    "fp": "FY",
+    "currency": "USD",
+    "is_comparative": false,
+    "total_revenue": 322087000.0,
+    "n_income_attr_p": 72616000.0,
+    "basic_eps": 0.0537,
+    "accounts_receiv": 1004000.0,
+    "money_cap": 184061000.0,
+    "total_hldr_eqy_exc_min_int": 195936000.0,
+    "n_cashflow_act": 74426000.0,
+    "capex": -4904000.0,
+    "div_paid_owners": 37686000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 243431000.0,
+    "free_cashflow": 69522000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20151231",
+    "fp": "FY",
+    "currency": "USD",
+    "is_comparative": true,
+    "total_revenue": 202546000.0,
+    "n_income_attr_p": 41492000.0,
+    "basic_eps": 0.03,
+    "accounts_receiv": 1083000.0,
+    "money_cap": 185503000.0,
+    "total_hldr_eqy_exc_min_int": 190524000.0,
+    "n_cashflow_act": 53562000.0,
+    "capex": -4137000.0,
+    "div_paid_owners": 37660000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 220126000.0,
+    "free_cashflow": 49425000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   }
+  ],
+  "yahoo_fundamentals": [
+   {
+    "end_date": "20251231",
+    "fp": "FY",
+    "currency": "HKD",
+    "accounts_receiv": 119038000.0,
+    "money_cap": 2414275000.0,
+    "total_hldr_eqy_exc_min_int": 3456344000.0,
+    "total_debt": 59892000.0,
+    "div_paid_owners": 229915000.0,
+    "capex": -156320000.0,
+    "n_cashflow_act": 682763000.0,
+    "total_revenue": 5497009000.0,
+    "free_cashflow": 526443000.0,
+    "inventories": 5348000.0,
+    "n_income_attr_p": 580493000.0,
+    "total_assets": 4654043000.0,
+    "basic_eps": 0.5102
+   },
+   {
+    "end_date": "20241231",
+    "fp": "FY",
+    "currency": "HKD",
+    "accounts_receiv": 124553000.0,
+    "money_cap": 2245666000.0,
+    "total_hldr_eqy_exc_min_int": 3121069000.0,
+    "total_debt": 83912000.0,
+    "div_paid_owners": 97410000.0,
+    "capex": -133875000.0,
+    "n_cashflow_act": 1120857000.0,
+    "total_revenue": 5737114000.0,
+    "free_cashflow": 986982000.0,
+    "inventories": 409000.0,
+    "n_income_attr_p": 580676000.0,
+    "total_assets": 4418656000.0,
+    "basic_eps": 0.5061
+   },
+   {
+    "end_date": "20231231",
+    "fp": "FY",
+    "currency": "HKD",
+    "accounts_receiv": 65516000.0,
+    "money_cap": 1469752000.0,
+    "total_hldr_eqy_exc_min_int": 2734763000.0,
+    "total_debt": 63220000.0,
+    "div_paid_owners": 0.0,
+    "capex": -133926000.0,
+    "n_cashflow_act": 128577000.0,
+    "total_revenue": 5265911000.0,
+    "free_cashflow": -5349000.0,
+    "inventories": 433000.0,
+    "n_income_attr_p": 73053000.0,
+    "total_assets": 3697437000.0,
+    "basic_eps": 0.0625
+   },
+   {
+    "end_date": "20221231",
+    "fp": "FY",
+    "currency": "HKD",
+    "accounts_receiv": 19300000.0,
+    "money_cap": 1581832000.0,
+    "total_hldr_eqy_exc_min_int": 2711867000.0,
+    "total_debt": 62999000.0,
+    "div_paid_owners": 0.0,
+    "capex": -134407000.0,
+    "n_cashflow_act": -98239000.0,
+    "total_revenue": 4591327000.0,
+    "free_cashflow": -232646000.0,
+    "inventories": 578000.0,
+    "n_income_attr_p": -503589000.0,
+    "total_assets": 3636137000.0,
+    "basic_eps": -0.4329
+   }
+  ]
+ },
+ "interim": {
+  "report_statements": [
+   {
+    "end_date": "20260630",
+    "fp": "H1",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 2877708000.0,
+    "n_income_attr_p": 308395000.0,
+    "basic_eps": 0.2773,
+    "accounts_receiv": 216091000.0,
+    "inventories": 16451000.0,
+    "money_cap": 1993789000.0,
+    "total_hldr_eqy_exc_min_int": 3181842000.0,
+    "n_cashflow_act": 294276000.0,
+    "capex": -22874000.0,
+    "div_paid_owners": 606696000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4310006000.0,
+    "free_cashflow": 271402000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20250630",
+    "fp": "H1",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 2721445000.0,
+    "n_income_attr_p": 321519000.0,
+    "basic_eps": 0.2805,
+    "accounts_receiv": 131819000.0,
+    "inventories": 797000.0,
+    "money_cap": 2501634000.0,
+    "total_hldr_eqy_exc_min_int": 3423182000.0,
+    "n_cashflow_act": 355461000.0,
+    "capex": -45588000.0,
+    "div_paid_owners": 73249000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4613350000.0,
+    "free_cashflow": 309873000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20240630",
+    "fp": "H1",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 2735274000.0,
+    "basic_eps": 0.288,
+    "accounts_receiv": 173608000.0,
+    "inventories": 339000.0,
+    "money_cap": 1940320000.0,
+    "total_hldr_eqy_exc_min_int": 3010788000.0,
+    "n_cashflow_act": 602551000.0,
+    "capex": -78676000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 4103925000.0,
+    "free_cashflow": 523875000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   },
+   {
+    "end_date": "20230630",
+    "fp": "H1",
+    "currency": "HKD",
+    "is_comparative": false,
+    "total_revenue": 2499020000.0,
+    "n_income_attr_p": -359798000.0,
+    "basic_eps": -0.308,
+    "accounts_receiv": 116168000.0,
+    "inventories": 49000.0,
+    "money_cap": 1481464000.0,
+    "total_hldr_eqy_exc_min_int": 2331408000.0,
+    "n_cashflow_act": -44176000.0,
+    "capex": -60229000.0,
+    "derived_fields": {
+     "total_assets": [
+      "total_nca",
+      "total_cur_assets"
+     ],
+     "total_liab": [
+      "total_cur_liab",
+      "total_ncl"
+     ],
+     "free_cashflow": [
+      "n_cashflow_act",
+      "capex"
+     ]
+    },
+    "total_assets": 3563090000.0,
+    "free_cashflow": -104405000.0,
+    "validation": {
+     "version": 5,
+     "status": "ok",
+     "suspect_fields": [],
+     "row_level": false
+    }
+   }
+  ]
+ },
+ "dividend_rows": [],
+ "daily_basic": [],
+ "graham": {
+  "status": "ok",
+  "criteria": [
+   {
+    "criterion": "current_ratio",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "lt_debt_vs_net_current_assets",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_stability",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "dividend_record",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_growth",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "pe",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "pb_or_product",
+    "verdict": "pass",
+    "basis": {
+     "price": 3.095,
+     "price_currency": "HKD",
+     "price_date": "2026-09-29",
+     "implied_shares": 1112134872,
+     "share_ratio": null,
+     "bvps": 2.861022,
+     "equity": 3181842000.0,
+     "equity_currency": "HKD"
+    }
+   }
+  ]
+ }
+}

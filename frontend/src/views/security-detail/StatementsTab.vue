@@ -3,8 +3,9 @@
  * 「报表」tab：财报摘要（LLM 分档摘要）、港股报表抽取进度、美/港股核心科目透视表、
  * A股利润与现金流摘要。
  */
-import { computed, ref } from 'vue'
-import { InfoFilled, Link } from '@element-plus/icons-vue'
+import { computed, h, ref, type Directive } from 'vue'
+import { NAlert, NButton, NDataTable, NEmpty, NSwitch, NTag, type DataTableColumns } from 'naive-ui'
+import ResearchNote from './ResearchNote.vue'
 import { EMPTY, formatDateTime } from '@/utils/helpers'
 import {
   buildNotesText,
@@ -33,6 +34,18 @@ import type { ProfileRow, SecurityProfileState } from './types'
 
 const props = defineProps<{ state: SecurityProfileState; market: string }>()
 const emit = defineEmits<{ backfill: [] }>()
+
+// Naive 的公开 contentClass 定位内容层，父层为实际滚动区；保留原生左右键滚动。
+const vTableScrollFocus: Directive<HTMLElement, string> = {
+  mounted(element, { value }) {
+    const container = element.querySelector<HTMLElement>('.sd-financial-content')?.parentElement
+    if (!container) return
+    container.classList.add('sd-financial-scroll')
+    container.tabIndex = 0
+    container.setAttribute('role', 'region')
+    container.setAttribute('aria-label', value)
+  }
+}
 
 const isA = computed(() => props.market === 'A股')
 const isHk = computed(() => props.market === '港股')
@@ -160,10 +173,6 @@ function cellSup(row: ProfileRow, field: string): string {
   return row.__source?.[field] === 'yahoo' ? '雅' : ''
 }
 
-function pivotRowClass({ row }: { row: ProfileRow }): string {
-  return row.fp === 'H1' ? 'sd-interim-row' : ''
-}
-
 // ---- A股利润与现金流摘要 ----
 const statementAnnualOnly = ref(false)
 // 三大报表按报告期合并为一行（利润表/现金流/资产负债各取核心科目）
@@ -179,13 +188,163 @@ const statementRows = computed(() => {
   const rows = [...merged.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([, row]) => row)
   return (statementAnnualOnly.value ? annualOnly(rows) : rows).slice(0, 8)
 })
+
+function note(label: string, text: string, caption?: string) {
+  return h(ResearchNote, { label, text, caption })
+}
+const failedColumns: DataTableColumns<ProfileRow> = [
+  {
+    title: '报告',
+    key: 'report',
+    width: 160,
+    render: (row) =>
+      `${formatPeriod(row.end_date)} ${row.report_type === 'interim' ? '中报' : '年报'}`
+  },
+  {
+    title: '状态',
+    key: 'status',
+    width: 120,
+    render: (row) =>
+      h(
+        NTag,
+        { type: row.capped ? 'error' : 'warning', size: 'small', bordered: false },
+        { default: () => (row.capped ? '已封顶' : `可重试（${row.attempts} 次）`) }
+      )
+  },
+  { title: '原因', key: 'error', minWidth: 200, render: (row) => row.error || EMPTY }
+]
+function pivotValue(row: ProfileRow, field: string) {
+  if (scrubbed(row, field))
+    return note(
+      `${field === 'basic_eps' ? 'EPS' : PIVOT_COLUMNS.find((column) => column.field === field)?.label}校验说明`,
+      '校验存疑，已置空',
+      '✕'
+    )
+  if (field === 'basic_eps' && epsNote(row))
+    return h('span', [formatPerShare(row.basic_eps), note('EPS折元依据', epsNote(row), '折')])
+  return h('span', [
+    field === 'basic_eps' ? formatEps(row.basic_eps) : formatYi(row[field]),
+    h('sup', { class: 'sd-src-sup' }, cellSup(row, field))
+  ])
+}
+const pivotColumns = computed<DataTableColumns<ProfileRow>>(() => [
+  {
+    title: showInterim.value ? '期末' : '财年止',
+    key: 'period',
+    width: 130,
+    fixed: 'left',
+    render: (row) =>
+      h('span', [
+        formatPeriod(row.end_date),
+        ...(row.fp === 'H1'
+          ? [note('中报期别说明', '中报：六个月数，不可与年度数直接比较', '6M')]
+          : [])
+      ])
+  },
+  {
+    title: '币种',
+    key: 'currency',
+    width: 90,
+    render: (row) =>
+      h('span', [
+        h(
+          'span',
+          { class: { 'sd-currency-outlier': isCurrencyOutlier(row, currencySummary.value) } },
+          row.currency || EMPTY
+        ),
+        ...(currencySwitchText(pivotRows.value, row)
+          ? [
+              h(ResearchNote, {
+                label: '报告币种变更说明',
+                text: currencySwitchText(pivotRows.value, row),
+                caption: '换币',
+                'data-testid': 'pivot-currency-switch'
+              })
+            ]
+          : [])
+      ])
+  },
+  ...PIVOT_COLUMNS.map((column) => ({
+    title: column.label,
+    key: column.field,
+    minWidth: 100,
+    align: 'right' as const,
+    className: 'sd-numeric',
+    render: (row: ProfileRow) => pivotValue(row, column.field)
+  })),
+  {
+    title: () =>
+      h('span', [
+        'EPS',
+        ...(isHk.value
+          ? [
+              note(
+                'EPS单位说明',
+                '每股金额（原币元，不按亿换算）。原文以「仙」列示的期别已 ÷100 折元（带「折」标记，可展开查看依据）'
+              )
+            ]
+          : [])
+      ]),
+    key: 'basic_eps',
+    minWidth: 90,
+    align: 'right',
+    className: 'sd-numeric',
+    render: (row) => pivotValue(row, 'basic_eps')
+  },
+  ...(isHk.value
+    ? [
+        {
+          title: '来源',
+          key: 'source',
+          minWidth: 160,
+          render: (row: ProfileRow) =>
+            h('span', [
+              row.__sourceKinds ? sourceLabel(row as HkPivotRow) : '',
+              ...(row.__suspect
+                ? [note('报表校验存疑依据', suspectTooltipText(row as HkPivotRow), '存疑')]
+                : []),
+              ...(notesTagLabel(row)
+                ? [note('报表修正与口径依据', notesText(row), notesTagLabel(row))]
+                : [])
+            ])
+        }
+      ]
+    : [])
+])
+const statementColumns: DataTableColumns<ProfileRow> = [
+  {
+    title: '报告期',
+    key: 'period',
+    width: 120,
+    fixed: 'left',
+    render: (row) => formatPeriod(row.end_date)
+  },
+  { title: '期别', key: 'kind', width: 70, render: (row) => periodKindLabel(row.end_date) },
+  ...[
+    { key: 'total_revenue', title: '营业总收入', width: 100 },
+    { key: 'operate_profit', title: '营业利润', width: 92 },
+    { key: 'n_income', title: '归母净利润', width: 100 },
+    { key: 'n_cashflow_act', title: '经营现金流净额', width: 118 },
+    { key: 'n_cashflow_inv_act', title: '投资现金流净额', width: 118 },
+    { key: 'total_assets', title: '总资产', width: 92 },
+    { key: 'total_hldr_eqy_exc_min_int', title: '净资产', width: 92 }
+  ].map((column) => ({
+    key: column.key,
+    title: column.title,
+    minWidth: column.width,
+    align: 'right' as const,
+    className: 'sd-numeric',
+    render: (row: ProfileRow) =>
+      formatYi(column.key === 'n_income' ? (row.n_income_attr_p ?? row.n_income) : row[column.key])
+  }))
+]
 </script>
 
 <template>
   <!-- 财报摘要 -->
   <section
     v-if="state.capabilities.report_digest"
-    class="sd-block"
+    class="sd-block digest-section"
     data-testid="report-digest-section"
   >
     <div class="sd-block-header">
@@ -198,23 +357,19 @@ const statementRows = computed(() => {
           ></span
         >
       </h3>
-      <el-button
+      <NButton
         size="small"
-        plain
+        secondary
         :loading="state.backfilling"
         data-testid="backfill-digests-button"
         @click="emit('backfill')"
       >
         补齐历史摘要
-      </el-button>
+      </NButton>
     </div>
-    <el-alert
-      v-if="backfillSummary"
-      :title="backfillSummary"
-      type="info"
-      :closable="false"
-      class="block-alert"
-    />
+    <NAlert v-if="backfillSummary" type="default" :closable="false" class="block-alert">{{
+      backfillSummary
+    }}</NAlert>
     <el-collapse v-if="state.reportDigests.length" class="digest-collapse">
       <el-collapse-item
         v-for="digest in state.reportDigests"
@@ -224,33 +379,29 @@ const statementRows = computed(() => {
         <template #title>
           <div class="digest-title">
             <span class="sd-num">{{ formatPeriod(digest.end_date) }}</span>
-            <el-tag size="small" effect="plain">{{ digestTypeLabel(digest.report_type) }}</el-tag>
-            <el-tooltip
-              v-if="digest.digest_tier === 'C'"
-              content="较早年份只摘要核心三项（主营收入结构 / 一次性项目 / 会计信号）与关键数字"
-              placement="top"
-            >
-              <el-tag size="small" type="info" effect="plain">精简摘要</el-tag>
-            </el-tooltip>
+            <NTag size="small" :bordered="false">{{ digestTypeLabel(digest.report_type) }}</NTag>
+            <NTag v-if="digest.digest_tier === 'C'" size="small" :bordered="false">精简摘要</NTag>
             <span class="digest-title-spacer" />
-            <el-link
+            <a
               v-if="digestSourceHref(digest.source_url)"
               :href="digestSourceHref(digest.source_url)!"
               target="_blank"
               rel="noopener noreferrer"
-              type="primary"
-              :underline="false"
               class="digest-source"
               @click.stop
+              @keydown.stop
             >
-              <el-icon><Link /></el-icon>原文
-            </el-link>
+              原文
+            </a>
           </div>
         </template>
+        <p v-if="digest.digest_tier === 'C'" class="sd-footnote">
+          较早年份只摘要核心三项（主营收入结构 / 一次性项目 / 会计信号）与关键数字
+        </p>
         <dl class="sd-field-list">
           <template v-for="field in digestFields(digest)" :key="field">
             <dt>{{ field }}</dt>
-            <dd>{{ digest.digest[field] }}</dd>
+            <dd class="digest-narrative">{{ digest.digest[field] }}</dd>
           </template>
           <template v-if="keyNumbers(digest).length">
             <dt>关键数字</dt>
@@ -263,10 +414,9 @@ const statementRows = computed(() => {
         </dl>
       </el-collapse-item>
     </el-collapse>
-    <el-empty
+    <NEmpty
       v-else
       description="暂无财报摘要；点击「补齐历史摘要」抓取年报并生成（每次最多 4 份，可重复点击续跑）"
-      :image-size="56"
     />
   </section>
 
@@ -305,33 +455,29 @@ const statementRows = computed(() => {
         >该公司未在披露易发布中期报告</span
       >
       <span v-if="suspectPeriodsText">存疑期：{{ suspectPeriodsText }}</span>
-      <el-link
+      <NButton
         v-if="failedReports.length"
-        type="primary"
-        :underline="false"
+        text
+        :aria-expanded="showFailedReports"
         @click="showFailedReports = !showFailedReports"
+        >{{ showFailedReports ? '收起失败清单' : '查看失败清单' }}</NButton
       >
-        {{ showFailedReports ? '收起失败清单' : '查看失败清单' }}
-      </el-link>
     </div>
-    <el-table v-if="showFailedReports && failedReports.length" :data="failedReports" size="small">
-      <el-table-column label="报告" width="160">
-        <template #default="{ row }">
-          {{ formatPeriod(row.end_date) }}
-          {{ row.report_type === 'interim' ? '中报' : '年报' }}
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="120">
-        <template #default="{ row }">
-          <el-tag :type="row.capped ? 'danger' : 'warning'" size="small" effect="plain">
-            {{ row.capped ? '已封顶' : `可重试（${row.attempts} 次）` }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="原因" min-width="200">
-        <template #default="{ row }">{{ row.error || EMPTY }}</template>
-      </el-table-column>
-    </el-table>
+    <div
+      v-if="showFailedReports && failedReports.length"
+      class="sd-table-scroll"
+      tabindex="0"
+      role="region"
+      aria-label="失败报告清单，可横向滚动"
+    >
+      <NDataTable
+        class="sd-data-table"
+        style="min-width: 480px"
+        :columns="failedColumns"
+        :data="failedReports"
+        :bordered="false"
+      />
+    </div>
   </section>
 
   <!-- 核心科目透视（美股 EDGAR / 港股 PDF 抽取 + 雅虎补缺） -->
@@ -340,102 +486,31 @@ const statementRows = computed(() => {
       <h3 class="sd-block-title">
         {{ showInterim ? '核心科目（年报 + 中报）' : '年度核心科目' }}
         <span class="sd-title-note" data-testid="pivot-unit">{{ pivotUnitText }}</span>
-        <el-tooltip :content="pivotSourceHelp" placement="top">
-          <el-icon class="sd-help"><InfoFilled /></el-icon>
-        </el-tooltip>
+        <ResearchNote popover label="核心科目来源与单位说明" :text="pivotSourceHelp" />
       </h3>
-      <el-switch
-        v-if="isHk"
-        v-model="showInterim"
-        size="small"
-        active-text="显示中报"
-        data-testid="pivot-show-interim"
-      />
-    </div>
-    <el-table :data="pivotRows" size="small" :stripe="!showInterim" :row-class-name="pivotRowClass">
-      <template #empty>
-        <el-empty description="暂无数据；生成分析时会自动同步" :image-size="56" />
-      </template>
-      <el-table-column :label="showInterim ? '期末' : '财年止'" width="122">
-        <template #default="{ row }">
-          <span class="sd-num">{{ formatPeriod(row.end_date) }}</span>
-          <el-tooltip v-if="row.fp === 'H1'" content="中报：六个月数，不可与年度数直接比较">
-            <span class="sd-period-badge">6M</span>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column label="币种" width="84">
-        <template #default="{ row }">
-          <span :class="{ 'sd-currency-outlier': isCurrencyOutlier(row, currencySummary) }">
-            {{ row.currency || EMPTY }}
-          </span>
-          <el-tooltip
-            v-if="currencySwitchText(pivotRows, row)"
-            :content="currencySwitchText(pivotRows, row)"
-          >
-            <span class="sd-period-badge" data-testid="pivot-currency-switch">换币</span>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-      <el-table-column
-        v-for="column in PIVOT_COLUMNS"
-        :key="column.field"
-        :label="column.label"
-        align="right"
-        min-width="92"
+      <label v-if="isHk" class="statement-switch"
+        ><NSwitch
+          v-model:value="showInterim"
+          aria-label="显示中报"
+          data-testid="pivot-show-interim"
+        />显示中报</label
       >
-        <template #default="{ row }">
-          <el-tooltip v-if="scrubbed(row, column.field)" content="校验存疑，已置空" placement="top">
-            <span class="sd-scrubbed">✕</span>
-          </el-tooltip>
-          <template v-else
-            >{{ formatYi(row[column.field])
-            }}<sup class="sd-src-sup">{{ cellSup(row, column.field) }}</sup></template
-          >
-        </template>
-      </el-table-column>
-      <el-table-column align="right" min-width="76">
-        <template #header>
-          EPS
-          <el-tooltip
-            v-if="isHk"
-            content="每股金额（原币元，不按亿换算）。原文以「仙」列示的期别已 ÷100 折元（带「折」上标，悬停看依据）"
-            placement="top"
-          >
-            <el-icon class="sd-help"><InfoFilled /></el-icon>
-          </el-tooltip>
-        </template>
-        <template #default="{ row }">
-          <el-tooltip v-if="scrubbed(row, 'basic_eps')" content="校验存疑，已置空" placement="top">
-            <span class="sd-scrubbed">✕</span>
-          </el-tooltip>
-          <el-tooltip v-else-if="epsNote(row)" :content="epsNote(row)" placement="top">
-            <span>{{ formatPerShare(row.basic_eps) }}<sup class="sd-src-sup">折</sup></span>
-          </el-tooltip>
-          <template v-else
-            >{{ formatEps(row.basic_eps)
-            }}<sup class="sd-src-sup">{{ cellSup(row, 'basic_eps') }}</sup></template
-          >
-        </template>
-      </el-table-column>
-      <el-table-column v-if="isHk" label="来源" min-width="140">
-        <template #default="{ row }">
-          <span>{{ row.__sourceKinds ? sourceLabel(row as HkPivotRow) : '' }}</span>
-          <el-tooltip
-            v-if="row.__suspect"
-            :content="suspectTooltipText(row as HkPivotRow)"
-            placement="top"
-          >
-            <el-tag type="warning" size="small" effect="plain" class="suspect-tag">存疑</el-tag>
-          </el-tooltip>
-          <el-tooltip v-if="notesTagLabel(row)" :content="notesText(row)" placement="top">
-            <el-tag type="info" size="small" effect="plain" class="suspect-tag">{{
-              notesTagLabel(row)
-            }}</el-tag>
-          </el-tooltip>
-        </template>
-      </el-table-column>
-    </el-table>
+    </div>
+    <p class="sd-financial-scroll-hint">
+      左右滑动查看更多列；首列固定便于核对，也可用左右方向键滚动。
+    </p>
+    <div v-table-scroll-focus="'核心科目透视表，可横向滚动'" class="sd-fixed-table">
+      <NDataTable
+        class="sd-data-table"
+        :scroll-x="isHk ? 1070 : 910"
+        :scrollbar-props="{ contentClass: 'sd-financial-content' }"
+        :columns="pivotColumns"
+        :data="pivotRows"
+        :bordered="false"
+        :row-class-name="(row) => (row.fp === 'H1' ? 'sd-interim-row' : '')"
+        ><template #empty><NEmpty description="暂无数据；生成分析时会自动同步" /></template
+      ></NDataTable>
+    </div>
   </section>
 
   <!-- 利润与现金流摘要（A股三大报表） -->
@@ -448,53 +523,53 @@ const statementRows = computed(() => {
             >，最新报告期 {{ formatPeriod(state.latestPeriods.income) }}</template
           ></span
         >
-        <el-tooltip
-          content="一季报/中报/三季报为年初至今累计值，与年报混排时注意期别"
-          placement="top"
-        >
-          <el-icon class="sd-help"><InfoFilled /></el-icon>
-        </el-tooltip>
+        <ResearchNote
+          popover
+          label="利润与现金流期别说明"
+          text="一季报/中报/三季报为年初至今累计值，与年报混排时注意期别"
+        />
       </h3>
-      <el-switch v-model="statementAnnualOnly" size="small" active-text="只看年报" />
+      <label class="statement-switch"
+        ><NSwitch
+          v-model:value="statementAnnualOnly"
+          aria-label="利润与现金流摘要只看年报"
+        />只看年报</label
+      >
     </div>
-    <el-table :data="statementRows" size="small" stripe>
-      <template #empty>
-        <el-empty description="暂无数据；生成分析时会自动同步" :image-size="56" />
-      </template>
-      <el-table-column label="报告期" width="104">
-        <template #default="{ row }">{{ formatPeriod(row.end_date) }}</template>
-      </el-table-column>
-      <el-table-column label="期别" width="70">
-        <template #default="{ row }">{{ periodKindLabel(row.end_date) }}</template>
-      </el-table-column>
-      <el-table-column label="营业总收入" align="right" min-width="92">
-        <template #default="{ row }">{{ formatYi(row.total_revenue) }}</template>
-      </el-table-column>
-      <el-table-column label="营业利润" align="right" min-width="84">
-        <template #default="{ row }">{{ formatYi(row.operate_profit) }}</template>
-      </el-table-column>
-      <el-table-column label="归母净利润" align="right" min-width="92">
-        <template #default="{ row }">{{ formatYi(row.n_income_attr_p ?? row.n_income) }}</template>
-      </el-table-column>
-      <el-table-column label="经营现金流净额" align="right" min-width="110">
-        <template #default="{ row }">{{ formatYi(row.n_cashflow_act) }}</template>
-      </el-table-column>
-      <el-table-column label="投资现金流净额" align="right" min-width="110">
-        <template #default="{ row }">{{ formatYi(row.n_cashflow_inv_act) }}</template>
-      </el-table-column>
-      <el-table-column label="总资产" align="right" min-width="84">
-        <template #default="{ row }">{{ formatYi(row.total_assets) }}</template>
-      </el-table-column>
-      <el-table-column label="净资产" align="right" min-width="84">
-        <template #default="{ row }">{{ formatYi(row.total_hldr_eqy_exc_min_int) }}</template>
-      </el-table-column>
-    </el-table>
+    <p class="sd-financial-scroll-hint">
+      左右滑动查看更多列；首列固定便于核对，也可用左右方向键滚动。
+    </p>
+    <div v-table-scroll-focus="'利润与现金流摘要表，可横向滚动'" class="sd-fixed-table">
+      <NDataTable
+        class="sd-data-table"
+        :scroll-x="902"
+        :scrollbar-props="{ contentClass: 'sd-financial-content' }"
+        :columns="statementColumns"
+        :data="statementRows"
+        :bordered="false"
+        ><template #empty><NEmpty description="暂无数据；生成分析时会自动同步" /></template
+      ></NDataTable>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .block-alert {
   margin-bottom: 10px;
+}
+
+.digest-narrative {
+  max-width: 38em;
+  font-family: var(--app-font-serif);
+  font-size: 18px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .digest-narrative {
+    font-size: 17px;
+  }
 }
 
 .digest-collapse {
@@ -528,7 +603,19 @@ const statementRows = computed(() => {
   margin-bottom: 8px;
 }
 
-.suspect-tag {
-  margin-left: 6px;
+.statement-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.digest-source {
+  color: var(--app-primary-strong);
+}
+:deep(.sd-interim-row td) {
+  background: var(--app-surface-muted);
+}
+:deep(.sd-currency-outlier) {
+  color: var(--app-warning-text);
 }
 </style>

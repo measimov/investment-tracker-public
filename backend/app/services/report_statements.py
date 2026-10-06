@@ -34,7 +34,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 #      （「二零二零年年報 基 本 …」）时剥掉报告名
 # v11：被空格拆开的两位附注号（「現金及現金等價物 2 6 2,105,184 1,815,678」）在列数已确认时粘回
 #      再剥（#263：货币资金曾被取成 2 千元，00728 2025 中报 EPS 取成附注号 20）
-STATEMENT_EXTRACTOR_VERSION = 11
+# v13：03900 2016 年报逗号前断字；已确认列数与附注不足以解释时粘回唯一的前导数字断字
+STATEMENT_EXTRACTOR_VERSION = 13
 STATEMENT_KINDS = ("income", "balance", "cashflow")
 
 # 报表标题核心（繁/简；港股「綜合」= A股「合并」）。income 同时覆盖损益表与全面收益表
@@ -93,7 +94,8 @@ _TOC_HEADER_RE = re.compile(r"目錄|目录|CONTENTS", re.I)
 # 字间空格的标题（00728：「合 併 綜 合 收 益 表」「合 併 權 益 變 動 表」）：连续 ≥3 个单字
 # 以单个空格相隔时去掉空格。只压这种「单字链」，表头里「附註 人民幣千元 人民幣千元」的
 # 词间空格是列单位的分隔符，必须保留
-_CJK_CHAR = r"[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]"
+# 全角破折號「－」（U+FF0D）是空值记号不是文字（#339）：留在字符类里会被「單字鏈」压进科目名
+_CJK_CHAR = r"[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uff0c\uff0e-\uffef]"
 _SPACED_CJK_RE = re.compile(rf"{_CJK_CHAR}(?:[ \u3000]{_CJK_CHAR}){{2,}}")
 
 
@@ -101,7 +103,11 @@ def squash_spaced_cjk(text: str) -> str:
     return _SPACED_CJK_RE.sub(lambda m: m.group(0).replace(" ", "").replace("\u3000", ""), text)
 
 
-_NUM = r"\(?-?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\d+(?:\.\d+)?\)?|[–—-]"
+# 空值记号：半角连字符、en/em dash，以及全角破折號「－」与「―」（#339：03900 2019 中报同一页
+# 混用「–」与「－」，00799 2016 损益表用「－」——不认时上期值被当成本期、行尾的整行丢失）。
+# U+2212「−」单独成 token 时同样是空值；紧贴数字时是负号，由 normalize_minus_sign 先改成「-」
+NULL_MARKS = frozenset({"–", "—", "-", "－", "―", "−"})
+_NUM = r"\(?-?\d{1,3}(?:,\d{3})*(?:\.\d+)?\)?|\(?-?\d+(?:\.\d+)?\)?|[–—\-－―−]"
 _VALUES = rf"(?:(?:{_NUM})\s+)*(?:{_NUM})"
 _ROW_RE = re.compile(rf"^(?P<label>\S.*?)\s+(?P<values>{_VALUES})\s*$")
 _VALUES_ONLY_RE = re.compile(rf"^(?P<values>{_VALUES})\s*$")
@@ -272,7 +278,7 @@ def _is_terminator(line: str) -> bool:
 
 def parse_number(token: str) -> Optional[Decimal]:
     text = token.strip()
-    if text in {"–", "—", "-", ""}:
+    if not text or text in NULL_MARKS:
         return None
     if text.count("(") != text.count(")"):
         # 括号不配对（「(1,034,206」）：负号是否成立说不清，宁可缺值也不静默丢负号
@@ -294,7 +300,10 @@ def parse_number(token: str) -> Optional[Decimal]:
 #   报表里一位小数常见），只有在**已知列数且 token 数多出来**时才粘（PR #207 评审 P1）——
 #   `_parse_row_tokens` 不知道列数，所以这一步放在 parse_row 里按列数做
 _SPLIT_THOUSANDS_RE = re.compile(r"(\d,\d{2}) (\d)(?![\d,.])")
+_SPLIT_COMMA_RE = re.compile(r"(?<![\d,.])(\d{1,3}(?:,\d{3})*)\s+(,\d{3})(?!\d)")
 _SPLIT_DECIMAL_RE = re.compile(r"(\d{1,3}(?:,\d{3})+\.\d) (\d)(?![\d,.])")
+_SPLIT_LEADING_RE = re.compile(r"^\(?-?\d{1,2}$")
+_GROUPED_TAIL_RE = re.compile(r"^\d{1,3}(?:,\d{3})+(?:\.\d+)?\)?$")
 
 
 # 括号负数的内侧空格（01023 2024「銷售 成本 ( 1,034,206) ( 1,222,076)」）：`_NUM` 的括号不能带
@@ -306,6 +315,15 @@ _PAREN_CLOSE_SPACE_RE = re.compile(r"(?<=\d)[ 　]+\)")
 
 def normalize_paren_spaces(line: str) -> str:
     return _PAREN_CLOSE_SPACE_RE.sub(")", _PAREN_OPEN_SPACE_RE.sub("(", line))
+
+
+# 数学减号 U+2212 紧贴数字（「−1,234」「(−56)」）是负号：换成 ASCII「-」交给 `_NUM`；
+# 单独成 token 的「−」留作空值记号（NULL_MARKS）
+_MINUS_SIGN_RE = re.compile(r"\u2212(?=\d)")
+
+
+def normalize_minus_sign(line: str) -> str:
+    return _MINUS_SIGN_RE.sub("-", line)
 
 
 # 币种包裹的每股金额（v10）：港股損益表的每股盈利常把币种写进每个数值格——「HK$4.889港元」「HK$5.692
@@ -362,12 +380,34 @@ def unwrap_currency_amounts(line: str) -> Tuple[str, List[str]]:
 
 
 def glue_split_digits(line: str) -> str:
-    """只粘有明确断字证据的形态（畸形两位千分组）。"""
+    """只粘有明确断字证据的形态（畸形两位千分组、逗号前空格）。"""
     previous = None
     while previous != line:
         previous = line
         line = _SPLIT_THOUSANDS_RE.sub(r"\1\2", line)
+        line = _SPLIT_COMMA_RE.sub(r"\1\2", line)
     return line
+
+
+def glue_leading_digits(tokens: List[str], expected: int, *, has_note: bool = False) -> List[str]:
+    """「1 4,879,912」只有合并后唯一吻合已确认列数（及附注列）时才粘。"""
+    if not expected or len(tokens) <= expected:
+        return tokens
+    candidates = []
+    joinable = 0
+    for i in range(len(tokens) - 1):
+        if not _SPLIT_LEADING_RE.match(tokens[i]) or not _GROUPED_TAIL_RE.match(tokens[i + 1]):
+            continue
+        joined = tokens[i] + tokens[i + 1]
+        if not _NUM_TOKEN_RE.match(joined):
+            continue
+        joinable += 1
+        glued = tokens[:i] + [joined] + tokens[i + 2 :]
+        if len(glued) == expected or (
+            not has_note and len(glued) == expected + 1 and _LEADING_NOTE_RE.match(glued[0])
+        ):
+            candidates.append(glued)
+    return candidates[0] if joinable == len(candidates) == 1 else tokens
 
 
 def glue_decimal_tail(tokens: List[str], expected: int) -> List[str]:
@@ -389,7 +429,8 @@ def glue_decimal_tail(tokens: List[str], expected: int) -> List[str]:
 def _parse_row_tokens(line: str) -> Optional[Tuple[str, str, List[str]]]:
     """数字行 → (label, note, value_tokens)；非数字行返回 None。
     无标签的合计行（`6 751,766 660,257` / `229,801 196,467`）标签为空。"""
-    line = glue_split_digits(unwrap_currency_amounts(normalize_paren_spaces(line))[0])
+    line = normalize_paren_spaces(normalize_minus_sign(line))
+    line = glue_split_digits(unwrap_currency_amounts(line)[0])
     only = _VALUES_ONLY_RE.match(line)
     if only:
         tokens = only.group("values").split()
@@ -424,19 +465,31 @@ def parse_row(
     if parsed is None:
         return None
     label, note, tokens = parsed
-    if (
-        not note
-        and expected_columns
-        and len(tokens) == expected_columns + 1
-        and _LEADING_NOTE_RE.match(tokens[0])
-    ):
-        # 多出的那个 token 就是附注号：列布局已被完整解释，**不得再粘**——先粘会把两个合法
-        # 金额粘成一个、附注号顶成本期金额，两期静默错列（PR #207 评审 P1）
-        return label, tokens[0], [parse_number(t) for t in tokens[1:]]
-    tokens = glue_decimal_tail(tokens, expected_columns)
-    if not note:
-        note, tokens = _split_leading_note(tokens, expected_columns)
+    note, tokens = resolve_row_tokens(note, tokens, expected_columns)
     return label, note, [parse_number(t) for t in tokens]
+
+
+def resolve_row_tokens(note: str, tokens: List[str], expected: int) -> Tuple[str, List[str]]:
+    """按已确认的列数把一行的数值 token 定型为 (附注号, 各列 token)。**`_parse_block` 与
+    `parse_row` 共用这一个入口**（#341：`glue_decimal_tail` 曾只在 parse_row 里调用，而生产解析
+    不经过 parse_row，01133 的尾数粘合在生产上从未生效——测试测的是另一条路径）。顺序：
+    1. 标签里已带附注号：不再剥；
+    2. 「附注号 + 恰好列数」：列布局已被完整解释，**不得再粘**——先粘会把两个合法金额粘成一个、
+       附注号顶成本期金额，两期静默错列（PR #207 评审 P1）；
+    3. 按列数粘小数尾数（`glue_decimal_tail`）；
+    4. 两位附注号被拆成两个一位数时粘回（`_glue_split_note`）；
+    5. 附注仍不能解释列布局时，按列数粘分组金额的前导数字（`glue_leading_digits`），再剥附注。
+    """
+    if note:
+        return note, glue_leading_digits(tokens, expected, has_note=True)
+    if expected and len(tokens) == expected + 1 and _LEADING_NOTE_RE.match(tokens[0]):
+        return tokens[0], tokens[1:]
+    tokens = glue_decimal_tail(tokens, expected)
+    tokens = _glue_split_note(tokens, expected)
+    if expected and len(tokens) == expected + 1 and _LEADING_NOTE_RE.match(tokens[0]):
+        return tokens[0], tokens[1:]
+    tokens = glue_leading_digits(tokens, expected)
+    return _split_leading_note(tokens, expected)
 
 
 def _years_in(text: str) -> List[int]:
@@ -802,7 +855,7 @@ def _parse_block(block: _Block) -> ParsedStatement:
         hints = list(unit_hints)
         if eps_kind and eps_kind not in hints:
             hints.append(eps_kind)
-        markers = unwrap_currency_amounts(normalize_paren_spaces(text))[1]
+        markers = unwrap_currency_amounts(normalize_paren_spaces(normalize_minus_sign(text)))[1]
         if markers:
             hints.append(WRAPPED_UNIT_CONTEXT + "、".join(markers))
         row_context = hints + [c for c in row_context if c not in hints]
@@ -819,8 +872,7 @@ def _parse_block(block: _Block) -> ParsedStatement:
     rows: List[StatementRow] = []
     final_counts: Dict[int, int] = {}
     for label, note, tokens, ctx, offset in raw_rows:
-        if not note:
-            note, tokens = _split_leading_note(_glue_split_note(tokens, expected), expected)
+        note, tokens = resolve_row_tokens(note, tokens, expected)
         values = [parse_number(t) for t in tokens]
         if _is_year_only_row(values):
             continue
@@ -1292,7 +1344,8 @@ def resolve_value(
     """若干行同一列求和（LLM 只给行 id）；全部缺失返回 None；按单位放大（每股指标除外）。"""
     by_id = {row.row_id: row for row in parsed.rows}
     total: Optional[Decimal] = None
-    for row_id in row_ids:
+    # 同一行 id 只计一次（#342-2：存量映射里可能有重复 id，逐个相加会让科目翻倍）
+    for row_id in dict.fromkeys(row_ids):
         row = by_id.get(row_id)
         if row is None or column >= len(row.values):
             continue

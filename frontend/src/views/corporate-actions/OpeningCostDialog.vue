@@ -68,6 +68,7 @@ defineExpose({ open })
     title="补录期初建仓成本"
     :width="isMobileView ? '95%' : '480px'"
     :fullscreen="isMobileView"
+    :close-on-click-modal="false"
   >
     <el-alert
       type="info"

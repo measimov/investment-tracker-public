@@ -38,6 +38,7 @@ from ..config import settings
 from ..core.logging import get_app_logger
 from ..core.timeutil import local_today
 from ..models.security_profile import SecurityProfileData
+from .background_job_store import JobOwnershipLostError
 from .llm_client import (
     LLMClientError,
     LLMNotConfiguredError,
@@ -68,6 +69,7 @@ from .report_statement_prompts import (
     STATEMENT_BUILD_VERSION,
     STATEMENT_PROMPT_VERSION,
     build_statement_messages,
+    is_revenue_label,
     parse_statement_mapping,
     statement_row_current,
 )
@@ -500,6 +502,25 @@ def rebuild_report_statements(
     return result
 
 
+def statement_capped(payload: Dict[str, Any]) -> bool:
+    """抽取记录是否已封顶（永久跳过）：失败次数达上限，且那些失败发生在**当前** prompt 版本下
+    （#343-1：prompt 升版就是为了修映射契约问题，旧版本下的失败不能继续挡住重试）。"""
+    return (
+        int(payload.get("attempts") or 0) >= MAX_ATTEMPTS
+        and payload.get("status") != "ok"
+        and versions_current(payload, prompt_version=STATEMENT_PROMPT_VERSION)
+    )
+
+
+def no_revenue_line_stale(payload: Dict[str, Any]) -> bool:
+    """按「表内无收入行」接受的旧映射，在当前收入行判据下表内其实有收入行（#342-3：09618「總收入」）
+    ——不能沿用，须重新映射。只看存下的行标签，零下载零 LLM 即可判定。"""
+    if "income.total_revenue:no_revenue_line" not in (payload.get("unresolved") or []):
+        return False
+    rows = ((payload.get("statements") or {}).get("income") or {}).get("rows") or []
+    return any(is_revenue_label(row.get("label") or "") for row in rows)
+
+
 def _extract_row_current(payload: Dict[str, Any], fingerprint: str) -> bool:
     return payload.get("source_fingerprint") == fingerprint and versions_current(
         payload, extractor_version=STATEMENT_EXTRACTOR_VERSION
@@ -599,10 +620,10 @@ def ensure_report_statements(
             if payload.get("status") == "ok" and prompt_current:
                 result["completed"] += 1
                 continue
-            attempts = int(payload.get("attempts") or 0)
-            if attempts >= MAX_ATTEMPTS and not (
-                payload.get("status") == "ok" and not prompt_current
-            ):
+            # prompt 升版后旧版本下的失败不算数（#343-1）：靠 prompt 升版修复的映射契约问题
+            # （缺必需科目、非法 JSON、输出截断）必须能到达已封顶的报告，否则重跑脚本永不收敛
+            attempts = int(payload.get("attempts") or 0) if prompt_current else 0
+            if statement_capped(payload):
                 result["permanently_failed"] += 1
                 result["gaps"].append(f"{target['end_date']} 报表抽取失败（已封顶）")
                 continue
@@ -612,8 +633,7 @@ def ensure_report_statements(
                     kind: ParsedStatement.from_payload(item)
                     for kind, item in (payload.get("statements") or {}).items()
                 }
-                if payload.get("status") == "ok" and not prompt_current:
-                    attempts = 0
+
         # 抽取器升版而报告本身没变（同一源指纹、已成功、prompt 为当前版本）：重下载重定位后若解析
         # 结果与存量**逐字节相同**，沿用已存映射不再调用 LLM——抽取器修复通常只影响少数版式，
         # 其余报告重跑 LLM 只会引入映射抖动（已被交叉核对验证过的映射被随机改写）与成本
@@ -626,6 +646,7 @@ def ensure_report_statements(
             and versions_current(payload, prompt_version=STATEMENT_PROMPT_VERSION)
             and payload.get("statements")
             and isinstance(payload.get("mapping"), dict)
+            and not no_revenue_line_stale(payload)
             else None
         )
         if result["attempted"] >= max_new:
@@ -656,6 +677,8 @@ def ensure_report_statements(
                         "completion_tokens": prior.get("completion_tokens"),
                     },
                 }
+                if "generation_meta" in prior:
+                    completion["generation_meta"] = prior["generation_meta"]
                 result["mapping_reused"] += 1
             else:
                 prior = None
@@ -737,6 +760,11 @@ def ensure_report_statements(
                         else STATEMENT_EXTRACTOR_VERSION
                     ),
                     "model": completion.get("model"),
+                    **(
+                        {"generation_meta": completion["generation_meta"]}
+                        if "generation_meta" in completion
+                        else {}
+                    ),
                     "prompt_tokens": usage.get("prompt_tokens"),
                     "completion_tokens": usage.get("completion_tokens"),
                     "fetched_pdf_bytes": fetched_bytes,
@@ -753,6 +781,8 @@ def ensure_report_statements(
                 "message": str(exc) or "未配置 LLM API Key（LLM_REPORT_API_KEY）",
             }
             break
+        except JobOwnershipLostError:
+            raise
         except Exception as exc:  # noqa: BLE001 - 分类后落库，与摘要管线同语义
             db.rollback()
             # 推理吃光输出额度的空/半截输出（finish_reason=length）重试也一样：确定性失败，两次封顶，
@@ -900,7 +930,7 @@ def statement_progress(db: Session, symbol: str, market: str) -> Dict[str, Any]:
                 "report_type": (row.payload or {}).get("report_type"),
                 "error": (row.payload or {}).get("error"),
                 "attempts": int((row.payload or {}).get("attempts") or 0),
-                "capped": int((row.payload or {}).get("attempts") or 0) >= MAX_ATTEMPTS,
+                "capped": statement_capped(row.payload or {}),
             }
             for row in failed
         ),
@@ -968,6 +998,8 @@ def attach_statement_outcome(
     runner = ensure or ensure_report_statements
     try:
         statements = runner(db, symbol, market, max_new=max_new)
+    except JobOwnershipLostError:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("报表抽取意外失败 %s/%s: %s", market, symbol, str(exc)[:200])
         outcome["gaps"] = list(outcome.get("gaps") or []) + ["[报表抽取] 管线异常，本轮未抽取报表"]

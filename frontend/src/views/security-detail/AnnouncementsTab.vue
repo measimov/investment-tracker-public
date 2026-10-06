@@ -4,8 +4,10 @@
  * 同日同类的文件合为一组，组可展开看全部文件；标题为交易所原文，链接到原文。
  */
 import { computed, onMounted, ref, watch } from 'vue'
+import { NAlert, NButton, NEmpty, NSpin, NTag } from 'naive-ui'
+import { ChevronDown } from '@lucide/vue'
 import { useAliveGuard } from '@/composables/useAliveGuard'
-import { formatDateTime } from '@/utils/helpers'
+import { formatDate, formatDateTime } from '@/utils/helpers'
 import {
   ANNOUNCEMENT_CATEGORIES,
   IMPORTANCE_FILTER_OPTIONS,
@@ -14,7 +16,8 @@ import {
   importanceTagType,
   safeAnnouncementUrl,
   sourceLabel,
-  syncStatusText
+  syncStatusText,
+  type ImportanceFilter
 } from '@/utils/announcements'
 import { useAnnouncements } from './useAnnouncements'
 
@@ -38,6 +41,11 @@ function toggle(groupKey: string) {
   expanded.value = next
 }
 
+function selectImportance(value: ImportanceFilter) {
+  state.importance = value
+  reload()
+}
+
 function reload() {
   expanded.value = new Set()
   load()
@@ -58,30 +66,35 @@ watch(
     <div class="sd-block-header">
       <h3 class="sd-block-title">官方公告</h3>
       <div class="sd-block-actions announcement-filters">
-        <el-radio-group v-model="state.importance" size="small" @change="reload">
-          <el-radio-button
+        <div class="importance-options" role="group" aria-label="公告重要程度">
+          <button
             v-for="option in IMPORTANCE_FILTER_OPTIONS"
             :key="option.value"
-            :value="option.value"
+            type="button"
+            :aria-pressed="state.importance === option.value"
+            @click="selectImportance(option.value)"
           >
             {{ option.label }}
-          </el-radio-button>
-        </el-radio-group>
-        <el-select
-          v-model="state.category"
-          size="small"
-          clearable
-          placeholder="全部类别"
-          class="category-select"
-          @change="reload"
-        >
-          <el-option
-            v-for="option in ANNOUNCEMENT_CATEGORIES"
-            :key="option.value"
-            :label="option.label"
-            :value="option.value"
-          />
-        </el-select>
+          </button>
+        </div>
+        <span class="category-field">
+          <select
+            v-model="state.category"
+            aria-label="公告类别"
+            class="category-select"
+            @change="reload"
+          >
+            <option value="">全部类别</option>
+            <option
+              v-for="option in ANNOUNCEMENT_CATEGORIES"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+          <ChevronDown aria-hidden="true" />
+        </span>
       </div>
     </div>
 
@@ -92,82 +105,94 @@ watch(
     >
       {{ syncHint.text }}
     </p>
-    <el-alert
-      v-if="state.error"
-      :title="state.error"
-      type="error"
-      :closable="false"
-      show-icon
-      class="section-alert"
-    />
-
-    <div v-loading="state.loading" class="announcement-timeline">
-      <el-empty
-        v-if="!state.loading && !state.error && state.groups.length === 0"
-        :description="state.sync?.sync_status === 'synced' ? '筛选范围内没有公告' : '暂无公告'"
-        :image-size="72"
-      />
-      <div v-for="section in sections" :key="section.date" class="announcement-day">
-        <div class="announcement-date">{{ section.date }}</div>
-        <div
-          v-for="group in section.groups"
-          :key="group.group_key"
-          class="announcement-group"
-          data-testid="announcement-group"
+    <NAlert v-if="state.error" type="error" :closable="false" class="section-alert"
+      >{{ state.error }}
+      <div class="alert-actions">
+        <NButton :disabled="state.loading || state.loadingMore" @click="reload"
+          >重新加载公告</NButton
         >
-          <div class="announcement-head">
-            <el-tag :type="importanceTagType(group.importance)" size="small" effect="plain">
-              {{ importanceLabel(group.importance) }}
-            </el-tag>
-            <el-tag size="small" type="info" effect="plain">{{ group.category_label }}</el-tag>
-            <a
-              v-if="safeAnnouncementUrl(group.url)"
-              :href="safeAnnouncementUrl(group.url)!"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="announcement-title"
-            >
-              {{ group.title }}
-            </a>
-            <span v-else class="announcement-title">{{ group.title }}</span>
-          </div>
-          <div class="announcement-meta sd-meta-time">
-            {{ sourceLabel(group.source) }}
-            <template v-if="group.document_count > 1">
-              ·
-              <el-button
-                link
+      </div></NAlert
+    >
+
+    <NSpin :show="state.loading" aria-label="正在加载官方公告"
+      ><div class="announcement-timeline">
+        <NEmpty
+          v-if="!state.loading && !state.error && state.groups.length === 0"
+          :description="state.sync?.sync_status === 'synced' ? '筛选范围内没有公告' : '暂无公告'"
+        />
+        <div v-for="section in sections" :key="section.date" class="announcement-day">
+          <div class="announcement-date">{{ formatDate(section.date) }}</div>
+          <div
+            v-for="group in section.groups"
+            :key="group.group_key"
+            class="announcement-group"
+            data-testid="announcement-group"
+          >
+            <div class="announcement-head">
+              <NTag
+                :type="
+                  importanceTagType(group.importance) === 'danger'
+                    ? 'error'
+                    : importanceTagType(group.importance) === 'warning'
+                      ? 'warning'
+                      : 'default'
+                "
                 size="small"
-                type="primary"
-                data-testid="announcement-toggle"
-                @click="toggle(group.group_key)"
+                :bordered="false"
               >
-                {{ expanded.has(group.group_key) ? '收起' : `共 ${group.document_count} 份文件` }}
-              </el-button>
-            </template>
-          </div>
-          <ul v-if="expanded.has(group.group_key)" class="announcement-docs">
-            <li v-for="doc in group.documents" :key="doc.url + doc.title">
-              <span class="sd-meta-time">{{ formatDateTime(doc.published_at) }}</span>
+                {{ importanceLabel(group.importance) }}
+              </NTag>
+              <NTag size="small" type="default" :bordered="false">{{ group.category_label }}</NTag>
               <a
-                v-if="safeAnnouncementUrl(doc.url)"
-                :href="safeAnnouncementUrl(doc.url)!"
+                v-if="safeAnnouncementUrl(group.url)"
+                :href="safeAnnouncementUrl(group.url)!"
                 target="_blank"
                 rel="noopener noreferrer"
+                class="announcement-title"
               >
-                {{ doc.title }}
+                {{ group.title }}
               </a>
-              <span v-else>{{ doc.title }}</span>
-            </li>
-          </ul>
+              <span v-else class="announcement-title">{{ group.title }}</span>
+            </div>
+            <div class="announcement-meta sd-meta-time">
+              {{ sourceLabel(group.source) }}
+              <template v-if="group.document_count > 1">
+                ·
+                <NButton
+                  text
+                  size="small"
+                  data-testid="announcement-toggle"
+                  :aria-expanded="expanded.has(group.group_key)"
+                  :aria-label="`${group.title}：${expanded.has(group.group_key) ? '收起文件' : '展开全部文件'}`"
+                  @click="toggle(group.group_key)"
+                >
+                  {{ expanded.has(group.group_key) ? '收起' : `共 ${group.document_count} 份文件` }}
+                </NButton>
+              </template>
+            </div>
+            <ul v-if="expanded.has(group.group_key)" class="announcement-docs">
+              <li v-for="doc in group.documents" :key="doc.url + doc.title">
+                <span class="sd-meta-time">{{ formatDateTime(doc.published_at) }}</span>
+                <a
+                  v-if="safeAnnouncementUrl(doc.url)"
+                  :href="safeAnnouncementUrl(doc.url)!"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {{ doc.title }}
+                </a>
+                <span v-else>{{ doc.title }}</span>
+              </li>
+            </ul>
+          </div>
         </div>
-      </div>
-      <div v-if="state.hasMore" class="announcement-more">
-        <el-button size="small" :loading="state.loadingMore" @click="loadMore">
-          加载更早的公告
-        </el-button>
-      </div>
-    </div>
+        <div v-if="state.hasMore" class="announcement-more">
+          <NButton size="small" :loading="state.loadingMore" @click="loadMore">
+            加载更早的公告
+          </NButton>
+        </div>
+      </div></NSpin
+    >
     <p class="sd-footnote">
       来源：巨潮资讯（A/B 股）、披露易（港股）、SEC EDGAR（美股）。只同步持仓与观察清单里的标的；
       分类由标题规则判定，重要程度仅供参考，以原文为准。
@@ -177,16 +202,72 @@ watch(
 
 <style scoped>
 .announcement-filters {
+  --announcement-filter-height: 36px;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.category-select {
+.category-field {
+  position: relative;
+  display: inline-flex;
   width: 150px;
+  max-width: 100%;
+}
+.category-field svg {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  color: var(--app-text-muted);
+  pointer-events: none;
+}
+.category-select {
+  appearance: none;
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--announcement-filter-height);
+  padding: 0 32px 0 10px;
+  color: var(--app-text);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  font: inherit;
+}
+.importance-options {
+  display: flex;
+  gap: 4px;
+}
+.importance-options button {
+  box-sizing: border-box;
+  height: var(--announcement-filter-height);
+  padding: 0 12px;
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+.importance-options button[aria-pressed='true'] {
+  background: var(--app-surface-secondary);
+  color: var(--app-primary-strong);
+  border-color: var(--app-primary);
+}
+.importance-options button:focus-visible,
+.category-select:focus-visible {
+  outline: 2px solid var(--app-primary);
+  outline-offset: 2px;
+}
+@media (max-width: 640px) {
+  .announcement-filters {
+    --announcement-filter-height: 44px;
+  }
 }
 
 .sync-warning {
-  color: var(--el-color-warning);
+  color: var(--app-warning-text);
 }
 
 .announcement-timeline {
@@ -222,11 +303,11 @@ watch(
   flex: 1 1 240px;
   min-width: 0;
   overflow-wrap: anywhere;
-  color: var(--el-text-color-primary);
+  color: var(--app-text);
 }
 
 a.announcement-title:hover {
-  color: var(--el-color-primary);
+  color: var(--app-primary-strong);
 }
 
 .announcement-meta {

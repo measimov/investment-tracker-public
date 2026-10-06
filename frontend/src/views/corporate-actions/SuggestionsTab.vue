@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { showApiError } from '@/utils/showApiError'
-import { ref, reactive, watch } from 'vue'
+import { getApiErrorMessage } from '@/utils/apiErrors'
+import { computed, h, ref, reactive, watch } from 'vue'
+import { RouterLink } from 'vue-router'
+import { NAlert, NButton, NDataTable, NEmpty, NSpin, NTag, type DataTableColumns } from 'naive-ui'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import { holdingsLink } from '@/utils/securities'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
+import DividendReceiptDialog from './DividendReceiptDialog.vue'
 import type { BrokerAccount, DividendSuggestion } from '@/types'
-import { formatNumber, formatDate, formatQuantity, toNumber } from '@/utils/helpers'
+import { formatCurrency, formatDate, formatQuantity, toNumber } from '@/utils/helpers'
 import { pollJobUntilDone } from '@/utils/polling'
 import {
+  type AccountListStatus,
   accountLabel,
   accountOptionLabel,
   actionTypeLabel,
@@ -14,12 +21,22 @@ import {
   UNASSIGNED_ACCOUNT_LABEL
 } from '@/utils/labels'
 import { useAliveGuard } from '@/composables/useAliveGuard'
-import { hkDividendNotes, suggestionSourceLabel, type HkAnnouncementDetail } from './shared'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import {
+  dividendReviewReason,
+  hkDividendNotes,
+  suggestionSourceLabel,
+  type HkAnnouncementDetail
+} from './shared'
 
 // 后端 schema 为准（此前手写副本把 status 枚举放宽为 string）
 type SuggestionRow = DividendSuggestion
 
-const props = defineProps<{ brokerAccounts: BrokerAccount[]; active: boolean }>()
+const props = defineProps<{
+  brokerAccounts: BrokerAccount[]
+  brokerAccountsStatus: AccountListStatus
+  active: boolean
+}>()
 
 // counts-changed：待处理徽标挂在壳层 tab 标签上，由壳层重取；
 // accepted：接受入账产生了正式公司行动记录，壳层要刷新记录 tab
@@ -27,9 +44,16 @@ const emit = defineEmits<{ 'counts-changed': []; accepted: [] }>()
 
 const suggestions = ref<SuggestionRow[]>([])
 const suggestionsLoading = ref(false)
-// 默认只看「新建议」：与 tab 徽标（NEW 计数）同一口径——已匹配的建议账本里已有记录，
-// 不需要处理；需要核对时切到「新建议+已匹配」或「仅已匹配」
-const suggestionStatusFilter = ref('NEW')
+const suggestionsHasLoaded = ref(false)
+const suggestionsError = ref('')
+const suggestionsRequest = useLatestRequest()
+// 默认展示全部待处理预计（包括部分到账），状态由服务器在分页前筛选。
+const suggestionStatusFilter = ref('PENDING')
+const receiptReview = ref<SuggestionRow | null>(null)
+async function receiptsSaved() {
+  await loadSuggestions()
+  emit('counts-changed')
+}
 const SUGGESTION_LIMIT = 200
 const { isUnmounted } = useAliveGuard()
 const syncing = ref(false)
@@ -44,7 +68,22 @@ const acceptDialog = reactive<{
 }>({ visible: false, row: null, brokerAccountId: null, totalDividend: null, taxWithheld: null })
 
 function brokerAccountLabelById(accountId: number | null | undefined) {
-  return accountLabel(props.brokerAccounts, accountId)
+  return accountLabel(props.brokerAccounts, accountId, { status: props.brokerAccountsStatus })
+}
+
+function receiptStateLabel(state: string) {
+  return (
+    (
+      {
+        ANNOUNCED: '预计分红·资格待定',
+        PENDING: '等待到账',
+        PARTIAL: '已有实收·待核对收齐',
+        RECEIVED: '已收齐',
+        NEEDS_REVIEW: '待核对',
+        INACTIVE: '已忽略或被修订'
+      } as Record<string, string>
+    )[state] || '待核对'
+  )
 }
 
 function suggestionStatusLabel(status: string) {
@@ -74,16 +113,28 @@ function suggestionStatusTag(status: string) {
 }
 
 async function loadSuggestions() {
+  const token = suggestionsRequest.begin()
   suggestionsLoading.value = true
+  suggestionsError.value = ''
   try {
-    const params: Record<string, unknown> = { limit: SUGGESTION_LIMIT }
-    if (suggestionStatusFilter.value) params.status = suggestionStatusFilter.value
+    const params: Record<string, unknown> = {
+      limit: SUGGESTION_LIMIT,
+      pending_only: suggestionStatusFilter.value === 'PENDING'
+    }
+    if (!['ALL', 'PENDING'].includes(suggestionStatusFilter.value))
+      params.status = suggestionStatusFilter.value
     const response = await api.listDividendSuggestions(params)
-    suggestions.value = response.data
+    if (suggestionsRequest.isCurrent(token)) {
+      suggestions.value = response.data
+      suggestionsHasLoaded.value = true
+    }
   } catch (error) {
-    showApiError(error, '加载分红建议失败')
+    if (suggestionsRequest.isCurrent(token)) {
+      suggestionsError.value = getApiErrorMessage(error, '加载分红建议失败')
+      showApiError(error, '加载分红建议失败')
+    }
   } finally {
-    suggestionsLoading.value = false
+    if (suggestionsRequest.isCurrent(token)) suggestionsLoading.value = false
   }
 }
 
@@ -93,9 +144,10 @@ async function syncDividends() {
     const startResponse = await api.startDividendSyncJob()
     const job = await pollJobUntilDone(() => api.getDividendSyncJob(startResponse.data.id), {
       intervalMs: 2000,
-      maxAttempts: 150,
+      maxAttempts: 900,
       isCancelled: isUnmounted,
-      failureMessage: '分红公告同步失败'
+      failureMessage: '分红公告同步失败',
+      timeoutMessage: '分红公告同步仍在后台运行，请稍后刷新公司行动页查看'
     })
     // 取消/卸载即收手：pollJobUntilDone 被 isCancelled 中止时返回 null，
     // 若继续落到下面的列表刷新，会产生卸载后的请求与状态写入，失败时还会
@@ -112,7 +164,7 @@ async function syncDividends() {
       failed ? `${failed} 只标的失败` : '',
       unparsed ? `${unparsed} 份港股公告未能识别` : '',
       blocked ? `${blocked} 处港股股息因最新公告无法识别而暂停更新（沿用现有建议，未改写）` : '',
-      skippedNoTushare ? `未配置 TUSHARE_TOKEN，跳过 ${skippedNoTushare} 只 A/B 股` : ''
+      skippedNoTushare ? `行情来源需管理员配置，已跳过 ${skippedNoTushare} 只 A/B 股` : ''
     ].filter(Boolean)
     const notes = [...warnings, pending ? `${pending} 笔港股股息金额/除净日有待公布` : ''].filter(
       Boolean
@@ -133,6 +185,7 @@ async function syncDividends() {
 }
 
 function openAcceptDialog(row: SuggestionRow) {
+  if (row.action_type === 'CASH_DIVIDEND') return
   acceptDialog.row = row
   // 默认取建议行自身的账户归属（每账户一条建议）；NULL=未指定/合并口径
   acceptDialog.brokerAccountId = row.broker_account_id ?? null
@@ -204,201 +257,402 @@ watch(
     if (active && !suggestions.value.length) loadSuggestions()
   }
 )
+
+const isMobileView = useMediaQuery('(max-width: 640px)')
+const emptyDescription = computed(() =>
+  suggestionsLoading.value
+    ? '正在加载预计与待收股息'
+    : suggestionsError.value
+      ? '预计与待收股息暂不可用，请重试'
+      : !suggestionsHasLoaded.value
+        ? '预计与待收股息尚未加载'
+        : '暂无符合当前筛选的分红建议；可同步公告'
+)
+function naiveTag(
+  value: string | undefined
+): 'default' | 'warning' | 'error' | 'success' | 'primary' {
+  if (value === 'danger') return 'error'
+  if (value === 'warning' || value === 'success' || value === 'primary') return value
+  return 'default'
+}
+function suggestionAccount(row: SuggestionRow) {
+  return row.broker_account_id
+    ? brokerAccountLabelById(row.broker_account_id)
+    : row.action_type === 'STOCK_DIVIDEND'
+      ? '全部账户'
+      : UNASSIGNED_ACCOUNT_LABEL
+}
+function remainingEstimate(row: SuggestionRow) {
+  return row.remaining_estimated_gross != null
+    ? formatCurrency(row.remaining_estimated_gross, row.currency)
+    : row.receipt_state === 'RECEIVED'
+      ? '—'
+      : '待核对'
+}
+function completionExplanation(row: SuggestionRow) {
+  const basis =
+    row.completion_source === 'statement'
+      ? '对账单自动核对完成'
+      : row.completion_source === 'manual'
+        ? '人工确认收齐'
+        : row.review_reason
+          ? dividendReviewReason(row.review_reason)
+          : ''
+  return (
+    basis +
+    (['statement', 'manual'].includes(row.completion_source || '') && row.completion_date
+      ? ` · 末笔到账 ${formatDate(row.completion_date)}`
+      : '')
+  )
+}
+function renderCash(row: SuggestionRow) {
+  if (row.action_type !== 'CASH_DIVIDEND')
+    return h('span', `每股送转 ${formatQuantity(row.stk_div_per_share)}`)
+  const notes = hkNotes(row)
+  return h('div', { class: 'suggestion-amount' }, [
+    h('span', formatCurrency(row.cash_div_pre_tax, row.currency, 4)),
+    row.cash_div_pre_tax == null && row.cash_div_after_tax == null
+      ? h('small', { class: 'secondary-text' }, row.currency)
+      : null,
+    row.cash_div_after_tax != null
+      ? h(
+          'small',
+          { class: 'secondary-text' },
+          `税后 ${formatCurrency(row.cash_div_after_tax, row.currency, 4)}`
+        )
+      : null,
+    notes.length
+      ? h('details', { class: 'announcement-detail' }, [
+          h('summary', '公告说明'),
+          ...notes.map((note) => h('p', note))
+        ])
+      : null
+  ])
+}
+function renderReceipt(row: SuggestionRow) {
+  if (row.action_type !== 'CASH_DIVIDEND')
+    return h(
+      NTag,
+      { type: naiveTag(suggestionStatusTag(row.status)), size: 'small', bordered: false },
+      () => suggestionStatusLabel(row.status)
+    )
+  return h('div', { class: 'receipt-state' }, [
+    h(
+      NTag,
+      {
+        type: row.receipt_state === 'RECEIVED' ? 'success' : 'default',
+        size: 'small',
+        bordered: false
+      },
+      () => receiptStateLabel(row.receipt_state || '')
+    ),
+    completionExplanation(row)
+      ? h('p', { class: 'receipt-explanation' }, completionExplanation(row))
+      : null,
+    row.overdue && Number(row.remaining_estimated_gross) > 0
+      ? h(
+          NTag,
+          { type: 'warning', size: 'small', bordered: false },
+          () => '已过预计派息日·仍有待收余额'
+        )
+      : null
+  ])
+}
+function renderActions(row: SuggestionRow) {
+  const nodes = []
+  const button = (label: string, click: () => void) =>
+    h(
+      NButton,
+      {
+        text: true,
+        type: 'primary',
+        onClick: click,
+        'aria-label': `${label} ${row.symbol} ${formatDate(row.ex_date)}`
+      },
+      () => label
+    )
+  if (row.action_type === 'CASH_DIVIDEND' && row.receipt_state !== 'INACTIVE')
+    nodes.push(button('核对到账', () => (receiptReview.value = row)))
+  if (row.status === 'NEW') {
+    if (row.action_type !== 'CASH_DIVIDEND') nodes.push(button('接受', () => openAcceptDialog(row)))
+    nodes.push(button('忽略', () => ignoreSuggestion(row)))
+  } else if (row.status === 'MATCHED') {
+    nodes.push(
+      h(
+        'small',
+        { class: 'accepted-hint' },
+        `账本已有匹配记录，无需入账；如有出入请先核对既有记录。${row.action_type === 'CASH_DIVIDEND' ? receiptStateLabel(row.receipt_state || '') : '已在账'}`
+      )
+    )
+    nodes.push(button('忽略', () => ignoreSuggestion(row)))
+  } else if (row.status === 'IGNORED') nodes.push(button('恢复', () => restoreSuggestion(row)))
+  else
+    nodes.push(
+      h(
+        'small',
+        { class: 'accepted-hint' },
+        row.action_type === 'CASH_DIVIDEND' ? receiptStateLabel(row.receipt_state || '') : '已入账'
+      )
+    )
+  return h('div', { class: 'suggestion-actions' }, nodes)
+}
+const CashAmount = (props: { row: SuggestionRow }) => renderCash(props.row)
+const ReceiptState = (props: { row: SuggestionRow }) => renderReceipt(props.row)
+const SuggestionActions = (props: { row: SuggestionRow }) => renderActions(props.row)
+const columns: DataTableColumns<SuggestionRow> = [
+  {
+    title: '标的',
+    key: 'symbol',
+    width: 160,
+    render: (row) =>
+      h('div', { class: 'security-cell' }, [
+        h(RouterLink, { to: holdingsLink(row), class: 'symbol-link' }, () => row.symbol),
+        h('span', { class: 'security-name' }, row.name || row.market),
+        isHkRow(row)
+          ? h(
+              NTag,
+              { size: 'small', bordered: false, 'data-testid': 'suggestion-source-hkex' },
+              () => suggestionSourceLabel(row.source)
+            )
+          : null
+      ])
+  },
+  {
+    title: '类型',
+    key: 'action_type',
+    width: 110,
+    render: (row) =>
+      h(
+        NTag,
+        { type: naiveTag(actionTypeTag(row.action_type)), size: 'small', bordered: false },
+        () => actionTypeLabel(row.action_type)
+      )
+  },
+  {
+    title: '账户',
+    key: 'account',
+    width: 150,
+    render: (row) =>
+      h(
+        'span',
+        { class: !row.broker_account_id ? 'account-unassigned' : '' },
+        suggestionAccount(row)
+      )
+  },
+  { title: '除权除息日', key: 'ex_date', width: 110, render: (row) => formatDate(row.ex_date) },
+  {
+    title: '预计派息日',
+    key: 'pay_date',
+    width: 110,
+    render: (row) => (row.pay_date ? formatDate(row.pay_date) : '—')
+  },
+  {
+    title: '每股金额 / 送转比例',
+    key: 'amount',
+    width: 160,
+    align: 'right',
+    cellProps: () => ({ style: { verticalAlign: 'top' } }),
+    render: renderCash
+  },
+  {
+    title: '登记日持仓',
+    key: 'quantity',
+    width: 150,
+    align: 'right',
+    render: (row) =>
+      h('div', [
+        h('span', formatQuantity(row.record_date_quantity)),
+        row.quantity_basis === 'merged'
+          ? h('p', { class: 'receipt-explanation' }, '合并口径：账户归属存在矛盾，数量总和可信')
+          : null
+      ])
+  },
+  {
+    title: '推算总额（税前）',
+    key: 'estimated',
+    width: 150,
+    align: 'right',
+    render: (row) =>
+      row.estimated_total_dividend != null
+        ? formatCurrency(row.estimated_total_dividend, row.currency)
+        : '—'
+  },
+  {
+    title: '剩余预计（税前）',
+    key: 'remaining',
+    width: 160,
+    align: 'right',
+    render: remainingEstimate
+  },
+  { title: '到账核对', key: 'receipt', width: 230, render: renderReceipt },
+  {
+    title: '已确认到账',
+    key: 'received',
+    width: 150,
+    align: 'right',
+    render: (row) =>
+      h(
+        'div',
+        row.receipt_ids?.length
+          ? Object.entries(row.received_by_currency || {}).map(([currency, amount]) =>
+              h('div', formatCurrency(amount, String(currency)))
+            )
+          : '—'
+      )
+  },
+  { title: '操作', key: 'actions', width: 230, fixed: 'right', render: renderActions }
+]
 </script>
 
 <template>
-  <el-card>
-    <template #header>
-      <div class="page-header">
-        <span>分红公告建议</span>
-        <div class="header-actions">
-          <el-select
-            v-model="suggestionStatusFilter"
-            class="suggestion-status-filter"
-            @change="loadSuggestions"
-          >
-            <el-option label="待处理（新建议）" value="NEW" />
-            <el-option label="新建议+已匹配" value="" />
-            <el-option label="仅已匹配" value="MATCHED" />
-            <el-option label="已入账" value="ACCEPTED" />
-            <el-option label="已忽略" value="IGNORED" />
-          </el-select>
-          <el-button
-            type="primary"
-            :loading="syncing"
-            data-testid="dividend-sync-button"
-            @click="syncDividends"
-          >
-            同步分红公告
-          </el-button>
-        </div>
+  <section
+    class="suggestions-tab"
+    aria-labelledby="suggestions-heading"
+    :aria-busy="suggestionsLoading"
+  >
+    <header class="suggestions-heading">
+      <h2 id="suggestions-heading">预计与待收股息</h2>
+      <div class="header-actions">
+        <select
+          v-model="suggestionStatusFilter"
+          aria-label="筛选股息建议状态"
+          @change="loadSuggestions"
+        >
+          <option value="NEW">待处理（新建议）</option>
+          <option value="PENDING">预计与待收</option>
+          <option value="ALL">全部公告</option>
+          <option value="MATCHED">仅已匹配</option>
+          <option value="ACCEPTED">历史已接受</option>
+          <option value="IGNORED">已忽略</option>
+        </select>
+        <NButton
+          type="primary"
+          :loading="syncing"
+          data-testid="dividend-sync-button"
+          @click="syncDividends"
+          >同步分红公告</NButton
+        >
       </div>
-    </template>
-
-    <el-alert
-      title="A/B 股同步 Tushare 分红公告（需配置 TUSHARE_TOKEN），港股同步披露易「现金股息公告」表格；美股分红仍以券商对账单导入为准。建议不会自动入账——点“接受”才会创建正式公司行动记录。"
-      type="info"
-      :closable="false"
-      show-icon
-      class="suggestions-note"
-    />
-    <el-alert
+    </header>
+    <p class="suggestions-note">
+      公告用于预计统计，实收按实际到账计入。有对账单明细、能唯一对应本次派息且金额吻合时，系统自动核对收齐；否则说明待核对原因。普通股息不改变买入成本。美股公告暂未自动覆盖。
+    </p>
+    <NAlert
+      v-if="suggestionsError"
+      type="error"
+      :show-icon="false"
+      class="state-alert"
+      data-testid="suggestions-load-error"
+      >{{
+        suggestionsHasLoaded
+          ? '预计与待收股息加载失败，保留上次成功结果。当前筛选尚未确认。'
+          : '预计与待收股息加载失败，公告与待收状态未知。'
+      }}<NButton @click="loadSuggestions">重试建议</NButton></NAlert
+    >
+    <p v-if="suggestionsLoading" role="status" class="suggestions-note">
+      正在加载{{ suggestionsHasLoaded ? '，暂保留上次结果' : '' }}
+    </p>
+    <NAlert
       v-if="suggestions.length >= SUGGESTION_LIMIT"
       type="info"
-      :closable="false"
-      show-icon
-      class="suggestions-note"
-      :title="`仅显示最近 ${SUGGESTION_LIMIT} 条建议（按除权日倒序）`"
+      class="state-alert"
+      :title="`仅显示最近 ${SUGGESTION_LIMIT} 条建议（按除权除息日倒序）`"
     />
-
-    <div class="responsive-table">
-      <el-table v-loading="suggestionsLoading" :data="suggestions" stripe>
-        <el-table-column label="代码/名称" min-width="130">
-          <template #default="{ row }">
-            <span class="suggestion-symbol">{{ row.symbol }}</span>
-            <span v-if="row.name" class="suggestion-name">{{ row.name }}</span>
-            <el-tag
-              v-if="isHkRow(row)"
-              size="small"
-              effect="plain"
-              class="suggestion-source"
-              data-testid="suggestion-source-hkex"
-            >
-              {{ suggestionSourceLabel(row.source) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="类型" width="100">
-          <template #default="{ row }">
-            <el-tag :type="actionTypeTag(row.action_type)" size="small">
-              {{ actionTypeLabel(row.action_type) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="账户" min-width="110" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span :class="{ 'account-unassigned': !row.broker_account_id }">
-              {{
-                row.broker_account_id
-                  ? brokerAccountLabelById(row.broker_account_id)
-                  : row.action_type === 'STOCK_DIVIDEND'
-                    ? '全部账户'
-                    : UNASSIGNED_ACCOUNT_LABEL
-              }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column label="除权日" width="110">
-          <template #default="{ row }">{{ formatDate(row.ex_date) }}</template>
-        </el-table-column>
-        <el-table-column label="派息日" width="110">
-          <template #default="{ row }">{{
-            row.pay_date ? formatDate(row.pay_date) : '—'
-          }}</template>
-        </el-table-column>
-        <el-table-column label="每股税前(税后)" min-width="130" align="right">
-          <template #default="{ row }">
-            <template v-if="row.action_type === 'CASH_DIVIDEND'">
-              {{ formatNumber(toNumber(row.cash_div_pre_tax), 4) }}
-              <span v-if="row.currency !== 'CNY'" class="suggestion-currency">{{
-                row.currency
-              }}</span>
-              <span v-if="row.cash_div_after_tax" class="after-tax">
-                ({{ formatNumber(toNumber(row.cash_div_after_tax), 4) }})
-              </span>
-              <el-tooltip v-if="hkNotes(row).length" placement="top">
-                <template #content>
-                  <div v-for="(line, index) in hkNotes(row)" :key="index">{{ line }}</div>
-                </template>
-                <el-tag size="small" type="info" effect="plain" class="suggestion-detail-tag">
-                  公告
-                </el-tag>
-              </el-tooltip>
-            </template>
-            <template v-else>每股送转 {{ formatQuantity(row.stk_div_per_share) }}</template>
-          </template>
-        </el-table-column>
-        <el-table-column label="登记日持仓" min-width="110" align="right">
-          <template #default="{ row }">
-            <span>{{ formatQuantity(row.record_date_quantity) }}</span>
-            <el-tooltip
-              v-if="row.quantity_basis === 'merged'"
-              content="账户归属存在矛盾，按合并口径推算（数量总和可信）"
-            >
-              <el-tag type="warning" size="small" effect="plain">合并</el-tag>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-        <el-table-column label="推算总额(税前)" min-width="120" align="right">
-          <template #default="{ row }">
-            {{
-              row.estimated_total_dividend != null
-                ? formatNumber(toNumber(row.estimated_total_dividend), 2)
-                : '—'
-            }}
-            <span
-              v-if="row.estimated_total_dividend != null && row.currency !== 'CNY'"
-              class="suggestion-currency"
-              >{{ row.currency }}</span
-            >
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <el-tooltip
-              v-if="row.match_detail && row.match_detail.amount_diff != null"
-              :content="`已按日期匹配到账本记录，但金额差 ${formatNumber(row.match_detail.amount_diff, 2)}，请核对`"
-            >
-              <el-tag type="warning" size="small">已匹配·金额差</el-tag>
-            </el-tooltip>
-            <el-tooltip
-              v-else-if="row.match_detail && row.match_detail.currency_mismatch"
-              :content="`已按日期匹配到账本记录（账本以 ${row.match_detail.currency_mismatch.recorded_currency || '其他币种'} 入账，与公告 ${row.currency} 币种不同，未比较金额）`"
-            >
-              <el-tag type="info" size="small">已匹配·币种不同</el-tag>
-            </el-tooltip>
-            <el-tag v-else :type="suggestionStatusTag(row.status)" size="small">
-              {{ suggestionStatusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
-          <template #default="{ row }">
-            <!-- 仅 NEW 可接受：MATCHED 已有账本记录，再入账即双计（后端同样拒绝） -->
-            <template v-if="row.status === 'NEW'">
-              <el-button type="primary" size="small" text @click="openAcceptDialog(row)">
-                接受
-              </el-button>
-              <el-button type="info" size="small" text @click="ignoreSuggestion(row)">
-                忽略
-              </el-button>
-            </template>
-            <template v-else-if="row.status === 'MATCHED'">
-              <el-tooltip content="账本已有匹配记录，无需入账；如有出入请先核对既有记录">
-                <span class="accepted-hint">已在账</span>
-              </el-tooltip>
-              <el-button type="info" size="small" text @click="ignoreSuggestion(row)">
-                忽略
-              </el-button>
-            </template>
-            <el-button
-              v-else-if="row.status === 'IGNORED'"
-              type="primary"
-              size="small"
-              text
-              @click="restoreSuggestion(row)"
-            >
-              恢复
-            </el-button>
-            <span v-else class="accepted-hint">已入账</span>
-          </template>
-        </el-table-column>
-        <template #empty>
-          <el-empty description="暂无分红建议；点击右上角同步公告" :image-size="88" />
-        </template>
-      </el-table>
-    </div>
-
+    <NDataTable
+      v-if="!isMobileView"
+      class="suggestions-table"
+      :columns="columns"
+      :data="suggestions"
+      :loading="suggestionsLoading"
+      :row-key="(row) => row.id"
+      :scroll-x="1970"
+      :bordered="false"
+      ><template #empty><NEmpty :description="emptyDescription" /></template
+    ></NDataTable>
+    <NSpin v-else :show="suggestionsLoading"
+      ><div class="mobile-card-list">
+        <NEmpty v-if="!suggestions.length" :description="emptyDescription" />
+        <article
+          v-for="row in suggestions"
+          :key="row.id"
+          class="mobile-card"
+          data-testid="dividend-suggestion-card"
+        >
+          <div class="mobile-card-head">
+            <div class="mobile-card-title">
+              <RouterLink :to="holdingsLink(row)" class="mobile-card-symbol">{{
+                row.symbol
+              }}</RouterLink
+              ><span class="mobile-card-name">{{ row.name || row.market }}</span>
+            </div>
+            <NTag :type="naiveTag(actionTypeTag(row.action_type))" size="small" :bordered="false">{{
+              actionTypeLabel(row.action_type)
+            }}</NTag>
+          </div>
+          <NTag
+            v-if="isHkRow(row)"
+            size="small"
+            :bordered="false"
+            data-testid="suggestion-source-hkex"
+            >{{ suggestionSourceLabel(row.source) }}</NTag
+          >
+          <div class="mobile-card-meta">
+            <span :class="{ 'account-unassigned': !row.broker_account_id }">{{
+              suggestionAccount(row)
+            }}</span
+            ><span>除权除息日 {{ formatDate(row.ex_date) }}</span
+            ><span>预计派息日 {{ formatDate(row.pay_date) }}</span
+            ><span>{{ row.currency }}</span>
+          </div>
+          <dl class="suggestion-facts">
+            <div>
+              <dt>
+                {{ row.action_type === 'CASH_DIVIDEND' ? '每股税前 / 税后' : '每股送转比例' }}
+              </dt>
+              <dd><CashAmount :row="row" /></dd>
+            </div>
+            <div>
+              <dt>登记日持仓</dt>
+              <dd>
+                {{ formatQuantity(row.record_date_quantity)
+                }}<small v-if="row.quantity_basis === 'merged'"
+                  >合并口径：账户归属存在矛盾，数量总和可信</small
+                >
+              </dd>
+            </div>
+            <div>
+              <dt>推算总额（税前）</dt>
+              <dd>
+                {{
+                  row.estimated_total_dividend != null
+                    ? formatCurrency(row.estimated_total_dividend, row.currency)
+                    : '—'
+                }}
+              </dd>
+            </div>
+            <div>
+              <dt>剩余预计（税前）</dt>
+              <dd>{{ remainingEstimate(row) }}</dd>
+            </div>
+            <div>
+              <dt>已确认到账</dt>
+              <dd>
+                <span v-for="(amount, currency) in row.received_by_currency" :key="currency">{{
+                  formatCurrency(amount, String(currency))
+                }}</span
+                ><span v-if="!row.receipt_ids?.length">—</span>
+              </dd>
+            </div>
+          </dl>
+          <ReceiptState :row="row" />
+          <div class="mobile-card-actions"><SuggestionActions :row="row" /></div>
+        </article></div
+    ></NSpin>
+    <DividendReceiptDialog
+      :row="receiptReview"
+      @close="receiptReview = null"
+      @saved="receiptsSaved"
+    />
     <!-- 接受建议：账户归属与税额可改 -->
     <el-dialog v-model="acceptDialog.visible" title="接受分红建议" width="min(480px, 94vw)">
       <el-form label-width="110px">
@@ -409,7 +663,7 @@ watch(
             }}）
           </span>
         </el-form-item>
-        <el-form-item label="券商账户">
+        <el-form-item label="账户">
           <el-select
             v-model="acceptDialog.brokerAccountId"
             placeholder="可选；按实际到账账户归属"
@@ -448,7 +702,7 @@ watch(
               港股按公告派发币种与除净日前一天持仓推算税前总额；预扣税视持有渠道而定（H 股/红筹经
               HKSCC 代理人常按 10%、港股通个人 20%），请按券商实际到账填写
             </div>
-            <div v-else class="field-hint">A 股券商到账通常为税前全额，税额保持 0 即可</div>
+            <div v-else class="field-hint">A股券商到账通常为税前全额，税额保持 0 即可</div>
           </el-form-item>
         </template>
       </el-form>
@@ -457,85 +711,202 @@ watch(
         <el-button type="primary" :loading="accepting" @click="submitAccept">确认入账</el-button>
       </template>
     </el-dialog>
-  </el-card>
+  </section>
 </template>
-
 <style scoped>
-.suggestion-status-filter {
+.suggestions-tab {
+  width: 100%;
+  min-width: 0;
+}
+.suggestions-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 24px 0;
+}
+.suggestions-heading h2 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.header-actions select {
+  height: 36px;
   width: 200px;
-  margin-right: 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 3px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 14px;
 }
-
+.header-actions select:focus-visible {
+  outline: 2px solid var(--app-primary);
+  outline-offset: 2px;
+}
 .suggestions-note {
-  margin-bottom: 14px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  line-height: 1.8;
+  margin: 16px 0;
 }
-
-.suggestion-symbol {
+.state-alert {
+  margin: 12px 0;
+}
+.state-alert .n-button {
+  margin-left: 12px;
+}
+.suggestions-table :deep(.security-cell) {
+  display: grid;
+  gap: 6px;
+}
+.suggestions-table :deep(.security-name) {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  overflow-wrap: anywhere;
+}
+.suggestions-table :deep(.symbol-link),
+.mobile-card-symbol {
+  color: var(--app-primary-strong);
   font-weight: 600;
-  margin-right: 6px;
+  text-decoration: none;
 }
-
-.suggestion-name {
-  color: var(--el-text-color-secondary);
+.suggestions-table :deep(.symbol-link:hover),
+.mobile-card-symbol:hover {
+  text-decoration: underline;
+}
+.suggestions-table :deep(.account-unassigned),
+.account-unassigned {
+  color: var(--app-text-muted);
+}
+.suggestions-tab :deep(.suggestion-amount) {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.suggestions-tab :deep(.secondary-text),
+.suggestions-tab :deep(.receipt-explanation),
+.suggestions-tab :deep(.accepted-hint) {
   font-size: 12px;
+  color: var(--app-text-muted);
+  line-height: 1.8;
+  overflow-wrap: anywhere;
 }
-
-.suggestion-source {
-  margin-left: 6px;
+.suggestions-tab :deep(.receipt-explanation) {
+  margin: 6px 0;
 }
-
-.suggestion-currency {
-  margin-left: 3px;
-  color: var(--el-text-color-secondary);
+.suggestions-tab :deep(.receipt-state) {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+.suggestions-tab :deep(.suggestion-actions) {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.suggestions-tab :deep(.suggestion-actions .n-button) {
+  min-height: 24px;
+}
+.suggestions-tab :deep(.accepted-hint) {
+  flex-basis: 100%;
+}
+.suggestions-tab :deep(.announcement-detail) {
+  text-align: left;
   font-size: 12px;
+  line-height: 1.8;
+  color: var(--app-text-muted);
 }
-
-.suggestion-detail-tag {
-  margin-left: 4px;
-  cursor: help;
+.suggestions-tab :deep(.announcement-detail summary) {
+  align-content: center;
+  cursor: pointer;
+  min-height: 24px;
+  color: var(--app-primary-strong);
 }
-
-.after-tax {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+.suggestions-tab :deep(.announcement-detail p) {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
-
 .amount-input {
   width: 100%;
 }
-
 .field-hint {
   font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.4;
+  color: var(--app-text-muted);
+  line-height: 1.8;
 }
-
-.accepted-hint {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.account-unassigned {
-  color: var(--app-warning);
-}
-
-@media (max-width: 900px) {
-  .header-actions {
-    width: 100%;
+@media (max-width: 640px) {
+  .suggestions-heading {
+    align-items: flex-start;
     flex-wrap: wrap;
   }
-}
-
-/* 移动端：筛选下拉与同步按钮各占一行，表格在容器内横向滚动，不撑破视口 */
-@media (max-width: 640px) {
-  .suggestion-status-filter {
+  .header-actions {
     width: 100%;
-    margin-right: 0;
-    margin-bottom: 8px;
   }
-
-  .header-actions > .el-button {
-    width: 100%;
+  .header-actions select {
+    min-height: 44px;
+    flex: 1;
+    min-width: 160px;
+  }
+  .header-actions .n-button {
+    min-height: 44px;
+  }
+  .mobile-card {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-soft);
+    border-radius: 3px;
+    box-shadow: none;
+  }
+  .mobile-card-title {
+    min-width: 0;
+    flex: 1;
+  }
+  .mobile-card-name {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .mobile-card-meta {
+    line-height: 1.8;
+    margin: 12px 0;
+  }
+  .suggestion-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 12px;
+    margin: 18px 0;
+  }
+  .suggestion-facts div {
+    min-width: 0;
+  }
+  .suggestion-facts dt {
+    font-size: 12px;
+    color: var(--app-text-muted);
+    line-height: 1.8;
+  }
+  .suggestion-facts dd {
+    margin: 4px 0 0;
+    line-height: 1.8;
+    overflow-wrap: anywhere;
+  }
+  .suggestion-facts small,
+  .suggestion-facts dd > span {
+    display: block;
+  }
+  .suggestions-tab :deep(.suggestion-actions .n-button),
+  .suggestions-tab :deep(.announcement-detail summary) {
+    min-height: 44px;
+  }
+  .mobile-card-actions {
+    margin-top: 14px;
+    justify-content: flex-start;
   }
 }
 </style>

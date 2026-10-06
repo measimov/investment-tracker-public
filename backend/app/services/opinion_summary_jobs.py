@@ -303,6 +303,8 @@ def summarize_one(
     # 4/4 落库（全局产物：名称只从公共元数据解析，与 SecurityAnalysis 同规）
     stage("persist", completed=3)
     usage = completion.get("usage", {})
+    if "generation_meta" in completion:
+        input_payload["generation_meta"] = completion["generation_meta"]
     latest_raw = stats.get("latest_utterance_at")
     summary_row = SecurityOpinionSummary(
         symbol=symbol,

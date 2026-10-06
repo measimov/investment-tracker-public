@@ -3,6 +3,7 @@
  * 陈价/缺价提示（#286：仪表盘与统计页共用，同一严重度）：一行摘要，展开看名称清单，附刷新入口。
  */
 import { computed, ref } from 'vue'
+import { NAlert, NButton } from 'naive-ui'
 import {
   collectPriceIssues,
   describeIssueItem,
@@ -31,40 +32,37 @@ function toggle(kind: 'stale' | 'missing') {
 
 <template>
   <template v-for="row in rows" :key="row.kind">
-    <el-alert
+    <NAlert
       v-if="row.title"
       type="warning"
-      show-icon
-      :closable="false"
       class="price-issues-alert"
       :data-testid="`price-issues-${row.kind}`"
     >
-      <template #title>
+      <template #header>
         <span>{{ row.title }}</span>
-        <el-button
-          link
-          type="primary"
+        <NButton
+          text
           size="small"
           class="price-issues-action"
+          :aria-expanded="expanded === row.kind"
           @click="toggle(row.kind)"
         >
           {{ expanded === row.kind ? '收起' : '查看明细' }}
-        </el-button>
-        <el-button
-          link
-          type="primary"
+        </NButton>
+        <NButton
+          text
           size="small"
           class="price-issues-action"
           :loading="refreshing"
           @click="$emit('refresh')"
         >
           刷新价格
-        </el-button>
+        </NButton>
       </template>
       <ul v-if="expanded === row.kind" class="price-issues-list">
         <li v-for="item in row.items" :key="item.key">{{ describeIssueItem(item) }}</li>
       </ul>
-    </el-alert>
+    </NAlert>
   </template>
 </template>
 
@@ -75,6 +73,7 @@ function toggle(kind: 'stale' | 'missing') {
 
 .price-issues-action {
   margin-left: 8px;
+  min-height: 24px;
 }
 
 .price-issues-list {
@@ -84,5 +83,11 @@ function toggle(kind: 'stale' | 'missing') {
   overflow-y: auto;
   font-size: 12px;
   line-height: 1.7;
+}
+
+@media (max-width: 640px) {
+  .price-issues-action {
+    min-height: 44px;
+  }
 }
 </style>

@@ -32,10 +32,7 @@ from ..services.broker_import_common import (
     disambiguated_row_hash,
     iso_date_range,
     ProspectiveTransaction,
-    attribute_tax_source,
-    find_dividend_for_tax,
     load_unattributed_tax_sources,
-    mark_unattributed_tax,
     source_error_rows,
 )
 from ..services.security_rule_service import (
@@ -55,8 +52,8 @@ from ..services.import_batch_service import (
     validate_import_account,
     validate_source_file_account,
 )
+from .dividend_tax_service import create_dividend_tax_event, attribute_tax_cash_source
 from .broker_import_common import (
-    append_note,
     attribute_source,
     book_suspected_source,
     BookedTradeKey,
@@ -95,7 +92,9 @@ PARSER_NAME = "cmb_statement"
 #   v14 = 转托转入/转存管转入 入账为 OPENING_POSITION 公司行动（成交价 0 = 成本未知并标记，
 #         #174）；场外开基 申购/赎回/转托管确认 计入预期归档不再拖批次 PARTIAL；存量归档
 #         的转入行经 skip_reason=unbooked_opening_position 重导转正；托管转出 归档并告警
-PARSER_VERSION = "14"
+#   v15 = 递延红利税独立按实际扣税日入账；归属可显式分摊，不改原股息
+#   v16 = 现金事件也做跨文件语义判重；原始指纹保持不变
+PARSER_VERSION = "16"
 TRADE_BUSINESS_MAP = {
     "证券买入": "BUY",
     "证券卖出": "SELL",
@@ -297,12 +296,7 @@ class ParsedFlow:
 
     @property
     def is_dividend_tax(self) -> bool:
-        return (
-            not self.excluded
-            and self.business_name == TAX_BUSINESS_NAME
-            and bool(self.security_code)
-            and self.amount < 0
-        )
+        return not self.excluded and self.business_name == TAX_BUSINESS_NAME and self.amount < 0
 
     @property
     def is_cash_business(self) -> bool:
@@ -310,7 +304,7 @@ class ParsedFlow:
 
         方向不符的行在 parse 阶段已产出阻断错误；这里再次否决入账资格，
         确保即使错误被上层忽略也只会归档、绝不 abs() 成反向事件。"""
-        if self.excluded or self.amount == 0:
+        if self.excluded or self.amount == 0 or self.is_dividend_tax:
             return False
         if self.cash_event_type is None:
             return False
@@ -1052,8 +1046,7 @@ ARCHIVED_REVIVE = "revive"
 ARCHIVED_REVIVE_RULES: Dict[str, Callable[[Any, frozenset], bool]] = {
     # 未建模的托管转出：归档一次即够，重导按重复计（持仓可能高估的告警照旧）
     UNBOOKED_CUSTODY_OUT: lambda flow, confirmed: False,
-    # 未归属税行：本批补齐了股息的（有证券代码的股息税）在原行上转正；缺代码的税行进不了
-    # 转正分支，只能按重复计（2026-09-02 重导重叠区间对账单实锤过撞唯一约束）
+    # 旧未归属税行：有无证券代码都可原地关联实际税日现金事实；不再等待唯一股息。
     UNATTRIBUTED_TAX: lambda flow, confirmed: flow.is_dividend_tax,
     # 疑似重复：人工确认后才转正，未确认按重复计（#189 同款）
     SUSPECTED_DUPLICATE: lambda flow, confirmed: flow.row_hash in confirmed,
@@ -1108,16 +1101,60 @@ def booked_trade_key_of_source(row: BrokerFundFlow) -> Optional[BookedTradeKey]:
     )
 
 
+def cash_event_type_of_flow(flow: ParsedFlow) -> Optional[str]:
+    if flow.is_cash_interest:
+        return "INTEREST"
+    if flow.is_dividend_tax:
+        return "TAX"
+    return flow.cash_event_type if flow.is_cash_business else None
+
+
+def booked_cash_key(row, event_type):
+    """只忽略价格/回购利率的导出精度；数量符号、实付金额、费用、余额均需相同。"""
+    return (
+        row.security_code or "",
+        row.trade_date,
+        event_type,
+        row.trade_quantity,
+        row.amount,
+        row.currency,
+        row.business_name,
+        row.stamp_tax,
+        row.commission,
+        row.handling_fee,
+        row.management_fee,
+        row.settlement_fee,
+        row.transfer_fee,
+        row.other_fee,
+        row.cash_balance,
+        row.remaining_quantity,
+        row.settlement_rate,
+        row.serial_number or "",
+        row.contract_number or "",
+        row.shareholder_code or "",
+    )
+
+
+def book_suspected_cash_source(source, event_id):
+    source.cash_event_id = event_id
+    source.skip_reason = None
+    source.notes = broker_import_common.append_note(
+        source.notes, "confirmed as a distinct cash event during re-import"
+    )
+    return source
+
+
 def suspected_sample(
     flow: ParsedFlow, existing: Optional[BrokerFundFlow], *, previously_held: bool
 ) -> Dict[str, Any]:
     market = infer_market(flow.security_code, flow.currency, flow.shareholder_code)
+    cash_type = cash_event_type_of_flow(flow)
     return {
         "row_number": flow.source_row_number,
         "symbol": flow.security_code,
         "name": flow.security_name,
         "market": market,
-        "transaction_type": flow.transaction_type or "",
+        "transaction_type": cash_type or flow.transaction_type or "",
         "trade_date": flow.trade_date.isoformat(),
         "quantity": str(flow.booked_quantity),
         "amount": str(flow.amount),
@@ -1129,6 +1166,13 @@ def suspected_sample(
         "existing_import_batch_id": existing.import_batch_id if existing is not None else None,
         "existing_row_number": existing.source_row_number if existing is not None else None,
         "existing_row_hash": existing.row_hash if existing is not None else None,
+        "currency": flow.currency,
+        "existing_date": existing.trade_date.isoformat() if existing is not None else None,
+        "existing_currency": existing.currency if existing is not None else None,
+        "existing_amount": str(existing.amount) if existing is not None else None,
+        "reason": "同账户、日期、业务、数量、金额、费用及余额相同，价格/利率精度不同"
+        if cash_type
+        else None,
         "row_hash": flow.row_hash,
         "previously_held": previously_held,
     }
@@ -1162,7 +1206,7 @@ def resolve_suspected_duplicates(
         for flow in parsed_rows
         if flow.becomes_transaction and flow.row_hash not in existing_hashes
     ]
-    return classify_suspected_duplicates(
+    trades = classify_suspected_duplicates(
         db,
         BrokerFundFlow,
         user_id=user_id,
@@ -1174,6 +1218,46 @@ def resolve_suspected_duplicates(
         previously_held=previously_held,
         confirmed_hashes=confirmed_row_hashes,
     )
+    cash_rows = [flow for flow in parsed_rows if cash_event_type_of_flow(flow)]
+    cash_hashes = {flow.row_hash for flow in cash_rows}
+    # 使用既有现金事实的类型，不重解释用户当前可修改的业务映射。
+    events = (
+        {
+            event.id: event
+            for event in db.query(CashEvent)
+            .filter(
+                CashEvent.user_id == user_id,
+                CashEvent.broker_account_id == broker_account_id,
+                CashEvent.event_date.in_({flow.trade_date for flow in cash_rows}),
+            )
+            .all()
+        }
+        if cash_rows
+        else {}
+    )
+
+    def key_of_source(source):
+        event = events.get(source.cash_event_id)
+        if source.broker != BROKER_NAME or event is None:
+            return None
+        return booked_cash_key(source, event.event_type)
+
+    cash = classify_suspected_duplicates(
+        db,
+        BrokerFundFlow,
+        user_id=user_id,
+        broker_account_id=broker_account_id,
+        candidates=[flow for flow in cash_rows if flow.row_hash not in existing_hashes],
+        key_of_flow=lambda flow: booked_cash_key(flow, cash_event_type_of_flow(flow)),
+        key_of_source=key_of_source,
+        batch_hashes=batch_hashes,
+        previously_held={h: row for h, row in previously_held.items() if h in cash_hashes},
+        confirmed_hashes=confirmed_row_hashes,
+        booked_link="cash_event_id",
+    )
+    trades.held_hashes |= cash.held_hashes
+    trades.matches.update(cash.matches)
+    return trades
 
 
 def build_import_result(
@@ -1822,6 +1906,37 @@ def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
     broker_import_common.reject_unassigned_legacy_sources(db, user_id, BROKER_NAME)
 
 
+def _prepare_dividend_receipts(db, user_id, account_id, rows, existing_hashes, *, lock=False):
+    from .dividend_receipt_service import DividendReceipt, prepare_dividend_receipts
+
+    markets = {
+        flow.row_hash: infer_market(flow.security_code, flow.currency, flow.shareholder_code)
+        for flow in rows
+    }
+    return prepare_dividend_receipts(
+        db,
+        user_id,
+        account_id,
+        [
+            DividendReceipt(
+                flow.row_hash,
+                flow.security_code,
+                markets[flow.row_hash],
+                flow.trade_date,
+                flow.currency,
+                flow.amount,
+            )
+            for flow in rows
+            if flow.is_cash_dividend and markets[flow.row_hash]
+        ],
+        existing_hashes=existing_hashes,
+        lock=lock,
+        securities={
+            (flow.security_code, markets[flow.row_hash]) for flow in rows if markets[flow.row_hash]
+        },
+    )
+
+
 def preview_cmb_fund_flow(
     db: Session,
     user_id: int,
@@ -1951,6 +2066,17 @@ def preview_cmb_fund_flow(
     except ValueError as exc:
         # 持仓预检失败不是行级解析错误（没有 `row N:` 前缀），但它同样阻塞导入，
         # 必须并进 errors 全集——否则诊断报告里的 counts 会和界面上的条数打架。
+        errors = [*errors, str(exc)]
+        result["errors"] = [*result.get("errors", []), str(exc)]
+        result["errors_total"] = result.get("errors_total", 0) + 1
+
+    try:
+        dividend_plan = _prepare_dividend_receipts(
+            db, user_id, broker_account_id, parsed_rows, duplicate_hashes
+        )
+        result["warnings"] = [*result.get("warnings", []), *dividend_plan.warnings()]
+        result["merged_dividend_rows"] = len(dividend_plan.matches)
+    except ValueError as exc:
         errors = [*errors, str(exc)]
         result["errors"] = [*result.get("errors", []), str(exc)]
         result["errors_total"] = result.get("errors_total", 0) + 1
@@ -2244,6 +2370,10 @@ def import_cmb_fund_flow(
         )
         existing_hashes = {h for h, reason in archived_rows.items() if reason is None}
         duplicate_hashes = set(existing_hashes)
+        dividend_plan = _prepare_dividend_receipts(
+            db, user_id, broker_account_id, parsed_rows, existing_hashes, lock=True
+        )
+        warnings = [*warnings, *dividend_plan.warnings()]
         # 上次未归属的税行：本批若补齐了股息就在原行上转正（不建新行）
         unattributed_tax_sources = load_unattributed_tax_sources(
             db,
@@ -2293,6 +2423,28 @@ def import_cmb_fund_flow(
 
             market = infer_market(flow.security_code, flow.currency, flow.shareholder_code)
 
+            if flow.row_hash in suspected.held_hashes:
+                # 疑似重复（#190）：归档留痕、不入账。人工确认后带 confirm 清单重导，
+                # 走相应的交易/现金业务分支原地转正
+                matched = suspected.matches.get(flow.row_hash)
+                archived = create_broker_fund_flow(
+                    user_id=user_id,
+                    broker_account_id=broker_account_id,
+                    filename=filename,
+                    flow=flow,
+                    import_batch_id=batch_id,
+                )
+                mark_suspected_duplicate(
+                    archived,
+                    "suspected duplicate of booked flow "
+                    f"id={matched.id if matched is not None else '?'} "
+                    f"(price {matched.trade_price if matched is not None else '?'} vs "
+                    f"{flow.trade_price}); manual confirmation required",
+                )
+                db.add(archived)
+                existing_hashes.add(flow.row_hash)
+                continue
+
             if flow.is_cash_interest:
                 cash_event = CashEvent(
                     user_id=user_id,
@@ -2305,18 +2457,55 @@ def import_cmb_fund_flow(
                 )
                 db.add(cash_event)
                 db.flush()
-                db.add(
-                    create_broker_fund_flow(
+                archive_and_link(
+                    db,
+                    suspected_sources,
+                    flow.row_hash,
+                    revive=lambda source, event_id=cash_event.id: book_suspected_cash_source(
+                        source, event_id
+                    ),
+                    create=lambda event_id=cash_event.id: create_broker_fund_flow(
                         user_id=user_id,
                         broker_account_id=broker_account_id,
                         filename=filename,
                         flow=flow,
                         import_batch_id=batch_id,
-                        cash_event_id=cash_event.id,
-                    )
+                        cash_event_id=event_id,
+                    ),
+                    revived=revived_source_hashes,
                 )
                 existing_hashes.add(flow.row_hash)
                 imported_cash_events += 1
+                continue
+
+            if flow.is_dividend_tax:
+                tax_sources = {**unattributed_tax_sources, **suspected_sources}
+                cash_event = create_dividend_tax_event(
+                    db,
+                    user_id=user_id,
+                    broker_account_id=broker_account_id,
+                    flow=flow,
+                    broker_name=BROKER_NAME,
+                )
+                archive_and_link(
+                    db,
+                    tax_sources,
+                    flow.row_hash,
+                    revive=lambda source, event_id=cash_event.id: attribute_tax_cash_source(
+                        source, event_id
+                    ),
+                    create=lambda event_id=cash_event.id: create_broker_fund_flow(
+                        user_id=user_id,
+                        broker_account_id=broker_account_id,
+                        filename=filename,
+                        flow=flow,
+                        import_batch_id=batch_id,
+                        cash_event_id=event_id,
+                    ),
+                    revived=revived_source_hashes,
+                )
+                existing_hashes.add(flow.row_hash)
+                imported_tax_adjustments += 1
                 continue
 
             if flow.is_cash_business:
@@ -2332,38 +2521,53 @@ def import_cmb_fund_flow(
                 )
                 db.add(cash_event)
                 db.flush()
-                db.add(
-                    create_broker_fund_flow(
+                archive_and_link(
+                    db,
+                    suspected_sources,
+                    flow.row_hash,
+                    revive=lambda source, event_id=cash_event.id: book_suspected_cash_source(
+                        source, event_id
+                    ),
+                    create=lambda event_id=cash_event.id: create_broker_fund_flow(
                         user_id=user_id,
                         broker_account_id=broker_account_id,
                         filename=filename,
                         flow=flow,
                         import_batch_id=batch_id,
-                        cash_event_id=cash_event.id,
-                    )
+                        cash_event_id=event_id,
+                    ),
+                    revived=revived_source_hashes,
                 )
                 existing_hashes.add(flow.row_hash)
                 imported_cash_events += 1
                 continue
 
             if flow.is_cash_dividend:
-                action = CorporateAction(
-                    user_id=user_id,
-                    broker_account_id=broker_account_id,
-                    import_batch_id=batch_id,
-                    symbol=flow.security_code,
-                    name=flow.security_name,
-                    market=market,
-                    action_type="CASH_DIVIDEND",
-                    ex_date=flow.trade_date,
-                    payment_date=flow.trade_date,
-                    total_dividend=flow.amount,
-                    tax_withheld=Decimal("0"),
-                    net_dividend=flow.amount,
-                    currency=flow.currency,
-                    notes=import_note(BROKER_NAME, flow.business_name),
+                action = dividend_plan.apply(
+                    flow.row_hash,
+                    batch_id=batch_id,
+                    source_note=import_note(BROKER_NAME, flow.business_name),
                 )
-                db.add(action)
+                if action is None:
+                    action = CorporateAction(
+                        user_id=user_id,
+                        broker_account_id=broker_account_id,
+                        import_batch_id=batch_id,
+                        symbol=flow.security_code,
+                        name=flow.security_name,
+                        market=market,
+                        action_type="CASH_DIVIDEND",
+                        ex_date=flow.trade_date,
+                        payment_date=flow.trade_date,
+                        total_dividend=None,
+                        tax_withheld=None,
+                        amount_basis="NET_ONLY",
+                        receipt_status="RECEIVED",
+                        net_dividend=flow.amount,
+                        currency=flow.currency,
+                        notes=import_note(BROKER_NAME, flow.business_name),
+                    )
+                    db.add(action)
                 db.flush()
                 db.add(
                     create_broker_fund_flow(
@@ -2377,65 +2581,6 @@ def import_cmb_fund_flow(
                 )
                 existing_hashes.add(flow.row_hash)
                 imported_corporate_actions += 1
-                continue
-
-            if flow.is_dividend_tax:
-                action = find_dividend_for_tax(
-                    db,
-                    user_id,
-                    flow,
-                    market,
-                    broker_account_id=broker_account_id,
-                )
-                if not action:
-                    warnings.append(
-                        f"row {flow.source_row_number}: expected exactly one account-scoped "
-                        f"dividend for tax on {flow.security_code}; source preserved unlinked"
-                    )
-                    # 已保留过就不重复建行（row_hash 唯一约束）；标记为未归属，
-                    # 补齐股息后重导会被 get_existing_hashes 放行并在此转正。
-                    if flow.row_hash not in unattributed_tax_sources:
-                        db.add(
-                            mark_unattributed_tax(
-                                create_broker_fund_flow(
-                                    user_id=user_id,
-                                    broker_account_id=broker_account_id,
-                                    filename=filename,
-                                    flow=flow,
-                                    import_batch_id=batch_id,
-                                ),
-                                "preserved without canonical action: "
-                                "expected exactly one account-scoped dividend",
-                            )
-                        )
-                    continue
-                tax_amount = abs(flow.amount)
-                action.tax_withheld = (action.tax_withheld or Decimal("0")) + tax_amount
-                if action.total_dividend is not None:
-                    action.net_dividend = max(
-                        Decimal("0"), action.total_dividend - action.tax_withheld
-                    )
-                action.notes = append_note(action.notes, f"{BROKER_NAME}红利税补缴")
-                # 上次未归属的那一行就地转正，不插新行
-                archive_and_link(
-                    db,
-                    unattributed_tax_sources,
-                    flow.row_hash,
-                    revive=lambda source, action_id=action.id: attribute_tax_source(
-                        source, action_id
-                    ),
-                    create=lambda action_id=action.id: create_broker_fund_flow(
-                        user_id=user_id,
-                        broker_account_id=broker_account_id,
-                        filename=filename,
-                        flow=flow,
-                        import_batch_id=batch_id,
-                        corporate_action_id=action_id,
-                    ),
-                    revived=revived_source_hashes,
-                )
-                existing_hashes.add(flow.row_hash)
-                imported_tax_adjustments += 1
                 continue
 
             if flow.is_opening_position:
@@ -2501,17 +2646,6 @@ def import_cmb_fund_flow(
                     import_batch_id=batch_id,
                 )
                 if (
-                    flow.business_name == TAX_BUSINESS_NAME
-                    and not flow.security_code
-                    and flow.amount < 0
-                ):
-                    # 与 0011 回填口径一致：缺代码税行归档即带未归属标记，
-                    # 重导走上面的重复守卫而非再次通用归档
-                    mark_unattributed_tax(
-                        archived,
-                        "preserved without security code; manual attribution required",
-                    )
-                elif (
                     flow.business_name in OPENING_POSITION_BUSINESS_NAMES
                     and flow.security_code
                     and not flow.excluded
@@ -2528,28 +2662,6 @@ def import_cmb_fund_flow(
                         UNBOOKED_CUSTODY_OUT,
                         "custody transfer-out not modelled; account position may be overstated",
                     )
-                db.add(archived)
-                existing_hashes.add(flow.row_hash)
-                continue
-
-            if flow.row_hash in suspected.held_hashes:
-                # 疑似重复（#190）：归档留痕、不入账。人工确认后带 confirm 清单重导，
-                # 走下面的 book_suspected_source 原地转正
-                matched = suspected.matches.get(flow.row_hash)
-                archived = create_broker_fund_flow(
-                    user_id=user_id,
-                    broker_account_id=broker_account_id,
-                    filename=filename,
-                    flow=flow,
-                    import_batch_id=batch_id,
-                )
-                mark_suspected_duplicate(
-                    archived,
-                    "suspected duplicate of booked flow "
-                    f"id={matched.id if matched is not None else '?'} "
-                    f"(price {matched.trade_price if matched is not None else '?'} vs "
-                    f"{flow.trade_price}); manual confirmation required",
-                )
                 db.add(archived)
                 existing_hashes.add(flow.row_hash)
                 continue
@@ -2644,6 +2756,7 @@ def import_cmb_fund_flow(
             db.query(BrokerFundFlow).filter(BrokerFundFlow.import_batch_id == batch_id).count()
         )
         result["archived_source_rows"] = imported_source_rows
+        result["merged_dividend_rows"] = len(dividend_plan.matches)
         completed_batch = complete_import_batch(
             db,
             batch_id,

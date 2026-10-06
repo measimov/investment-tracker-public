@@ -69,15 +69,21 @@ export function accountOptionLabel(account: AccountLike): string {
   )
 }
 
-/** 按 id 取账户显示名：null/空 → 未指定账户；列表里找不到 → 已删除账户。全站唯一实现。 */
+export type AccountListStatus = 'loading' | 'ready' | 'error'
+
+/** 只有列表加载成功后，缺失的 id 才能显示为已删除。 */
 export function accountLabel(
   accounts: readonly AccountLike[],
   id: unknown,
-  { full = false }: { full?: boolean } = {}
+  { full = false, status = 'ready' }: { full?: boolean; status?: AccountListStatus } = {}
 ): string {
   if (id === null || id === undefined || id === '') return UNASSIGNED_ACCOUNT_LABEL
   const account = accounts.find((item) => String(item.id) === String(id))
-  if (!account) return DELETED_ACCOUNT_LABEL
+  if (!account) {
+    if (status === 'loading') return '账户加载中'
+    if (status === 'error') return '账户暂不可用'
+    return DELETED_ACCOUNT_LABEL
+  }
   return full ? accountOptionLabel(account) : accountShortName(account)
 }
 /** 引用了已删除的券商账户 */
@@ -92,8 +98,8 @@ export const TRANSACTION_TYPE_LABELS: Record<string, string> = {
 }
 
 export const TRANSACTION_TYPE_TAGS: Record<string, TagKind> = {
-  BUY: 'success',
-  SELL: 'danger',
+  BUY: 'info',
+  SELL: 'info',
   TRANSFER_OUT: 'warning',
   TRANSFER_IN: 'info'
 }

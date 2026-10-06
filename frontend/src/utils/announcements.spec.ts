@@ -70,7 +70,7 @@ describe('公告展示', () => {
     expect(
       syncStatusText({ sync_status: 'synced', last_synced: '2026-09-29', unsupported_reason: null })
         .text
-    ).toContain('2026-09-29')
+    ).toContain('2026/09/29')
   })
 
   it('按公告日分段与翻页游标', () => {

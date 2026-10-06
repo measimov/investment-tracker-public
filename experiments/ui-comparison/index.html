@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>投资追踪 · 组件对照</title>
+    <style>
+      body {
+        margin: 0;
+        background: #faf9f5;
+        color: #242321;
+        font:
+          15px/1.7 -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          'Microsoft YaHei',
+          sans-serif;
+      }
+      main {
+        max-width: 860px;
+        margin: 50px auto;
+        padding: 0 24px;
+      }
+      h1 {
+        font-size: 28px;
+        margin-bottom: 10px;
+      }
+      p {
+        color: #5f5b53;
+      }
+      nav {
+        display: grid;
+        gap: 16px;
+        margin: 28px 0;
+      }
+      a {
+        display: block;
+        background: white;
+        border: 1px solid #e5e1d8;
+        border-radius: 6px;
+        padding: 18px 22px;
+        color: #a6533c;
+        text-decoration: none;
+      }
+      a:focus-visible {
+        outline: 3px solid #a6533c;
+      }
+      a span {
+        display: block;
+        color: #5f5b53;
+        font-size: 13px;
+      }
+      strong {
+        font-size: 18px;
+      }
+      ul {
+        padding-left: 22px;
+        color: #5f5b53;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>持仓与交易 · 组件对照</h1>
+      <p>同一份合成数据、同一套金融格式、相同功能范围。打开任意版本试用；不会连接生产服务。</p>
+      <a href="/design/" style="margin: 24px 0; border-color: #cbb19a; background: #f3e9dd"
+        ><strong>查看新版持仓视觉稿</strong
+        ><span>完整页面、桌面/手机布局、可收起导航与可操作明细。这一版用于审阅风格。</span></a
+      >
+      <nav>
+        <a href="/element/"><strong>Element Plus</strong><span>现有组件库基线</span></a
+        ><a href="/naive/"><strong>Naive UI</strong><span>完整组件与主题配置方案</span></a
+        ><a href="/nuxt/"
+          ><strong>Nuxt UI</strong><span>Vue / Vite 接入，Reka 与 Tailwind 组件方案</span></a
+        >
+      </nav>
+      <section>
+        <h2>实测摘要</h2>
+        <p>
+          建议 Naive UI
+          先做真实持仓页验证：较大表格更新更快，包体接近现有方案；下一步及全站迁移均待确认。默认 50
+          行时，三版主要操作差距较小。
+        </p>
+        <div style="overflow-x: auto">
+          <table style="width: 100%; text-align: left; border-collapse: collapse">
+            <thead>
+              <tr>
+                <th>方案</th>
+                <th>JS+CSS gzip</th>
+                <th>200 行渲染</th>
+                <th>200 行排序</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Element Plus</td>
+                <td>215.1 KB</td>
+                <td>198 ms</td>
+                <td>110 ms</td>
+              </tr>
+              <tr>
+                <td>Naive UI</td>
+                <td>220.0 KB</td>
+                <td>132 ms</td>
+                <td>51 ms</td>
+              </tr>
+              <tr>
+                <td>Nuxt UI</td>
+                <td>237.5 KB</td>
+                <td>213 ms</td>
+                <td>120 ms</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          同机 Chromium、缓存重访、各 5 次取中位数。计时含两帧等待，不是
+          INP，也不代表线上全站表现。36 项交互检查通过。
+        </p>
+      </section>
+      <ul>
+        <li>切换 50 / 200 条样本，输入关键字或筛选账户和日期。</li>
+        <li>切换盈亏排序，展开账户明细，横向滚动查看操作列。</li>
+        <li>打开交易弹窗，检查必填校验与 0.085 价格的完整保存。</li>
+        <li>缩窄浏览器，检查表格滚动、日期输入与弹窗操作。</li>
+      </ul>
+      <p>本原型用于选型，不代表正式产品已改版，也不代表已批准迁移任何组件库。</p>
+    </main>
+  </body>
+</html>

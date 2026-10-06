@@ -32,6 +32,34 @@ const pdf2025 = {
 }
 
 describe('mergeHkPivotRows', () => {
+  it('本身存疑的派生科目不因雅虎补缺而复活（#343-3，与后端 rederive_fields 同口径）', () => {
+    const row = {
+      end_date: '20251231',
+      fp: 'FY',
+      currency: 'CNY',
+      is_comparative: false,
+      total_hldr_eqy_exc_min_int: 800,
+      minority_int: 50,
+      total_equity: 850,
+      total_liab: 100,
+      derived_fields: { total_equity: ['total_hldr_eqy_exc_min_int', 'minority_int'] },
+      validation: {
+        status: 'suspect',
+        row_level: false,
+        suspect_fields: ['total_liab', 'total_equity'],
+        checks: []
+      }
+    }
+    const withYahoo = mergeHkPivotRows(
+      [row],
+      [{ end_date: '20251231', fp: 'FY', currency: 'CNY', total_liab: 120 }]
+    )
+    const withoutYahoo = mergeHkPivotRows([row], [])
+    expect(withYahoo[0].total_equity).toBeNull()
+    expect(withoutYahoo[0].total_equity).toBeNull()
+    expect(withYahoo[0].total_liab).toBe(120)
+  })
+
   it('PDF 行优先，雅虎只补缺并标注来源', () => {
     const rows = mergeHkPivotRows(
       [pdf2025],

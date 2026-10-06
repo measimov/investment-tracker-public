@@ -1,0 +1,92 @@
+/* Element Plus adapter for light and dark modes; palette.css owns every color. */
+:root,
+html.dark {
+  --el-bg-color: var(--app-surface);
+  --el-bg-color-page: var(--app-bg);
+  --el-bg-color-overlay: var(--app-surface);
+  --el-fill-color: var(--app-surface-secondary);
+  --el-fill-color-light: var(--app-surface-muted);
+  --el-fill-color-lighter: var(--app-surface-muted);
+  --el-fill-color-extra-light: var(--app-surface-muted);
+  --el-fill-color-dark: var(--app-hover);
+  --el-fill-color-darker: var(--app-hover);
+  --el-fill-color-blank: var(--app-surface);
+  --el-text-color-primary: var(--app-text);
+  --el-text-color-regular: var(--app-text);
+  --el-text-color-secondary: var(--app-text-muted);
+  --el-text-color-placeholder: var(--app-text-soft);
+  --el-text-color-disabled: var(--app-text-disabled);
+  --el-border-color: var(--app-border);
+  --el-border-color-light: var(--app-border-soft);
+  --el-border-color-lighter: var(--app-separator);
+  --el-border-color-extra-light: var(--app-separator);
+  --el-border-color-dark: var(--app-border);
+  --el-border-color-darker: var(--app-border);
+  --el-disabled-bg-color: var(--app-disabled);
+  --el-disabled-text-color: var(--app-text-disabled);
+  --el-disabled-border-color: var(--app-border-soft);
+  --el-box-shadow: var(--app-shadow-popover);
+  --el-box-shadow-light: var(--app-shadow-popover);
+  --el-box-shadow-lighter: var(--app-shadow-popover);
+  --el-color-primary: var(--app-primary);
+  --el-color-primary-dark-2: var(--app-primary-pressed);
+  --el-color-primary-light-3: color-mix(in srgb, var(--app-primary) 70%, var(--app-surface));
+  --el-color-primary-light-5: color-mix(in srgb, var(--app-primary) 50%, var(--app-surface));
+  --el-color-primary-light-7: color-mix(in srgb, var(--app-primary) 30%, var(--app-surface));
+  --el-color-primary-light-8: color-mix(in srgb, var(--app-primary) 20%, var(--app-surface));
+  --el-color-primary-light-9: color-mix(in srgb, var(--app-primary) 10%, var(--app-surface));
+  --el-color-success: var(--app-success);
+  --el-color-success-dark-2: var(--app-success-pressed);
+  --el-color-success-light-3: color-mix(in srgb, var(--app-success) 70%, var(--app-surface));
+  --el-color-success-light-5: color-mix(in srgb, var(--app-success) 50%, var(--app-surface));
+  --el-color-success-light-7: color-mix(in srgb, var(--app-success) 30%, var(--app-surface));
+  --el-color-success-light-8: color-mix(in srgb, var(--app-success) 20%, var(--app-surface));
+  --el-color-success-light-9: color-mix(in srgb, var(--app-success) 10%, var(--app-surface));
+  --el-color-danger: var(--app-danger);
+  --el-color-danger-dark-2: var(--app-danger-pressed);
+  --el-color-danger-light-3: color-mix(in srgb, var(--app-danger) 70%, var(--app-surface));
+  --el-color-danger-light-5: color-mix(in srgb, var(--app-danger) 50%, var(--app-surface));
+  --el-color-danger-light-7: color-mix(in srgb, var(--app-danger) 30%, var(--app-surface));
+  --el-color-danger-light-8: color-mix(in srgb, var(--app-danger) 20%, var(--app-surface));
+  --el-color-danger-light-9: color-mix(in srgb, var(--app-danger) 10%, var(--app-surface));
+  --el-color-warning: var(--app-warning);
+  --el-color-warning-dark-2: var(--app-warning-pressed);
+  --el-color-warning-light-3: color-mix(in srgb, var(--app-warning) 70%, var(--app-surface));
+  --el-color-warning-light-5: color-mix(in srgb, var(--app-warning) 50%, var(--app-surface));
+  --el-color-warning-light-7: color-mix(in srgb, var(--app-warning) 30%, var(--app-surface));
+  --el-color-warning-light-8: color-mix(in srgb, var(--app-warning) 20%, var(--app-surface));
+  --el-color-warning-light-9: color-mix(in srgb, var(--app-warning) 10%, var(--app-surface));
+  --el-color-info: var(--app-info);
+  --el-color-info-dark-2: var(--app-info-pressed);
+  --el-color-info-light-3: color-mix(in srgb, var(--app-info) 70%, var(--app-surface));
+  --el-color-info-light-5: color-mix(in srgb, var(--app-info) 50%, var(--app-surface));
+  --el-color-info-light-7: color-mix(in srgb, var(--app-info) 30%, var(--app-surface));
+  --el-color-info-light-8: color-mix(in srgb, var(--app-info) 20%, var(--app-surface));
+  --el-color-info-light-9: color-mix(in srgb, var(--app-info) 10%, var(--app-surface));
+}
+
+.el-popper.is-dark {
+  --el-popper-bg-color-dark: var(--app-tooltip);
+  color: var(--app-tooltip-text);
+}
+
+.el-button.el-button--primary:not(.is-plain):not(.is-text):not(.is-link) {
+  --el-button-bg-color: var(--app-primary-fill);
+  --el-button-border-color: var(--app-primary-fill);
+  --el-button-hover-bg-color: var(--app-primary-fill-hover);
+  --el-button-hover-border-color: var(--app-primary-fill-hover);
+  --el-button-active-bg-color: var(--app-primary-fill-pressed);
+  --el-button-active-border-color: var(--app-primary-fill-pressed);
+  --el-button-text-color: var(--app-on-primary-fill);
+  --el-button-hover-text-color: var(--app-on-primary-fill);
+  --el-button-active-text-color: var(--app-on-primary-fill);
+}
+
+html.dark
+  .el-button:is(.el-button--success, .el-button--danger, .el-button--warning, .el-button--info):not(
+    .is-plain
+  ):not(.is-text):not(.is-link) {
+  --el-button-text-color: var(--app-on-primary);
+  --el-button-hover-text-color: var(--app-on-primary);
+  --el-button-active-text-color: var(--app-on-primary);
+}

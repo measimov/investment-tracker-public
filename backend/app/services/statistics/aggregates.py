@@ -17,10 +17,17 @@ from .. import exchange_rate_service
 from ..market_data_service import infer_price_currency
 from ..portfolio.curve import corporate_action_inflows, get_current_price
 from ..portfolio.fifo import empty_fifo_result, fifo_data_quality
-from ..portfolio.fx import ExchangeRateLookup
+from ..portfolio.fx import ExchangeRateLookup, dividend_tax_cash_flow
 from ..portfolio.metrics import xirr
-from ..portfolio.semantics import cash_dividend_amounts
+from ..portfolio.semantics import (
+    cash_dividend_amounts,
+    dividend_cash_date,
+    is_received_dividend,
+    dividend_amounts_complete,
+)
+from ..dividend_tax_service import load_dividend_tax_events
 from .fifo_results import fifo_results_for_user
+from .receivables import build_receivable_return
 from .fx import (
     DbExchangeRateLookup,
     missing_rate_warning,
@@ -584,6 +591,7 @@ def get_dividend_summary(
     user_id: int,
     *,
     dividend_actions: Optional[List[CorporateAction]] = None,
+    today: Optional[date] = None,
 ) -> Dict[str, Any]:
     """股息统计摘要（独立模块，不混入盈亏）——多币种。"""
     if dividend_actions is None:
@@ -595,7 +603,10 @@ def get_dividend_summary(
             )
             .all()
         )
-    dividends = dividend_actions
+    from ..dividend_forecast_service import forecast_summary
+
+    today = today or local_today()
+    dividends = [div for div in dividend_actions if is_received_dividend(div, today)]
 
     total_gross_cny = Decimal(0)
     total_tax_cny = Decimal(0)
@@ -654,6 +665,36 @@ def get_dividend_summary(
         by_symbol[bucket_key]["total_net_cny"] += net_cny
         by_symbol[bucket_key]["count"] += 1
 
+    tax_events = load_dividend_tax_events(db, user_id, end_date=today)
+    dividends_by_id = {div.id: div for div in dividends}
+    unallocated_tax_cny = Decimal(0)
+    for event in tax_events:
+        try:
+            amount_cny = exchange_rate_service.convert_to_cny(db, event.amount, event.currency)
+            unallocated_tax_cny += exchange_rate_service.convert_to_cny(
+                db, event.unallocated_tax_amount, event.currency
+            )
+        except ValueError:
+            missing_rate_currencies.add(event.currency)
+            amount_cny = Decimal(0)
+        total_tax_cny += amount_cny
+        total_net_cny -= amount_cny
+        for allocation in event.tax_allocations:
+            div = dividends_by_id.get(allocation.corporate_action_id)
+            if div is None:
+                continue
+            bucket = by_symbol[(div.symbol, div.market)]
+            try:
+                tax_cny = exchange_rate_service.convert_to_cny(
+                    db, allocation.amount, event.currency
+                )
+            except ValueError:
+                tax_cny = Decimal(0)
+            bucket["total_tax"] += allocation.amount
+            bucket["total_tax_cny"] += tax_cny
+            bucket["total_net"] -= allocation.amount
+            bucket["total_net_cny"] -= tax_cny
+
     # 转换为USD
     total_gross_usd = to_usd_or_zero(db, total_gross_cny)
     total_tax_usd = to_usd_or_zero(db, total_tax_cny)
@@ -678,6 +719,9 @@ def get_dividend_summary(
     ]
 
     return {
+        "forecast": forecast_summary(db, user_id, today=today),
+        "amounts_incomplete_count": sum(not dividend_amounts_complete(div) for div in dividends),
+        "legacy_unreviewed_count": sum(div.amount_basis == "LEGACY" for div in dividends),
         "total_dividend_gross_cny": float(total_gross_cny),
         "total_dividend_gross_usd": float(total_gross_usd),
         "total_dividend_gross": float(total_gross_cny),  # 向后兼容
@@ -688,6 +732,16 @@ def get_dividend_summary(
         "total_dividend_net_usd": float(total_net_usd),
         "total_dividend_net": float(total_net_cny),  # 向后兼容
         "by_symbol": by_symbol_list,
+        **(
+            {
+                "unallocated_tax_cny": float(unallocated_tax_cny),
+                "unallocated_tax_count": sum(
+                    event.unallocated_tax_amount > 0 for event in tax_events
+                ),
+            }
+            if tax_events
+            else {}
+        ),
         "missing_rate_currencies": sorted(missing_rate_currencies),
         "base_currency": "CNY",
     }
@@ -773,15 +827,25 @@ def _compose_account_total_return(
             .all()
         )
     for div in dividend_actions:
+        if not is_received_dividend(div, today or local_today()):
+            continue
         currency = div.currency or "CNY"
         _, _, net = cash_dividend_amounts(div)
-        flow_date = div.payment_date or div.ex_date
+        flow_date = dividend_cash_date(div)
         cash_flows.append(
             (
                 flow_date,
                 to_cny_on_date(net, currency, flow_date, rate_lookup),
             )
         )
+
+    missing_tax_rates = set()
+    for event in load_dividend_tax_events(db, user_id, end_date=today or local_today()):
+        flow = dividend_tax_cash_flow(event, rate_lookup)
+        if flow is None:
+            missing_tax_rates.add(event.currency)
+        else:
+            cash_flows.append(flow)
 
     # 公司行动带来的外部投入（期初建仓按成本、配股按认购成本，#271）：它们的股份在期末市值里，
     # 投入却不在买卖流水里——不计入的话 XIRR 被系统性高估，与同屏 TTWR 口径不一
@@ -823,7 +887,7 @@ def _compose_account_total_return(
         # 业务时区的今天：UTC 容器里北京 0–8 点 date.today() 还是昨天
         cash_flows.append((today or local_today(), current_market_value_cny))
 
-    xirr_rate = xirr(cash_flows)
+    xirr_rate = None if missing_tax_rates else xirr(cash_flows)
 
     total_return_usd = to_usd_or_zero(db, total_return_cny)
     net_invested_principal_usd = to_usd_or_zero(db, net_invested_principal_cny)
@@ -850,7 +914,7 @@ def _compose_account_total_return(
         "annualized_method": "xirr",
         "fx_basis": "transaction_date",
         "base_currency": "CNY",
-        "calculation_status": "exact",
+        "calculation_status": "indeterminate" if missing_tax_rates else "exact",
         "calculation_scope": "invested_securities_only",
         "xirr_unknown_cost_count": len(unknown_cost_positions),
         "methodology_notes": [
@@ -866,7 +930,13 @@ def _compose_account_total_return(
             ]
             if unknown_cost_positions
             else []
+        )
+        + (
+            ["股息税扣款日缺少汇率，未将原币税款混入人民币现金流，年化收益暂不展示。"]
+            if missing_tax_rates
+            else []
         ),
+        **({"missing_tax_rate_currencies": sorted(missing_tax_rates)} if missing_tax_rates else {}),
     }
 
 
@@ -896,14 +966,16 @@ def calculate_performance_summary(
         .all()
     )
     dividend_actions = [
-        action for action in corporate_actions if action.action_type == "CASH_DIVIDEND"
+        action
+        for action in corporate_actions
+        if is_received_dividend(action, today or local_today())
     ]
 
     fifo_results = fifo_results_for_user(
         db, user_id, transactions=transactions, corporate_actions=corporate_actions
     )
     realized = calculate_realized_pnl_fifo(db, user_id, fifo_results=fifo_results)
-    dividends = get_dividend_summary(db, user_id, dividend_actions=dividend_actions)
+    dividends = get_dividend_summary(db, user_id, dividend_actions=dividend_actions, today=today)
     current = calculate_current_holdings_performance(
         db, user_id, current_prices, fifo_results=fifo_results
     )
@@ -927,4 +999,7 @@ def calculate_performance_summary(
         "dividend_summary": dividends,
         "total_realized_return": total_realized,
         "account_return": account,
+        "receivable_return": build_receivable_return(
+            db, user_id, account["total_return_cny"], corporate_actions, today=today
+        ),
     }

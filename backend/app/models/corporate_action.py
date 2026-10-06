@@ -1,4 +1,14 @@
-from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, Text, ForeignKey
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Numeric,
+    Date,
+    DateTime,
+    Text,
+    ForeignKey,
+    CheckConstraint,
+)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from ..database import Base
@@ -56,9 +66,24 @@ class CorporateAction(Base):
     total_dividend = Column(Numeric(18, 8), comment="股息总额")
 
     # 税务相关
-    tax_withheld = Column(Numeric(18, 8), default=0, comment="预扣税金额")
+    tax_withheld = Column(Numeric(18, 8).evaluates_none(), default=0, comment="预扣税金额")
     tax_rate = Column(Numeric(5, 4), comment="税率（如0.10表示10%）")
     net_dividend = Column(Numeric(18, 8), comment="税后净股息")
+    receipt_status = Column(
+        String(20), nullable=False, default="RECEIVED", server_default="RECEIVED"
+    )
+    amount_basis = Column(String(20), nullable=False, default="LEGACY", server_default="LEGACY")
+    dividend_suggestion_id = Column(
+        Integer,
+        ForeignKey(
+            "corporate_action_suggestions.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_corporate_actions_dividend_suggestion_id",
+        ),
+        nullable=True,
+        index=True,
+    )
 
     # 股票股息/红股相关（STOCK_DIVIDEND, BONUS_ISSUE）
     shares_received = Column(Numeric(18, 8), comment="获得的股票数量")
@@ -88,3 +113,12 @@ class CorporateAction(Base):
 
     broker_account = relationship("BrokerAccount")
     import_batch = relationship("ImportBatch")
+
+    __table_args__ = (
+        CheckConstraint(
+            "receipt_status IN ('RECEIVED', 'UNVERIFIED')", name="ck_ca_receipt_status"
+        ),
+        CheckConstraint(
+            "amount_basis IN ('LEGACY', 'GROSS_NET', 'NET_ONLY')", name="ck_ca_amount_basis"
+        ),
+    )

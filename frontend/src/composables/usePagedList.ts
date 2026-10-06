@@ -25,6 +25,8 @@ export function usePagedList<T>(options: {
   pageSize?: number
 }) {
   const loading = ref(false)
+  const loadError = ref(false)
+  const hasLoaded = ref(false)
   const items = ref([]) as Ref<T[]>
   const pagination = reactive({ page: 1, pageSize: options.pageSize ?? 50, total: 0 })
   let requestSeq = 0
@@ -33,12 +35,14 @@ export function usePagedList<T>(options: {
     const seq = ++requestSeq
     const force = request.force === true
     loading.value = true
+    loadError.value = false
     try {
       const result = await options.fetchPage(
         { skip: (pagination.page - 1) * pagination.pageSize, limit: pagination.pageSize },
         { force }
       )
       if (seq !== requestSeq) return // 已有更新的请求：丢弃晚到的旧结果
+      hasLoaded.value = true
       items.value = result.items
       pagination.total = result.total
       const lastPage = Math.max(1, Math.ceil(result.total / pagination.pageSize))
@@ -47,7 +51,10 @@ export function usePagedList<T>(options: {
         await load({ force })
       }
     } catch (error) {
-      if (seq === requestSeq) showApiError(error, options.failureMessage)
+      if (seq === requestSeq) {
+        loadError.value = true
+        showApiError(error, options.failureMessage)
+      }
     } finally {
       if (seq === requestSeq) loading.value = false
     }
@@ -64,5 +71,5 @@ export function usePagedList<T>(options: {
     return load()
   }
 
-  return { loading, items, pagination, load, search, changePageSize }
+  return { loading, loadError, hasLoaded, items, pagination, load, search, changePageSize }
 }

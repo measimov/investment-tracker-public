@@ -1,5 +1,5 @@
 /**
- * 批量观点摘要（观点页「一键生成」，克隆 holdings/useBatchAnalysis 的骨架）。
+ * 批量生成观点摘要（观点页「一键生成」，克隆 holdings/useBatchAnalysis 的骨架）。
  *
  * 与批量分析的差异：每标的只有一次 LLM 调用（十几秒量级）、目标数只信后端
  * 预览（零匹配标的已在后端剔除，本地无法估算）、无 deep 模式。
@@ -19,11 +19,11 @@ export const OPINION_BATCH_POLL_INTERVAL_MS = 3000
 export const OPINION_BATCH_POLL_MAX_ATTEMPTS = 1200
 
 const STATUS_LABELS: Record<string, string> = {
-  queued: '批量观点摘要排队中',
-  running: '批量观点摘要进行中',
-  succeeded: '批量观点摘要完成',
-  failed: '批量观点摘要失败',
-  interrupted: '批量观点摘要已终止'
+  queued: '批量生成观点摘要排队中',
+  running: '批量生成观点摘要进行中',
+  succeeded: '批量生成观点摘要完成',
+  failed: '批量生成观点摘要失败',
+  interrupted: '批量生成观点摘要已终止'
 }
 
 export function useOpinionBatch({
@@ -54,13 +54,13 @@ export function useOpinionBatch({
     isUnmounted,
     pollIntervalMs: OPINION_BATCH_POLL_INTERVAL_MS,
     pollMaxAttempts: OPINION_BATCH_POLL_MAX_ATTEMPTS,
-    timeoutMessage: '批量观点摘要仍在后台运行；重新进入本页可继续查看进度',
-    failureMessage: '批量观点摘要失败',
+    timeoutMessage: '批量生成观点摘要仍在后台运行；重新进入本页可继续查看进度',
+    failureMessage: '批量生成观点摘要失败',
     cancelConfirm: {
       message: '已生成的摘要会保留，未开始的标的不再处理。',
-      title: '终止批量观点摘要'
+      title: '终止批量生成观点摘要'
     },
-    cancelledMessage: '批量观点摘要已终止，已生成的摘要已保留',
+    cancelledMessage: '批量生成观点摘要已终止，已生成的摘要已保留',
     onUpdate: (current, previous) => {
       if (Number(current.completed || 0) > Number(previous?.completed || 0)) refreshSummaries()
     },
@@ -70,12 +70,12 @@ export function useOpinionBatch({
       const skipped = Number(finished.skipped_count || 0)
       const failed = Number(finished.failed_count || 0)
       const summary =
-        `批量观点摘要完成：成功 ${success} 只` +
+        `批量生成观点摘要完成：成功 ${success} 只` +
         (skipped ? `，跳过 ${skipped} 只` : '') +
         (failed ? `，失败 ${failed} 只` : '')
       if (!failed) ElMessage.success(summary)
       else if (success > 0) ElMessage.warning(summary)
-      else ElMessage.error('批量观点摘要全部失败，请检查 LLM 配置后重试')
+      else ElMessage.error('批量生成观点摘要全部失败，请检查 LLM 配置后重试')
     },
     onCancelled: async () => {
       await refreshSummaries()
@@ -86,7 +86,7 @@ export function useOpinionBatch({
 
   async function loadTargets(): Promise<OpinionBatchTarget[]> {
     const response = await api.getOpinionBatchTargets()
-    const list = (response.data?.targets || []) as OpinionBatchTarget[]
+    const list = response.data?.targets || []
     if (!isUnmounted()) targets.value = list
     return list
   }
@@ -120,7 +120,7 @@ export function useOpinionBatch({
             `逐个调用 LLM 生成观点摘要，每标的约一次调用。\n` +
             `摘要仍新鲜（24 小时内或无新发言）的标的会自动跳过；` +
             `任务在后台运行，关闭页面不会中断。`,
-          '批量生成观点标签',
+          '批量生成观点摘要',
           { type: 'warning', confirmButtonText: '开始生成', cancelButtonText: '取消' }
         )
       } catch {
@@ -133,7 +133,7 @@ export function useOpinionBatch({
       await watchJob(response.data.id)
     } catch (error) {
       if (isUnmounted()) return
-      showApiError(error, '批量观点摘要启动失败')
+      showApiError(error, '批量生成观点摘要启动失败')
     } finally {
       if (!isUnmounted()) starting.value = false
     }

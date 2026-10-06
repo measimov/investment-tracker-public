@@ -920,7 +920,9 @@ def test_rerun_script_keeps_gap_year_report_in_plan(db):
         },
     )
     db.commit()
-    assert [row.period_key for row in script._stale_rows(db, "02669")] == ["20151231|annual"]
+    stale, unplanned = script._stale_rows(db, "02669")
+    assert [row.period_key for row in stale] == ["20151231|annual"]
+    assert unplanned == []
 
 
 def test_comparative_merge_carries_per_statement_build_metadata():

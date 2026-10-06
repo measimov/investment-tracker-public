@@ -1,8 +1,9 @@
-"""解析美股 20-F 封面的 ADS 换算比（1 ADS = N 股普通股），落 security_profile_data/ads_ratio。
+"""解析美股年报（20-F / 10-K）封面的 ADS 换算比（1 ADS = N 股普通股），落 security_profile_data/ads_ratio。
 
-每个标的先拉一次 EDGAR submissions 取最新年报：10-K 发行人跳过（按 1:1），最新 20-F 已按当前
-解析器版本处理过的零下载（`--force` 强制重下重解析）。解析失败的标的可在「特例规则」里手动
-填写 ADS_RATIO，规则优先于解析值。
+每个标的先拉一次 EDGAR submissions 取最新年报：最新年报已按当前解析器版本处理过的零下载
+（`--force` 强制重下重解析）。10-K 封面没有登记 ADS 的记 no_ads（按 1:1）；v3 起 10-K 也下载
+封面（#352，以 ADS 交易的 10-K 申报人此前被按 1:1 估值）。解析失败的标的可在「特例规则」里
+手动填写 ADS_RATIO，规则优先于解析值。
 
 用法：
     python scripts/sync_ads_ratios.py --all          # 持仓 ∪ 自选 ∪ 已有 EDGAR 档案的美股
@@ -71,7 +72,7 @@ def main() -> int:
                 print(f"  {symbol}: 异常 {type(exc).__name__}: {str(exc)[:150]}")
                 continue
             status = outcome["status"]
-            if status in ("failed", "capped", "not_found"):
+            if status in ("failed", "capped", "not_found", "cover_unknown"):
                 failures += 1
             detail = ""
             if outcome.get("ratio"):
@@ -81,7 +82,7 @@ def main() -> int:
             elif outcome.get("form"):
                 detail = f" 最新年报 {outcome['form']}"
             print(f"  {symbol}: {status}{detail}")
-        print(f"共 {len(symbols)} 个标的，未得到换算比 {failures} 个（not_20f 不计）")
+        print(f"共 {len(symbols)} 个标的，未得到换算比 {failures} 个（not_20f、no_ads 不计）")
         return 0
     finally:
         db.close()

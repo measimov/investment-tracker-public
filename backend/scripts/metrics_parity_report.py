@@ -127,7 +127,7 @@ def build_snapshot(user_id: int, *, prices_mode: str = "holding", today: date) -
             "summary_statistics": ss.get_summary_statistics(db, user_id),
             "statistics_by_market": ss.get_statistics_by_market(db, user_id),
             "realized_pnl": ss.calculate_realized_pnl_fifo(db, user_id),
-            "dividend_summary": ss.get_dividend_summary(db, user_id),
+            "dividend_summary": ss.get_dividend_summary(db, user_id, today=today),
             "current_performance": ss.calculate_current_holdings_performance(db, user_id, prices),
             "performance_summary": ss.calculate_performance_summary(
                 db, user_id, prices, today=today

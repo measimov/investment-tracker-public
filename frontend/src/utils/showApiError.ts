@@ -1,5 +1,6 @@
 import { ElMessage } from 'element-plus'
 import { getApiErrorMessage, type NormalizedApiError } from './apiErrors'
+import { PollingTimeoutError } from './polling'
 
 export interface ShowApiErrorOptions {
   /** 后端没有给出原因时的兜底文案 */
@@ -16,6 +17,10 @@ export interface ShowApiErrorOptions {
  * 绕开了全局通知去重，后端一挂同一个错误弹两次（#284）。
  */
 export function showApiError(error: unknown, options?: string | ShowApiErrorOptions): void {
+  if (error instanceof PollingTimeoutError) {
+    ElMessage.info(error.message)
+    return
+  }
   if ((error as Partial<NormalizedApiError> | null)?.globallyNotified) return
   const { fallback, prefix } = typeof options === 'string' ? { fallback: options } : options || {}
   const message = getApiErrorMessage(error, fallback)

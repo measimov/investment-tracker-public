@@ -6,8 +6,10 @@
  */
 
 import { computed, reactive } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { confirmAction } from '@/composables/useConfirmAction'
 import api from '@/api'
+import { useLatestRequest } from '@/composables/useLatestRequest'
 import type { CollectorAuthor, CollectorCube, CollectorStatus } from '@/types'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import { showApiError } from '@/utils/showApiError'
@@ -24,20 +26,31 @@ export function useCollector() {
     cubeForm: { cubeId: '', displayName: '' }
   })
 
-  const health = computed(() => collectorHealth(state.status))
+  const statusRequest = useLatestRequest()
+  const health = computed(() =>
+    state.status
+      ? collectorHealth(state.status)
+      : {
+          type: 'info' as const,
+          label: state.loadError ? '状态未知' : state.loading ? '加载中' : '尚未加载',
+          hint: ''
+        }
+  )
   const formValid = computed(() => isValidXueqiuUserId(state.form.userId))
   const cubeFormValid = computed(() => isValidCubeId(state.cubeForm.cubeId))
 
   async function load() {
+    const request = statusRequest.begin()
     state.loading = true
     state.loadError = ''
     try {
       const response = await api.getCollectorStatus()
-      state.status = response.data
+      if (statusRequest.isCurrent(request)) state.status = response.data
     } catch (error) {
-      state.loadError = getApiErrorMessage(error, '采集器状态加载失败')
+      if (statusRequest.isCurrent(request))
+        state.loadError = getApiErrorMessage(error, '采集器状态加载失败')
     } finally {
-      state.loading = false
+      if (statusRequest.isCurrent(request)) state.loading = false
     }
   }
 
@@ -78,19 +91,18 @@ export function useCollector() {
   }
 
   async function removeAuthor(author: CollectorAuthor) {
-    try {
-      await ElMessageBox.confirm(
-        `把「${author.display_name || author.xueqiu_user_id}」移出关注名单？已采集的发言会保留。`,
-        '移出关注名单',
-        { type: 'warning', confirmButtonText: '移出', cancelButtonText: '取消' }
-      )
-    } catch {
+    if (
+      !(await confirmAction({
+        title: '移出关注名单',
+        message: `把「${author.display_name || author.xueqiu_user_id}」移出关注名单？已采集的发言会保留。`,
+        confirmText: '移出'
+      }))
+    )
       return
-    }
     state.saving = true
     try {
       await api.deleteCollectorAuthor(author.xueqiu_user_id)
-      ElMessage.success('已移出关注名单')
+      ElMessage.success('作者已移出关注名单')
       await load()
     } catch (error) {
       showApiError(error, '移出作者失败')
@@ -153,19 +165,18 @@ export function useCollector() {
   }
 
   async function removeCube(cube: CollectorCube) {
-    try {
-      await ElMessageBox.confirm(
-        `把组合「${cube.display_name || cube.cube_id}」移出跟踪名单？已采集的调仓记录会保留。`,
-        '移出组合',
-        { type: 'warning', confirmButtonText: '移出', cancelButtonText: '取消' }
-      )
-    } catch {
+    if (
+      !(await confirmAction({
+        title: '移出组合',
+        message: `把组合「${cube.display_name || cube.cube_id}」移出跟踪名单？已采集的调仓记录会保留。`,
+        confirmText: '移出'
+      }))
+    )
       return
-    }
     state.saving = true
     try {
       await api.deleteCollectorCube(cube.cube_id)
-      ElMessage.success('已移出组合跟踪名单')
+      ElMessage.success('组合已移出跟踪名单')
       await load()
     } catch (error) {
       showApiError(error, '移出组合失败')

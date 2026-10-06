@@ -28,14 +28,14 @@ describe('priceIssues（#286）', () => {
 
   it('摘要一行：数量 + 最早日期', () => {
     const issues = collectPriceIssues(freshness)
-    expect(staleSummary(issues)).toBe('2 只持仓价格超过 7 天未更新，最早 2026-08-15')
+    expect(staleSummary(issues)).toBe('2 只持仓价格超过 7 天未更新，最早 2026/08/15')
     expect(missingSummary(issues)).toBe('1 只持仓缺少可用估值价格，未计入市值')
     expect(staleSummary(collectPriceIssues({}))).toBeNull()
   })
 
   it('清单行带名称，没有名称退回代码', () => {
     const [first] = collectPriceIssues(freshness).stale
-    expect(describeIssueItem(first)).toBe('腾讯控股（00700 · 港股） 2026-08-15')
+    expect(describeIssueItem(first)).toBe('腾讯控股（00700 · 港股） 2026/08/15')
     expect(describeIssueItem(collectPriceIssues(freshness).missing[0])).toBe('NOPX · 新加坡股')
   })
 

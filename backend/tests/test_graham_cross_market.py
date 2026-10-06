@@ -34,6 +34,7 @@ from app.services.report_statement_prompts import (
     STATEMENT_PROMPT_VERSION,
 )
 from app.services.report_statements import STATEMENT_EXTRACTOR_VERSION
+from app.services.security_analysis_prompts import build_analysis_messages
 from tests.analysis_fixtures import FULL_REPORT_JSON
 
 FIXTURES = Path(__file__).parent / "fixtures" / "graham"
@@ -414,6 +415,33 @@ def test_us_20f_annual_with_ads_ratio():
     assert pb["basis"]["bvps"] == pytest.approx(22025.0 / 1000.0 * 4)
 
 
+@pytest.mark.parametrize("share_ratio", [0.125, 0.00125])
+def test_model_message_preserves_fractional_ads_valuation_basis(share_ratio):
+    annual, _ = _us_rows(form="20-F", quarters=False)
+    result = compute_graham_screen(
+        "美股",
+        pivot_rows_to_statements(annual),
+        valuation={
+            "price": _price(77.57, "USD"),
+            "fx_rates": {"USD": 1.0},
+            "interim_rows": [],
+            "annual_form": "20-F",
+            "share_ratio": share_ratio,
+            "share_ratio_note": f"1 ADS = {share_ratio} 股",
+        },
+    )
+    message = build_analysis_messages({"meta": {"market": "美股"}, "graham_screen": result})[1][
+        "content"
+    ]
+    sent = json.loads(message.split("```json\n", 1)[1].split("\n```", 1)[0])["graham_screen"]
+    for criterion in ("pe", "pb_or_product"):
+        original = _by(result, criterion)
+        displayed = _by(sent, criterion)
+        assert original["basis"]["share_ratio"] == share_ratio
+        assert displayed["basis"] == original["basis"]
+        assert displayed["verdict"] == original["verdict"]
+
+
 def test_us_20f_without_registered_ads_ratio_is_indeterminate():
     annual, _ = _us_rows(form="20-F", quarters=False)
     result = compute_graham_screen(
@@ -601,7 +629,9 @@ def test_edgar_chain_covers_convertible_debt_and_dividends():
         "LongTermDebtAndCapitalLeaseObligations",
     ):
         assert concept in chains["lt_debt"]
-    assert chains["div_paid_owners"][0] == "PaymentsOfDividends"
+    # v4（#351）：普通股股息概念排前；合计概念（含优先股与非控股股息）只作最后兜底
+    assert chains["div_paid_owners"][0] == "PaymentsOfDividendsCommonStock"
+    assert chains["div_paid_owners"][-1] == "PaymentsOfDividends"
 
 
 def test_statement_prompt_fields_for_graham():

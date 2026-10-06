@@ -1,0 +1,157 @@
+{
+  "at": "2026-10-02T16:54:16.979Z",
+  "url": "http://127.0.0.1:4318/design/",
+  "method": "Real UI actions against synthetic local visual prototype; one isolated context per case. No production calls. Desktop 1440x1000 and mobile 393x852; reduced motion and transition settling.",
+  "cases": [
+    {
+      "name": "desktop-layout-prices",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "overflow": {
+          "width": 1440,
+          "scrollWidth": 1440,
+          "bodyScrollWidth": 1440
+        },
+        "rows": 9,
+        "prices": [
+          "0.085",
+          "1.409",
+          "—"
+        ],
+        "total": "¥1,977,385.24"
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "search-summary-stability",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "searchRows": 1,
+        "noResultRows": 0,
+        "summaryUnchanged": true
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "scope-account-market",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "marketTotal": "¥1,020,747.00",
+        "marketAccountTotal": "¥106,652.00"
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "account-view-row-identity",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "rows": 10,
+        "summaryUnchanged": true,
+        "tencentRows": [
+          "腾腾讯控股00700·港股 / 互联网香港投资账户800412.50 HKD586.00HKDHK$468,800.00折 ¥426,608.00+HK$138,800.00+42.06%折 +¥126,308.00",
+          "腾腾讯控股00700·港股 / 互联网环球投资账户200460.00 HKD586.00HKDHK$117,200.00折 ¥106,652.00+HK$25,200.00+27.39%折 +¥22,932.00"
+        ],
+        "accountNamesVisible": true
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "cny-sort-unknown-last",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "descending": [
+          "腾讯控股",
+          "长江电力",
+          "中国移动",
+          "苹果公司",
+          "标普 500 ETF",
+          "阿里巴巴－W",
+          "红利低波 ETF",
+          "示例精密制造",
+          "示例海外消费"
+        ],
+        "unknownLastBothDirections": true
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "edit-quote-cost-preserved",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "quote": "0.0851",
+        "costPreserved": "¥1,700,315.24",
+        "valueDelta": "¥1.82"
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "detail-drawer-focus",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "focusTrap": true,
+        "escape": true,
+        "focusRestored": true
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "mobile-layout-detail",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "overflow": {
+          "width": 393,
+          "scrollWidth": 393,
+          "bodyScrollWidth": 393
+        },
+        "drawer": {
+          "x": 16,
+          "y": 0,
+          "width": 377,
+          "height": 852
+        }
+      },
+      "verifiedAt": "2026-10-02T16:45:14.261Z"
+    },
+    {
+      "name": "mobile-navigation-focus",
+      "status": "passed",
+      "pageErrors": [],
+      "externalRequests": [],
+      "observations": {
+        "focusTrap": true,
+        "escape": true,
+        "selectCurrentCloses": true,
+        "focusRestored": true
+      },
+      "verifiedAt": "2026-10-02T16:54:16.979Z"
+    }
+  ],
+  "verificationBatches": [
+    {
+      "at": "2026-10-02T16:45:14.261Z",
+      "scope": "Eight unchanged functional/layout cases",
+      "assets": "index-Ba4mWi_M.js / index-CrIwlhrm.css"
+    },
+    {
+      "at": "2026-10-02T16:54:16.979Z",
+      "scope": "Mobile navigation initial focus, keyboard trap, Escape, focus restoration and current-page selection after explicit tabindex fix",
+      "assets": "index-C1VLLAnv.js / index-CrIwlhrm.css"
+    }
+  ]
+}

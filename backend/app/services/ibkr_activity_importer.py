@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+from types import SimpleNamespace
 import re
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -35,7 +36,6 @@ from ..services.broker_import_common import (
     iso_date_range,
     lock_broker_import,
     mark_suspected_duplicate,
-    mark_unattributed_tax,
     normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间,
     ProspectiveTransaction,
     RESULT_SAMPLE_LIMIT,
@@ -47,6 +47,7 @@ from ..services.broker_import_common import (
 )
 from ..config import settings
 from ..services.dividend_sync_service import MATCH_WINDOW_BEFORE_DAYS
+from .portfolio.semantics import dividend_cash_date
 from ..services.holding_service import (
     AccountReplayError,
     account_precheck_events,
@@ -66,6 +67,7 @@ from ..services.import_batch_service import (
     validate_import_account,
     validate_source_file_account,
 )
+from .dividend_tax_service import create_dividend_tax_event, attribute_tax_cash_source
 from ..services.stock_price_service import (
     to_tushare_a_code,
     to_tushare_hk_code,
@@ -79,7 +81,8 @@ SOURCE_TYPE_XLSX = "ibkr_trade_history_xlsx"
 PARSER_NAME = "ibkr_activity"
 # 入账语义变化必须升版（审计批次可区分）：v6 = 排除规则表驱动，
 # 命中标的只归档不入账且不进 eligible 判重
-PARSER_VERSION = "6"
+# v7: 不唯一或非到账日的股息税按实际日期独立入账，允许显式归属
+PARSER_VERSION = "7"
 # trade_history.xlsx（reporting API 自制导出，规范格式）的 All Trades 表。
 # 只含成交（STK/OPT/CASH），不含股息与预扣税 —— 股息仍需其他来源。
 XLSX_TRADE_SHEET = "All Trades"
@@ -1185,6 +1188,27 @@ def resolve_existing_sources(
                 source,
                 "同一来源同时链接交易和公司行动，链接冲突",
             )
+        if source.activity_type == WITHHOLDING_TAX_TYPE and source.cash_event_id is not None:
+            event = db.get(CashEvent, source.cash_event_id)
+            if (
+                has_transaction
+                or has_corporate_action
+                or event is None
+                or event.user_id != user_id
+                or event.broker_account_id != broker_account_id
+                or event.tax_kind != "DIVIDEND"
+                or event.event_type != "TAX"
+                or source.skip_reason is not None
+                or source.fx_quote_cash_event_id is not None
+                or source.fx_fee_cash_event_id is not None
+                or event.event_date != source.trade_date
+                or event.currency != source.base_currency
+                or not _decimal_equal(event.amount, abs(source.gross_amount))
+            ):
+                raise _unsafe_existing_source(source, "股息税现金事实与来源不一致")
+            resolution.booked_hashes.add(source.row_hash)
+            resolution.duplicate_hashes.add(source.row_hash)
+            continue
         if not has_transaction and not has_corporate_action:
             if (
                 source.activity_type == WITHHOLDING_TAX_TYPE
@@ -1457,7 +1481,7 @@ def _dividend_window_gap(
     action: CorporateAction, flow_date: date, *, ibkr_linked: bool
 ) -> Optional[int]:
     """命中返回日期差（越小越优先配对），不命中返回 None。"""
-    anchor = action.payment_date or action.ex_date
+    anchor = dividend_cash_date(action)
     if anchor is None:
         return None
     gap = abs((flow_date - anchor).days)
@@ -1825,7 +1849,7 @@ def suspected_sample(
             existing_date = record.transaction_date.isoformat()
             existing_price = _fmt_decimal(record.price)
         else:
-            existing_date = (record.payment_date or record.ex_date).isoformat()
+            existing_date = dividend_cash_date(record).isoformat()
             if record.total_dividend is not None:
                 existing_amount = _fmt_decimal(record.total_dividend)
     return {
@@ -2215,6 +2239,32 @@ def mark_archived_bookable_duplicates(
             booked_source_hashes.add(flow.row_hash)
 
 
+def prepare_ibkr_dividend_receipts(db, user_id, account_id, rows, excluded, *, lock=False):
+    from .dividend_receipt_service import DividendReceipt, prepare_dividend_receipts
+
+    return prepare_dividend_receipts(
+        db,
+        user_id,
+        account_id,
+        [
+            DividendReceipt(
+                flow.row_hash,
+                flow.symbol,
+                flow.market,
+                flow.trade_date,
+                flow.base_currency,
+                flow.gross_amount,
+                gross=flow.gross_amount,
+                tax=Decimal("0"),
+            )
+            for flow in rows
+            if flow.is_cash_dividend
+        ],
+        existing_hashes=excluded,
+        lock=lock,
+    )
+
+
 def preview_ibkr_activity(
     db: Session,
     user_id: int,
@@ -2276,6 +2326,19 @@ def preview_ibkr_activity(
         confirmed_row_hashes=confirmed_row_hashes,
     )
     warnings_extra.extend(suspected_warnings)
+    try:
+        dividend_plan = prepare_ibkr_dividend_receipts(
+            db,
+            user_id,
+            broker_account_id,
+            parsed_rows,
+            set(resolution.booked_hashes)
+            | unconfirmed_previously_held(suspected)
+            | suspected.held_hashes,
+        )
+        warnings_extra.extend(dividend_plan.warnings())
+    except ValueError as exc:
+        errors.append(str(exc))
     booked_source_hashes = preview_booked_source_hashes(
         db,
         user_id,
@@ -2512,6 +2575,7 @@ class TaxCandidateIndex:
             .filter(
                 CorporateAction.user_id == user_id,
                 CorporateAction.action_type == "CASH_DIVIDEND",
+                CorporateAction.receipt_status == "RECEIVED",
                 CorporateAction.broker_account_id == broker_account_id,
                 CorporateAction.symbol.in_({symbol for symbol, _ in keys}),
             )
@@ -2561,6 +2625,7 @@ def find_dividend_candidates_for_tax(
             CorporateAction.symbol == flow.symbol,
             CorporateAction.market == flow.market,
             CorporateAction.action_type == "CASH_DIVIDEND",
+            CorporateAction.receipt_status == "RECEIVED",
             CorporateAction.currency == flow.base_currency,
             CorporateAction.broker_account_id == broker_account_id,
             or_(
@@ -3072,6 +3137,17 @@ def import_ibkr_activity(
             confirmed_row_hashes=confirmed_row_hashes,
         )
         warnings_extra.extend(suspected_warnings)
+        dividend_plan = prepare_ibkr_dividend_receipts(
+            db,
+            user_id,
+            broker_account_id,
+            parsed_rows,
+            set(resolution.booked_hashes)
+            | unconfirmed_previously_held(suspected)
+            | suspected.held_hashes,
+            lock=True,
+        )
+        warnings_extra.extend(dividend_plan.warnings())
         # 上次已归档为疑似、本次未确认：按重复计，原归档行继续保留待确认。
         # 确认过的在原归档行上转正（suspected_sources.pop），绝不插第二条同 hash 行
         pending_suspected = unconfirmed_previously_held(suspected)
@@ -3187,23 +3263,31 @@ def import_ibkr_activity(
                 continue
 
             if flow.is_cash_dividend:
-                action = CorporateAction(
-                    user_id=user_id,
-                    broker_account_id=broker_account_id,
-                    import_batch_id=batch_id,
-                    symbol=flow.symbol,
-                    name=flow.name,
-                    market=flow.market,
-                    action_type="CASH_DIVIDEND",
-                    ex_date=flow.trade_date,
-                    payment_date=flow.trade_date,
-                    total_dividend=flow.gross_amount,
-                    tax_withheld=Decimal("0"),
-                    net_dividend=flow.gross_amount,
-                    currency=flow.base_currency,
-                    notes=import_note(BROKER_NAME, flow.description),
+                action = dividend_plan.apply(
+                    flow.row_hash,
+                    batch_id=batch_id,
+                    source_note=import_note(BROKER_NAME, flow.description),
                 )
-                db.add(action)
+                if action is None:
+                    action = CorporateAction(
+                        user_id=user_id,
+                        broker_account_id=broker_account_id,
+                        import_batch_id=batch_id,
+                        symbol=flow.symbol,
+                        name=flow.name,
+                        market=flow.market,
+                        action_type="CASH_DIVIDEND",
+                        ex_date=flow.trade_date,
+                        payment_date=flow.trade_date,
+                        total_dividend=flow.gross_amount,
+                        tax_withheld=Decimal("0"),
+                        amount_basis="GROSS_NET",
+                        receipt_status="RECEIVED",
+                        net_dividend=flow.gross_amount,
+                        currency=flow.base_currency,
+                        notes=import_note(BROKER_NAME, flow.description),
+                    )
+                    db.add(action)
                 db.flush()
                 # 人工确认的疑似股息：在原归档行上转正，不插第二条同 hash 行
                 archive_and_link(
@@ -3292,35 +3376,32 @@ def import_ibkr_activity(
                 index=tax_index,
             )
             preserved_tax = suspected_sources.pop(flow.row_hash, None)
-            if len(candidates) != 1:
-                if preserved_tax is not None:
-                    # 确认过的疑似税行仍找不到唯一股息：原归档行改记未归属，不建新行
-                    preserved_tax.skip_reason = UNATTRIBUTED_TAX
-                    preserved_tax.notes = (
-                        f"{preserved_tax.notes or ''}; confirmed but no unique dividend "
-                        f"candidate (found {len(candidates)})"
-                    ).strip("; ")
-                    db.add(preserved_tax)
-                elif flow.row_hash not in resolution.unresolved_tax_sources:
-                    unresolved_source = create_ibkr_activity_flow(
+            if len(candidates) != 1 or dividend_cash_date(candidates[0]) != flow.trade_date:
+                event = create_dividend_tax_event(
+                    db,
+                    user_id=user_id,
+                    broker_account_id=broker_account_id,
+                    flow=SimpleNamespace(
+                        amount=flow.gross_amount,
+                        currency=flow.base_currency,
+                        trade_date=flow.trade_date,
+                        business_name=flow.activity_type,
+                        security_code=flow.symbol,
+                    ),
+                    broker_name=BROKER_NAME,
+                )
+                source = preserved_tax or resolution.unresolved_tax_sources.get(flow.row_hash)
+                if source is None:
+                    source = create_ibkr_activity_flow(
                         user_id=user_id,
                         filename=filename,
                         flow=flow,
                         broker_account_id=broker_account_id,
                         import_batch_id=batch_id,
                     )
-                    db.add(
-                        mark_unattributed_tax(
-                            unresolved_source,
-                            "Preserved without canonical action: expected exactly one "
-                            f"same-account same-security same-date dividend; found {len(candidates)}",
-                        )
-                    )
-                errors.append(
-                    f"row {flow.source_row_number}: withholding tax requires exactly one "
-                    f"same-account, same-security, same-date dividend candidate; "
-                    f"found {len(candidates)}"
-                )
+                db.add(attribute_tax_cash_source(source, event.id))
+                imported_tax_adjustments += 1
+                booked_source_hashes.add(flow.row_hash)
                 continue
             imported_tax_adjustments += apply_withholding_tax(
                 db,

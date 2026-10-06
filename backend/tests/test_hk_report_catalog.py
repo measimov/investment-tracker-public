@@ -28,7 +28,11 @@ def _patch(monkeypatch, calls):
 def test_digest_and_statement_pick_the_same_annual_reports(monkeypatch):
     calls = []
     _patch(monkeypatch, calls)
-    digest_targets = digest.plan_report_targets_detailed("00700", "港股")["targets"]
+    digest_targets = [
+        t
+        for t in digest.plan_report_targets_detailed("00700", "港股")["targets"]
+        if t["report_type"] == "annual"
+    ]
     statement_targets = [
         t
         for t in statements.plan_statement_targets("00700", "港股")["targets"]

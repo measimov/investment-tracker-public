@@ -29,10 +29,10 @@ from app.services.xueqiu_collector.cookie_health import check_expiry
 NOW = 1_790_000_000.0  # 固定时钟：2026-09 附近
 DAY = 86400
 
-TOKEN_A = "SYNTH_A_TOKEN_7f3c9e0d1b2a4c5d"
-TOKEN_AT = "SYNTH_XQAT_TOKEN_91e2d3c4b5a6"
-TOKEN_R = "SYNTH_R_TOKEN_0a1b2c3d"
-TOKEN_U = "SYNTH_U_1234567890"
+TOKEN_A = "SYNTH_A_TOKEN_7f3c9e0d1b2a4c5d"  # gitleaks:allow (synthetic test fixture)
+TOKEN_AT = "SYNTH_XQAT_TOKEN_91e2d3c4b5a6"  # gitleaks:allow (synthetic test fixture)
+TOKEN_R = "SYNTH_R_TOKEN_0a1b2c3d"  # gitleaks:allow (synthetic test fixture)
+TOKEN_U = "SYNTH_U_1234567890"  # gitleaks:allow (synthetic test fixture)
 SECRET_VALUES = (TOKEN_A, TOKEN_AT, TOKEN_R, TOKEN_U)
 
 

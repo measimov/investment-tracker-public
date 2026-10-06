@@ -1,0 +1,24 @@
+{
+  "market": "港股",
+  "symbol": "03900",
+  "end_date": "20161231",
+  "report_type": "annual",
+  "title": "綠城中國 2016 年報",
+  "source_url": "https://www1.hkexnews.hk/listedco/listconews/sehk/2017/0427/ltn20170427447_c.pdf",
+  "source_note": "2026-10-02 从持久化公开 PDF 以 baseline_text 抽取；保留三张报表附近页，其余置空以保住页码。銀行結餘及現金、遞延稅項負債、儲備、非控股股東權益含逗号前空格/拆开的前导数字。",
+  "pages": 207,
+  "kept_pages": [
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112
+  ],
+  "chars": 10878
+}

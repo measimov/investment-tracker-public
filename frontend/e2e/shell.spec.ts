@@ -40,8 +40,8 @@ test('user changes their own password from the user menu and must log in again',
   try {
     await loginThroughUi(page, { username, password: oldPassword })
 
-    await page.locator('.user-dropdown').hover()
-    await page.getByRole('menuitem', { name: '修改密码' }).click()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByRole('button', { name: '修改密码', exact: true }).click()
     const dialog = page.locator('.el-dialog', { hasText: '修改密码' })
     await expect(dialog).toBeVisible()
 
@@ -76,31 +76,31 @@ test('user changes their own password from the user menu and must log in again',
   }
 })
 
-test('navigation highlights pages inside 更多 and nested routes, sets titles, and has a 404', async ({
+test('navigation highlights primary, other and nested routes, sets titles, and has a 404', async ({
   page
 }) => {
-  // 宽视口：保证「更多」本身不会被 EP 的溢出折叠收进「…」
   await page.setViewportSize({ width: 1440, height: 900 })
   await loginThroughUi(page, user)
   await expect(page).toHaveTitle('仪表盘 · 投资追踪系统')
-
-  // 常用页在顶层，低频页在「更多」里
-  const menu = page.locator('.header-menu')
-  await expect(menu.locator(':scope > .el-menu-item', { hasText: '当前持仓' })).toBeVisible()
-  await expect(menu.locator(':scope > .el-menu-item', { hasText: '公司行动' })).toHaveCount(0)
-
-  await page.locator('.header-more-menu').hover()
-  await page.getByRole('menuitem', { name: '公司行动' }).click()
+  const menu = page.getByRole('navigation', { name: '主导航' })
+  await expect(menu.getByRole('link', { name: '当前持仓', exact: true })).toBeVisible()
+  await menu.getByRole('link', { name: '公司行动', exact: true }).click()
   await expect(page).toHaveURL(/\/corporate-actions$/)
   await expect(page).toHaveTitle('公司行动 · 投资追踪系统')
-  await expect(page.locator('.header-more-menu')).toHaveClass(/is-active/)
-
-  // 标的档案不在导航里：点亮「当前持仓」，标题带代码
+  await expect(menu.getByRole('link', { name: '公司行动', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page'
+  )
   await page.goto('/securities/A股/600000')
   await expect(page).toHaveTitle('600000 · 标的档案 · 投资追踪系统')
-  await expect(menu.locator('.el-menu-item.is-active')).toHaveText(/当前持仓/)
-  await expect(page.locator('.header-more-menu')).not.toHaveClass(/is-active/)
-
+  await expect(menu.getByRole('link', { name: '当前持仓', exact: true })).toHaveAttribute(
+    'aria-current',
+    'page'
+  )
+  await expect(menu.getByRole('link', { name: '公司行动', exact: true })).not.toHaveAttribute(
+    'aria-current',
+    'page'
+  )
   await page.goto('/no-such-page')
   await expect(page).toHaveTitle('页面不存在 · 投资追踪系统')
   await expect(page.getByText('页面不存在', { exact: true })).toBeVisible()
@@ -151,24 +151,60 @@ test('switching users without a page reload never shows the previous user holdin
     expect(bought.ok()).toBeTruthy()
 
     await loginThroughUi(page, { username: alice.username, password })
-    await page.getByRole('menuitem', { name: '当前持仓' }).first().click()
+    await page
+      .getByRole('navigation', { name: '主导航' })
+      .getByRole('link', { name: '当前持仓', exact: true })
+      .click()
     await expect(page.getByText(aliceSymbol).first()).toBeVisible()
 
     // 登出并在同一个页面里登录 B：Login 走 router.push，不整页刷新，Pinia 状态会留下来
-    await page.locator('.user-dropdown').hover()
-    await page.getByRole('menuitem', { name: '退出登录' }).click()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByRole('button', { name: '退出登录', exact: true }).click()
     await expect(page).toHaveURL(/\/login/)
     await page.getByPlaceholder('请输入用户名').fill(bob.username)
     await page.getByPlaceholder('请输入密码').fill(password)
     await page.getByRole('button', { name: '登录' }).click()
     await expect(page).toHaveURL(/\/$/)
 
-    await page.getByRole('menuitem', { name: '当前持仓' }).first().click()
+    await page
+      .getByRole('navigation', { name: '主导航' })
+      .getByRole('link', { name: '当前持仓', exact: true })
+      .click()
     await expect(page.getByText('暂无持仓数据').first()).toBeVisible()
     await expect(page.getByText(aliceSymbol)).toHaveCount(0)
   } finally {
     for (const created of users) {
       await request.delete(`${API}/api/users/${created.id}`, { headers: adminHeaders })
     }
+  }
+})
+
+// 长不存在路径原先被全局溢出裁掉，且缺少实际 H1；未登录返回仍沿原路由守卫。
+test('anonymous long 404 preserves the whole path and keyboard return at narrow and desktop widths', async ({
+  page
+}) => {
+  const path = '/ui-public-nonexistent_' + 'long_public_path_'.repeat(40)
+  for (const width of [320, 1440]) {
+    await page.setViewportSize({ width, height: 852 })
+    await page.goto(path)
+    await expect(
+      page.getByRole('heading', { name: '页面不存在', level: 1, exact: true })
+    ).toBeVisible()
+    await expect(page.locator('h1')).toHaveCount(1)
+    await expect(page.locator('.el-result__subtitle')).toHaveText(`没有找到「${path}」对应的页面`)
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Math.max(document.body.scrollWidth, document.documentElement.scrollWidth)
+        )
+      )
+      .toBeLessThanOrEqual(width)
+    const home = page.getByRole('button', { name: '返回首页', exact: true })
+    await home.focus()
+    await home.press('Enter')
+    await expect(page).toHaveURL(/\/login(?:\?|$)/)
+    await expect(
+      page.getByRole('heading', { name: '投资追踪系统', level: 1, exact: true })
+    ).toBeVisible()
   }
 })

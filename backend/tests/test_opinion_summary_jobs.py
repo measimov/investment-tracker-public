@@ -305,7 +305,15 @@ def test_build_input_shrinks_baseline_and_notes_truncation():
 # 单标的 job
 # --------------------------------------------------------------------------- #
 def _run_single(
-    db, monkeypatch, *, matched, llm_content=None, user_id=1, symbol="600519", market="A股"
+    db,
+    monkeypatch,
+    *,
+    matched,
+    llm_content=None,
+    generation_meta=None,
+    user_id=1,
+    symbol="600519",
+    market="A股",
 ):
     calls = {"llm": 0}
 
@@ -314,7 +322,11 @@ def _run_single(
 
     def fake_chat(messages, **kwargs):
         calls["llm"] += 1
-        return _fake_completion(llm_content or _llm_output())
+        assert all("generation_meta" not in message["content"] for message in messages)
+        completion = _fake_completion(llm_content or _llm_output())
+        if generation_meta is not None:
+            completion["generation_meta"] = generation_meta
+        return completion
 
     monkeypatch.setattr(jobs, "scan_matched_utterances", fake_scan)
     monkeypatch.setattr(jobs, "chat_completion", fake_chat)
@@ -326,9 +338,9 @@ def _run_single(
     return stored, calls
 
 
-def test_single_job_success_persists_all_fields(db, monkeypatch):
+def test_single_job_success_persists_all_fields(db, monkeypatch, generation_meta):
     matched = [_utt(author="某作者", days_ago=2), _utt(author="某作者", days_ago=60)]
-    stored, calls = _run_single(db, monkeypatch, matched=matched)
+    stored, calls = _run_single(db, monkeypatch, matched=matched, generation_meta=generation_meta)
     assert stored.status == "succeeded"
     assert calls["llm"] == 1
     row = db.query(SecurityOpinionSummary).one()
@@ -341,6 +353,8 @@ def test_single_job_success_persists_all_fields(db, monkeypatch):
     assert row.recent_days == 30 and row.lookback_days == 180
     assert row.latest_utterance_at is not None
     assert row.input_payload["stats"]["utterance_count"] == 2
+    assert row.input_payload.get("generation_meta") == generation_meta
+    assert ("generation_meta" in row.input_payload) == (generation_meta is not None)
     assert stored.data["summary_id"] == row.id
 
 

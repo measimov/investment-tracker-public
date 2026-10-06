@@ -4,16 +4,28 @@ import { EMPTY } from '@/utils/helpers'
 import { LEDGER_CURRENCIES } from '@/utils/currency'
 import { accountShortName, maskAccountNumber } from '@/utils/labels'
 import { makeConfirmedAction } from '@/composables/useConfirmAction'
-import { reactive, ref } from 'vue'
+import { computed, h, nextTick, reactive, ref } from 'vue'
+import {
+  NAlert,
+  NButton,
+  NCheckbox,
+  NDataTable,
+  NEmpty,
+  NSpin,
+  NTag,
+  type DataTableColumns
+} from 'naive-ui'
 import { type FormInstance } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
 import api from '@/api'
+import { isLongNote, renderNote } from './shared'
 import { useMediaQuery } from '@/composables/useMediaQuery'
 import { type AccountRow, type DialogState, brokerOptions, makeSaver } from './shared'
 
 const props = defineProps<{
   accounts: AccountRow[]
   loading: boolean
+  hasLoaded: boolean
+  loadError: boolean
   reload: () => Promise<unknown>
 }>()
 
@@ -51,6 +63,7 @@ function openAccountDialog(row?: AccountRow) {
   accountDialog.id = row?.id || null
   resetAccountForm(row)
   accountDialog.visible = true
+  void nextTick(() => accountFormRef.value?.clearValidate())
 }
 
 const saveAccount = makeSaver({
@@ -68,12 +81,81 @@ const removeAccount = makeConfirmedAction<AccountRow>({
   title: '删除账户',
   confirmText: '删除',
   message: (row) =>
-    `仅空账户可以删除。若“${accountShortName(row)}”已有交易或审计记录，请编辑账户并将其停用。`,
+    `仅空账户可以删除。若「${accountShortName(row)}」已有交易或审计记录，请编辑账户并将其停用。`,
   request: (row) => api.deleteBrokerAccount(row.id),
   successMessage: '账户已删除',
   failureMessage: '账户删除失败',
   reload: () => props.reload()
 })
+
+const emptyDescription = computed(() =>
+  props.loadError ? '尚未确认账户，请重试' : !props.hasLoaded ? '账户正在加载' : '尚未登记券商账户'
+)
+const columns: DataTableColumns<AccountRow> = [
+  {
+    title: '账户',
+    key: 'account_name',
+    width: 220,
+    render: (row) =>
+      h('div', { class: 'primary-cell' }, [
+        h('strong', accountShortName(row)),
+        h('span', maskAccountNumber(row.account_number_masked) || '未填写尾号')
+      ])
+  },
+  { title: '券商', key: 'broker', width: 150, render: (row) => row.broker || EMPTY },
+  { title: '基础币种', key: 'base_currency', width: 105 },
+  {
+    title: '状态',
+    key: 'is_active',
+    width: 90,
+    render: (row) =>
+      h(
+        NTag,
+        { size: 'small', bordered: false, type: row.is_active === false ? 'default' : 'success' },
+        () => (row.is_active === false ? '停用' : '启用')
+      )
+  },
+  {
+    title: '备注',
+    key: 'notes',
+    width: 220,
+    cellProps: () => ({ style: { verticalAlign: 'top' } }),
+    render: (row) => renderNote(row.notes)
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 190,
+    fixed: 'right',
+    render: (row) =>
+      h('div', [
+        h('div', { class: 'row-actions' }, [
+          h(
+            NButton,
+            {
+              text: true,
+              type: 'primary',
+              'aria-label': `编辑 ${accountShortName(row)} 账户`,
+              onClick: () => openAccountDialog(row)
+            },
+            () => '编辑'
+          ),
+          h(
+            NButton,
+            {
+              text: true,
+              type: 'error',
+              disabled: row.has_records,
+              'aria-label': `删除 ${accountShortName(row)} 空账户`,
+              onClick: () => removeAccount(row)
+            },
+            () => '删除空账户'
+          )
+        ]),
+        row.has_records ? h('p', { class: 'cell-sub' }, '已有记录，可编辑后停用') : null
+      ])
+  }
+]
 </script>
 
 <template>
@@ -83,109 +165,129 @@ const removeAccount = makeConfirmedAction<AccountRow>({
         <h2>券商账户</h2>
         <p>为交易以及后续的账户级持仓、收益统计建立明确归属。</p>
       </div>
-      <el-button type="primary" :icon="Plus" @click="openAccountDialog()">新增账户</el-button>
+      <div class="toolbar-actions">
+        <NButton :loading="loading" aria-label="重新加载账户" @click="reload">重新加载</NButton
+        ><NButton type="primary" @click="openAccountDialog()">新增账户</NButton>
+      </div>
     </div>
 
-    <div v-if="!isMobileView" class="responsive-table desktop-data-table">
-      <el-table :data="accounts" v-loading="loading" stripe row-key="id">
-        <template #empty>
-          <el-empty description="尚未登记券商账户">
-            <el-button type="primary" @click="openAccountDialog()">新增第一个账户</el-button>
-          </el-empty>
-        </template>
-        <el-table-column label="账户" min-width="200">
-          <template #default="{ row }">
-            <div class="primary-cell">
-              <strong>{{ accountShortName(row) }}</strong>
-              <span>{{ maskAccountNumber(row.account_number_masked) || '未填写尾号' }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="broker" label="券商" min-width="140">
-          <template #default="{ row }">{{ row.broker || EMPTY }}</template>
-        </el-table-column>
-        <el-table-column prop="base_currency" label="基础币种" width="105" />
-        <el-table-column prop="is_active" label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="row.is_active === false ? 'info' : 'success'" size="small">
-              {{ row.is_active === false ? '停用' : '启用' }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="notes" label="备注" min-width="180" show-overflow-tooltip />
-        <el-table-column label="操作" width="140" fixed="right">
-          <template #default="{ row }">
-            <el-button type="primary" text @click="openAccountDialog(row)">编辑</el-button>
-            <el-tooltip
-              :disabled="!row.has_records"
-              content="已有交易或导入记录的账户不能删除，可编辑后停用"
-              placement="top"
-            >
-              <span>
-                <el-button
-                  type="danger"
-                  text
-                  :disabled="row.has_records"
-                  @click="removeAccount(row)"
-                  >删除空账户</el-button
-                >
+    <NAlert
+      v-if="loadError"
+      type="warning"
+      :show-icon="false"
+      class="read-alert"
+      title="账户加载失败"
+      >{{ hasLoaded ? '显示上次成功加载的账户，尚未确认最新结果。' : '尚未确认账户，请重试。' }}
+      <NButton text type="primary" @click="reload">重试账户</NButton></NAlert
+    >
+    <p v-else-if="loading && hasLoaded" class="read-note" role="status">
+      正在重新加载，以下为上次成功账户。
+    </p>
+    <NSpin v-if="!isMobileView" :show="loading"
+      ><NDataTable
+        :data="accounts"
+        :columns="columns"
+        :row-key="(row: AccountRow) => row.id"
+        :scroll-x="975"
+        :bordered="false"
+        class="account-table"
+        ><template #empty
+          ><NEmpty
+            :description="emptyDescription"
+            :theme-overrides="{ textColor: 'var(--app-text-muted)' }"
+            ><template v-if="hasLoaded && !loadError && !loading" #extra
+              ><NButton type="primary" @click="openAccountDialog()"
+                >新增第一个账户</NButton
+              ></template
+            ></NEmpty
+          ></template
+        ></NDataTable
+      ></NSpin
+    >
+
+    <NSpin v-else :show="loading"
+      ><div class="mobile-card-list">
+        <NEmpty
+          v-if="!accounts.length"
+          :description="emptyDescription"
+          :theme-overrides="{ textColor: 'var(--app-text-muted)' }"
+          ><template v-if="hasLoaded && !loadError && !loading" #extra
+            ><NButton type="primary" @click="openAccountDialog()">新增第一个账户</NButton></template
+          ></NEmpty
+        >
+        <article
+          v-for="row in accounts"
+          :key="row.id"
+          class="mobile-card"
+          data-testid="account-card"
+        >
+          <div class="mobile-card-head">
+            <div class="mobile-card-title">
+              <span class="mobile-card-symbol">{{ accountShortName(row) }}</span>
+              <span class="mobile-card-name">
+                {{ maskAccountNumber(row.account_number_masked) || '未填写尾号' }}
               </span>
-            </el-tooltip>
-          </template>
-        </el-table-column>
-      </el-table>
-    </div>
-
-    <div v-else v-loading="loading" class="mobile-card-list">
-      <el-empty v-if="!accounts.length" description="尚未登记券商账户" :image-size="88">
-        <el-button type="primary" @click="openAccountDialog()">新增第一个账户</el-button>
-      </el-empty>
-      <article v-for="row in accounts" :key="row.id" class="mobile-card" data-testid="account-card">
-        <div class="mobile-card-head">
-          <div class="mobile-card-title">
-            <span class="mobile-card-symbol">{{ accountShortName(row) }}</span>
-            <span class="mobile-card-name">
-              {{ maskAccountNumber(row.account_number_masked) || '未填写尾号' }}
-            </span>
+            </div>
+            <div class="mobile-card-tags">
+              <NTag
+                :type="row.is_active === false ? 'default' : 'success'"
+                size="small"
+                :bordered="false"
+              >
+                {{ row.is_active === false ? '停用' : '启用' }}
+              </NTag>
+            </div>
           </div>
-          <div class="mobile-card-tags">
-            <el-tag :type="row.is_active === false ? 'info' : 'success'" size="small">
-              {{ row.is_active === false ? '停用' : '启用' }}
-            </el-tag>
+
+          <div class="mobile-card-meta">
+            <span>{{ row.broker || '未填写券商' }}</span>
+            <span>{{ row.base_currency }}</span>
+            <details v-if="isLongNote(row.notes)" class="read-details">
+              <summary>查看完整备注</summary>
+              <p>{{ row.notes }}</p>
+            </details>
+            <span v-else-if="row.notes">{{ row.notes }}</span>
           </div>
-        </div>
 
-        <div class="mobile-card-meta">
-          <span>{{ row.broker || '未填写券商' }}</span>
-          <span>{{ row.base_currency }}</span>
-          <span v-if="row.notes">{{ row.notes }}</span>
-        </div>
-
-        <div class="mobile-card-actions">
-          <el-button type="primary" size="small" text @click="openAccountDialog(row)">
-            编辑
-          </el-button>
-          <el-button
-            v-if="!row.has_records"
-            type="danger"
-            size="small"
-            text
-            @click="removeAccount(row)"
-          >
-            删除空账户
-          </el-button>
-        </div>
-      </article>
-    </div>
+          <div class="mobile-card-actions">
+            <NButton
+              type="primary"
+              text
+              :aria-label="`编辑 ${accountShortName(row)} 账户`"
+              @click="openAccountDialog(row)"
+            >
+              编辑
+            </NButton>
+            <NButton
+              v-if="!row.has_records"
+              type="error"
+              text
+              :aria-label="`删除 ${accountShortName(row)} 空账户`"
+              @click="removeAccount(row)"
+            >
+              删除空账户
+            </NButton>
+          </div>
+        </article>
+      </div></NSpin
+    >
 
     <el-dialog
       v-model="accountDialog.visible"
       :title="accountDialog.id ? '编辑券商账户' : '新增券商账户'"
       width="560px"
+      :close-on-click-modal="false"
+      class="account-form-dialog"
+      :close-on-press-escape="!accountDialog.saving"
+      :show-close="!accountDialog.saving"
     >
       <el-form ref="accountFormRef" :model="accountForm" :rules="accountRules" label-width="100px">
         <el-form-item label="账户名称" prop="account_name">
-          <el-input v-model="accountForm.account_name" placeholder="例如：IBKR 主账户" />
+          <el-input
+            v-model="accountForm.account_name"
+            aria-label="账户名称"
+            placeholder="例如：IBKR 主账户"
+          />
         </el-form-item>
         <el-form-item label="券商" prop="broker">
           <!-- 浮层向上展开：默认向下会盖住尚未填写的「账户尾号」，快速录入/
@@ -193,6 +295,7 @@ const removeAccount = makeConfirmedAction<AccountRow>({
                顺序自上而下，向上只盖住已填过的「账户名称」，无害。(#87) -->
           <el-select
             v-model="accountForm.broker"
+            aria-label="券商"
             filterable
             allow-create
             default-first-option
@@ -211,12 +314,13 @@ const removeAccount = makeConfirmedAction<AccountRow>({
         <el-form-item label="账户尾号">
           <el-input
             v-model="accountForm.account_number_masked"
+            aria-label="账户尾号"
             placeholder="只保存脱敏标识，例如 ****1234 / ****5678"
           />
           <span class="field-hint">一份对账单有多个股东代码时，请把各尾号都填在这里。</span>
         </el-form-item>
         <el-form-item label="基础币种" prop="base_currency">
-          <el-select v-model="accountForm.base_currency">
+          <el-select v-model="accountForm.base_currency" aria-label="基础币种">
             <el-option
               v-for="currency in LEDGER_CURRENCIES"
               :key="currency"
@@ -226,11 +330,18 @@ const removeAccount = makeConfirmedAction<AccountRow>({
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
-          <el-switch v-model="accountForm.is_active" active-text="启用" inactive-text="停用" />
+          <NCheckbox
+            v-model:checked="accountForm.is_active"
+            class="account-state-checkbox"
+            :disabled="accountDialog.saving"
+            :aria-disabled="accountDialog.saving"
+            >启用账户</NCheckbox
+          >
         </el-form-item>
         <el-form-item label="备注">
           <el-input
             v-model="accountForm.notes"
+            aria-label="账户备注"
             type="textarea"
             :rows="3"
             placeholder="不保存密码、完整账号或报表访问令牌"
@@ -239,12 +350,37 @@ const removeAccount = makeConfirmedAction<AccountRow>({
       </el-form>
       <template #footer>
         <div class="mobile-dialog-footer">
-          <el-button @click="accountDialog.visible = false">取消</el-button>
-          <el-button type="primary" :loading="accountDialog.saving" @click="saveAccount"
-            >保存</el-button
+          <el-button :disabled="accountDialog.saving" @click="accountDialog.visible = false"
+            >取消</el-button
+          >
+          <NButton
+            type="primary"
+            class="form-save-button"
+            aria-label="保存"
+            :loading="accountDialog.saving"
+            :aria-disabled="accountDialog.saving"
+            :aria-busy="accountDialog.saving"
+            @click="saveAccount"
+            >保存</NButton
           >
         </div>
       </template>
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.account-state-checkbox {
+  min-height: 24px;
+}
+
+@media (max-width: 640px) {
+  .account-state-checkbox {
+    min-height: 44px;
+  }
+  .form-save-button {
+    min-height: 44px;
+    width: 100%;
+  }
+}
+</style>

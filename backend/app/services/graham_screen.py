@@ -40,6 +40,7 @@ from .earnings_quality import (
     edgar_zero_inference_allowed,
     statement_currency,
 )
+from .periods import annual_by_year, annual_year_key
 
 # 原著防御型标准；dividend_years_min 原著为 20 年不间断，A 股市场史与
 # 注册制前的分红文化撑不起该口径，按"连续 5 年"起判、数值如实展示。
@@ -119,21 +120,12 @@ def _num(row: Optional[Dict[str, Any]], *fields: str) -> Optional[float]:
 
 
 def _year_of(row: Dict[str, Any]) -> Optional[str]:
-    end_date = str(row.get("end_date") or "")
-    if not end_date:
-        return None
-    if end_date.endswith("1231") or str(row.get("fp") or "") == "FY":
-        return end_date[:4]
-    return None
+    # 财年键的唯一定义在 periods（52/53 周财年年终日跨公历年时按财年取键，#350）
+    return annual_year_key(row)
 
 
 def _annual_by_year(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    by_year: Dict[str, Dict[str, Any]] = {}
-    for row in rows:
-        year = _year_of(row)
-        if year and year not in by_year:
-            by_year[year] = row
-    return by_year
+    return annual_by_year(rows)
 
 
 def _criterion(
@@ -165,7 +157,7 @@ def _lt_debt(
       退回含短债的 `total_debt`，由调用方在超出净流动资产时判 indeterminate（无法归因）；
     - 美股：EDGAR 长期债务概念链；本期缺失而往年有值、且该行由当前概念链抓取 → 0（已清偿或
       转入流动负债——拼多多 2024 年可转债全部列为一年内到期、2025 年起不再报告）；
-    - A股：沿用有息负债合计口径（_total_debt）。
+    - A股：沿用有息负债合计口径（total_debt）。
     """
     if balance_row is None:
         return None
@@ -173,9 +165,9 @@ def _lt_debt(
         lt_borr = _num(balance_row, "lt_borr")
         if lt_borr is not None:
             return {"value": lt_borr, "basis": "非流动借款", "long_term_only": True}
-        return _total_debt(balance_row, market)
+        return total_debt(balance_row, market)
     if market == "美股":
-        info = _total_debt(balance_row, market)
+        info = total_debt(balance_row, market)
         if info is not None:
             return info
         if edgar_missing_other_currency(balance_row, "lt_debt"):
@@ -190,10 +182,10 @@ def _lt_debt(
                 "long_term_only": True,
             }
         return None
-    return _total_debt(balance_row, market)
+    return total_debt(balance_row, market)
 
 
-def _total_debt(balance_row: Optional[Dict[str, Any]], market: str) -> Optional[Dict[str, Any]]:
+def total_debt(balance_row: Optional[Dict[str, Any]], market: str) -> Optional[Dict[str, Any]]:
     """有息负债合计与口径说明；无法可靠合计时返回 None（宁缺毋错）。
 
     - 港股：total_debt 合计（PDF 映射或 Yahoo）；没有合计时用 PDF 的流动+非流动借款；
@@ -309,6 +301,7 @@ class _Valuation:
         self.share_ratio_note = valuation.get("share_ratio_note")
         self.share_ratio_source = valuation.get("share_ratio_source")
         self.share_ratio_missing = bool(valuation.get("share_ratio_missing"))
+        self.share_ratio_unknown = bool(valuation.get("share_ratio_unknown"))
         self.annual_form = valuation.get("annual_form")
 
     @property
@@ -744,10 +737,19 @@ def _statement_valuation(
             _criterion("pb_or_product", "indeterminate", reason),
         )
     if view.share_ratio_missing:
-        reason = (
-            "20-F 发行人以 ADS 交易，价格与每股盈利口径不一致：20-F 封面未解析出 ADS 换算比，"
-            "可在特例规则中手动填写"
-        )
+        # 10-K 封面登记了 ADS 却解析不出比例时同样缺（#352）；20-F 的文案不变
+        form = "10-K" if str(view.annual_form or "").startswith("10-K") else "20-F"
+        if view.share_ratio_unknown:
+            # 封面无法识别：连是否以 ADS 交易都不知道（PR #358 评审 P2），不按 1:1 猜
+            reason = (
+                f"{form} 封面未识别出证券登记表，无法确认是否以 ADS 交易，价格与每股盈利口径"
+                "不可确定：可在特例规则中手动填写 ADS 换算比（普通股填 1）"
+            )
+        else:
+            reason = (
+                f"{form} 发行人以 ADS 交易，价格与每股盈利口径不一致：{form} 封面未解析出"
+                " ADS 换算比，可在特例规则中手动填写"
+            )
         return (
             _criterion("pe", "indeterminate", reason),
             _criterion("pb_or_product", "indeterminate", reason),
@@ -1387,7 +1389,7 @@ def _criterion_earnings_growth(ctx: _ScreenContext, history: _ProfitHistory) -> 
 def _fragility_signals(ctx: _ScreenContext, basic: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """塔勒布脆弱性信号。"""
     latest_balance, latest_income = ctx.latest_balance, ctx.latest_income
-    debt_info = _total_debt(latest_balance, ctx.market)  # 脆弱性信号的有息负债口径
+    debt_info = total_debt(latest_balance, ctx.market)  # 脆弱性信号的有息负债口径
     fragility: Dict[str, Any] = {}
     total_assets = _num(latest_balance, "total_assets")
     total_liab = _num(latest_balance, "total_liab")
@@ -1428,7 +1430,8 @@ def compute_graham_screen(
     valuation（港股/美股，调用方从行情库/汇率表/中报季报行装配）：
     {price: {close, currency, date, stale, age_days, source} | None,
      fx_rates: {报表币种: 折价格币种的汇率}, interim_rows: [港股 H1 / 美股单季行],
-     share_ratio / share_ratio_note / share_ratio_source('rule'|'20-F') / share_ratio_missing
+     share_ratio / share_ratio_note / share_ratio_source('rule'|'20-F'|'10-K') / share_ratio_missing /
+     share_ratio_unknown
      （美股 ADS 口径，见 ads_ratio_service）, annual_form}。
     history_confirmed：可得年度数据的起点即公司披露历史的起点（港股由披露易清单确认；
     否则只说「已取得年度数据仅 N 年」，不断言公司历史短）。"""

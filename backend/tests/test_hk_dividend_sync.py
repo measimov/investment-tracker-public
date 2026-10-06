@@ -27,7 +27,7 @@ from app.services import hkex_dividend_source as src
 from app.services.background_job_store import JobOwnershipLostError
 from app.services.hk_adjustment_factors import recompute_hk_adj_factors
 
-from .helpers import add_transaction, make_account, reset_tables
+from .helpers import seed_legacy_accepted_dividend, add_transaction, make_account, reset_tables
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hkex_dividend"
 RATE_SOURCE = "test-hkdiv"
@@ -236,12 +236,11 @@ def test_accepting_hk_suggestion_books_hkd_dividend(db, monkeypatch):
 
     suggestion = _suggestions(db, "00700")[0]
     user = db.query(User).filter(User.id == 1).one()
-    action = svc.accept_suggestion(db, user, suggestion.id, {"tax_withheld": Decimal("53")})
-    assert action.currency == "HKD"
-    assert Decimal(str(action.dividend_per_share)) == Decimal("5.3")
-    assert Decimal(str(action.total_dividend)) == Decimal("530")
-    assert Decimal(str(action.net_dividend)) == Decimal("477")
-    assert "hkexnews-dividend" in action.notes
+    with pytest.raises(svc.SuggestionStateError, match="不能通过接受公告"):
+        svc.accept_suggestion(db, user, suggestion.id, {"tax_withheld": Decimal("53")})
+    assert suggestion.currency == "HKD"
+    assert suggestion.estimated_total_dividend == Decimal("530")
+    assert db.query(CorporateAction).count() == 0
 
 
 def test_withholding_detail_for_h_share(db, monkeypatch):
@@ -400,7 +399,7 @@ def test_update_keeps_accepted_old_suggestion(db, monkeypatch):
     _buy(db, "00728", "1000", date(2026, 1, 10))
     svc.sync_dividends_for_user(db, 1)
     user = db.query(User).filter(User.id == 1).one()
-    svc.accept_suggestion(db, user, _suggestions(db, "00728")[0].id, {})
+    seed_legacy_accepted_dividend(db, user, _suggestions(db, "00728")[0].id, {})
 
     fake.publish(
         "00728", "2026051901240", "2026-05-19T21:44:00", _text("00728_final_2025_update.txt")

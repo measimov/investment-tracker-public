@@ -3,6 +3,7 @@
 全部 monkeypatch analyze_one，不触发真实外呼与 LLM。
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ from app.models.broker_account import BrokerAccount
 from app.models.security_rule import SecurityRule
 from app.models.user import User
 from app.services import security_analysis_batch_jobs as batch
+from app.services.background_job_store import JobOwnershipLostError
 from app.services.llm_client import LLMClientError, LLMNotConfiguredError
 
 from .helpers import reset_tables
@@ -657,6 +659,82 @@ def test_ordinary_llm_4xx_is_symbol_level_not_batch_abort(db, monkeypatch):
     assert len(calls) == 2  # 两只都尝试了
     assert job.status == "succeeded"  # 单只失败不中止整批
     assert job.data["failed_count"] == 2
+
+
+def test_analyze_one_persists_generation_metadata_after_prompt(db, monkeypatch, generation_meta):
+    from app.services import business_profile_service as bp_svc
+    from app.services import report_digest_service as digest_svc
+    from app.services import security_analysis_jobs as jobs
+    from app.services.security_analysis_prompts import REPORT_SECTIONS
+
+    monkeypatch.setattr(jobs, "sync_symbol_profile", lambda *a: {"supported": True})
+    monkeypatch.setattr(digest_svc, "digest_gap_preview", lambda *a: [])
+    monkeypatch.setattr(bp_svc, "ensure_peer_list", lambda *a: [])
+    monkeypatch.setattr(bp_svc, "ensure_business_profile", lambda *a: None)
+    monkeypatch.setattr(jobs, "resolve_public_security_name", lambda *a: None)
+    monkeypatch.setattr(jobs, "profile_fetched_date", lambda *a: None)
+    original_input = {"meta": {"symbol": "600036", "market": "A股"}}
+    monkeypatch.setattr(jobs, "build_analysis_input", lambda *a, **k: dict(original_input))
+
+    def fake_chat(messages, **kwargs):
+        assert all("generation_meta" not in message["content"] for message in messages)
+        return {
+            "content": json.dumps(
+                {
+                    "tags": ["数据不足"],
+                    "risk_level": "medium",
+                    "summary": "数据不足。",
+                    "report_markdown": "\n\n".join(
+                        f"## {section}\n数据不足。" for section in REPORT_SECTIONS
+                    ),
+                },
+                ensure_ascii=False,
+            ),
+            "model": "test-model",
+            "usage": {},
+            **({"generation_meta": generation_meta} if generation_meta is not None else {}),
+        }
+
+    monkeypatch.setattr(jobs, "chat_completion", fake_chat)
+    outcome = jobs.analyze_one(db, "600036", "A股", digest_max_new=0)
+    assert outcome["status"] == "succeeded"
+    row = db.get(SecurityAnalysis, outcome["analysis_id"])
+    assert row.input_payload == {
+        **original_input,
+        **({"generation_meta": generation_meta} if generation_meta is not None else {}),
+    }
+
+
+@pytest.mark.parametrize("stage", ["digest", "statement", "business_profile"])
+def test_analyze_one_lost_ownership_in_llm_enrichment_stops_before_analysis(db, monkeypatch, stage):
+    from app.services import business_profile_service as bp_svc
+    from app.services import report_digest_service as digest_svc
+    from app.services import report_statement_service as statement_svc
+    from app.services import security_analysis_jobs as jobs
+
+    monkeypatch.setattr(jobs, "sync_symbol_profile", lambda *a: {"supported": True})
+    monkeypatch.setattr(digest_svc, "ensure_report_digests", lambda *a, **k: {"gaps": []})
+    monkeypatch.setattr(statement_svc, "ensure_report_statements", lambda *a, **k: {"gaps": []})
+    monkeypatch.setattr(bp_svc, "ensure_peer_list", lambda *a: [])
+    monkeypatch.setattr(bp_svc, "ensure_business_profile", lambda *a: None)
+
+    def lost_ownership(*args, **kwargs):
+        raise JobOwnershipLostError("job lease lost")
+
+    module, name = {
+        "digest": (digest_svc, "ensure_report_digests"),
+        "statement": (statement_svc, "ensure_report_statements"),
+        "business_profile": (bp_svc, "ensure_business_profile"),
+    }[stage]
+    monkeypatch.setattr(module, name, lost_ownership)
+    monkeypatch.setattr(
+        jobs,
+        "build_analysis_input",
+        lambda *a, **k: pytest.fail("失权后不得继续组装输入或请求 LLM"),
+    )
+    with pytest.raises(JobOwnershipLostError, match="job lease lost"):
+        jobs.analyze_one(db, "00700", "港股")
+    assert db.query(SecurityAnalysis).count() == 0
 
 
 def test_analyze_one_marks_fatal_kinds(db, monkeypatch):

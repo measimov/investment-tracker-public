@@ -6,6 +6,7 @@ import pytest
 from app.core.timeutil import local_today
 from app.database import SessionLocal
 from app.models.broker_fund_flow import BrokerFundFlow
+from app.models.cash_event import CashEvent
 from app.models.corporate_action import CorporateAction
 from app.models.exchange_rate import ExchangeRate
 from app.models.holding import Holding
@@ -30,6 +31,7 @@ from tests.helpers import add_transaction, reset_tables
 
 
 RESET_MODELS = (
+    CashEvent,
     BrokerFundFlow,
     IbkrActivityFlow,
     SecurityPrice,

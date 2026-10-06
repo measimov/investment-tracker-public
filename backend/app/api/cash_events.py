@@ -14,7 +14,15 @@ from ..schemas.cash_event import (
     CashEventResponse,
     CashEventType,
     CashEventUpdate,
+    DividendTaxAllocationsUpdate,
 )
+from ..services.broker_import_common import lock_broker_import
+from ..services.dividend_tax_service import (
+    replace_tax_allocations,
+    validate_existing_tax_allocations,
+    validate_tax_event,
+)
+from ..services.holding_service import lock_record
 from ._ownership import annotate_read_only, ensure_record_is_mutable, get_owned_record
 
 
@@ -46,8 +54,10 @@ def create_cash_event(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
+    lock_broker_import(db, current_user.id)
     _validate_broker_account(db, current_user.id, cash_event.broker_account_id)
     db_event = CashEvent(**cash_event.model_dump(), user_id=current_user.id)
+    validate_tax_event(db_event)
     db.add(db_event)
     db.commit()
     db.refresh(db_event)
@@ -103,6 +113,8 @@ def update_cash_event(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
+    lock_broker_import(db, current_user.id)
+    lock_record(db, "cash-event-record", event_id)
     db_event = get_owned_record(
         db,
         CashEvent,
@@ -117,6 +129,7 @@ def update_cash_event(
         _validate_broker_account(db, current_user.id, account_id)
     for field, value in update_data.items():
         setattr(db_event, field, value)
+    validate_existing_tax_allocations(db, event=db_event)
     db.commit()
     db.refresh(db_event)
     return db_event
@@ -128,6 +141,8 @@ def delete_cash_event(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
+    lock_broker_import(db, current_user.id)
+    lock_record(db, "cash-event-record", event_id)
     db_event = get_owned_record(
         db,
         CashEvent,
@@ -139,3 +154,23 @@ def delete_cash_event(
     db.delete(db_event)
     db.commit()
     return None
+
+
+@router.put("/{event_id:int}/dividend-allocations", response_model=CashEventResponse)
+def update_dividend_tax_allocations(
+    event_id: int,
+    update: DividendTaxAllocationsUpdate,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    # 导入事实仍只读；显式归属可调整。与导入、股息更新/删除共用用户串行锁。
+    lock_broker_import(db, current_user.id)
+    lock_record(db, "cash-event-record", event_id)
+    event = get_owned_record(db, CashEvent, event_id, current_user.id, "现金事件不存在")
+    db.refresh(event)
+    for action_id in sorted({item.corporate_action_id for item in update.allocations}):
+        lock_record(db, "corporate-action-record", action_id)
+    replace_tax_allocations(db, event, update.allocations)
+    db.commit()
+    db.refresh(event)
+    return annotate_read_only(db, current_user.id, "cash_event", [event])[0]

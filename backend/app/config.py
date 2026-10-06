@@ -139,11 +139,21 @@ class Settings(BaseSettings):
     # 无参数 astimezone() 在那里是空转，东八区跨日转换不会发生。
     display_timezone: str = "Asia/Shanghai"
 
-    # LLM report (DeepSeek / OpenAI-compatible; empty key disables the feature)
+    # LLM channels: official → Ark → Bailian → OpenRouter; empty keys skip channels.
     llm_report_api_key: str = ""
     llm_report_base_url: str = "https://api.deepseek.com"
     llm_report_model: str = "deepseek-flash"
-    llm_report_timeout_seconds: int = 120
+    llm_report_timeout_seconds: int = Field(default=120, gt=0)
+    llm_fallback_budget_seconds: int = Field(default=240, gt=0)
+    llm_ark_api_key: str = Field(default="", repr=False)
+    llm_ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    llm_ark_model: str = "deepseek-v4-1-flash-260910"
+    llm_bailian_api_key: str = Field(default="", repr=False)
+    llm_bailian_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    llm_bailian_model: str = "deepseek-v4.1-flash"
+    llm_openrouter_api_key: str = Field(default="", repr=False)
+    llm_openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    llm_openrouter_model: str = "deepseek/deepseek-v4.1-flash"
     # DeepSeek 推理 token 与输出共享此配额：8192 实测被长分析报告吃穿
     # （港股分析要求额外写明数据边界，report_markdown 截断或整体为空）
     llm_report_max_output_tokens: int = 16384
@@ -238,6 +248,13 @@ class Settings(BaseSettings):
     announcement_sync_enabled: bool = True
     # 首次同步（无水位）的回溯天数
     announcement_backfill_days: int = Field(default=365, ge=1)
+    # 原始报告文件缓存（巨潮/披露易 PDF、EDGAR 主文档；report_cache）：容器内的持久化挂载目录，
+    # 不存在或不可写即关闭（开发/测试环境默认关闭）。解析规则升版重跑时命中本地、不再重新下载
+    report_cache_dir: str = "/app/cache/reports"
+    # 缓存总量上限（GB）：超过时按最近使用时间删，先删无人引用的
+    report_cache_max_gb: float = Field(default=8, gt=0)
+    # 无人引用（非当前跟踪标的的抽取/节选/摘要所需）的文件，超过这么多天没用即删除
+    report_cache_unreferenced_days: int = Field(default=30, ge=1)
     # 重大公告推送（持仓或自选标的，走 NOTIFY_URLS；首次回溯的历史公告不推）
     announcement_notify_enabled: bool = True
     price_refresh_max_workers: int = 4

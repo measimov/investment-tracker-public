@@ -1,0 +1,10 @@
+fastapi==0.109.0
+uvicorn==0.27.0
+grimp==3.17
+radon==6.0.1
+coverage==7.16.2
+pytest==9.1.1
+pytest-xdist==3.8.0
+pytest-cov==7.1.0
+httpx==0.26.0
+pydantic==2.5.3

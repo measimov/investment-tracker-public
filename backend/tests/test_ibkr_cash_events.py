@@ -236,7 +236,7 @@ def test_imported_ibkr_cash_events_are_read_only_via_api(monkeypatch):
 def test_parser_version_tracks_booking_semantics():
     """入账语义检测器：改变了导入产物（入账/归档/判重范围）必须升版并更新
     此断言——v5 现金入账、v6 排除规则表驱动。"""
-    assert importer.PARSER_VERSION == "6"
+    assert importer.PARSER_VERSION == "7"
 
 
 def test_fx_price_currency_mismatch_archives_without_events(monkeypatch):

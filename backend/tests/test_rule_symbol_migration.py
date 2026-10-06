@@ -9,12 +9,17 @@ import os
 import sqlalchemy as sa
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.dialects.postgresql import dialect
 
-SCRATCH_DB = "investment_test_rule_symbol_migration"
-# make_url 保留查询参数（本机要 ?gssencmode=disable，否则每次建连挂 180 秒）
+from conftest import _database_url_with_suffix
+
+# 从当前串行/worker 库派生，外部运行方也能在异常退出后推导并清理。
+# make_url 保留查询参数（本机要 ?gssencmode=disable，否则每次建连挂 180 秒）。
 _BASE_URL = sa.engine.make_url(os.environ["DATABASE_URL"])
 ADMIN_URL = _BASE_URL.set(database="postgres").render_as_string(hide_password=False)
-SCRATCH_URL = _BASE_URL.set(database=SCRATCH_DB).render_as_string(hide_password=False)
+SCRATCH_URL = _database_url_with_suffix(os.environ["DATABASE_URL"], "_sm")
+SCRATCH_DB = sa.engine.make_url(SCRATCH_URL).database
+_SCRATCH_DB_IDENTIFIER = dialect().identifier_preparer.quote_identifier(SCRATCH_DB)
 
 
 def _alembic_config(url: str) -> Config:
@@ -31,8 +36,8 @@ def test_rule_symbols_are_normalized_and_conflicts_left_alone(monkeypatch, capsy
     monkeypatch.setattr(settings, "database_url", SCRATCH_URL)
     admin_engine = sa.create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
     with admin_engine.connect() as conn:
-        conn.execute(sa.text(f"DROP DATABASE IF EXISTS {SCRATCH_DB}"))
-        conn.execute(sa.text(f"CREATE DATABASE {SCRATCH_DB}"))
+        conn.execute(sa.text(f"DROP DATABASE IF EXISTS {_SCRATCH_DB_IDENTIFIER}"))
+        conn.execute(sa.text(f"CREATE DATABASE {_SCRATCH_DB_IDENTIFIER}"))
     try:
         config = _alembic_config(SCRATCH_URL)
         command.upgrade(config, "20260929_0035")
@@ -108,4 +113,4 @@ def test_rule_symbols_are_normalized_and_conflicts_left_alone(monkeypatch, capsy
     finally:
         admin_engine = sa.create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT")
         with admin_engine.connect() as conn:
-            conn.execute(sa.text(f"DROP DATABASE IF EXISTS {SCRATCH_DB} WITH (FORCE)"))
+            conn.execute(sa.text(f"DROP DATABASE IF EXISTS {_SCRATCH_DB_IDENTIFIER} WITH (FORCE)"))

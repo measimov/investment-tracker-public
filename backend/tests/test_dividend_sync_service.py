@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.api.corporate_actions import delete_corporate_action
 from app.core.timeutil import local_today
 from app.database import SessionLocal
 from app.models.background_job import BackgroundJob
@@ -20,7 +21,13 @@ from app.models.transaction import Transaction
 from app.services import dividend_sync_service as svc
 from app.services.portfolio.semantics import bonus_share_factor
 
-from .helpers import add_transaction, make_account, reset_tables
+from .helpers import (
+    seed_legacy_accepted_dividend,
+    add_transaction,
+    get_user,
+    make_account,
+    reset_tables,
+)
 
 RESET_MODELS = [
     CorporateActionSuggestion,
@@ -93,6 +100,282 @@ def _patch_fetchers(monkeypatch, dividends=None, disclosures=None, floats=None):
     monkeypatch.setattr(svc, "fetch_share_floats", lambda s, m: list(floats or []))
 
 
+def test_duplicate_source_rows_do_not_rollback_cash_and_stock_suggestions(db, monkeypatch):
+    _seed_holding(db)
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    db.commit()
+    row = _announcement(stk_div=Decimal("0.1"))
+    _patch_fetchers(monkeypatch, dividends=[row, dict(row)])
+
+    first = svc.sync_dividends_for_user(db, 1)
+    assert first["failed"] == []
+    suggestions = db.query(CorporateActionSuggestion).all()
+    assert {s.action_type for s in suggestions} == {"CASH_DIVIDEND", "STOCK_DIVIDEND"}
+    assert len(suggestions) == 2
+    assert next(
+        s for s in suggestions if s.action_type == "CASH_DIVIDEND"
+    ).estimated_total_dividend == Decimal("1000")
+    stock = next(s for s in suggestions if s.action_type == "STOCK_DIVIDEND")
+    assert stock.stk_div_per_share * stock.record_date_quantity == Decimal("100")
+    ids = {s.id for s in suggestions}
+
+    second = svc.sync_dividends_for_user(db, 1)
+    assert second["failed"] == []
+    assert {s.id for s in db.query(CorporateActionSuggestion).all()} == ids
+    assert db.query(CorporateAction).count() == 0
+
+
+@pytest.mark.parametrize("date_field", ["ann_date", "imp_ann_date"])
+def test_newest_announcement_wins_regardless_of_source_order(db, monkeypatch, date_field):
+    _seed_holding(db)
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    db.commit()
+    older = _announcement(**{date_field: RECENT_EX - timedelta(days=3)})
+    newer = _announcement(
+        **{date_field: older[date_field] + timedelta(days=1)},
+        cash_div_tax=Decimal("1.2"),
+        cash_div=Decimal("1.08"),
+    )
+    for rows in ([newer, older], [older, newer]):
+        _patch_fetchers(monkeypatch, dividends=rows)
+        assert svc.sync_dividends_for_user(db, 1)["failed"] == []
+        suggestion = db.query(CorporateActionSuggestion).one()
+        assert suggestion.ann_date == newer["ann_date"]
+        assert suggestion.estimated_total_dividend == Decimal("1200")
+        assert db.query(CorporateAction).count() == 0
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.parametrize("action_type", ["CASH_DIVIDEND", "STOCK_DIVIDEND"])
+def test_ex_date_revision_removes_unaccepted_rows_without_rebooking_accepted_distribution(
+    db, monkeypatch, accepted, action_type
+):
+    _seed_holding(db)
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    db.commit()
+    row = _announcement(
+        cash_div_tax=Decimal("1") if action_type == "CASH_DIVIDEND" else None,
+        cash_div=Decimal("0.9") if action_type == "CASH_DIVIDEND" else None,
+        stk_div=Decimal("0.1") if action_type == "STOCK_DIVIDEND" else None,
+    )
+    _patch_fetchers(monkeypatch, dividends=[row])
+    svc.sync_dividends_for_user(db, 1)
+    old = db.query(CorporateActionSuggestion).one()
+    old_id = old.id
+    if accepted:
+        seed_legacy_accepted_dividend(db, get_user(db), old_id, {"tax_withheld": "0"})
+    revised_ex = RECENT_EX + timedelta(days=70)  # outside both old matching windows
+    revised = {
+        **row,
+        "ex_date": revised_ex,
+        "record_date": revised_ex - timedelta(days=1),
+        "pay_date": revised_ex + timedelta(days=1),
+    }
+    _patch_fetchers(monkeypatch, dividends=[revised])
+    result = svc.sync_dividends_for_user(db, 1)
+    assert not result["failed"]
+    current = db.query(CorporateActionSuggestion).filter_by(ex_date=revised_ex).one()
+    if accepted:
+        assert db.get(CorporateActionSuggestion, old_id).status == "ACCEPTED"
+        assert current.status == "MATCHED"
+        assert current.match_detail["matched_by"] == "announcement_revision"
+        assert db.query(CorporateAction).count() == 1
+        action_id = db.query(CorporateAction).one().id
+        delete_corporate_action(action_id, current_user=get_user(db), db=db)
+        assert db.get(CorporateActionSuggestion, old_id) is None
+        db.refresh(current)
+        assert current.status == "NEW"
+        with pytest.raises(LookupError, match="不存在"):
+            svc.accept_suggestion(db, get_user(db), old_id, {})
+        recreated = seed_legacy_accepted_dividend(
+            db, get_user(db), current.id, {"tax_withheld": "0"}
+        )
+        assert recreated.ex_date == revised_ex
+        assert db.query(CorporateAction).count() == 1
+        if action_type == "STOCK_DIVIDEND":
+            assert db.query(Holding).one().quantity == Decimal("1100")
+    else:
+        assert result["stale_removed"] == 1
+        assert db.query(CorporateActionSuggestion).count() == 1
+        assert current.status == "NEW"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("action_type", ["CASH_DIVIDEND", "STOCK_DIVIDEND"])
+def test_accept_checks_distribution_identity_outside_date_window(
+    db, monkeypatch, action_type, legacy
+):
+    _seed_holding(db)
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    db.commit()
+    row = _announcement(
+        cash_div_tax=Decimal("1") if action_type == "CASH_DIVIDEND" else None,
+        cash_div=Decimal("0.9") if action_type == "CASH_DIVIDEND" else None,
+        stk_div=Decimal("0.1") if action_type == "STOCK_DIVIDEND" else None,
+    )
+    _patch_fetchers(monkeypatch, dividends=[row])
+    svc.sync_dividends_for_user(db, 1)
+    original = db.query(CorporateActionSuggestion).one()
+    key = original.announcement_detail["distribution_key"]
+    action = seed_legacy_accepted_dividend(db, get_user(db), original.id, {"tax_withheld": "0"})
+    if legacy:
+        original.announcement_detail = None
+    # 模拟旧客户端/历史数据留下的 NEW，绕过同步阶段的 MATCHED 结论。
+    stale = CorporateActionSuggestion(
+        user_id=1,
+        symbol="600036",
+        market="A股",
+        action_type=action_type,
+        ex_date=RECENT_EX + timedelta(days=70),
+        ann_date=row["ann_date"],
+        pay_date=RECENT_EX + timedelta(days=71),
+        currency="CNY",
+        cash_div_pre_tax=row["cash_div_tax"],
+        stk_div_per_share=row["stk_div"],
+        record_date_quantity=Decimal("1000"),
+        estimated_total_dividend=Decimal("1000"),
+        announcement_detail={"distribution_key": key},
+        status="NEW",
+    )
+    db.add(stale)
+    db.commit()
+    with pytest.raises(svc.SuggestionStateError, match="已存在匹配"):
+        svc.accept_suggestion(db, get_user(db), stale.id, {})
+    db.refresh(stale)
+    assert stale.status == "MATCHED"
+    assert stale.matched_corporate_action_id == action.id
+    assert stale.match_detail["matched_by"] == "announcement_revision"
+    assert db.query(CorporateAction).count() == 1
+    if action_type == "STOCK_DIVIDEND":
+        assert db.query(Holding).one().quantity == Decimal("1100")
+
+
+@pytest.mark.parametrize("action_type", ["CASH_DIVIDEND", "STOCK_DIVIDEND"])
+def test_ignored_revision_cannot_restore_and_revision_can_return_to_original_date(
+    db, monkeypatch, action_type
+):
+    _seed_holding(db)
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    db.commit()
+    row = _announcement(
+        cash_div_tax=Decimal("1") if action_type == "CASH_DIVIDEND" else None,
+        cash_div=Decimal("0.9") if action_type == "CASH_DIVIDEND" else None,
+        stk_div=Decimal("0.1") if action_type == "STOCK_DIVIDEND" else None,
+    )
+    _patch_fetchers(monkeypatch, dividends=[row])
+    svc.sync_dividends_for_user(db, 1)
+    original = db.query(CorporateActionSuggestion).one()
+    svc.ignore_suggestion(db, 1, original.id)
+    revised_ex = RECENT_EX + timedelta(days=70)
+    revised = {
+        **row,
+        "ex_date": revised_ex,
+        "record_date": revised_ex - timedelta(days=1),
+        "pay_date": revised_ex + timedelta(days=1),
+    }
+    _patch_fetchers(monkeypatch, dividends=[revised])
+    svc.sync_dividends_for_user(db, 1)
+    current = db.query(CorporateActionSuggestion).filter_by(ex_date=revised_ex).one()
+    with pytest.raises(svc.SuggestionStateError, match="已修订"):
+        svc.restore_suggestion(db, 1, original.id)
+    assert original.status == "IGNORED"
+    svc.ignore_suggestion(db, 1, current.id)
+    # 日期改回已有版本时，以本次源数据为准，而不是最大日期或最新行 id。
+    _patch_fetchers(monkeypatch, dividends=[row])
+    svc.sync_dividends_for_user(db, 1)
+    restored = svc.restore_suggestion(db, 1, original.id)
+    assert restored.status == "NEW"
+    with pytest.raises(svc.SuggestionStateError, match="已修订"):
+        svc.restore_suggestion(db, 1, current.id)
+    action = seed_legacy_accepted_dividend(db, get_user(db), original.id, {"tax_withheld": "0"})
+    assert action.ex_date == RECENT_EX
+    assert db.query(CorporateAction).count() == 1
+
+
+def test_distribution_identity_uses_final_account_and_keeps_other_account_independent(
+    db, monkeypatch
+):
+    _seed_holding(db)
+    first, second = make_account(db), make_account(db, broker="IBKR")
+    add_transaction(
+        db,
+        symbol="600036",
+        market="A股",
+        currency="CNY",
+        broker_account_id=first.id,
+        transaction_date=date(2024, 1, 10),
+        quantity=Decimal("1000"),
+    )
+    db.commit()
+    row = _announcement()
+    _patch_fetchers(monkeypatch, dividends=[row])
+    svc.sync_dividends_for_user(db, 1)
+    original = db.query(CorporateActionSuggestion).one()
+    action = seed_legacy_accepted_dividend(
+        db, get_user(db), original.id, {"broker_account_id": second.id}
+    )
+    assert action.broker_account_id == second.id
+    values = dict(
+        user_id=1,
+        symbol="600036",
+        market="A股",
+        action_type="CASH_DIVIDEND",
+        ex_date=RECENT_EX + timedelta(days=70),
+        ann_date=row["ann_date"],
+        pay_date=RECENT_EX + timedelta(days=71),
+        currency="CNY",
+        cash_div_pre_tax=Decimal("1"),
+        record_date_quantity=Decimal("1000"),
+        estimated_total_dividend=Decimal("1000"),
+        announcement_detail=dict(original.announcement_detail),
+        status="NEW",
+    )
+    duplicate = CorporateActionSuggestion(**values, broker_account_id=second.id)
+    separate = CorporateActionSuggestion(**values, broker_account_id=first.id)
+    db.add_all([duplicate, separate])
+    db.commit()
+    with pytest.raises(svc.SuggestionStateError, match="已存在匹配"):
+        svc.accept_suggestion(db, get_user(db), duplicate.id, {})
+    independent = seed_legacy_accepted_dividend(db, get_user(db), separate.id, {})
+    assert independent.broker_account_id == first.id
+    assert db.query(CorporateAction).count() == 2
+
+
 # ---------------------------------------------------------------------------
 # div_proc 过滤与登记日持仓
 # ---------------------------------------------------------------------------
@@ -149,6 +432,168 @@ def test_position_bought_after_record_date_is_skipped(db, monkeypatch):
 
     assert result["skipped_no_position"] == 1
     assert db.query(CorporateActionSuggestion).count() == 0
+
+
+@pytest.mark.parametrize(
+    "symbol,currency,last_trade,ex_date,record_date,pay_date,per_share,received_total",
+    [
+        # 2026 年实施公告：最后含权交易日在周五，B 股登记日在交收后的周三。
+        (
+            "900903",
+            "USD",
+            date(2026, 7, 10),
+            date(2026, 7, 13),
+            date(2026, 7, 15),
+            date(2026, 7, 24),
+            "0.02",
+            "2.935",
+        ),
+        (
+            "200429",
+            "HKD",
+            date(2026, 8, 7),
+            date(2026, 8, 10),
+            date(2026, 8, 12),
+            date(2026, 8, 12),
+            "0.604",
+            "694.65",
+        ),
+    ],
+)
+def test_b_share_entitlement_uses_pre_ex_trades_and_flags_currency(
+    db,
+    monkeypatch,
+    symbol,
+    currency,
+    last_trade,
+    ex_date,
+    record_date,
+    pay_date,
+    per_share,
+    received_total,
+):
+    monkeypatch.setattr(svc, "local_today", lambda: date(2026, 10, 2))
+    _seed_holding(db, symbol=symbol, market="B股", quantity=Decimal("800"))
+    for trade_date, side, quantity in (
+        (last_trade, "BUY", "1000"),
+        (ex_date, "BUY", "200"),
+        (ex_date + timedelta(days=1), "SELL", "400"),
+    ):
+        add_transaction(
+            db,
+            symbol=symbol,
+            market="B股",
+            currency=currency,
+            transaction_date=trade_date,
+            transaction_type=side,
+            quantity=Decimal(quantity),
+        )
+    action = CorporateAction(
+        user_id=1,
+        symbol=symbol,
+        market="B股",
+        action_type="CASH_DIVIDEND",
+        ex_date=pay_date,
+        currency=currency,
+        total_dividend=Decimal(received_total),
+    )
+    db.add(action)
+    db.commit()
+    row = _announcement(
+        ex_date=ex_date,
+        record_date=record_date,
+        pay_date=pay_date,
+        cash_div=Decimal(per_share),
+        cash_div_tax=Decimal(per_share),
+        stk_div=Decimal("0.1"),
+    )
+    _patch_fetchers(monkeypatch, dividends=[row])
+
+    assert svc.sync_dividends_for_user(db, 1)["failed"] == []
+    suggestions = db.query(CorporateActionSuggestion).all()
+    assert len(suggestions) == 2
+    cash = next(s for s in suggestions if s.action_type == "CASH_DIVIDEND")
+    stock = next(s for s in suggestions if s.action_type == "STOCK_DIVIDEND")
+    assert cash.record_date == stock.record_date == record_date
+    assert cash.record_date_quantity == stock.record_date_quantity == Decimal("1000")
+    assert cash.estimated_total_dividend == Decimal(per_share) * 1000
+    assert cash.currency == "CNY"  # 公告金额仍保留人民币，不能只改外币标签。
+    assert cash.match_detail["currency_mismatch"]["recorded_currency"] == currency
+    assert "amount_diff" not in cash.match_detail
+    # 旧 NEW/MATCHED 仍由现有 upsert 刷新，重复同步不新增，也不改实际到账。
+    ids = {s.id for s in suggestions}
+    cash.record_date_quantity = Decimal("800")
+    cash.estimated_total_dividend = Decimal(per_share) * 800
+    cash.receipt_complete = True
+    db.commit()
+    assert svc.sync_dividends_for_user(db, 1)["failed"] == []
+    assert {s.id for s in db.query(CorporateActionSuggestion).all()} == ids
+    db.refresh(cash)
+    db.refresh(action)
+    assert cash.record_date_quantity == Decimal("1000") and cash.receipt_complete is False
+    assert action.total_dividend == Decimal(received_total)
+
+
+@pytest.mark.parametrize("market,expected_quantity", [("B股", None), ("A股", "1000")])
+def test_buy_on_ex_date_does_not_get_b_share_dividend(db, monkeypatch, market, expected_quantity):
+    monkeypatch.setattr(svc, "local_today", lambda: date(2026, 10, 2))
+    _seed_holding(db, symbol="200429", market=market)
+    ex_date = date(2026, 8, 10)
+    add_transaction(
+        db,
+        symbol="200429",
+        market=market,
+        currency="HKD" if market == "B股" else "CNY",
+        transaction_date=ex_date,
+        quantity=Decimal("1000"),
+    )
+    db.commit()
+    _patch_fetchers(
+        monkeypatch,
+        dividends=[
+            _announcement(
+                ex_date=ex_date,
+                record_date=ex_date + timedelta(days=2),
+                pay_date=ex_date + timedelta(days=2),
+            )
+        ],
+    )
+    result = svc.sync_dividends_for_user(db, 1)
+    assert result["failed"] == []
+    suggestions = db.query(CorporateActionSuggestion).all()
+    if expected_quantity is None:
+        assert suggestions == [] and result["skipped_no_position"] == 1
+    else:
+        assert len(suggestions) == 1
+        assert suggestions[0].record_date_quantity == Decimal(expected_quantity)
+
+
+def test_b_share_sold_on_ex_date_keeps_dividend_entitlement(db, monkeypatch):
+    monkeypatch.setattr(svc, "local_today", lambda: date(2026, 10, 2))
+    ex_date = date(2026, 8, 10)
+    for day, side in ((ex_date - timedelta(days=3), "BUY"), (ex_date, "SELL")):
+        add_transaction(
+            db,
+            symbol="200429",
+            market="B股",
+            currency="HKD",
+            transaction_date=day,
+            transaction_type=side,
+            quantity=Decimal("1000"),
+        )
+    db.commit()
+    _patch_fetchers(
+        monkeypatch,
+        dividends=[
+            _announcement(
+                ex_date=ex_date,
+                record_date=ex_date + timedelta(days=2),
+                pay_date=ex_date + timedelta(days=2),
+            )
+        ],
+    )
+    assert svc.sync_dividends_for_user(db, 1)["failed"] == []
+    assert db.query(CorporateActionSuggestion).one().record_date_quantity == Decimal("1000")
 
 
 def test_record_date_quantity_keeps_account_breakdown(db, monkeypatch):
@@ -288,14 +733,12 @@ def test_multi_account_entitlement_splits_into_per_account_suggestions(db, monke
         (a2.id, Decimal("400")),
     ]
 
+    assert sum(s.estimated_total_dividend for s in suggestions) == Decimal("1000")
     user = db.query(User).filter(User.id == 1).one()
-    actions = [svc.accept_suggestion(db, user, s.id, {}) for s in suggestions]
-    assert [(a.broker_account_id, Decimal(str(a.total_dividend))) for a in actions] == [
-        (a1.id, Decimal("600")),
-        (a2.id, Decimal("400")),
-    ]
-    total = sum(Decimal(str(a.total_dividend)) for a in actions)
-    assert total == Decimal("1000")  # 金额之和 = 总权益 × 每股税前 1.0
+    for suggestion in suggestions:
+        with pytest.raises(svc.SuggestionStateError, match="不能通过接受公告"):
+            svc.accept_suggestion(db, user, suggestion.id, {})
+    assert db.query(CorporateAction).count() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -497,11 +940,7 @@ def test_cash_and_stock_in_one_announcement_split_into_two(db, monkeypatch):
     assert types == {"CASH_DIVIDEND", "STOCK_DIVIDEND"}
 
 
-def test_accept_amounts_align_with_cash_dividend_amounts(db, monkeypatch):
-    """接受后 gross/tax/net 与统计层 cash_dividend_amounts 口径闭合。"""
-    from app.models.user import User
-    from app.services.portfolio.semantics import cash_dividend_amounts
-
+def test_cash_accept_with_tax_override_still_cannot_book_forecast(db, monkeypatch):
     _seed_holding(db)
     add_transaction(
         db,
@@ -514,23 +953,11 @@ def test_accept_amounts_align_with_cash_dividend_amounts(db, monkeypatch):
     db.commit()
     _patch_fetchers(monkeypatch, dividends=[_announcement()])
     svc.sync_dividends_for_user(db, 1)
-
-    s = db.query(CorporateActionSuggestion).one()
-    user = db.query(User).filter(User.id == 1).one()
-    # override：按券商实际到账改税额
-    action = svc.accept_suggestion(db, user, s.id, {"tax_withheld": Decimal("100")})
-
-    gross, tax, net = cash_dividend_amounts(action)
-    assert gross == Decimal("1000")
-    assert tax == Decimal("100")
-    assert net == Decimal("900")
-    db.refresh(s)
-    assert s.status == "ACCEPTED"
-    assert s.created_corporate_action_id == action.id
-
-    # 重复接受 → SuggestionStateError
-    with pytest.raises(svc.SuggestionStateError):
-        svc.accept_suggestion(db, user, s.id, {})
+    suggestion = db.query(CorporateActionSuggestion).one()
+    with pytest.raises(svc.SuggestionStateError, match="不能通过接受公告"):
+        svc.accept_suggestion(db, get_user(db), suggestion.id, {"tax_withheld": Decimal("100")})
+    assert db.query(CorporateAction).count() == 0
+    assert suggestion.status == "NEW"
 
 
 def test_matched_suggestion_cannot_be_accepted(db, monkeypatch):
@@ -628,8 +1055,8 @@ def test_concurrent_accept_creates_single_action(db, monkeypatch):
     for t in threads:
         t.join(timeout=30)
 
-    assert sorted(kind for kind, _ in outcomes) == ["conflict", "ok"]
-    assert db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count() == 1
+    assert sorted(kind for kind, _ in outcomes) == ["conflict", "conflict"]
+    assert db.query(CorporateAction).filter(CorporateAction.symbol == "600036").count() == 0
 
 
 def test_concurrent_accept_vs_ignore_never_leaves_inconsistent_state(db, monkeypatch):
@@ -870,7 +1297,7 @@ def test_concurrent_accept_vs_ledger_insert(db, monkeypatch):
         assert action_count == 2
     else:
         # 录入先到：accept 锁内重判重命中 → MATCHED、仅导入一条
-        assert s.status == "MATCHED" and s.created_corporate_action_id is None
+        assert s.status in ("NEW", "MATCHED") and s.created_corporate_action_id is None
         assert action_count == 1
 
 
@@ -954,7 +1381,7 @@ def test_resync_is_idempotent_and_refreshes_revisions(db, monkeypatch):
 
     svc.restore_suggestion(db, 1, s.id)
     user = db.query(User).filter(User.id == 1).one()
-    action = svc.accept_suggestion(db, user, s.id, {})
+    action = seed_legacy_accepted_dividend(db, user, s.id, {})
     _patch_fetchers(monkeypatch, dividends=[_announcement(cash_div_tax=Decimal("2.0"))])
     svc.sync_dividends_for_user(db, 1)
     s = db.query(CorporateActionSuggestion).one()
@@ -1028,7 +1455,7 @@ def test_resync_keeps_accepted_when_equity_disappears(db, monkeypatch):
     svc.sync_dividends_for_user(db, 1)
     s = db.query(CorporateActionSuggestion).one()
     user = db.query(User).filter(User.id == 1).one()
-    svc.accept_suggestion(db, user, s.id, {})
+    seed_legacy_accepted_dividend(db, user, s.id, {})
 
     db.query(Transaction).filter(Transaction.id == txn_id).delete()
     db.commit()
@@ -1098,6 +1525,29 @@ def test_single_symbol_failure_does_not_abort(db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("stage", ["预案", "股东大会通过"])
+def test_plan_without_ex_date_is_an_announcement_event_only(db, monkeypatch, stage):
+    _seed_holding(db)
+    ann_date = TODAY - timedelta(days=2)
+    row = _announcement(
+        div_proc=stage, ann_date=ann_date, ex_date=None, record_date=None, pay_date=None
+    )
+    _patch_fetchers(monkeypatch, dividends=[row, dict(row)])
+    first = svc.sync_dividends_for_user(db, 1)
+    assert first["failed"] == []
+    assert first["events_upserted"] == 1
+    event = db.query(SecurityEvent).one()
+    assert event.event_type == "DIVIDEND_PLAN"
+    assert event.event_date == ann_date
+    assert event.payload["date_basis"] == "announcement"
+    assert event.payload["div_proc"] == stage
+    assert event.payload["ex_date"] is None
+    assert svc.sync_dividends_for_user(db, 1)["events_upserted"] == 0
+    assert db.query(SecurityEvent).count() == 1
+    assert db.query(CorporateActionSuggestion).count() == 0
+    assert db.query(CorporateAction).count() == 0
+
+
 def test_events_upsert_and_plan_to_implemented_transition(db, monkeypatch):
     _seed_holding(db)
     add_transaction(
@@ -1139,7 +1589,7 @@ def test_events_upsert_and_plan_to_implemented_transition(db, monkeypatch):
     assert events["SHARE_UNLOCK"].payload["float_share"] == 300.0
     assert events["SHARE_UNLOCK"].payload["batches"] == 2
 
-    # 预案 → 实施：同除权日再同步，事件刷新不重复，且开始产生建议
+    # 预案 → 实施：保留原预案事件，不重复新增，且开始产生建议
     _patch_fetchers(
         monkeypatch,
         dividends=[_announcement(ex_date=future_ex, record_date=future_ex - timedelta(days=1))],
@@ -1204,8 +1654,8 @@ def test_periodic_entry_includes_sold_out_users(db, monkeypatch):
     assert job.user_id == 1
 
 
-def test_periodic_entry_runs_weekly_by_db_state(db, monkeypatch):
-    """每小时 tick，但按库内上次入队时间一周只入队一次（重启不重跑）。"""
+def test_periodic_entry_runs_daily_by_db_state(db, monkeypatch):
+    """每小时 tick，未满 24 小时不入队；满一天重跑，重启不重复。"""
     from datetime import datetime, timezone
 
     from app.models.scheduled_task_state import ScheduledTaskState
@@ -1224,11 +1674,19 @@ def test_periodic_entry_runs_weekly_by_db_state(db, monkeypatch):
         assert (first.status, second.status) == ("succeeded", "skipped")
         assert len(calls) == 1
 
-        # 上次入队已满 7 天 → 再次入队
         scheduled_state.mark_ran(
             db,
             jobs.PERIODIC_TASK_NAME,
-            now=datetime.now(timezone.utc) - jobs.PERIODIC_EVERY - timedelta(minutes=1),
+            now=datetime.now(timezone.utc) - timedelta(hours=23),
+        )
+        assert jobs.periodic_enqueue_dividend_sync().status == "skipped"
+        assert len(calls) == 1
+
+        # 上次入队已满 24 小时 → 再次入队
+        scheduled_state.mark_ran(
+            db,
+            jobs.PERIODIC_TASK_NAME,
+            now=datetime.now(timezone.utc) - timedelta(days=1, minutes=1),
         )
         assert jobs.periodic_enqueue_dividend_sync().status == "succeeded"
         assert len(calls) == 2

@@ -245,6 +245,7 @@ def _normalize(snapshot):
     """剔除依赖 date.today() 的易变字段。"""
     account = snapshot["performance_summary"]["account_return"]
     account["annualized_return_rate"] = "<volatile:today-dependent>"
+    snapshot["performance_summary"]["receivable_return"]["as_of"] = "<volatile:today-dependent>"
     return snapshot
 
 

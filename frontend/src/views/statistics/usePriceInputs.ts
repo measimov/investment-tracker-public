@@ -68,12 +68,16 @@ export function usePriceInputs() {
 
       const response = await holdingsStore.batchUpdatePrices(updates)
       const result = response.data
-      ElMessage.success(`成功保存 ${result.success_count} 个价格`)
+      if (result.failed_count > 0)
+        ElMessage.warning(
+          `已保存 ${result.success_count} 个价格，${result.failed_count} 个失败：${(
+            result.failed_list ?? []
+          )
+            .map((item: { symbol: string }) => item.symbol)
+            .join('、')}`
+        )
+      else ElMessage.success(`成功保存 ${result.success_count} 个价格`)
       await loadHoldingsForPrice({ force: true })
-
-      if (result.failed_count > 0) {
-        console.error('保存失败的项:', result.failed_list)
-      }
     } catch (error) {
       showApiError(error, { prefix: '保存失败' })
     } finally {

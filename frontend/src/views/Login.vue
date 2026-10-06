@@ -2,11 +2,7 @@
   <div class="login-container">
     <section class="login-shell login-card">
       <div class="login-brand">
-        <span class="brand-mark" aria-hidden="true">
-          <span></span>
-          <span></span>
-          <span></span>
-        </span>
+        <span class="brand-mark" aria-hidden="true"></span>
         <div>
           <h1>投资追踪系统</h1>
           <p>用户登录</p>
@@ -24,6 +20,7 @@
         <el-form-item label="用户名" prop="username">
           <el-input
             v-model="loginForm.username"
+            autocomplete="username"
             placeholder="请输入用户名"
             :prefix-icon="User"
             size="large"
@@ -34,6 +31,7 @@
           <el-input
             v-model="loginForm.password"
             type="password"
+            autocomplete="current-password"
             placeholder="请输入密码"
             :prefix-icon="Lock"
             size="large"
@@ -71,7 +69,7 @@
 import { ref, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { User, Lock } from '@element-plus/icons-vue'
+import { UserRound as User, LockKeyhole as Lock } from '@lucide/vue'
 import { ElMessage, type FormInstance } from 'element-plus'
 
 const router = useRouter()
@@ -119,9 +117,9 @@ const handleLogin = async () => {
     const result = await authStore.login(loginForm.username, loginForm.password)
 
     if (result.success) {
-      ElMessage.success('登录成功')
       // 回到会话过期前的页面；无 redirect 时回首页
-      router.push(safeRedirectTarget())
+      await router.push(safeRedirectTarget())
+      ElMessage.success('登录成功')
     } else if (!result.globallyNotified) {
       // 用户名密码错误、账号停用等只在表单下方提示一次；
       // 5xx/断网已由全局通知提示，不再重复
@@ -162,37 +160,13 @@ const handleLogin = async () => {
 }
 
 .brand-mark {
-  display: grid;
-  grid-template-columns: repeat(3, 6px);
-  align-items: end;
-  gap: 3px;
+  display: block;
+  flex: 0 0 38px;
   width: 38px;
   height: 38px;
-  padding: 7px;
-  background: var(--app-primary);
-  border: none;
-  border-radius: var(--app-radius);
-}
-
-.brand-mark span {
-  display: block;
-  width: 6px;
-  border-radius: 1px 1px 0 0;
-  background: var(--app-on-primary);
-}
-
-.brand-mark span:nth-child(1) {
-  height: 14px;
-  opacity: 0.75;
-}
-
-.brand-mark span:nth-child(2) {
-  height: 22px;
-}
-
-.brand-mark span:nth-child(3) {
-  height: 10px;
-  opacity: 0.6;
+  background-color: var(--app-primary);
+  -webkit-mask: url('../assets/brand-mark.png') center / contain no-repeat;
+  mask: url('../assets/brand-mark.png') center / contain no-repeat;
 }
 
 .login-brand h1 {

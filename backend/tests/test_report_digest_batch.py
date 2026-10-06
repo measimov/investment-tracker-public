@@ -943,3 +943,51 @@ def test_hk_statement_fatal_aborts_batch_and_pipeline_error_is_isolated(db, monk
     job, _calls = _run(db, monkeypatch)
     assert job["status"] == "succeeded" and job["success_count"] == 1
     assert job["results"][0]["statements"] is None and job["results"][0]["gap_count"] == 1
+
+
+def test_reused_digest_counts_as_success_in_batch_like_single_backfill(db, monkeypatch):
+    """#378 评审 P2：抽取器升版后沿用旧摘要（digest_reused）是本轮成功落地的工作。
+    「1 份沿用 + 1 份失败」在批量里曾按 generated==0 判全部失败，把连败计数推到早停线——
+    判据与单标的回填必须是同一个函数，结果、计数与早停一致。"""
+    from app.services.report_digest_jobs import backfill_failure_message
+
+    for index in range(4):
+        _hold(db, f"60000{index}", "A股")
+
+    def all_failed(symbol):
+        return _ok(
+            symbol,
+            total=1,
+            completed=0,
+            generated=0,
+            failed=1,
+            remaining=0,
+            gaps=["20251231 摘要生成失败"],
+        )
+
+    def reused_and_failed(symbol):
+        outcome = _ok(
+            symbol,
+            total=2,
+            completed=1,
+            generated=0,
+            failed=1,
+            remaining=0,
+            gaps=["20241231 摘要生成失败"],
+        )
+        outcome["digest_reused"] = 1
+        return outcome
+
+    job, calls = _run(
+        db, monkeypatch, outcomes=[all_failed, all_failed, reused_and_failed, all_failed]
+    )
+    assert len(calls) == 4  # 沿用那只清零了连败计数，没有在第 3 只早停
+    assert job["status"] == "succeeded"
+    assert job["success_count"] == 1 and job["failed_count"] == 3
+    assert job["digests_generated"] == 0  # 成本计数不含沿用
+    assert job["digests_reused"] == 1
+    reused_row = next(r for r in job["results"] if r.get("reused"))
+    assert reused_row["status"] == "ok" and reused_row["generated"] == 0
+    # 单标的回填对同一结果同样判成功，对全部失败同样判失败
+    assert backfill_failure_message(reused_and_failed("600002")) is None
+    assert backfill_failure_message(all_failed("600000")) is not None

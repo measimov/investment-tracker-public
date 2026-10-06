@@ -88,6 +88,25 @@ def cash_dividend_amounts(action) -> Tuple[Decimal, Decimal, Decimal]:
     return gross, tax, net
 
 
+def is_received_dividend(action, as_of=None):
+    """Only received cash facts count; historical rows retain their old date fallback."""
+    if getattr(action, "action_type", None) != "CASH_DIVIDEND":
+        return False
+    if getattr(action, "receipt_status", None) == "UNVERIFIED":
+        return False
+    cash_date = dividend_cash_date(action)
+    return cash_date is not None and (as_of is None or cash_date <= as_of)
+
+
+def dividend_amounts_complete(action):
+    return getattr(action, "amount_basis", None) != "NET_ONLY"
+
+
+def dividend_cash_date(action):
+    """现金制股息日期：优先实际到账日，缺失时沿用 ex_date 的历史回退。"""
+    return getattr(action, "payment_date", None) or getattr(action, "ex_date", None)
+
+
 # 会改变持仓数量的公司行动（现金股息等不在其列）。
 # **唯一定义**：fifo / standard_import / api 层都从这里引用，别再各抄一份——
 # 新类型漏在任何一份副本里都会静默不重算持仓（#174 评审实锤四份副本）。

@@ -168,6 +168,9 @@ def test_analysis_input_shrinks_twice_and_rechecks(monkeypatch):
     # graham 取数走独立的年度行专取口径（真实 DB 查询），单测桩掉
     monkeypatch.setattr(security_profile_service, "compute_graham_for", lambda *a, **k: None)
     monkeypatch.setattr(
+        security_profile_service, "load_annual_statement_datasets", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
         earnings_quality,
         "market_statements",
         lambda *a, **k: {"income": [], "balancesheet": [], "cashflow": [], "fina_indicator": []},
@@ -196,7 +199,7 @@ def test_analysis_input_shrinks_twice_and_rechecks(monkeypatch):
     )
     monkeypatch.setattr(saj, "CHAR_BUDGET", 3_000)
 
-    payload = saj.build_analysis_input(None, "TEST", "A股")
+    payload = saj.build_analysis_input(None, "TEST", "A股", digest_gaps=[])
 
     assert len(payload["events"]) == saj.EVENTS_SHRUNK_CAP, "二级收缩应截 events"
     assert len(payload["peers"]["list"]) == saj.PEERS_SHRUNK_CAP, "二级收缩应截 peers"

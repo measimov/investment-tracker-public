@@ -140,6 +140,9 @@ async def test_manual_entries_normalize_hk_symbols(db, api_user):
 @pytest.mark.anyio
 async def test_corporate_action_create_and_update_normalize(db, api_user):
     """公司行动的创建与更新都必须归一（评审 P1：更新路径曾可写回未归一代码）。"""
+    from tests.helpers import make_account
+
+    account = make_account(db, user_id=api_user, commit=True)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         auth = await _client_auth(client)
@@ -151,6 +154,10 @@ async def test_corporate_action_create_and_update_normalize(db, api_user):
                 "symbol": "700",
                 "market": "港股",
                 "action_type": "CASH_DIVIDEND",
+                "broker_account_id": account.id,
+                "payment_date": "2026-08-01",
+                "receipt_confirmed": True,
+                "tax_withheld": "0",
                 "ex_date": "2026-08-01",
                 "dividend_per_share": "1.2",
                 "total_dividend": "120",
@@ -164,7 +171,7 @@ async def test_corporate_action_create_and_update_normalize(db, api_user):
         renamed = await client.put(
             f"/api/corporate-actions/{action_id}",
             headers=auth,
-            json={"symbol": "3900"},
+            json={"receipt_confirmed": True, "symbol": "3900"},
         )
         assert renamed.status_code == 200
         assert renamed.json()["symbol"] == "03900"
@@ -177,6 +184,10 @@ async def test_corporate_action_create_and_update_normalize(db, api_user):
                 "symbol": "941",
                 "market": "美股",
                 "action_type": "CASH_DIVIDEND",
+                "broker_account_id": account.id,
+                "payment_date": "2026-08-01",
+                "receipt_confirmed": True,
+                "tax_withheld": "0",
                 "ex_date": "2026-08-02",
                 "dividend_per_share": "0.5",
                 "total_dividend": "50",
@@ -185,7 +196,7 @@ async def test_corporate_action_create_and_update_normalize(db, api_user):
         fixed = await client.put(
             f"/api/corporate-actions/{us_row.json()['id']}",
             headers=auth,
-            json={"market": "港股"},
+            json={"receipt_confirmed": True, "market": "港股"},
         )
         assert fixed.status_code == 200
         assert fixed.json()["symbol"] == "00941"

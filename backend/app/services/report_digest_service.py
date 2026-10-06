@@ -11,6 +11,7 @@
 
 import io
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,7 +29,7 @@ from .llm_client import (
     chat_completion,
     is_output_truncated,
 )
-from .payload_versions import versions_current
+from .payload_versions import stored_version, versions_current
 from .report_digest_prompts import (
     DEFAULT_TIER as DEFAULT_DIGEST_TIER,
     DIGEST_PROMPT_VERSION,
@@ -37,10 +38,12 @@ from .report_digest_prompts import (
     parse_digest_output,
     tier_spec,
 )
-from .report_fetchers import cninfo_search_reports, download_report_pdf
+from .report_digest_qa import check_digest_numbers, digest_for_llm
+from .report_fetchers import EdgarListingIncomplete, cninfo_search_reports, download_report_pdf
 from .report_sections import (
     SECTION_EXTRACTOR_VERSION,
     budget_section,
+    section_extractor_version,
     extract_cn_sections,
     pages_to_text,
     share_budget,
@@ -133,9 +136,11 @@ def plan_report_targets_detailed(symbol: str, market: str) -> Dict[str, Any]:
         by_period: Dict[str, Dict[str, Any]] = {}
         for row in announcements:
             title = row["title"]
-            if any(word in title for word in ("摘要", "英文", "已取消", "补充公告")):
+            if is_a_share_report_noise(title):
                 continue
-            end_date = _infer_report_end_date(title, row["ann_date"], report_type)
+            end_date = _infer_report_end_date(
+                title, row.get("ann_date_local") or row["ann_date"], report_type
+            )
             if not end_date:
                 continue
             existing = by_period.get(end_date)
@@ -149,7 +154,9 @@ def plan_report_targets_detailed(symbol: str, market: str) -> Dict[str, Any]:
                     "report_type": report_type,
                     "end_date": end_date,
                     "title": row["title"],
+                    # ann_date 是源指纹的组成部分，保持 UTC 原值（#346-4）；本地日期另存供展示
                     "ann_date": row["ann_date"],
+                    "ann_date_local": row.get("ann_date_local") or row["ann_date"],
                     "url": row["url"],
                 }
             )
@@ -159,6 +166,21 @@ def plan_report_targets_detailed(symbol: str, market: str) -> Dict[str, Any]:
         "complete": not failed_kinds,
         "failed_kinds": failed_kinds,
     }
+
+
+# 巨潮年报/半年报类别里不是正式报告的公告。「更正公告」「关于…年度报告…的公告」只有一两页，
+# 抽不出 MD&A，按确定性失败两次封顶——而它公告日更晚、会在「同期取最新」里挤掉正式年报，
+# 这一年从此永久缺失（#346-2；港股侧 ANNUAL_NOISE 早就排除「更正」）。「（更正后）」「（修订版）」
+# 「（更新后）」是完整的重刊报告，保留
+_A_SHARE_NOISE_WORDS = ("摘要", "英文", "已取消", "补充公告", "更正公告")
+_A_SHARE_REPORT_NOTICE_RE = re.compile(r"关于.*(?:年度报告|半年度报告|年报).*的(?:公告|说明)")
+
+
+def is_a_share_report_noise(title: str) -> bool:
+    title = str(title or "")
+    if any(word in title for word in _A_SHARE_NOISE_WORDS):
+        return True
+    return bool(_A_SHARE_REPORT_NOTICE_RE.search(title))
 
 
 def _plan_us_targets_detailed(symbol: str) -> Dict[str, Any]:
@@ -171,8 +193,13 @@ def _plan_us_targets_detailed(symbol: str) -> Dict[str, Any]:
         logger.warning("美股 %s 未在 SEC 注册表中找到，跳过报告规划", symbol)
         return {"targets": [], "complete": True, "failed_kinds": []}
     targets = []
+    complete = True
     try:
         filings = edgar_recent_annual_filings(lookup["cik"], limit=ANNUAL_YEARS)
+    except EdgarListingIncomplete as exc:
+        # 老年报在 filings.files 分页里而某页取不到：已读到的照用，但清单标为不完整（#346-1）
+        logger.warning("EDGAR 年报清单不完整 %s: %s", symbol, str(exc)[:150])
+        filings, complete = exc.filings, False
     except Exception as exc:
         logger.warning("EDGAR 年报清单获取失败 %s: %s", symbol, str(exc)[:150])
         return {"targets": [], "complete": False, "failed_kinds": ["annual"]}
@@ -198,24 +225,32 @@ def _plan_us_targets_detailed(symbol: str) -> Dict[str, Any]:
             }
         )
     targets.sort(key=lambda item: item["end_date"], reverse=True)
-    return {"targets": targets, "complete": True, "failed_kinds": []}
+    return {
+        "targets": targets,
+        "complete": complete,
+        "failed_kinds": [] if complete else ["annual"],
+    }
 
 
 def _plan_hk_targets_detailed(symbol: str) -> Dict[str, Any]:
-    """港股：披露易近十年年报（半年报另属一类，摘要不纳入）。清单与选取规则见 hk_report_catalog，
+    """港股：披露易近十年年报与最新中报。清单与选取规则见 hk_report_catalog，
     与港股报表抽取同一份——同一财年两条管线选中的是同一份报告。"""
-    try:
-        targets = hk_report_targets(symbol, "annual", ANNUAL_YEARS)
-    except Exception as exc:  # noqa: BLE001 - 清单失败 = 不完整，调用方短 TTL 重试
-        logger.warning("披露易年报清单获取失败 %s: %s", symbol, str(exc)[:150])
-        return {"targets": [], "complete": False, "failed_kinds": ["annual"]}
-    return {"targets": targets, "complete": True, "failed_kinds": []}
+    targets: List[Dict[str, Any]] = []
+    failed_kinds: List[str] = []
+    for report_type, keep in (("annual", ANNUAL_YEARS), ("interim", 1)):
+        try:
+            targets.extend(hk_report_targets(symbol, report_type, keep))
+        except Exception as exc:  # noqa: BLE001 - 保留另一类成功清单，短 TTL 重试
+            logger.warning("披露易 %s 清单获取失败 %s: %s", report_type, symbol, str(exc)[:150])
+            failed_kinds.append(report_type)
+    targets.sort(key=lambda item: item["end_date"], reverse=True)
+    return {"targets": targets, "complete": not failed_kinds, "failed_kinds": failed_kinds}
 
 
 def _infer_report_end_date(title: str, ann_date: str, report_type: str) -> Optional[str]:
-    """从标题推报告期（"2025年年度报告"→20251231）；标题无年份用公告年-1 兜底。"""
-    import re
-
+    """从标题推报告期（"2025年年度报告"→20251231）；标题无年份用公告年-1 兜底。
+    兜底用的公告日必须是业务时区日期（`ann_date_local`）：UTC 日期把 1 月 1 日零点的公告算成
+    上一年最后一天，年份就错一年（#346-4）。"""
     match = re.search(r"(20\d{2})\s*年", title)
     if match:
         year = int(match.group(1))
@@ -249,10 +284,21 @@ def is_transient_error(exc: Exception) -> bool:
     if isinstance(exc, requests.HTTPError):
         status = getattr(exc.response, "status_code", None)
         return status is None or status >= 500 or status == 429
+    if isinstance(exc, _PERMANENT_REQUEST_ERRORS):
+        return False  # URL 本身不合法：重试结果相同
+    if isinstance(exc, requests.RequestException):
+        # 下载中途断连（ChunkedEncodingError / ContentDecodingError：urllib3 的 ProtocolError、
+        # IncompleteRead 经 iter_content 转成它们，而它们不是 ConnectionError 的子类）：此前落进
+        # 「确定性」分支，偶发两次就让该报告期永久封顶（#347-2）
+        return True
     if isinstance(exc, LLMClientError):
         if is_output_truncated(exc):
             # 输出额度耗尽（空或半截，finish_reason=length）：同样输入重试结果相同，
             # 计 attempts 两次封顶——否则 status_code=None 被当瞬时，每轮都重烧一次
+            return False
+        if exc.finish_reason and exc.finish_reason not in _TRANSIENT_FINISH_REASONS:
+            # content_filter 等「200 但拒绝输出」：同样的报告重试照样被拒。此前 status_code=None
+            # 被当瞬时，每轮批量/每周都重烧一次最多 40k 输入 token 且 attempts 永不增加
             return False
         # LLM 走 httpx 而非 requests，上面两条一条都拦不住：不认的话一次
         # DeepSeek 5xx 就烧掉一次永久额度，两次之后该报告期永久跳过
@@ -261,33 +307,55 @@ def is_transient_error(exc: Exception) -> bool:
     return False
 
 
+# 资源/过载类 finish_reason 可以重试（DeepSeek 的 insufficient_system_resource）；其余非空的
+# finish_reason（content_filter 等）是模型对这份输入的确定性回应
+_TRANSIENT_FINISH_REASONS = frozenset({"insufficient_system_resource"})
+_PERMANENT_REQUEST_ERRORS = (
+    requests.exceptions.InvalidURL,
+    requests.exceptions.MissingSchema,
+    requests.exceptions.InvalidSchema,
+)
+
 _TIER_RICHNESS = {"C": 0, "B": 1, "A": 2}
 
 
-def digest_versions_current(payload: Dict[str, Any]) -> bool:
+def _extractor_version_for(market: Optional[str]) -> int:
+    return section_extractor_version(market) if market else SECTION_EXTRACTOR_VERSION
+
+
+def digest_versions_current(payload: Dict[str, Any], market: Optional[str] = None) -> bool:
     """该摘要行是否由当前版本的抽取器与 prompt 生成（缺字段 = 版本 1 的历史行）。
 
     读取路径（分析输入、进度）必须一起用它过滤：只看 `status == "ok"` 的话，
     一次回填最多重跑 4 份，其余旧版本的错误摘要仍是 ok，分析会把新旧混在一起，
     进度还会虚报已完成——版本号是为了让错误数据**消失**，不是只挡住重跑。
+    抽取器版本分市场（`section_extractor_version`）：调用方有市场就必须传。
     """
     return versions_current(
-        payload, extractor_version=SECTION_EXTRACTOR_VERSION, prompt_version=DIGEST_PROMPT_VERSION
+        payload,
+        extractor_version=_extractor_version_for(market),
+        prompt_version=DIGEST_PROMPT_VERSION,
     )
 
 
-def _digest_is_current(payload: Dict[str, Any], fingerprint: str, tier: str) -> bool:
-    """缓存命中判据：源指纹 + 双版本 + 档位**不低于**当前所需。
+def _digest_is_current(
+    payload: Dict[str, Any], fingerprint: str, tier: str, market: Optional[str] = None
+) -> bool:
+    """缓存命中判据：源指纹 + 双版本 + 档位。
 
-    档位只在"缓存的比现在需要的更薄"时才重跑。报告变旧会从 A 降到 B 再降到
-    C——那是降级，已有的 A 档摘要本就比 C 档更全，花钱重跑一次去换更少的字段
-    是纯亏。C 档省的是**尚未生成**那些年份的钱，不是把已有的削一遍。
+    成功行：档位**不低于**当前所需即命中。报告变旧会从 A 降到 B 再降到 C——那是降级，
+    已有的 A 档摘要本就比 C 档更全，花钱重跑一次去换更少的字段是纯亏。
+    失败行：档位必须**完全一致**（#347-3）。A/B 全字段 schema 下失败（缺「展望」、截断）的
+    报告，到需要 C 档时应该拿到必填更宽松、更便宜的 C 档 prompt 重试，而不是被高档位的
+    封顶行永久挡住。
     """
     if payload.get("source_fingerprint") != fingerprint:
         return False
-    if not digest_versions_current(payload):
+    if not digest_versions_current(payload, market):
         return False
     cached_tier = str(payload.get("digest_tier") or DEFAULT_DIGEST_TIER)
+    if payload.get("status") != "ok":
+        return cached_tier == tier
     return _TIER_RICHNESS.get(cached_tier, 1) >= _TIER_RICHNESS.get(tier, 1)
 
 
@@ -377,17 +445,25 @@ def _ensure_section(
     命中条件是**两个**版本维度同时匹配：源指纹（报告本身有没有出修订版）与
     抽取器版本（我们的定位逻辑有没有改）。只看源指纹的话，修好抽取缺陷后库里
     那批抽错章节的节选会永久命中，修复对存量数据完全无效。
+
+    抽取器升版而报告没变时，重抽出的节选若与旧节选**逐字节相同**，在节选行上记下
+    `sections_unchanged_since`（内容自哪个版本起没变）：旧版本下用同样节选生成的摘要可以
+    原样沿用、不再调 LLM（`_reuse_digest`，与港股报表的 `mapping_reused` 同一思路）——抽取器
+    修复通常只影响部分版式，其余报告重烧一遍摘要只是花钱买回同样的输入。
     """
     period_key = target["period_key"]
     fingerprint = source_fingerprint(target)
+    current_version = section_extractor_version(market)
     row = load_profile_row(db, symbol, market, "report_section", period_key)
     attempts = 0
+    previous_sections: Optional[Dict[str, str]] = None
+    previous_since: Optional[int] = None
     if row:
         payload = row.payload or {}
         fresh = (
             payload.get("source_fingerprint") == fingerprint
             # 缺字段 = 版本 1 的历史行，bump 后一律重抽
-            and versions_current(payload, extractor_version=SECTION_EXTRACTOR_VERSION)
+            and versions_current(payload, extractor_version=current_version)
         )
         if fresh:
             if payload.get("extract_status") == "ok":
@@ -395,6 +471,14 @@ def _ensure_section(
             if int(payload.get("attempts") or 0) >= MAX_ATTEMPTS:
                 return None
             attempts = int(payload.get("attempts") or 0)
+        elif (
+            payload.get("source_fingerprint") == fingerprint
+            and payload.get("extract_status") == "ok"
+            and payload.get("sections")
+        ):
+            previous_sections = payload.get("sections")
+            old_version = stored_version(payload, "extractor_version")
+            previous_since = int(payload.get("sections_unchanged_since") or old_version)
         # 指纹或抽取器版本变化 → attempts 归零重新抽取
 
     try:
@@ -425,6 +509,7 @@ def _ensure_section(
         }
         if not sections.get("mdna"):
             raise ValueError("未能定位管理层讨论与分析章节")
+        unchanged_since = previous_since if previous_sections == sections else None
         upsert_profile_row(
             db,
             symbol,
@@ -434,9 +519,11 @@ def _ensure_section(
             {
                 "source_url": target["url"],
                 "source_fingerprint": fingerprint,
-                "extractor_version": SECTION_EXTRACTOR_VERSION,
+                "extractor_version": current_version,
+                "sections_unchanged_since": unchanged_since,
                 "title": target["title"],
                 "ann_date": target["ann_date"],
+                "ann_date_local": target.get("ann_date_local") or target["ann_date"],
                 "extract_status": "ok",
                 "error": None,
                 "attempts": attempts + 1,
@@ -476,7 +563,7 @@ def _ensure_section(
             {
                 "source_url": target["url"],
                 "source_fingerprint": fingerprint,
-                "extractor_version": SECTION_EXTRACTOR_VERSION,
+                "extractor_version": current_version,
                 "title": target["title"],
                 "ann_date": target["ann_date"],
                 "extract_status": "failed",
@@ -504,7 +591,7 @@ def _section_permanently_failed(
         return False
     return (
         payload.get("source_fingerprint") == source_fingerprint(target)
-        and versions_current(payload, extractor_version=SECTION_EXTRACTOR_VERSION)
+        and versions_current(payload, extractor_version=section_extractor_version(market))
         and payload.get("extract_status") != "ok"
         and int(payload.get("attempts") or 0) >= MAX_ATTEMPTS
     )
@@ -520,7 +607,7 @@ def _newest_of_each_kind(targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen: set = set()
     kept: List[Dict[str, Any]] = []
     for target in targets:
-        kind = "semi" if target.get("report_type") == "semi" else "annual"
+        kind = "semi" if target.get("report_type") in ("semi", "interim") else "annual"
         if kind in seen:
             continue
         seen.add(kind)
@@ -532,7 +619,7 @@ _CAPPED_GAP_TEXT = {
     "digest_capped": "摘要生成失败（已封顶）",
     "section_capped": "报告下载或章节抽取失败（已封顶）",
 }
-_PLAN_INCOMPLETE_GAP = "年报清单检索失败或不完整（数据源故障），本轮覆盖范围不可信"
+_PLAN_INCOMPLETE_GAP = "财报清单检索失败或不完整（数据源故障），本轮覆盖范围不可信"
 
 
 def _target_digest_state(
@@ -543,7 +630,7 @@ def _target_digest_state(
     （digest_gap_preview）共用这一处判定。"""
     digest_row = load_profile_row(db, symbol, market, "report_digest", target["period_key"])
     payload = digest_row.payload if digest_row else None
-    if payload and not _digest_is_current(payload, source_fingerprint(target), tier):
+    if payload and not _digest_is_current(payload, source_fingerprint(target), tier, market):
         payload = None
     if payload and payload.get("status") == "ok":
         return "ok", payload
@@ -579,6 +666,99 @@ def digest_gap_preview(db: Session, symbol: str, market: str) -> List[str]:
     if plan.get("status") == "partial":
         gaps.insert(0, _PLAN_INCOMPLETE_GAP)
     return gaps
+
+
+def _previous_ok_payload(
+    db: Session, symbol: str, market: str, period_key: str
+) -> Optional[Dict[str, Any]]:
+    """该报告期库里最近一份成功的摘要载荷（当前行是 ok 就是它，失败行则取它保存的 previous_ok）。"""
+    row = load_profile_row(db, symbol, market, "report_digest", period_key)
+    payload = dict(row.payload or {}) if row else {}
+    if payload.get("status") == "ok":
+        payload.pop("previous_ok", None)
+        return payload
+    previous = payload.get("previous_ok")
+    return dict(previous) if isinstance(previous, dict) else None
+
+
+def _reuse_digest(db: Session, symbol: str, market: str, target: Dict[str, Any], tier: str) -> bool:
+    """抽取器升版后节选逐字节未变：旧版本下由同样节选生成的摘要原样沿用（只改版本号），
+    返回是否沿用。条件：当前版本的节选行记着 `sections_unchanged_since`、同源指纹、prompt 为
+    当前版本、档位够用、生成摘要的抽取器版本不早于节选内容未变的起点——否则那份摘要看到的是
+    另一份节选。"""
+    fingerprint = source_fingerprint(target)
+    current = section_extractor_version(market)
+    section_row = load_profile_row(db, symbol, market, "report_section", target["period_key"])
+    section = section_row.payload if section_row else None
+    if (
+        not section
+        or section.get("source_fingerprint") != fingerprint
+        or not versions_current(section, extractor_version=current)
+        or not section.get("sections_unchanged_since")
+    ):
+        return False
+    unchanged_since = int(section["sections_unchanged_since"])
+    row = load_profile_row(db, symbol, market, "report_digest", target["period_key"])
+    payload = dict(row.payload or {}) if row else {}
+    if payload.get("status") != "ok":
+        return False
+    if payload.get("source_fingerprint") != fingerprint:
+        return False
+    if not versions_current(payload, prompt_version=DIGEST_PROMPT_VERSION):
+        return False
+    cached_tier = str(payload.get("digest_tier") or DEFAULT_DIGEST_TIER)
+    if _TIER_RICHNESS.get(cached_tier, 1) < _TIER_RICHNESS.get(tier, 1):
+        return False
+    produced_by = stored_version(payload, "extractor_version")
+    if produced_by < unchanged_since or produced_by >= current:
+        # 早于未变起点：那份摘要看到的是另一份节选；已是当前版本：本就命中缓存，轮不到这里
+        return False
+    payload["extractor_version"] = current
+    payload["reused_from_extractor"] = produced_by
+    upsert_profile_row(db, symbol, market, "report_digest", target["period_key"], payload)
+    db.commit()
+    return True
+
+
+def digest_statement_reference(
+    db: Session, symbol: str, market: str, end_date: str, report_type: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """摘要数字核对用的同期报表行与币种（#289）：A股 Tushare 利润表（年初至今累计，与年报/中报
+    口径一致）；港股 PDF 报表行（当前版本、存疑科目已清洗），年报没有时退到雅虎同财年行；美股
+    EDGAR 年度透视行。取不到返回 (None, None)——不核对，不当作通过。"""
+    from .report_statement_checks import scrub_suspect_fields
+    from .report_statement_prompts import statement_row_current
+
+    def payload_of(dataset: str, period_key: str) -> Optional[Dict[str, Any]]:
+        row = load_profile_row(db, symbol, market, dataset, period_key)
+        return dict(row.payload or {}) if row else None
+
+    if market == "A股":
+        income = payload_of("income", end_date)
+        return (income, "CNY") if income else (None, None)
+    fp = "H1" if report_type in ("semi", "interim") else "FY"
+    if market == "港股":
+        statement = payload_of("report_statements", f"{end_date}|{fp}")
+        if statement and statement_row_current(statement):
+            statement = scrub_suspect_fields(statement)
+            return statement, statement.get("currency")
+        if fp == "FY":
+            yahoo = payload_of("yahoo_fundamentals", end_date)
+            if yahoo:
+                return yahoo, yahoo.get("currency")
+        return None, None
+    if market == "美股" and fp == "FY":
+        edgar = payload_of("edgar_companyfacts", f"{end_date}|FY")
+        if edgar:
+            return edgar, edgar.get("currency")
+    return None, None
+
+
+def digest_qa(
+    db: Session, symbol: str, market: str, end_date: str, report_type: str, digest: Dict[str, Any]
+) -> Dict[str, Any]:
+    statement, currency = digest_statement_reference(db, symbol, market, end_date, report_type)
+    return check_digest_numbers(digest, statement, statement_currency=currency)
 
 
 def ensure_report_digests(
@@ -631,6 +811,8 @@ def ensure_report_digests(
         # 同一套词汇表）。**绝不能让调用方去匹配中文 gap 文案**：文案一改判据
         # 就静默失效，批量退化成"全跑一遍白转"。
         "fatal": None,
+        # digest_reused = 抽取器升版后节选逐字节未变、沿用旧摘要（零 LLM）的份数
+        "digest_reused": 0,
     }
     if result["plan_incomplete"]:
         result["gaps"].insert(0, _PLAN_INCOMPLETE_GAP)
@@ -660,6 +842,10 @@ def ensure_report_digests(
             result["failed"] += 1
             result["gaps"].append(f"{target['end_date']} 报告下载或章节抽取失败")
             continue
+        if _reuse_digest(db, symbol, market, target, tier):
+            result["digest_reused"] += 1
+            result["completed"] += 1
+            continue
 
         attempts = int((payload or {}).get("attempts") or 0)
         packed, input_meta = _pack_for_digest(sections, tier=tier)
@@ -688,7 +874,7 @@ def ensure_report_digests(
                     "error": None,
                     "attempts": attempts + 1,
                     "source_fingerprint": fingerprint,
-                    "extractor_version": SECTION_EXTRACTOR_VERSION,
+                    "extractor_version": section_extractor_version(market),
                     "prompt_version": DIGEST_PROMPT_VERSION,
                     "digest_tier": tier,
                     "report_type": target["report_type"],
@@ -698,6 +884,11 @@ def ensure_report_digests(
                     "input_meta": input_meta,
                     "digest": digest,
                     "model": completion.get("model"),
+                    **(
+                        {"generation_meta": completion["generation_meta"]}
+                        if "generation_meta" in completion
+                        else {}
+                    ),
                     "prompt_tokens": usage.get("prompt_tokens"),
                     "completion_tokens": usage.get("completion_tokens"),
                 },
@@ -716,26 +907,25 @@ def ensure_report_digests(
             # ValueError = 输出不合约定（重试也一样）；LLM 侧按 is_transient_error 判
             deterministic = isinstance(exc, ValueError) or not is_transient_error(exc)
             db.rollback()
-            upsert_profile_row(
-                db,
-                symbol,
-                market,
-                "report_digest",
-                period_key,
-                {
-                    "status": "failed",
-                    "error": str(exc)[:300],
-                    "source_fingerprint": fingerprint,
-                    "extractor_version": SECTION_EXTRACTOR_VERSION,
-                    "prompt_version": DIGEST_PROMPT_VERSION,
-                    "digest_tier": tier,
-                    # 确定性失败计 attempts（封顶跳过）；瞬时失败不计（下次可重试）
-                    "attempts": attempts + (1 if deterministic else 0),
-                    "report_type": target["report_type"],
-                    "end_date": target["end_date"],
-                    "source_url": target["url"],
-                },
-            )
+            failed_payload = {
+                "status": "failed",
+                "error": str(exc)[:300],
+                "source_fingerprint": fingerprint,
+                "extractor_version": section_extractor_version(market),
+                "prompt_version": DIGEST_PROMPT_VERSION,
+                "digest_tier": tier,
+                # 确定性失败计 attempts（封顶跳过）；瞬时失败不计（下次可重试）
+                "attempts": attempts + (1 if deterministic else 0),
+                "report_type": target["report_type"],
+                "end_date": target["end_date"],
+                "source_url": target["url"],
+            }
+            previous_ok = _previous_ok_payload(db, symbol, market, period_key)
+            if previous_ok:
+                # 报告出了修订版（或升版重跑）而新摘要没生成出来：旧版有效摘要留着继续提供，
+                # 新版成功前不让这一期从分析输入里消失（#347-4）
+                failed_payload["previous_ok"] = previous_ok
+            upsert_profile_row(db, symbol, market, "report_digest", period_key, failed_payload)
             db.commit()
             result["failed"] += 1
             result["gaps"].append(f"{target['end_date']} 摘要生成失败")
@@ -760,14 +950,64 @@ def ensure_report_digests(
     return result
 
 
+def round_succeeded_count(result: Dict[str, Any]) -> int:
+    """本轮真正落地的摘要份数：新生成 + 抽取器升版后沿用（`digest_reused`）。
+
+    沿用不是成本（不进 generated），但它是本轮成功完成的工作：一轮里 1 份沿用、1 份失败，
+    结论是「部分成功」而不是「全部失败」。单标的回填与批量回填的失败判定都走
+    `all_attempts_failed`，不要各自拿 generated 判。"""
+    return int(result.get("generated") or 0) + int(result.get("digest_reused") or 0)
+
+
+def all_attempts_failed(result: Dict[str, Any]) -> bool:
+    """本轮有尝试且一份都没落地（新生成与沿用都为 0、failed>0）。"""
+    return round_succeeded_count(result) == 0 and int(result.get("failed") or 0) > 0
+
+
 # 详情页与分析输入取的摘要份数；report_freshness 的批量新鲜度判定按同一口径
 DIGEST_LOAD_LIMIT = 12
+
+
+def usable_digest_payload(
+    payload: Dict[str, Any], market: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """读取路径可用的摘要载荷：当前版本的 ok 行本身；失败行保存的旧版有效摘要（报告出修订版而
+    新摘要尚未生成，#347-4）；其余 None——版本过期 = 内容已知有误，宁可缺口如实上报也不混进分析。"""
+    if payload.get("status") == "ok":
+        return payload if digest_versions_current(payload, market) else None
+    previous = payload.get("previous_ok")
+    if isinstance(previous, dict) and digest_versions_current(previous, market):
+        return {**previous, "revision_pending": True}
+    return None
+
+
+def select_loadable_digests(
+    rows: List[Tuple[str, Dict[str, Any]]], market: Optional[str], *, limit: int
+) -> List[Tuple[str, Dict[str, Any]]]:
+    """[(period_key, payload)]（period_key 倒序）→ 读取路径实际用到的摘要，**年报全部 + 最新
+    一份中报**（#347-1）。规划只要最新一份中报，旧中报行从不删除：一直留着会挤占十年年报名额
+    （12 份上限里两份是过期中报时，最早的计划年报掉出分析输入且没有缺口说明），商业画像的
+    limit=3 还会拿到过期中报。分析输入、详情页、新鲜度判定共用这一处。"""
+    selected: List[Tuple[str, Dict[str, Any]]] = []
+    seen_semi = False
+    for period_key, payload in rows:
+        usable = usable_digest_payload(payload, market)
+        if usable is None:
+            continue
+        if str(period_key).endswith(("|semi", "|interim")):
+            if seen_semi:
+                continue
+            seen_semi = True
+        selected.append((period_key, usable))
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def load_report_digests(
     db: Session, symbol: str, market: str, *, limit: int = DIGEST_LOAD_LIMIT
 ) -> List[Dict[str, Any]]:
-    """status=ok 的摘要（end_date 倒序）：分析输入与详情页共用。"""
+    """可用的摘要（end_date 倒序；年报全部 + 最新一份中报）：分析输入与详情页共用。"""
     rows = (
         db.query(SecurityProfileData)
         .filter(
@@ -776,17 +1016,17 @@ def load_report_digests(
             SecurityProfileData.dataset == "report_digest",
         )
         .order_by(SecurityProfileData.period_key.desc())
-        .limit(limit * 2)  # 含 failed 行，过滤后再截
         .all()
     )
+    fetched_at = {row.period_key: row.fetched_at for row in rows}
     digests = []
-    for row in rows:
-        payload = row.payload or {}
-        if payload.get("status") != "ok" or not digest_versions_current(payload):
-            continue  # 版本过期 = 内容已知有误，宁可缺口如实上报也不混进分析
+    for period_key, payload in select_loadable_digests(
+        [(row.period_key, row.payload or {}) for row in rows], market, limit=limit
+    ):
+        entry_fetched = fetched_at.get(period_key)
         digests.append(
             {
-                "period_key": row.period_key,
+                "period_key": period_key,
                 "report_type": payload.get("report_type"),
                 "end_date": payload.get("end_date"),
                 "source_url": payload.get("source_url"),
@@ -795,11 +1035,21 @@ def load_report_digests(
                 # fetched_at 供分析新鲜度判断。分析输入经 serialize_digest_for_analysis
                 # 按字段挑选，不受这两个键影响
                 "digest_tier": str(payload.get("digest_tier") or DEFAULT_DIGEST_TIER),
-                "fetched_at": row.fetched_at.isoformat() if row.fetched_at else None,
+                "fetched_at": entry_fetched.isoformat() if entry_fetched else None,
+                # 报告出了修订版、新摘要尚未生成：展示的是上一版的有效摘要
+                "revision_pending": bool(payload.get("revision_pending")),
+                # 数字核对（#289）：按**当前**报表行现算、不落库——报表常在摘要之后才抽到或
+                # 被修正（分析 job 与每周刷新都是先摘要后报表），存下来的结论会过时
+                "qa": digest_qa(
+                    db,
+                    symbol,
+                    market,
+                    str(payload.get("end_date") or ""),
+                    str(payload.get("report_type") or ""),
+                    payload.get("digest") or {},
+                ),
             }
         )
-        if len(digests) >= limit:
-            break
     return digests
 
 
@@ -818,7 +1068,8 @@ def digest_progress(db: Session, symbol: str, market: str) -> Dict[str, Any]:
     ok = sum(
         1
         for row in rows
-        if (row.payload or {}).get("status") == "ok" and digest_versions_current(row.payload or {})
+        if (row.payload or {}).get("status") == "ok"
+        and digest_versions_current(row.payload or {}, market)
     )
     # 封顶失败同样要过版本：版本升级后 ensure 会重新尝试这些报告期，
     # 详情页却还在写"永久失败"——进度与实际行为对不上
@@ -827,7 +1078,7 @@ def digest_progress(db: Session, symbol: str, market: str) -> Dict[str, Any]:
         for row in rows
         if (row.payload or {}).get("status") == "failed"
         and int((row.payload or {}).get("attempts") or 0) >= MAX_ATTEMPTS
-        and digest_versions_current(row.payload or {})
+        and digest_versions_current(row.payload or {}, market)
     )
     return {"digested": ok, "failed_capped": failed}
 
@@ -840,18 +1091,19 @@ def serialize_digest_for_analysis(
     compacted = []
     for entry in digests:
         end_date = str(entry.get("end_date") or "")
-        digest = entry.get("digest") or {}
+        projection = digest_for_llm(entry)
+        digest = projection.pop("digest")
         if end_date[:4].isdigit() and int(end_date[:4]) < cutoff_year:
             digest = {
                 key: digest.get(key)
                 for key in ("主营收入结构", "一次性项目", "会计信号", "关键数字")
                 if digest.get(key)
             }
-        compacted.append(
-            {
-                "end_date": entry.get("end_date"),
-                "report_type": entry.get("report_type"),
-                "digest": digest,
-            }
-        )
+        item = {
+            "end_date": entry.get("end_date"),
+            "report_type": entry.get("report_type"),
+            "digest": digest,
+            **projection,
+        }
+        compacted.append(item)
     return compacted

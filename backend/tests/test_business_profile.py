@@ -5,6 +5,7 @@ import pytest
 from app.database import SessionLocal
 from app.models.security_profile import SecurityProfileData
 from app.services import business_profile_service as svc
+from app.services.background_job_store import JobOwnershipLostError
 from app.services.profile_store import upsert_profile_row
 from app.services.report_digest_prompts import DIGEST_PROMPT_VERSION
 from app.services.report_sections import SECTION_EXTRACTOR_VERSION
@@ -140,19 +141,28 @@ def test_input_assembly_uses_digest_slices_and_business_section(db):
     assert payload["source_end_date"] == "20251231"
 
 
-def test_ensure_profile_caches_and_refreshes_on_new_digest(db, monkeypatch):
+def test_ensure_profile_caches_and_refreshes_on_new_digest(db, monkeypatch, generation_meta):
     _seed_digest(db)
     calls = []
 
     def fake_llm(messages, **kw):
         calls.append(messages)
-        return {"content": VALID_PROFILE, "model": "deepseek-v4-pro", "usage": {}}
+        assert all("generation_meta" not in message["content"] for message in messages)
+        return {
+            "content": VALID_PROFILE,
+            "model": "deepseek-v4-pro",
+            "usage": {},
+            **({"generation_meta": generation_meta} if generation_meta is not None else {}),
+        }
 
     monkeypatch.setattr(svc, "chat_completion", fake_llm)
 
     profile = svc.ensure_business_profile(db, "600036", "A股")
     assert profile["商业模式"].startswith("零售银行")
     assert len(calls) == 1
+    payload = db.query(SecurityProfileData).filter_by(dataset="business_profile").one().payload
+    assert payload.get("generation_meta") == generation_meta
+    assert ("generation_meta" in payload) == (generation_meta is not None)
 
     # 无新报告期 → 缓存命中零调用
     profile = svc.ensure_business_profile(db, "600036", "A股")
@@ -260,6 +270,28 @@ def test_ensure_profile_without_sources_skips_llm(db, monkeypatch):
 
     monkeypatch.setattr(svc, "chat_completion", explode)
     assert svc.ensure_business_profile(db, "600036", "A股") is None
+
+
+def test_llm_lost_job_ownership_propagates_and_preserves_previous_profile(db, monkeypatch):
+    _seed_digest(db)
+    monkeypatch.setattr(
+        svc,
+        "chat_completion",
+        lambda *a, **k: {"content": VALID_PROFILE, "model": "m", "usage": {}},
+    )
+    svc.ensure_business_profile(db, "600036", "A股")
+    row = db.query(SecurityProfileData).filter_by(dataset="business_profile").one()
+    previous = dict(row.payload)
+    _seed_digest(db, end_date="20261231")
+
+    def lost_ownership(*args, **kwargs):
+        raise JobOwnershipLostError("job lease lost")
+
+    monkeypatch.setattr(svc, "chat_completion", lost_ownership)
+    with pytest.raises(JobOwnershipLostError, match="job lease lost"):
+        svc.ensure_business_profile(db, "600036", "A股")
+    db.refresh(row)
+    assert row.payload == previous
 
 
 def test_llm_failure_keeps_previous_profile(db, monkeypatch):
@@ -440,3 +472,63 @@ def test_peer_list_refetches_after_ttl(db, monkeypatch):
     )
     svc.ensure_peer_list(db, "AAPL", "美股")
     assert calls == [1]  # 过期后重新生成
+
+
+def test_business_profile_financials_use_annual_rows_and_whitelist(db):
+    """#348：此前按档案 caps 取最新 3 个 period_key——A股 拿到「中报/一季报/年报」混季累计行、
+    带着毛利额 gross_margin；港股/美股根本没有 income/fina_indicator，画像完全没有财务数据。"""
+    for period in ("20260630", "20260331", "20251231", "20241231", "20231231", "20221231"):
+        upsert_profile_row(
+            db,
+            "600036",
+            "A股",
+            "income",
+            period,
+            {"end_date": period, "total_revenue": 100.0, "n_income_attr_p": 10.0, "oper_cost": 60},
+        )
+        upsert_profile_row(
+            db,
+            "600036",
+            "A股",
+            "fina_indicator",
+            period,
+            {"end_date": period, "gross_margin": 40.0, "grossprofit_margin": 40.0, "roe": 9},
+        )
+    db.commit()
+    financials = svc.business_profile_financials(db, "600036", "A股")
+    assert [row["end_date"] for row in financials["income"]] == [
+        "20251231",
+        "20241231",
+        "20231231",
+    ]
+    assert [row["end_date"] for row in financials["fina_indicator"]] == [
+        "20251231",
+        "20241231",
+        "20231231",
+    ]
+    assert all("gross_margin" not in row for row in financials["fina_indicator"])
+    assert all("oper_cost" not in row for row in financials["income"])  # 白名单外
+
+
+def test_business_profile_financials_for_hk_come_from_statement_rows(db):
+    upsert_profile_row(
+        db,
+        "00700",
+        "港股",
+        "yahoo_fundamentals",
+        "20251231",
+        {
+            "end_date": "20251231",
+            "fp": "FY",
+            "currency": "CNY",
+            "total_revenue": 751766.0,
+            "cost_of_revenue": 329173.0,
+            "n_income_attr_p": 229801.0,
+        },
+    )
+    db.commit()
+    financials = svc.business_profile_financials(db, "00700", "港股")
+    (income,) = financials["income"]
+    assert income["total_revenue"] == 751766.0 and income["currency"] == "CNY"
+    (indicator,) = financials["fina_indicator"]
+    assert round(indicator["grossprofit_margin"], 1) == 56.2

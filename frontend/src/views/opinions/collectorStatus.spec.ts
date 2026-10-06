@@ -104,9 +104,9 @@ describe('symbolsCycleSummary', () => {
 describe('isValidCubeId / xueqiuCubeUrl', () => {
   it('两位字母加数字，大小写不敏感', () => {
     expect(isValidCubeId('ZH000001')).toBe(true)
-    expect(isValidCubeId(' zh000001 ')).toBe(true)
+    expect(isValidCubeId(' zh009440 ')).toBe(true)
     expect(isValidCubeId('ZH')).toBe(false)
-    expect(isValidCubeId('000001')).toBe(false)
+    expect(isValidCubeId('9440')).toBe(false)
     expect(isValidCubeId('https://xueqiu.com/P/ZH000001')).toBe(false)
     expect(xueqiuCubeUrl('ZH000001')).toBe('https://xueqiu.com/P/ZH000001')
   })
@@ -124,7 +124,7 @@ describe('collectorHealth', () => {
           waf_cooldown_until: '2026-09-27T08:00:00Z'
         })
       ).label
-    ).toBe('Cookie 失效')
+    ).toBe('Cookie 需检查')
     expect(collectorHealth(status({ waf_cooldown_until: '2026-09-27T08:00:00Z' })).label).toBe(
       'WAF 冷却中'
     )
@@ -133,9 +133,23 @@ describe('collectorHealth', () => {
     expect(collectorHealth(status({ last_cycle_status: '' })).label).toBe('尚未运行')
   })
 
+  it.each([
+    [0.5, 'Cookie 即将到期', 'warning'],
+    [0, 'Cookie 已过期', 'danger'],
+    [-0.5, 'Cookie 已过期', 'danger'],
+    [null, 'Cookie 需检查', 'danger']
+  ] as const)('critical Cookie 剩余 %s 天如实区分到期状态', (days_left, label, type) => {
+    const health = collectorHealth(
+      status({
+        cookie: { level: 'critical', message: '请更新凭证', days_left, cookie: 'xq_a_token' }
+      })
+    )
+    expect(health).toEqual({ label, type, hint: '请更新凭证' })
+  })
+
   it('非 ok 的上一轮把消息带出来', () => {
     const health = collectorHealth(
-      status({ last_cycle_status: 'partial', last_cycle_message: '1000000002:failed(超时)' })
+      status({ last_cycle_status: 'partial', last_cycle_message: '1000000003:failed(超时)' })
     )
     expect(health.type).toBe('warning')
     expect(health.hint).toContain('超时')
@@ -165,7 +179,7 @@ describe('run/cookie labels', () => {
       '已过期 2.0 天'
     )
     expect(cookieLabel({ level: 'critical', message: '', days_left: null, cookie: '' })).toBe(
-      '失效'
+      '需检查'
     )
     expect(cookieLabel({ level: 'unconfigured', message: '', days_left: null, cookie: '' })).toBe(
       '无法预判到期'

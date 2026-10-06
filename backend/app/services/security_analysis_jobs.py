@@ -11,9 +11,10 @@ token 成本高，由用户在详情页显式触发。
 
 import json
 from datetime import timedelta
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..config import settings
+from .analysis_signals import SIGNALS_SEMANTICS
 from ..core.logging import get_app_logger
 from ..database import SessionLocal
 from ..models.security_profile import SecurityAnalysis
@@ -109,8 +110,11 @@ class AnalysisBusyError(Exception):
         self.active_job = active_job
 
 
-# 输入字符预算：单标的档案远小于全组合复盘，30k 足够且省 token
-CHAR_BUDGET = 40_000  # 含十年财报摘要后上调（原 30k）
+# 输入字符预算（#332 离线评测，2026-10）：摘要补齐十年后，去噪音的完整输入 A股 6.5–8 万、港股 4.5–5.3 万、
+# 美股 ≤4.1 万字符。4 万预算会把港股十年报表砍半、摘要压成核心字段——评测里「完整送出」相对「截断」
+# 总分 +0.78、错误 −0.40/份（港股 +1.67、错误减半；A股 无差别），故提高到现有输入都不截断的水平，
+# 逐级收缩只作超长时的安全网。结果见 ops/llm-eval/pr3/
+CHAR_BUDGET = 100_000
 # 分析输入的港股报表行窗口：年度十二期（十年 + 比较列多出的年份）；中报只送最新一期及其
 # 比较列——中报科目与年度同名，多送几期只会让模型把半年数与全年数混算
 ANALYSIS_STATEMENT_CAPS: Dict[str, int] = {"FY": 12, "H1": 2}
@@ -129,6 +133,25 @@ def shrink_caps(caps: Dict[str, Any]) -> Dict[str, Any]:
 
 
 SHRUNK_CAPS = shrink_caps(ANALYSIS_CAPS)
+# 超预算收缩时最后才动的**证据**数据集：报表与财务指标（#332：此前一级收缩先把它们减半，
+# 噪音数据集反而原样保留）
+CORE_PROFILE_DATASETS = frozenset(
+    {
+        "income",
+        "balancesheet",
+        "cashflow",
+        "fina_indicator",
+        "xueqiu_income",
+        "report_statements",
+        "yahoo_fundamentals",
+        "edgar_companyfacts",
+    }
+)
+# 只减半非核心数据集（业绩预告/快报、审计、质押、增减持、股东、资金流……）的封顶
+NONCORE_SHRUNK_CAPS = {
+    dataset: (ANALYSIS_CAPS[dataset] if dataset in CORE_PROFILE_DATASETS else cap)
+    for dataset, cap in SHRUNK_CAPS.items()
+}
 
 # 三大报表 85-152 列/行，全字段会撑爆预算且多为空值——LLM 输入只取核心科目
 # （库内保留全量行供详情面板与追溯）
@@ -158,8 +181,53 @@ STATEMENT_LLM_FIELDS: Dict[str, tuple] = {
         "n_cashflow_act",
         "n_cashflow_inv_act",
         "n_cash_flows_fnc_act",
-        "free_cashflow",
         "c_pay_acq_const_fiolta",
+    ),
+    # A股 Tushare 财务指标（#332）：整行 108 个字段、约 1.55 万字符，大多分析用不上，且有与正确字段
+    # 长得像的干扰项（gross_margin 是毛利**额**，毛利率是 grossprofit_margin）。只送下列被代码或
+    # 提示词实际引用的字段（tests/test_analysis_input_denoise.py 用 AST 扫描守护，新增引用漏加即红）
+    "fina_indicator": (
+        "end_date",
+        # analysis_signals.roe_by_year（三种 ROE 口径）
+        "roe",
+        "roe_waa",
+        "roe_dt",
+        # earnings_quality（毛利率/净利率序列、扣非占比）
+        "grossprofit_margin",
+        "netprofit_margin",
+        "profit_dedt",
+        # graham_screen（流动比率、资产负债率、EPS、EBIT）
+        "current_ratio",
+        "debt_to_assets",
+        "eps",
+        "ebit",
+        # 详情页基本面卡展示的增速（FundamentalsTab）：模型与用户看到同一组数
+        "or_yoy",
+        "tr_yoy",
+        "netprofit_yoy",
+    ),
+    # A股 雪球利润表（#332）：年度行 85 个字段、每个科目还带 _yoy，约 1.35 万字符；与 Tushare 利润表
+    # 只送核心科目，且只送 Tushare 利润表块里没有的期间（_compact_profile 去重）——
+    # 它的价值是更长的年度历史，不是重复一遍最近两年
+    "xueqiu_income": (
+        "end_date",
+        "total_revenue",
+        "operating_cost",
+        "sales_fee",
+        "manage_fee",
+        "rad_cost",
+        "financing_expenses",
+        "asset_impairment_loss",
+        "credit_impairment_loss",
+        "invest_income",
+        "income_from_chg_in_fv",
+        "op",
+        "profit_total_amt",
+        "income_tax_expenses",
+        "net_profit",
+        "net_profit_atsopc",
+        "net_profit_after_nrgal_atsolc",
+        "basic_eps",
     ),
     # 港股 PDF 抽取行：只送科目与期别，源 URL/页码/指纹等溯源元数据留在库里
     "report_statements": (
@@ -208,17 +276,59 @@ STATEMENT_LLM_FIELDS: Dict[str, tuple] = {
 }
 
 
-# 无白名单（整行送模型）的数据集里语义有歧义、必须剔除的字段（#289）：Tushare fina_indicator 的
-# gross_margin 是**毛利额**，毛利率是 grossprofit_margin（%）——两者并存时模型会把前者当毛利率
-STATEMENT_LLM_DROPPED_FIELDS: Dict[str, tuple] = {"fina_indicator": ("gross_margin",)}
+# 原始分红记录只留最近几条作例证（#332）：逐年每股分红、股息总额、支付率由 signals 给出
+DIVIDEND_LLM_ROWS = 4
+
+
+DIVIDEND_LLM_FIELDS = (
+    "end_date",
+    "ann_date",
+    "div_proc",
+    "cash_div_tax",
+    "stk_div",
+    "ex_date",
+    "pay_date",
+)
+
+
+def _compact_dividend_history(rows: list) -> list:
+    """A股 分红记录送模型前去重（#289/#265）：同一次分配的多条「实施」按 signals 同一定义
+    （analysis_signals.implemented_dividends）只留一条——两处口径一致，模型看到的金额与
+    signals.shareholder_returns 相同；已有实施的报告期，其预案/股东大会通过等过程行不再送
+    （未实施的新预案保留）。"""
+    from .analysis_signals import implemented_dividends
+
+    implemented = implemented_dividends(rows)
+    done_periods = {
+        period
+        for item in implemented
+        for period in (item.get("source_end_dates") or [item["end_date"]])
+    }
+    kept = [item["row"] for item in implemented] + [
+        row
+        for row in rows
+        if row.get("div_proc") != "实施" and str(row.get("end_date") or "") not in done_periods
+    ]
+    kept.sort(
+        key=lambda row: (str(row.get("end_date") or ""), str(row.get("ann_date") or "")),
+        reverse=True,
+    )
+    return [
+        {field: row.get(field) for field in DIVIDEND_LLM_FIELDS if row.get(field) is not None}
+        for row in kept[:DIVIDEND_LLM_ROWS]
+    ]
 
 
 def _compact_statement_rows(dataset: str, rows: list) -> list:
+    if dataset == "dividend_history":
+        return _compact_dividend_history(rows)
+    # FCF 统一引用预计算值及其口径；原始来源的另一种定义留在档案中供核对。
+    if dataset == "yahoo_fundamentals":
+        rows = [
+            {key: value for key, value in row.items() if key != "free_cashflow"} for row in rows
+        ]
     fields = STATEMENT_LLM_FIELDS.get(dataset)
     if not fields:
-        dropped = STATEMENT_LLM_DROPPED_FIELDS.get(dataset)
-        if dropped:
-            return [{k: v for k, v in row.items() if k not in dropped} for row in rows]
         return rows
     if dataset == "report_statements":
         from .report_statement_checks import restated_fields, scrub_suspect_fields
@@ -235,12 +345,54 @@ def _compact_statement_rows(dataset: str, rows: list) -> list:
             for row in rows
         ]
     return [
-        {field: row.get(field) for field in fields if row.get(field) is not None} for row in rows
+        {
+            field: row.get(field)
+            for field in fields
+            if field != "free_cashflow" and row.get(field) is not None
+        }
+        for row in rows
     ]
 
 
 def _compact_profile(datasets: Dict[str, list]) -> Dict[str, list]:
-    return {dataset: _compact_statement_rows(dataset, rows) for dataset, rows in datasets.items()}
+    compacted = {
+        dataset: _compact_statement_rows(dataset, rows) for dataset, rows in datasets.items()
+    }
+    if compacted.get("report_statements") and compacted.get("yahoo_fundamentals"):
+        # 与 merge_hk_statement_rows 同一规则：PDF 科目优先，Yahoo 仅送同币种的空缺科目。
+        # 两份整行同时进入 prompt 会让模型混用相互矛盾的 CFO/资本开支（#289/#388）。
+        pdf_rows = {
+            (row.get("end_date"), row.get("fp") or "FY"): row
+            for row in compacted["report_statements"]
+        }
+        fallback_rows = []
+        meta_fields = ("end_date", "fp", "currency")
+        for row in compacted["yahoo_fundamentals"]:
+            pdf = pdf_rows.get((row.get("end_date"), row.get("fp") or "FY"))
+            if pdf is None:
+                fallback_rows.append(row)
+                continue
+            if not pdf.get("currency") or pdf["currency"] != row.get("currency"):
+                continue
+            missing = {
+                key: value
+                for key, value in row.items()
+                if key not in meta_fields and value is not None and pdf.get(key) is None
+            }
+            if missing:
+                fallback_rows.append(
+                    {**{key: row[key] for key in meta_fields if key in row}, **missing}
+                )
+        compacted["yahoo_fundamentals"] = fallback_rows
+    if compacted.get("xueqiu_income") and compacted.get("income"):
+        # 同期按 Tushare 优先只送一份（#332）；两源可能存在修订/精度差异，不假设数值相等
+        tushare_periods = {str(row.get("end_date") or "") for row in compacted["income"]}
+        compacted["xueqiu_income"] = [
+            row
+            for row in compacted["xueqiu_income"]
+            if str(row.get("end_date") or "") not in tushare_periods
+        ]
+    return compacted
 
 
 # 缺口清单进 LLM 输入的条数上限（超出部分以计数如实告知）
@@ -296,6 +448,37 @@ def annotate_event_status(events: list, as_of) -> list:
     return annotated
 
 
+def _build_signals(db, symbol: str, market: str, graham: Dict[str, Any]) -> Dict[str, Any]:
+    """预计算信号（#265）：取数 → analysis_signals.signals_from_inputs。辅助信息失败只降级为
+    status=error，分析照常进行——但**数据库错误要隔离**（PR #333 后评审）：PostgreSQL 语句出错后
+    当前事务作废，只捕获 Python 异常的话，后面照样调 LLM、到落库时才失败白烧一次额度。
+    取数放在 SAVEPOINT 里，普通 SQL 错误只回滚到保存点；连接失效等不可恢复的错误直接上抛，
+    不再往下走到 LLM。"""
+    from sqlalchemy.exc import DBAPIError, OperationalError, SQLAlchemyError
+
+    from .analysis_signals import signals_from_inputs
+    from .security_profile_service import load_signal_inputs
+
+    try:
+        with db.begin_nested():
+            inputs = load_signal_inputs(db, symbol, market)
+    except SQLAlchemyError as exc:
+        if isinstance(exc, OperationalError) or (
+            isinstance(exc, DBAPIError) and exc.connection_invalidated
+        ):
+            raise
+        logger.warning("预计算信号取数失败 %s/%s: %s", symbol, market, str(exc)[:200])
+        return {"status": "error"}
+    except Exception as exc:  # noqa: BLE001 - 非数据库异常：降级，不影响分析
+        logger.warning("预计算信号取数失败 %s/%s: %s", symbol, market, str(exc)[:200])
+        return {"status": "error"}
+    try:
+        return signals_from_inputs(market, inputs, graham)
+    except Exception as exc:  # noqa: BLE001 - 纯计算异常不影响分析（不碰数据库）
+        logger.warning("预计算信号计算失败 %s/%s: %s", symbol, market, str(exc)[:200])
+        return {"status": "error"}
+
+
 def build_analysis_input(
     db,
     symbol: str,
@@ -308,14 +491,13 @@ def build_analysis_input(
     """压缩输入：档案数据（逐集封顶+报表科目白名单）+ 事件 + 财报摘要
     + 商业画像/同业 + 利润质量指标。
 
-    超预算两级收缩、级间复测（issue #145：此前只收缩一次且不复检）：
-    一级 = 档案封顶减半 + 全部摘要压为核心字段；仍超预算时二级 = 截
-    events/peers。两级后仍超预算按现状送出并记 warning（极端标的如实上报，
+    超预算按辅助语境、非核心档案、摘要、报表期数的顺序逐级收缩，级间复测。
+    各级删减记入缺口；全部收缩后仍超预算按现状送出并记 warning（极端标的如实上报，
     胜过静默截断让模型把缺口读成"没有问题"）。"""
     from .business_profile_service import load_business_profile
     from .earnings_quality import compute_earnings_quality, market_statements
     from .report_digest_service import load_report_digests, serialize_digest_for_analysis
-    from .security_profile_service import compute_graham_for
+    from .security_profile_service import compute_graham_for, load_annual_statement_datasets
     from . import announcement_service, announcement_sync
 
     from ..core.timeutil import local_today
@@ -334,8 +516,10 @@ def build_analysis_input(
         )
     )
     digests = serialize_digest_for_analysis(load_report_digests(db, symbol, market))
-    business = load_business_profile(db, symbol, market)
-    statements = market_statements(market, profile["datasets"])
+    business = load_business_profile(db, symbol, market, for_analysis=True)
+    # 利润质量按年度行取数（与详情页同口径；caps 窗口混着季报，A股 只剩约 2 个年度）
+    annual = load_annual_statement_datasets(db, symbol, market)
+    statements = market_statements(market, annual if annual is not None else profile["datasets"])
     earnings_quality = compute_earnings_quality(
         statements["income"],
         statements["balancesheet"],
@@ -347,6 +531,19 @@ def build_analysis_input(
     # 十年准则失灵、分红记录截断成错误 fail——真实账本冒烟实锤）
     # user_id = 发起分析的用户：其 ADS_RATIO 规则覆盖 20-F 封面解析值（美股估值口径）
     graham = compute_graham_for(db, symbol, market, user_id=user_id) or {"status": "no_data"}
+    signals = _build_signals(db, symbol, market, graham)
+    # 两种定义的 FCF 并列曾导致模型挑错金额甚至正负号；存储/计算保持完整，LLM 只取主口径。
+    if "shareholder_returns" in signals:
+        signals = {
+            **signals,
+            "shareholder_returns": {
+                **(signals.get("shareholder_returns") or {}),
+                "by_year": [
+                    {key: value for key, value in row.items() if key != "fcf_alternative"}
+                    for row in (signals.get("shareholder_returns") or {}).get("by_year", [])
+                ],
+            },
+        }
     common_semantics = (
         "report_digests=财报关键章节的 AI 摘要(按报告期倒序，旧年份为压缩版；"
         "属公司自述口径，可引用)；business_profile=商业画像(商业模式/分部/上下游/"
@@ -359,10 +556,13 @@ def build_analysis_input(
     )
     market_semantics = {
         "A股": (
-            "fina_indicator=财务指标(按报告期；毛利率看 grossprofit_margin，单位 %)；"
-            "forecast=业绩预告；express=业绩快报；"
-            "daily_basic=最新估值快照(pe/pb/股息率)；dividend_history=分红送股历史"
-            "(div_proc=实施为已落地)；fina_audit=审计意见；pledge_stat=股权质押统计；"
+            "fina_indicator=财务指标(按报告期，只送分析用到的字段；毛利率看 grossprofit_margin，"
+            "单位 %)；forecast=业绩预告；express=业绩快报；"
+            "daily_basic=最新估值快照(pe/pb/股息率)；dividend_history=最近几条分红送股记录"
+            "(仅作例证：div_proc=实施为已落地，同一次分配已去重；cash_div_tax 为每股税前现金；"
+            "逐年每股分红、股息总额与支付率以 signals.shareholder_returns 为准)；"
+            "xueqiu_income=雪球利润表核心科目(只含 income 块没有的年度；同一期按 Tushare income 优先，"
+            "单位元；net_profit_atsopc=归母净利润、net_profit_after_nrgal_atsolc=扣非归母净利润)；fina_audit=审计意见；pledge_stat=股权质押统计；"
             "stk_holdertrade=重要股东增减持；income/balancesheet/cashflow=三大报表"
             "核心科目(合并报表口径，单位元)；events=财报披露/分红预案/解禁事件；"
         ),
@@ -386,7 +586,8 @@ def build_analysis_input(
             "行内 currency 字段，公司间不一致；非官方接口、仅近 3-5 年，只作补缺——同一期两源"
             "数值不一致时(如资本开支、自由现金流)以 report_statements 为准，不得混用两源)；"
             "report_digests=披露易年报全文的 AI 摘要；本市场无审计意见/质押/增减持/解禁"
-            "数据源，风险只能来自年报摘要——年报未设「主要風險」章节时该项为空，须如实说明；"
+            "数据源，风险依据为输入中各期摘要与预计算指标；某期风险字段缺失或写原文未提及，"
+            "只代表所提供节选的覆盖不足，不证明年报没有风险章节或公司没有风险；"
         ),
     }
     payload = {
@@ -399,6 +600,8 @@ def build_analysis_input(
                 + common_semantics
                 + AS_OF_SEMANTICS
                 + ANNOUNCEMENT_SEMANTICS
+                + "；"
+                + SIGNALS_SEMANTICS
             ),
         },
         "profile": _compact_profile(profile["datasets"]),
@@ -415,7 +618,12 @@ def build_analysis_input(
         },
         "earnings_quality": earnings_quality,
         "graham_screen": graham_for_llm(graham),
+        "signals": signals,
     }
+    if digest_gaps is None:
+        from .report_digest_service import digest_gap_preview
+
+        digest_gaps = digest_gap_preview(db, symbol, market)
     if digest_gaps:
         # 截断本身也要可见：只留 6 条而不说"还有几条"，模型会把这 6 条当成
         # 缺口全集，把"没列出来的年份"读成"没有问题的年份"
@@ -434,6 +642,8 @@ def build_analysis_input(
         announcement_gaps = [f"{reason}：announcements 为空不代表没有公告"]
     else:
         announcement_gaps = []
+    if not business.get("profile"):
+        announcement_gaps.append("商业画像缺失或其版本/输入已过期，本次未引用，不能视为公司未披露")
     suspect_periods = sorted(
         {
             f"{row.get('end_date')}|{row.get('fp') or 'FY'}"
@@ -458,23 +668,58 @@ def build_analysis_input(
         # 不计入上面的 8 条上限：Tushare 限流时数据集缺口常 ≥8 条，公告这条被截掉后模型会把
         # 空的 announcements 读成「近 180 天没有公告」（PR #311 评审 P3-1）
         payload["profile_data_gaps"] = payload.get("profile_data_gaps", []) + announcement_gaps
-    if _payload_chars(payload) > CHAR_BUDGET:
-        # 一级收缩：档案封顶减半；摘要全部压为核心四字段
-        profile = load_symbol_profile(db, symbol, market, caps=SHRUNK_CAPS)
+    return shrink_analysis_payload(db, symbol, market, payload)
+
+
+# 超预算时按顺序截断，价值越低越先动（#332）；每一级截掉什么写进 profile_data_gaps，
+# 触发到哪一级记在 meta.input_shrink（上线后监控用）
+SHRINK_GAP_NOTES = {
+    "aux": "输入超长：事件、公告、同业名单已截短（事件前 8 条、公告前 10 组、同业前 8 家）",
+    "profile_noncore": "输入超长：业绩预告/快报、审计、质押、增减持、股东、资金流等只保留最近一半的记录",
+    "digests": "输入超长：各期财报摘要只保留核心字段（主营收入结构、一次性项目、会计信号、关键数字）",
+    "statements": "输入超长：报表与财务指标只保留最近一半的报告期",
+}
+
+
+def shrink_analysis_payload(
+    db, symbol: str, market: str, payload: Dict[str, Any]
+) -> Dict[str, Any]:
+    """超预算收缩（#332）：先砍辅助语境，再砍非核心档案，再压缩摘要，最后才减报表期数。
+    此前的顺序相反——一级收缩就把报表减半、摘要压缩，噪音数据集原样保留。"""
+    from .report_digest_service import load_report_digests, serialize_digest_for_analysis
+
+    levels: List[str] = []
+
+    def over() -> bool:
+        return _payload_chars(payload) > CHAR_BUDGET
+
+    if over():
+        payload["events"] = (payload.get("events") or [])[:EVENTS_SHRUNK_CAP]
+        payload["announcements"] = (payload.get("announcements") or [])[:ANNOUNCEMENTS_SHRUNK_CAP]
+        payload["peers"]["list"] = (payload["peers"].get("list") or [])[:PEERS_SHRUNK_CAP]
+        levels.append("aux")
+    if over():
+        profile = load_symbol_profile(db, symbol, market, caps=NONCORE_SHRUNK_CAPS)
         payload["profile"] = _compact_profile(profile["datasets"])
+        levels.append("profile_noncore")
+    if over():
         payload["report_digests"] = serialize_digest_for_analysis(
             load_report_digests(db, symbol, market), compact_older_than_years=0
         )
-    if _payload_chars(payload) > CHAR_BUDGET:
-        # 二级收缩：events/peers 此前完全不参与收缩，现在才轮到它们——
-        # 它们只是辅助语境，截断代价远低于档案与摘要
-        payload["events"] = (payload.get("events") or [])[:EVENTS_SHRUNK_CAP]
-        payload["announcements"] = payload["announcements"][:ANNOUNCEMENTS_SHRUNK_CAP]
-        payload["peers"]["list"] = (payload["peers"].get("list") or [])[:PEERS_SHRUNK_CAP]
+        levels.append("digests")
+    if over():
+        profile = load_symbol_profile(db, symbol, market, caps=SHRUNK_CAPS)
+        payload["profile"] = _compact_profile(profile["datasets"])
+        levels.append("statements")
+    payload["meta"]["input_shrink"] = levels
+    if levels:
+        payload["profile_data_gaps"] = list(payload.get("profile_data_gaps") or []) + [
+            SHRINK_GAP_NOTES[level] for level in levels
+        ]
     final_chars = _payload_chars(payload)
     if final_chars > CHAR_BUDGET:
         logger.warning(
-            "分析输入两级收缩后仍超预算 %s/%s: %d > %d，按现状送出",
+            "分析输入逐级收缩后仍超预算 %s/%s: %d > %d，按现状送出",
             symbol,
             market,
             final_chars,
@@ -510,7 +755,7 @@ def start_security_analysis_job(user_id: int, symbol: str, market: str) -> Dict[
 
 
 def _ensure_ads_ratio_gap(db, symbol: str, market: str) -> list:
-    """美股：顺带确保最新 20-F 封面的 ADS 换算比已解析（缓存命中零下载）；
+    """美股：顺带确保最新年报（20-F / 10-K）封面的 ADS 换算比已解析（缓存命中零下载）；
     失败不阻断分析，只进缺口（估值两项会如实 indeterminate）。"""
     if market != "美股":
         return []
@@ -521,9 +766,11 @@ def _ensure_ads_ratio_gap(db, symbol: str, market: str) -> list:
     except Exception as exc:  # 网络/EDGAR 异常：不影响主分析
         db.rollback()
         logger.warning("ADS 换算比解析失败 %s: %s", symbol, str(exc)[:150])
-        return ["ADS 换算比获取失败（20-F 封面），美股估值口径可能不可用"]
+        return ["ADS 换算比获取失败（年报封面），美股估值口径可能不可用"]
+    if outcome.get("status") == "cover_unknown":
+        return ["ADS 换算比无法确定（年报封面未识别出证券登记表），美股估值两项不可确定"]
     if outcome.get("status") in ("failed", "capped"):
-        return ["ADS 换算比获取失败（20-F 封面），美股估值口径可能不可用"]
+        return ["ADS 换算比获取失败（年报封面），美股估值口径可能不可用"]
     return []
 
 
@@ -604,6 +851,8 @@ def analyze_one(
 
             digest_result = ensure_report_digests(db, symbol, market, max_new=digest_max_new)
             digest_gaps = digest_result.get("gaps", [])
+        except JobOwnershipLostError:
+            raise
         except Exception as exc:
             logger.warning("报告摘要保底失败 %s/%s: %s", symbol, market, str(exc)[:150])
             digest_gaps = ["报告摘要管线异常，本次分析未包含财报摘要"]
@@ -621,6 +870,8 @@ def analyze_one(
                 digest_gaps = digest_gaps + [
                     f"[报表抽取] {gap}" for gap in statement_result.get("gaps", [])
                 ]
+        except JobOwnershipLostError:
+            raise
         except Exception as exc:
             logger.warning("报表抽取保底失败 %s/%s: %s", symbol, market, str(exc)[:150])
             digest_gaps = digest_gaps + ["[报表抽取] 管线异常，本次分析未包含 PDF 报表科目"]
@@ -641,6 +892,8 @@ def analyze_one(
 
         ensure_peer_list(db, symbol, market)
         ensure_business_profile(db, symbol, market)
+    except JobOwnershipLostError:
+        raise
     except Exception as exc:
         logger.warning("商业画像刷新失败 %s/%s: %s", symbol, market, str(exc)[:150])
 
@@ -697,11 +950,26 @@ def analyze_one(
             return failure(str(exc), "llm_4xx")
         raise  # 5xx/超时 → 由调用方退避重试
 
+    # 标签兜底（#265）：与预计算信号明确矛盾的标签丢掉（只丢标签、不拒绝整份）
+    from .analysis_signals import validate_tags
+
+    tags, signal_adjustments = validate_tags(
+        parsed["tags"], input_payload.get("signals"), input_payload.get("graham_screen")
+    )
+    if signal_adjustments:
+        parsed = {
+            **parsed,
+            "tags": tags,
+            "adjustments": list(parsed.get("adjustments") or []) + signal_adjustments,
+        }
+
     # 6/6 落库。全局产物不得读取任何用户的持仓字段（用户手工录入的名称会经此
     # 泄露给全部用户，且多用户不同名导致结果不确定）——名称只从公共证券元数据
     # 解析，失败即留空由前端回退代码
     stage("persist", completed=5)
     usage = completion.get("usage", {})
+    if "generation_meta" in completion:
+        input_payload["generation_meta"] = completion["generation_meta"]
     analysis = SecurityAnalysis(
         symbol=symbol,
         market=market,

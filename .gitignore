@@ -114,15 +114,23 @@ test-results/
 # 雪球登录态 Cookie 与登录态导出：绝不入库
 backend/secrets/*
 !backend/secrets/.gitkeep
+# 原始报告文件缓存（REPORT_CACHE_HOST_DIR 默认目录）
+backend/cache/
 .xueqiu-cookies.json
 *xueqiu*cookie*.json
 cookies.xueqiu.json
-
-# symlinked from the private checkout during local verification; never publish
-frontend/node_modules
 
 # 本机 compose 覆盖（如容器 DNS），不入库
 docker-compose.override.yml
 
 # README 截图/演示视频的中间产物（playwright.demo.config.ts）
 frontend/demo-output/
+
+# Local architecture viewer and isolated CI outputs
+.venv-architecture/
+.architecture/
+frontend/architecture-dist/
+ops/ci/.local/
+
+# Temporary dependency link for local checks; never publish it.
+frontend/node_modules

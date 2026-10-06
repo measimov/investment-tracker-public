@@ -17,6 +17,7 @@ from ..services.price_refresh_jobs import (
     run_price_refresh_job,
     start_price_refresh_job,
 )
+from ..services.security_catalog_service import display_names
 from ..core.deps import get_current_active_user, get_current_admin_user
 from ..core.logging import get_app_logger
 
@@ -48,7 +49,13 @@ def get_holdings(
         query = query.filter(Holding.market == market)
 
     holdings = query.order_by(Holding.total_cost.desc()).all()
-    return holdings
+    names = display_names(db, current_user.id, ((row.symbol, row.market) for row in holdings))
+    return [
+        HoldingResponse.model_validate(row).model_copy(
+            update={"name": names.get((row.symbol, row.market), row.name)}
+        )
+        for row in holdings
+    ]
 
 
 @router.put("/{holding_id}/price", response_model=HoldingResponse)

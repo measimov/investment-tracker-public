@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { accountOptionLabel } from '@/utils/labels'
+import { CURRENCIES } from '@/utils/currency'
 import { computed, ref, watch } from 'vue'
-import { UploadFilled } from '@element-plus/icons-vue'
+import { Upload as UploadFilled } from '@lucide/vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
-import type { BrokerAccount, BrokerImportResult, SuspectedDuplicateSample } from '@/types'
+import type { BrokerAccount, SuspectedDuplicateSample } from '@/types'
 import {
   downloadFile,
   formatNumber,
+  formatCurrency,
+  formatDate,
   formatPrice,
   formatQuantity,
   todayLocalISODate
@@ -29,6 +32,8 @@ import {
   suspectedRowTypeLabel
 } from './suspectedDuplicates'
 import { showApiError } from '@/utils/showApiError'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import { useBrokerImportPreview } from './useBrokerImportPreview'
 
 // 扩展名不区分大小写：REPORT.XLSX 以前会被当成 CSV 发到 CSV 接口（#269）
 function isExcelFile(name: string): boolean {
@@ -36,21 +41,30 @@ function isExcelFile(name: string): boolean {
   return lower.endsWith('.xlsx') || lower.endsWith('.xls')
 }
 
+// 未知币种不能默认人民币，也不丢弃原响应中的币种代码。
+function formatImportAmount(
+  amount: number | string | null | undefined,
+  currency: string | null | undefined
+): string {
+  if (currency && CURRENCIES.some((item) => item.code === currency))
+    return formatCurrency(amount, currency)
+  const body = formatNumber(amount, 2)
+  return !currency ? body : `${body} ${currency}`
+}
+
 // 预览/导入响应以后端 BrokerImportResult 为准（生成类型；此前手写副本已漂移：
 // statement_scope 的 null、诊断报告新增字段都没跟上）
-type BrokerPreview = BrokerImportResult
-
 const props = defineProps<{ brokerAccounts: BrokerAccount[]; brokerAccountsLoading: boolean }>()
 
 // imported：入账数据已变（含"未达完整入账标准"的部分入账），壳层失效缓存并
 // 刷新列表；force 对应原实现两个分支的 loadTransactions 口径
 const emit = defineEmits<{ imported: [options: { force: boolean }] }>()
 
+const isMobile = useMediaQuery('(max-width: 640px)')
 const visible = ref(false)
-const importing = ref(false)
+const committing = ref(false)
 const uploadFile = ref<File | null>(null)
 const importMode = ref('standard')
-const brokerPreview = ref<BrokerPreview | null>(null)
 // 面板里展示的是预览还是正式导入的结果（部分入账时导入结果会替换预览）：
 // 结果态文案切成「导入结果」、导入按钮禁用——同一份文件不应在未改动时再点一次
 const importDone = ref(false)
@@ -85,6 +99,20 @@ async function confirmSelectedSuspected() {
 const brokerMode = computed<BrokerImportMode | null>(() =>
   isBrokerImportMode(importMode.value) ? importMode.value : null
 )
+const previewState = useBrokerImportPreview(
+  () =>
+    visible.value && uploadFile.value && brokerMode.value && importBrokerAccountId.value
+      ? {
+          file: uploadFile.value,
+          mode: brokerMode.value,
+          accountId: importBrokerAccountId.value,
+          confirmed: [...confirmedSuspectedHashes.value]
+        }
+      : null,
+  ({ file, mode, accountId, confirmed }) => BROKER_IMPORTS[mode].preview(file, accountId, confirmed)
+)
+const brokerPreview = previewState.preview
+const importing = computed(() => committing.value || previewState.loading.value)
 const importAccept = computed(() =>
   brokerMode.value ? BROKER_IMPORTS[brokerMode.value].accept : '.csv,.xlsx,.xls'
 )
@@ -141,7 +169,7 @@ function resetConfirmedSuspected() {
 }
 
 function clearPreview() {
-  brokerPreview.value = null
+  previewState.invalidate()
   importDone.value = false
 }
 
@@ -168,6 +196,9 @@ watch(importBrokerAccountId, () => {
   clearPreview()
   resetConfirmedSuspected()
 })
+watch(visible, () => {
+  importDone.value = false
+})
 
 async function handleImportPreview() {
   if (!uploadFile.value) {
@@ -182,25 +213,18 @@ async function handleImportPreview() {
     return
   }
 
-  importing.value = true
   try {
-    const response = await BROKER_IMPORTS[brokerMode.value as BrokerImportMode].preview(
-      uploadFile.value,
-      importBrokerAccountId.value as number,
-      confirmedSuspectedHashes.value
-    )
-    brokerPreview.value = response.data
+    if (!(await previewState.refresh())) return
     importDone.value = false
     selectedSuspectedRows.value = []
     ElMessage.success('预览完成')
   } catch (error) {
     showApiError(error, { prefix: '预览失败' })
-  } finally {
-    importing.value = false
   }
 }
 
 async function handleImport() {
+  if (importing.value || importDone.value) return
   if (!uploadFile.value) {
     ElMessage.warning('请选择文件')
     return
@@ -209,14 +233,23 @@ async function handleImport() {
     ElMessage.warning('正式券商导入必须选择匹配账户')
     return
   }
-  importing.value = true
+  const selected = previewState.acceptedSelection.value
+  if (brokerModeActive.value && (!selected || brokerPreviewHasBlockingErrors.value)) {
+    ElMessage.warning('请先完成当前文件和账户的有效预览')
+    return
+  }
+  // Snapshot before awaiting: the preview and commit must refer to the same inputs.
+  const file = uploadFile.value
+  const mode = importMode.value
+  const accountId = importBrokerAccountId.value
+  committing.value = true
   try {
     let successMessage: string
-    if (brokerMode.value) {
-      const response = await BROKER_IMPORTS[brokerMode.value].commit(
-        uploadFile.value,
-        importBrokerAccountId.value as number,
-        confirmedSuspectedHashes.value
+    if (selected) {
+      const response = await BROKER_IMPORTS[selected.mode].commit(
+        selected.file,
+        selected.accountId,
+        [...selected.confirmed]
       )
       if (brokerImportHasIssues(response.data)) {
         brokerPreview.value = response.data
@@ -225,18 +258,17 @@ async function handleImport() {
         emit('imported', { force: true })
         return
       }
-      successMessage = brokerImportSummary(brokerMode.value, response.data)
+      successMessage = brokerImportSummary(selected.mode, response.data)
     } else {
-      const isExcel = isExcelFile(uploadFile.value.name)
-      const accountId = importBrokerAccountId.value
+      const isExcel = isExcelFile(file.name)
       const response =
-        importMode.value === 'corporate_actions'
+        mode === 'corporate_actions'
           ? isExcel
-            ? await api.importCorporateActionsExcel(uploadFile.value, accountId)
-            : await api.importCorporateActionsCSV(uploadFile.value, accountId)
+            ? await api.importCorporateActionsExcel(file, accountId)
+            : await api.importCorporateActionsCSV(file, accountId)
           : isExcel
-            ? await api.importExcel(uploadFile.value, accountId)
-            : await api.importCSV(uploadFile.value, accountId)
+            ? await api.importExcel(file, accountId)
+            : await api.importCSV(file, accountId)
       successMessage = response.data.message
     }
 
@@ -250,7 +282,7 @@ async function handleImport() {
   } catch (error) {
     showApiError(error, { prefix: '导入失败' })
   } finally {
-    importing.value = false
+    committing.value = false
   }
 }
 
@@ -258,21 +290,30 @@ defineExpose({ open })
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="导入数据" width="720px">
+  <el-dialog
+    v-model="visible"
+    title="导入数据"
+    width="720px"
+    :close-on-click-modal="false"
+    :close-on-press-escape="!committing"
+    :show-close="!committing"
+  >
     <el-tabs v-model="importMode" class="import-tabs">
-      <el-tab-pane label="标准交易文件" name="standard" />
-      <el-tab-pane label="标准公司行动文件" name="corporate_actions" />
-      <el-tab-pane label="招商证券对账单" name="cmb" />
-      <el-tab-pane label="IBKR 活动报表" name="ibkr" />
-      <el-tab-pane label="东方财富对账单" name="eastmoney" />
+      <el-tab-pane label="标准交易文件" name="standard" :disabled="importing" />
+      <el-tab-pane label="标准公司行动文件" name="corporate_actions" :disabled="importing" />
+      <el-tab-pane label="招商证券对账单" name="cmb" :disabled="importing" />
+      <el-tab-pane label="IBKR 活动报表" name="ibkr" :disabled="importing" />
+      <el-tab-pane label="东方财富对账单" name="eastmoney" :disabled="importing" />
     </el-tabs>
     <div v-if="brokerModeActive" class="import-account-field">
       <span>导入到</span>
       <el-select
         v-model="importBrokerAccountId"
+        aria-label="导入账户"
         clearable
         placeholder="选择匹配的券商账户"
         :loading="brokerAccountsLoading"
+        :disabled="importing"
       >
         <el-option
           v-for="account in brokerImportAccountOptions"
@@ -294,9 +335,11 @@ defineExpose({ open })
       <span>归属账户</span>
       <el-select
         v-model="importBrokerAccountId"
+        aria-label="归属账户"
         clearable
         placeholder="不指定账户（默认）"
         :loading="brokerAccountsLoading"
+        :disabled="importing"
       >
         <el-option
           v-for="account in brokerAccounts"
@@ -306,7 +349,7 @@ defineExpose({ open })
         />
       </el-select>
       <small>
-        可选：把导入的记录归属到某个券商账户（如 HSBC 手工整理的标准 CSV）；不选则落"未指定账户"
+        可选：把导入的记录归属到某个券商账户（如 HSBC 手工整理的标准 CSV）；不选则落「未指定账户」
       </small>
     </div>
     <el-upload
@@ -316,6 +359,7 @@ defineExpose({ open })
       :on-remove="handleFileRemove"
       :limit="1"
       :accept="importAccept"
+      :disabled="importing"
     >
       <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
       <div class="el-upload__text">拖拽文件到此处或 <em>点击上传</em></div>
@@ -365,7 +409,7 @@ defineExpose({ open })
       </div>
       <el-descriptions
         v-if="importDone"
-        :column="3"
+        :column="isMobile ? 1 : 3"
         border
         size="small"
         class="responsive-descriptions import-result-counts"
@@ -380,7 +424,12 @@ defineExpose({ open })
           {{ brokerPreview.imported_cash_events || 0 }}
         </el-descriptions-item>
       </el-descriptions>
-      <el-descriptions :column="3" border size="small" class="responsive-descriptions">
+      <el-descriptions
+        :column="isMobile ? 1 : 3"
+        border
+        size="small"
+        class="responsive-descriptions"
+      >
         <el-descriptions-item label="券商">{{ brokerPreview.broker }}</el-descriptions-item>
         <el-descriptions-item v-if="importMode === 'eastmoney'" label="对账单范围">
           {{ brokerPreview.statement_scope === 'hk_connect' ? '港股通' : '普通股票' }}
@@ -462,8 +511,8 @@ defineExpose({ open })
           brokerPreview.reported_position_count || 0
         }}</el-descriptions-item>
         <el-descriptions-item label="日期范围"
-          >{{ brokerPreview.date_start || '—' }} ~
-          {{ brokerPreview.date_end || '—' }}</el-descriptions-item
+          >{{ formatDate(brokerPreview.date_start) }} 至
+          {{ formatDate(brokerPreview.date_end) }}</el-descriptions-item
         >
       </el-descriptions>
 
@@ -517,7 +566,9 @@ defineExpose({ open })
           @selection-change="handleSuspectedSelection"
         >
           <el-table-column type="selection" width="40" />
-          <el-table-column prop="trade_date" label="日期" width="105" />
+          <el-table-column label="日期" width="105">
+            <template #default="{ row }">{{ formatDate(row.trade_date) }}</template>
+          </el-table-column>
           <el-table-column prop="symbol" label="代码" width="90" />
           <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
           <el-table-column label="类型" width="80">
@@ -532,14 +583,16 @@ defineExpose({ open })
           </el-table-column>
           <el-table-column label="发生金额" width="130" align="right">
             <template #default="{ row }">
-              {{ formatNumber(row.amount, 2) }} {{ row.currency || '' }}
+              {{ formatImportAmount(row.amount, row.currency) }}
             </template>
           </el-table-column>
           <el-table-column label="已入账 → 本单" min-width="170" align="right">
             <template #default="{ row }">
               <template v-if="isSuspectedCashRow(row)">
-                {{ formatNumber(row.existing_amount, 2) }} {{ row.existing_currency || '' }}
-                <template v-if="row.existing_date">（{{ row.existing_date }}）</template>
+                {{ formatImportAmount(row.existing_amount, row.existing_currency) }}
+                <template v-if="row.existing_date"
+                  >（{{ formatDate(row.existing_date) }}）</template
+                >
               </template>
               <template v-else>
                 {{ formatPrice(row.existing_price) }} → {{ formatPrice(row.price) }}
@@ -625,7 +678,7 @@ defineExpose({ open })
     </div>
     <template #footer>
       <div class="mobile-dialog-footer">
-        <el-button @click="visible = false">取消</el-button>
+        <el-button :disabled="committing" @click="visible = false">取消</el-button>
         <el-button
           v-if="brokerModeActive && !brokerPreview"
           type="primary"
@@ -642,6 +695,7 @@ defineExpose({ open })
           :loading="importing"
           :disabled="
             (brokerModeActive && !importBrokerAccountId) ||
+            (brokerModeActive && !previewState.acceptedSelection.value) ||
             brokerPreviewHasBlockingErrors ||
             importDone
           "

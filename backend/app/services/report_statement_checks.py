@@ -746,10 +746,18 @@ def scrub_suspect_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def rederive_fields(row: Dict[str, Any]) -> Dict[str, Any]:
     """就地重新推导被清空的派生科目（输入已由可信来源补齐时）：FCF = CFO − |capex|，
-    分项合计按 `derived_fields`/SUM_DERIVED_FIELDS。只填 None 的派生科目，不覆盖已有值。"""
+    分项合计按 `derived_fields`/SUM_DERIVED_FIELDS。只填 None 的派生科目，不覆盖已有值；
+    **本身被判存疑的科目不重推导**（#343-3：存疑的派生值是否复活原本取决于碰巧有没有雅虎行，
+    前端 `hkStatements.rederiveFields` 同口径）。"""
     derived = derived_field_inputs(row)
+    validation = row.get("validation") or {}
+    suspect = (
+        set(validation.get("suspect_fields") or [])
+        if validation.get("status") == "suspect"
+        else set()
+    )
     for field, inputs in derived.items():
-        if row.get(field) is not None:
+        if row.get(field) is not None or field in suspect:
             continue
         values = [_num(row, inp) for inp in inputs]
         if any(value is None for value in values):

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
 from ..models.security_profile import SecurityProfileData
+from .background_job_store import JobOwnershipLostError
 from .business_profile_prompts import (
     BUSINESS_PROFILE_SYSTEM_PROMPT,
     PROFILE_PROMPT_VERSION,
@@ -27,8 +28,9 @@ from .business_profile_prompts import (
 from .llm_client import chat_completion
 from .payload_versions import versions_current
 from .report_digest_service import load_report_digests
+from .report_digest_qa import digest_for_llm
 from .profile_store import upsert_profile_row
-from .security_profile_service import load_symbol_profile
+from .security_profile_service import load_annual_statement_datasets
 
 logger = get_app_logger(__name__)
 
@@ -56,15 +58,19 @@ PROFILE_ARRAY_SPECS = (
 def build_business_profile_input(db: Session, symbol: str, market: str) -> Dict[str, Any]:
     """合成输入：近 3 份 digest 的业务字段 + 最新业务概要节选 + 近 3 年核心科目。"""
     digests = load_report_digests(db, symbol, market, limit=3)
-    digest_slices = [
-        {
-            "end_date": entry.get("end_date"),
-            "业务分部占比": (entry.get("digest") or {}).get("业务分部占比"),
-            "上下游与产业链": (entry.get("digest") or {}).get("上下游与产业链"),
-            "主营收入结构": (entry.get("digest") or {}).get("主营收入结构"),
-        }
-        for entry in digests
-    ]
+    digest_slices = []
+    for entry in digests:
+        projection = digest_for_llm(entry)
+        digest = projection.pop("digest")
+        digest_slices.append(
+            {
+                "end_date": entry.get("end_date"),
+                "业务分部占比": digest.get("业务分部占比"),
+                "上下游与产业链": digest.get("上下游与产业链"),
+                "主营收入结构": digest.get("主营收入结构"),
+                **projection,
+            }
+        )
     # 取最新一份**成功且含 business 节**的节选：只看最新一行会让最新报告
     # 抽取失败时，已有的上一期业务概要完全不进画像输入
     business_section = ""
@@ -86,22 +92,50 @@ def build_business_profile_input(db: Session, symbol: str, market: str) -> Dict[
             business_section = candidate[:10_000]
             break
 
-    profile = load_symbol_profile(
-        db,
-        symbol,
-        market,
-        caps={"income": 3, "fina_indicator": 3, "daily_basic": 1},
-    )
     return {
         "symbol": symbol,
         "market": market,
         "report_digest_slices": digest_slices,
         "business_section_excerpt": business_section,
-        "financials": {
-            "income": profile["datasets"].get("income", []),
-            "fina_indicator": profile["datasets"].get("fina_indicator", []),
-        },
+        "financials": business_profile_financials(db, symbol, market),
         "source_end_date": digests[0]["end_date"] if digests else None,
+    }
+
+
+FINANCIAL_YEARS = 3
+# 商业画像要的是「分部毛利率/增速」的参照系：收入、成本与利润的年度规模 + 毛利率/净利率。
+# 不送整行 fina_indicator——那里的 gross_margin 是 Tushare 的**毛利额**（#289），画像 prompt 又
+# 要求写毛利率
+FINANCIAL_INDICATOR_FIELDS = ("end_date", "currency", "grossprofit_margin", "netprofit_margin")
+
+
+def business_profile_financials(db: Session, symbol: str, market: str) -> Dict[str, Any]:
+    """近 3 个财年的核心科目（#348）：与利润质量、分析输入同一取数口径——年度行
+    （`load_annual_statement_datasets`）经 `market_statements` 按市场对齐，收入表走分析输入的
+    同一白名单（`STATEMENT_LLM_FIELDS`）。此前按档案 caps 取最新 3 个 period_key，A股 拿到的是
+    「中报/一季报/年报」混季累计行、还带着毛利额 gross_margin；港股/美股根本没有 income/
+    fina_indicator 数据集，画像完全没有财务数据。"""
+    from .earnings_quality import market_statements
+    from .security_analysis_jobs import STATEMENT_LLM_FIELDS
+
+    annual = load_annual_statement_datasets(db, symbol, market)
+    if annual is None:
+        return {"income": [], "fina_indicator": []}
+    statements = market_statements(market, annual)
+    income_fields = (*STATEMENT_LLM_FIELDS["income"], "currency")
+
+    def latest(rows: List[Dict[str, Any]], fields: tuple) -> List[Dict[str, Any]]:
+        ordered = sorted(rows, key=lambda row: str(row.get("end_date") or ""), reverse=True)
+        return [
+            {field: row.get(field) for field in fields if row.get(field) is not None}
+            for row in ordered[:FINANCIAL_YEARS]
+        ]
+
+    return {
+        "income": latest(statements.get("income") or [], income_fields),
+        "fina_indicator": latest(
+            statements.get("fina_indicator") or [], FINANCIAL_INDICATOR_FIELDS
+        ),
     }
 
 
@@ -161,7 +195,11 @@ def ensure_business_profile(db: Session, symbol: str, market: str) -> Optional[D
         .first()
     )
     payload_input = build_business_profile_input(db, symbol, market)
-    if not payload_input["report_digest_slices"] and not payload_input["business_section_excerpt"]:
+    has_digest_source = any(
+        any(item.get(field) for field in ("业务分部占比", "上下游与产业链", "主营收入结构"))
+        for item in payload_input["report_digest_slices"]
+    )
+    if not has_digest_source and not payload_input["business_section_excerpt"]:
         return (row.payload or {}).get("profile") if row else None  # 无源数据不生成
 
     fingerprint = input_fingerprint(payload_input)
@@ -207,11 +245,18 @@ def ensure_business_profile(db: Session, symbol: str, market: str) -> Optional[D
                 "input_fingerprint": fingerprint,
                 "prompt_version": PROFILE_PROMPT_VERSION,
                 "model": completion.get("model"),
+                **(
+                    {"generation_meta": completion["generation_meta"]}
+                    if "generation_meta" in completion
+                    else {}
+                ),
                 "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             },
         )
         db.commit()
         return profile
+    except JobOwnershipLostError:
+        raise
     except Exception as exc:  # 商业画像失败不阻断主分析
         db.rollback()
         logger.warning("商业画像生成失败 %s/%s: %s", symbol, market, str(exc)[:200])
@@ -385,7 +430,9 @@ def ensure_peer_list(db: Session, symbol: str, market: str) -> List[Dict[str, An
         return (row.payload or {}).get("peers", []) if row else []
 
 
-def load_business_profile(db: Session, symbol: str, market: str) -> Dict[str, Any]:
+def load_business_profile(
+    db: Session, symbol: str, market: str, *, for_analysis: bool = False
+) -> Dict[str, Any]:
     """详情页读取：{profile, peers, industry}。"""
     result: Dict[str, Any] = {"profile": None, "peers": [], "industry": None}
     for dataset, key in (("business_profile", "profile"), ("peer_list", None)):
@@ -403,6 +450,12 @@ def load_business_profile(db: Session, symbol: str, market: str) -> Dict[str, An
             continue
         payload = row.payload or {}
         if dataset == "business_profile" and payload.get("status") == "ok":
+            if for_analysis and (
+                not versions_current(payload, prompt_version=int(PROFILE_PROMPT_VERSION))
+                or payload.get("input_fingerprint")
+                != input_fingerprint(build_business_profile_input(db, symbol, market))
+            ):
+                continue  # 画像刷新失败时，旧输入派生的画像不可回流到主分析
             result["profile"] = payload.get("profile")
         elif dataset == "peer_list":
             result["peers"] = payload.get("peers", [])

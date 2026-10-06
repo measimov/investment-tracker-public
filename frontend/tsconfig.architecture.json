@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.app.json",
+  "include": [
+    "architecture/**/*.ts",
+    "architecture/**/*.vue",
+    "vite.architecture.config.ts",
+    "vitest.coverage.config.ts",
+    "env.d.ts"
+  ],
+  "compilerOptions": {
+    "strict": true,
+    "composite": false
+  }
+}

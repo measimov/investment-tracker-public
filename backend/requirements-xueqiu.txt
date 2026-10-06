@@ -1,0 +1,4 @@
+-r requirements.txt
+# 私有雪球客户端。URL 不带凭证；Docker 通过 BuildKit secret 临时注入。
+# 本地也可用 pip install -e ../../xueqiu-market 安装已有检出。
+xueqiu-market @ git+https://github.com/measimov/xueqiu-market.git@v0.1.0

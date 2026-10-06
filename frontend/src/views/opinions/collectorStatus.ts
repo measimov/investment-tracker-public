@@ -66,7 +66,7 @@ export function cookieLabel(cookie: CollectorCookieStatus | null | undefined): s
         ? `剩 ${cookie.days_left.toFixed(1)} 天`
         : `已过期 ${Math.abs(cookie.days_left).toFixed(1)} 天`
     }
-    return cookie.level === 'critical' ? '失效' : cookie.level
+    return cookie.level === 'critical' ? '需检查' : cookie.level
   }
   return '无法预判到期'
 }
@@ -88,7 +88,13 @@ export function collectorHealth(status: CollectorStatus | null | undefined): Col
     }
   }
   if (status.cookie?.level === 'critical') {
-    return { type: 'danger', label: 'Cookie 失效', hint: status.cookie.message }
+    const daysLeft = status.cookie.days_left
+    return {
+      type: daysLeft != null && daysLeft > 0 ? 'warning' : 'danger',
+      label:
+        daysLeft == null ? 'Cookie 需检查' : daysLeft > 0 ? 'Cookie 即将到期' : 'Cookie 已过期',
+      hint: status.cookie.message
+    }
   }
   if (status.waf_cooldown_until) {
     return {
@@ -140,7 +146,7 @@ function statCount(stats: Record<string, unknown> | undefined, ...path: string[]
 /** 每日按标的采集一行摘要（采集器卡片头部）。 */
 export function symbolsCycleSummary(symbols: CollectorSymbolsStatus | null | undefined): string {
   if (!symbols) return ''
-  if (!symbols.enabled) return '按标的采集已关闭（XUEQIU_COLLECTOR_SYMBOLS_ENABLED）'
+  if (!symbols.enabled) return '按标的采集已关闭，需管理员配置开启'
   if (!symbols.last_status) return `按标的采集：每天 ${symbols.run_after} 后一轮，尚未运行`
   const stats = symbols.last_stats as Record<string, unknown> | undefined
   const parts = [`按标的采集：${runStatusLabel(symbols.last_status)}`]

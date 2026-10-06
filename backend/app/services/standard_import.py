@@ -12,6 +12,9 @@ from types import SimpleNamespace
 import pandas as pd
 
 from .portfolio.semantics import QUANTITY_ACTION_TYPES
+from .dividend_receipt_rules import validate_receipt_input
+from .dividend_receipt_service import reconcile_manual_receipt
+from .broker_import_common import lock_broker_import
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
@@ -49,12 +52,14 @@ STANDARD_CORPORATE_ACTION_REQUIRED_COLUMNS = [
 ]
 
 STANDARD_CORPORATE_ACTION_OPTIONAL_DEFAULTS = {
+    "receipt_confirmed": False,
+    "amount_basis": "GROSS_NET",
     "name": None,
     "record_date": None,
     "payment_date": None,
     "dividend_per_share": None,
     "total_dividend": None,
-    "tax_withheld": Decimal("0"),
+    "tax_withheld": None,
     "tax_rate": None,
     "net_dividend": None,
     "shares_received": None,
@@ -265,6 +270,7 @@ def import_standard_corporate_actions_dataframe(
     affected_symbols = set()
 
     try:
+        lock_broker_import(db, user_id)
         for _, row in normalized.iterrows():
             action_data = {
                 "broker_account_id": broker_account_id,
@@ -277,7 +283,7 @@ def import_standard_corporate_actions_dataframe(
                 "payment_date": optional_date(row["payment_date"]),
                 "dividend_per_share": optional_decimal(row["dividend_per_share"]),
                 "total_dividend": optional_decimal(row["total_dividend"]),
-                "tax_withheld": optional_decimal(row["tax_withheld"], Decimal("0")),
+                "tax_withheld": optional_decimal(row["tax_withheld"]),
                 "tax_rate": optional_decimal(row["tax_rate"]),
                 "net_dividend": optional_decimal(row["net_dividend"]),
                 "shares_received": optional_decimal(row["shares_received"]),
@@ -293,10 +299,21 @@ def import_standard_corporate_actions_dataframe(
                 "currency": optional_value(row["currency"], "CNY"),
                 "notes": optional_value(row["notes"]),
             }
-            action = CorporateActionCreate(**action_data)
 
-            db_action = CorporateAction(**action.model_dump(), user_id=user_id)
+            action_data["receipt_confirmed"] = str(row["receipt_confirmed"]).strip().lower() in (
+                "true",
+                "1",
+                "yes",
+            )
+            action_data["amount_basis"] = optional_value(row["amount_basis"], "GROSS_NET")
+            action = CorporateActionCreate(**action_data)
+            validated = action.model_dump()
+            validate_receipt_input(validated, confirmed=action.receipt_confirmed)
+
+            db_action = CorporateAction(**validated, user_id=user_id)
             db.add(db_action)
+            db.flush()
+            reconcile_manual_receipt(db, db_action)
             if action.action_type in HOLDING_AFFECTING_ACTION_TYPES:
                 affected_symbols.add((action.symbol, action.market))
             imported_count += 1

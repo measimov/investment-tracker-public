@@ -29,11 +29,11 @@ export const BATCH_POLL_INTERVAL_MS = 5000
 export const BATCH_POLL_MAX_ATTEMPTS = 4320
 
 const BATCH_STATUS_LABELS: Record<string, string> = {
-  queued: '批量分析排队中',
-  running: '批量分析进行中',
-  succeeded: '批量分析完成',
-  failed: '批量分析失败',
-  interrupted: '批量分析已终止'
+  queued: '批量分析持仓排队中',
+  running: '批量分析持仓进行中',
+  succeeded: '批量分析持仓完成',
+  failed: '批量分析持仓失败',
+  interrupted: '批量分析持仓已终止'
 }
 
 // 目标数以后端预览为准：后端还会排除已清仓、EXCLUDE 与 CASH_MANAGEMENT 标的，
@@ -77,13 +77,13 @@ export function useBatchAnalysis({
     isUnmounted,
     pollIntervalMs: BATCH_POLL_INTERVAL_MS,
     pollMaxAttempts: BATCH_POLL_MAX_ATTEMPTS,
-    timeoutMessage: '批量分析仍在后台运行；重新进入持仓页可继续查看进度',
-    failureMessage: '批量分析失败',
+    timeoutMessage: '批量分析持仓仍在后台运行；重新进入持仓页可继续查看进度',
+    failureMessage: '批量分析持仓失败',
     cancelConfirm: {
       message: '已生成的分析会保留，未开始的标的不再分析。当前正在分析的标的会先跑完再停止。',
-      title: '终止批量分析'
+      title: '终止批量分析持仓'
     },
-    cancelledMessage: '批量分析已终止，已生成的分析已保留',
+    cancelledMessage: '批量分析持仓已终止，已生成的分析已保留',
     onUpdate: (job, previous) => {
       // 每完成一只就刷一次标签列：标签一格一格亮起来是最好的进度反馈
       if (Number(job.completed || 0) > Number(previous?.completed || 0)) refreshAnalyses()
@@ -95,12 +95,12 @@ export function useBatchAnalysis({
       const skipped = Number(job.skipped_count || 0)
       const failed = Number(job.failed_count || 0)
       const summary =
-        `批量分析完成：成功 ${success} 只` +
+        `批量分析持仓完成：成功 ${success} 只` +
         (skipped ? `，跳过 ${skipped} 只` : '') +
         (failed ? `，失败 ${failed} 只` : '')
       if (!failed) ElMessage.success(summary)
       else if (success > 0) ElMessage.warning(summary)
-      else ElMessage.error('批量分析全部失败，请检查 LLM 配置后重试')
+      else ElMessage.error('批量分析持仓全部失败，请检查 LLM 配置后重试')
     },
     onCancelled: async () => {
       await refreshAnalyses()
@@ -182,7 +182,7 @@ export function useBatchAnalysis({
         `将对 ${targetCount} 只持仓标的（A股/美股/港股）逐个同步基本面并调用 LLM 生成分析，` +
           `预计耗时 ${estimateText(targetCount)}，会消耗较多 LLM token。\n` +
           `24 小时内已分析过的标的会自动跳过；任务在后台运行，关闭页面不会中断。`,
-        '一键分析所有持仓',
+        '批量分析持仓',
         { type: 'warning', confirmButtonText: '开始分析', cancelButtonText: '取消' }
       )
     } catch {
@@ -200,7 +200,7 @@ export function useBatchAnalysis({
       await watchJob(response.data.id)
     } catch (error) {
       if (isUnmounted()) return
-      showApiError(error, '批量分析启动失败')
+      showApiError(error, '批量分析持仓启动失败')
     } finally {
       if (!isUnmounted()) starting.value = false
     }

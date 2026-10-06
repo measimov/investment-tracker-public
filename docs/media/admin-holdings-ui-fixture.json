@@ -1,0 +1,176 @@
+{
+  "notice": "全部合法虚构数据，管理员标志仅UI场景；不读写真实账本，不证明权限",
+  "users": [
+    {
+      "id": 95301,
+      "username": "ui_fiction_very_long_user_name_for_admin_qa_0001",
+      "email": "ui.fiction.long.address.for.admin.qa+01@example.com",
+      "is_active": true,
+      "is_admin": false,
+      "created_at": "2026-10-02T23:30:00+00:00",
+      "updated_at": "2026-10-02T23:30:00+00:00"
+    },
+    {
+      "id": 95302,
+      "username": "ui_fiction_admin",
+      "email": "ui.fake.admin@example.com",
+      "is_active": true,
+      "is_admin": true,
+      "created_at": "2026-09-01T23:30:00+00:00",
+      "updated_at": "2026-09-01T23:30:00+00:00"
+    },
+    {
+      "id": 95303,
+      "username": "ui_fiction_inactive",
+      "email": null,
+      "is_active": false,
+      "is_admin": false,
+      "created_at": "2026-01-31T23:30:00+00:00",
+      "updated_at": "2026-01-31T23:30:00+00:00"
+    }
+  ],
+  "holdings": [
+    {
+      "broker_account_id": null,
+      "unknown_cost_quantity": "0",
+      "price_updated_at": "2026-10-02T23:30:00+00:00",
+      "price_as_of": "2026-10-02",
+      "price_source": "manual",
+      "updated_at": "2026-10-02T23:30:00+00:00",
+      "id": 95401,
+      "user_id": 95301,
+      "symbol": "UIA",
+      "name": "完整虚构长名称用于账户归属与小数价格阅读验收完整虚构长名称用于账户归属与小数价格阅读验收完整虚构长名称用于账户归属与小数价格阅读验收",
+      "market": "A股",
+      "quantity": "10.1234",
+      "avg_cost": "1.2345",
+      "total_cost": "12.50",
+      "currency": "CNY",
+      "current_price": "2.3456",
+      "username": "ui_fiction_very_long_user_name_for_admin_qa_0001"
+    },
+    {
+      "broker_account_id": null,
+      "unknown_cost_quantity": "0",
+      "price_updated_at": "2026-10-02T23:30:00+00:00",
+      "price_as_of": "2026-10-02",
+      "price_source": "manual",
+      "updated_at": "2026-10-02T23:30:00+00:00",
+      "id": 95402,
+      "user_id": 95301,
+      "symbol": "UIB",
+      "name": "美元虚构标的",
+      "market": "美股",
+      "quantity": "2",
+      "avg_cost": "10",
+      "total_cost": "20",
+      "currency": "USD",
+      "current_price": "12.5",
+      "username": "ui_fiction_very_long_user_name_for_admin_qa_0001"
+    },
+    {
+      "broker_account_id": null,
+      "unknown_cost_quantity": "0",
+      "price_updated_at": "2026-10-02T23:30:00+00:00",
+      "price_as_of": "2026-10-02",
+      "price_source": "manual",
+      "updated_at": "2026-10-02T23:30:00+00:00",
+      "id": 95403,
+      "user_id": 95302,
+      "symbol": "UIC",
+      "name": "港元虚构标的",
+      "market": "港股",
+      "quantity": "4",
+      "avg_cost": "8",
+      "total_cost": "32",
+      "currency": "HKD",
+      "current_price": "10",
+      "username": "ui_fiction_admin"
+    },
+    {
+      "broker_account_id": null,
+      "unknown_cost_quantity": "0",
+      "price_updated_at": "2026-10-02T23:30:00+00:00",
+      "price_as_of": "2026-10-02",
+      "price_source": "manual",
+      "updated_at": "2026-10-02T23:30:00+00:00",
+      "id": 95404,
+      "user_id": 95302,
+      "symbol": "UID",
+      "name": "真实零价虚构行",
+      "market": "A股",
+      "quantity": "2",
+      "avg_cost": "4",
+      "total_cost": "8",
+      "currency": "CNY",
+      "current_price": "0",
+      "username": "ui_fiction_admin"
+    },
+    {
+      "broker_account_id": null,
+      "unknown_cost_quantity": "0",
+      "price_updated_at": null,
+      "price_as_of": null,
+      "price_source": null,
+      "updated_at": "2026-10-02T23:30:00+00:00",
+      "id": 95405,
+      "user_id": 95301,
+      "symbol": "UIE",
+      "name": "未知价格虚构行",
+      "market": "美股",
+      "quantity": "2",
+      "avg_cost": "5",
+      "total_cost": "10",
+      "currency": "USD",
+      "current_price": null,
+      "username": "ui_fiction_very_long_user_name_for_admin_qa_0001"
+    },
+    {
+      "broker_account_id": null,
+      "unknown_cost_quantity": "0",
+      "price_updated_at": "2026-10-02T23:30:00+00:00",
+      "price_as_of": "2026-10-02",
+      "price_source": "manual",
+      "updated_at": "2026-10-02T23:30:00+00:00",
+      "id": 95406,
+      "user_id": 95303,
+      "symbol": "UIF",
+      "name": "缺少汇率虚构行",
+      "market": "美股",
+      "quantity": "3",
+      "avg_cost": "5",
+      "total_cost": "15",
+      "currency": "CHF",
+      "current_price": "6",
+      "username": "ui_fiction_inactive"
+    }
+  ],
+  "rates": {
+    "base_currency": "CNY",
+    "rates": {
+      "USD": "7.1",
+      "HKD": "0.91"
+    },
+    "effective_date": "2026-10-02",
+    "source": "manual",
+    "details": {
+      "USD": {
+        "rate": "7.1",
+        "effective_date": "2026-10-02",
+        "source": "manual"
+      },
+      "HKD": {
+        "rate": "0.91",
+        "effective_date": "2026-10-02",
+        "source": "manual"
+      }
+    }
+  },
+  "expected": {
+    "totalCostCNY": "262.62",
+    "totalValueCNY": "237.64544704",
+    "profitCNY": "46.02544704",
+    "missingRateCount": 1,
+    "unpricedCount": 1
+  }
+}

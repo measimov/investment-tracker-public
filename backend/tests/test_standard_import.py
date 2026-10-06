@@ -88,6 +88,9 @@ def test_standard_corporate_action_import_recalculates_holdings():
     db = SessionLocal()
     reset_tables(db, RESET_MODELS)
     try:
+        from tests.helpers import make_account
+
+        account = make_account(db, commit=True)
         import_standard_transactions_dataframe(
             db,
             1,
@@ -115,6 +118,7 @@ def test_standard_corporate_action_import_recalculates_holdings():
                     "name": "腾讯控股",
                     "market": "港股",
                     "action_type": "CASH_DIVIDEND",
+                    "receipt_confirmed": True,
                     "ex_date": "2026-01-10",
                     "payment_date": "2026-01-10",
                     "total_dividend": "300",
@@ -132,6 +136,7 @@ def test_standard_corporate_action_import_recalculates_holdings():
                     "currency": "HKD",
                 },
             ),
+            broker_account_id=account.id,
         )
 
         holding = db.query(Holding).filter_by(user_id=1, symbol="00700", market="港股").one()
@@ -226,6 +231,9 @@ def test_standard_import_attributes_broker_account():
                     "symbol": "00700",
                     "market": "港股",
                     "action_type": "CASH_DIVIDEND",
+                    "receipt_confirmed": True,
+                    "payment_date": "2026-02-01",
+                    "tax_withheld": "0",
                     "ex_date": "2026-02-01",
                     "total_dividend": "160",
                     "net_dividend": "160",

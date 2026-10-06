@@ -1,0 +1,304 @@
+{
+ "symbol": "NFLX",
+ "market": "美股",
+ "exported_from": "production (read-only), 2026-09-30",
+ "annual": {
+  "edgar_companyfacts": [
+   {
+    "end_date": "20251231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 45183036000,
+    "n_income_attr_p": 10981201000,
+    "total_assets": 55596993000,
+    "total_hldr_eqy_exc_min_int": 26615488000,
+    "money_cap": 9033681000,
+    "lt_debt": 13463971000,
+    "n_cashflow_act": 10149273000,
+    "basic_eps": 2.58
+   },
+   {
+    "end_date": "20241231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 39000966000,
+    "n_income_attr_p": 8711631000,
+    "total_assets": 53630374000,
+    "total_hldr_eqy_exc_min_int": 24743567000,
+    "money_cap": 7804733000,
+    "lt_debt": 13798351000,
+    "n_cashflow_act": 7361364000,
+    "basic_eps": 2.03
+   },
+   {
+    "end_date": "20231231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 33723297000,
+    "n_income_attr_p": 5407990000,
+    "total_assets": 48731992000,
+    "total_hldr_eqy_exc_min_int": 20588313000,
+    "money_cap": 7116913000,
+    "lt_debt": 14143417000,
+    "n_cashflow_act": 7274301000,
+    "basic_eps": 1.22
+   },
+   {
+    "end_date": "20221231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 31615550000,
+    "n_income_attr_p": 4491924000,
+    "total_assets": 48594768000,
+    "total_hldr_eqy_exc_min_int": 20777401000,
+    "money_cap": 5147176000,
+    "lt_debt": 14353076000,
+    "n_cashflow_act": 2026257000,
+    "basic_eps": 10.1
+   },
+   {
+    "end_date": "20211231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 29697844000,
+    "n_income_attr_p": 5116228000,
+    "total_assets": 44584663000,
+    "total_hldr_eqy_exc_min_int": 15849248000,
+    "money_cap": 6027804000,
+    "lt_debt": 14693072000,
+    "n_cashflow_act": 392610000,
+    "basic_eps": 11.55
+   },
+   {
+    "end_date": "20201231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 24996056000,
+    "n_income_attr_p": 2761395000,
+    "total_assets": 39280359000,
+    "total_hldr_eqy_exc_min_int": 11065240000,
+    "money_cap": 8205550000,
+    "lt_debt": 15809095000,
+    "n_cashflow_act": 2427077000,
+    "basic_eps": 6.26
+   },
+   {
+    "end_date": "20191231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 20156447000,
+    "n_income_attr_p": 1866916000,
+    "total_assets": 33975712000,
+    "total_hldr_eqy_exc_min_int": 7582157000,
+    "money_cap": 5018437000,
+    "lt_debt": 14759260000,
+    "n_cashflow_act": -2887322000,
+    "basic_eps": 4.26
+   },
+   {
+    "end_date": "20181231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 15794341000,
+    "n_income_attr_p": 1211242000,
+    "total_assets": 25974400000,
+    "total_hldr_eqy_exc_min_int": 5238765000,
+    "money_cap": 3794483000,
+    "lt_debt": 10360058000,
+    "n_cashflow_act": -2680479000,
+    "basic_eps": 2.78
+   },
+   {
+    "end_date": "20171231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 11692713000,
+    "n_income_attr_p": 558929000,
+    "total_assets": 19012742000,
+    "total_hldr_eqy_exc_min_int": 3581956000,
+    "money_cap": 2822795000,
+    "lt_debt": 6499432000,
+    "n_cashflow_act": -1785948000,
+    "basic_eps": 1.29
+   },
+   {
+    "end_date": "20161231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 8830669000,
+    "n_income_attr_p": 186678000,
+    "total_assets": 13586610000,
+    "total_hldr_eqy_exc_min_int": 2679800000,
+    "money_cap": 1467576000,
+    "lt_debt": 3364311000,
+    "n_cashflow_act": -1473984000,
+    "basic_eps": 0.44
+   },
+   {
+    "end_date": "20151231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 6779511000,
+    "n_income_attr_p": 122641000,
+    "total_assets": 10202871000,
+    "total_hldr_eqy_exc_min_int": 2223426000,
+    "money_cap": 1809330000,
+    "lt_debt": 2371362000,
+    "n_cashflow_act": -749439000,
+    "basic_eps": 0.29
+   },
+   {
+    "end_date": "20141231",
+    "fp": "FY",
+    "currency": "USD",
+    "total_revenue": 5504656000,
+    "n_income_attr_p": 266799000,
+    "total_assets": 7042500000,
+    "total_hldr_eqy_exc_min_int": 1857708000,
+    "money_cap": 1113608000,
+    "lt_debt": 885849000,
+    "n_cashflow_act": 16483000,
+    "basic_eps": 0.63
+   }
+  ]
+ },
+ "interim": {
+  "edgar_companyfacts": [
+   {
+    "end_date": "20260630",
+    "fp": "Q2",
+    "currency": "USD",
+    "total_revenue": 12559938000,
+    "n_income_attr_p": 3401414000,
+    "total_assets": 58450441000,
+    "total_hldr_eqy_exc_min_int": 30152052000,
+    "money_cap": 9099232000,
+    "lt_debt": 11825548000,
+    "n_cashflow_act": 1743812000,
+    "basic_eps": 0.81
+   },
+   {
+    "end_date": "20260331",
+    "fp": "Q2",
+    "currency": "USD",
+    "total_hldr_eqy_exc_min_int": 31126399000,
+    "money_cap": 12266873000
+   },
+   {
+    "end_date": "20260331",
+    "fp": "Q1",
+    "currency": "USD",
+    "total_revenue": 12249757000,
+    "n_income_attr_p": 5282791000,
+    "total_assets": 61015914000,
+    "total_hldr_eqy_exc_min_int": 31126399000,
+    "money_cap": 12259772000,
+    "lt_debt": 13361331000,
+    "n_cashflow_act": 5290205000,
+    "basic_eps": 1.25
+   },
+   {
+    "end_date": "20251231",
+    "fp": "Q2",
+    "currency": "USD",
+    "total_assets": 55596993000,
+    "total_hldr_eqy_exc_min_int": 26615488000,
+    "money_cap": 9033681000,
+    "lt_debt": 13463971000
+   },
+   {
+    "end_date": "20251231",
+    "fp": "Q1",
+    "currency": "USD",
+    "total_assets": 55596993000,
+    "total_hldr_eqy_exc_min_int": 26615488000,
+    "money_cap": 9033681000,
+    "lt_debt": 13463971000
+   },
+   {
+    "end_date": "20250930",
+    "fp": "Q3",
+    "currency": "USD",
+    "total_revenue": 11510307000,
+    "n_income_attr_p": 2546916000,
+    "total_assets": 54934835000,
+    "total_hldr_eqy_exc_min_int": 25954035000,
+    "money_cap": 9287287000,
+    "lt_debt": 14463020000,
+    "n_cashflow_act": 2825174000,
+    "basic_eps": 6
+   },
+   {
+    "end_date": "20250630",
+    "fp": "Q3",
+    "currency": "USD",
+    "total_hldr_eqy_exc_min_int": 24951899000,
+    "money_cap": 8180573000
+   },
+   {
+    "end_date": "20250630",
+    "fp": "Q2",
+    "currency": "USD",
+    "total_revenue": 11079166000,
+    "n_income_attr_p": 3125413000,
+    "total_assets": 53099664000,
+    "total_hldr_eqy_exc_min_int": 24951899000,
+    "money_cap": 8177405000,
+    "lt_debt": 14453206000,
+    "n_cashflow_act": 2423258000,
+    "basic_eps": 0.74
+   }
+  ]
+ },
+ "dividend_rows": [],
+ "daily_basic": [],
+ "graham": {
+  "status": "ok",
+  "criteria": [
+   {
+    "criterion": "current_ratio",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "lt_debt_vs_net_current_assets",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_stability",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "dividend_record",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_growth",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "pe",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "pb_or_product",
+    "verdict": "fail",
+    "basis": {
+     "price": 70.3,
+     "price_currency": "USD",
+     "price_date": "2026-09-29",
+     "implied_shares": 4199276543,
+     "share_ratio": null,
+     "bvps": 7.180297,
+     "equity": 30152052000.0,
+     "equity_currency": "USD"
+    }
+   }
+  ]
+ }
+}

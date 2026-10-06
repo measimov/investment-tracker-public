@@ -132,6 +132,14 @@ server {
         proxy_read_timeout 10s;
     }
 
+    # 固定路径的首屏主题脚本每次校验，部署更新/回滚不沿用旧的偏好逻辑。
+    # expires 自动生成 no-cache；不加 add_header，保留父 server 的安全响应头。
+    location = /theme-init.js {
+        expires -1;
+        try_files $uri =404;
+        access_log off;
+    }
+
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
         expires 1y;
         add_header Cache-Control "public, immutable";

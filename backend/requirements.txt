@@ -26,3 +26,4 @@ pypinyin==0.55.0
 zhconv==1.4.3
 # 告警推送（services/notification_service.py）：Bark 为主，其他渠道只改 NOTIFY_URLS
 apprise==2.0.0
+# 可选雪球数据源另见 requirements-xueqiu.txt；核心依赖无需私有仓权限。

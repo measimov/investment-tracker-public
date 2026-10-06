@@ -460,6 +460,9 @@ def _run_job(
         datasets
         or {
             "fina_indicator": [{"end_date": "20251231", "roe": 15.0}],
+            # 固定模型输出里有「高股息」：估值快照须带股息率，否则标签兜底（#265）会按
+            # 「输入中没有股息率」把它丢掉
+            "daily_basic": [{"trade_date": "20260925", "close": 40.0, "dv_ttm": 5.2}],
         },
     )
     # 财报摘要/商业画像管线断网：分析 job 会调用真实实现（打 cninfo/tushare/LLM）
@@ -1133,7 +1136,8 @@ def test_build_system_prompt_hk_branch():
     assert "risk_level 不得为 low" in hk
     # 已接入披露易年报全文与年报/中报三张表抽取：结构化科目来自原文抽取（可达十年），
     # 风险等级下限保留
-    assert "主要風險" in hk
+    assert "不得推断年报没有风险章节" in hk
+    assert "实测多数没有" not in hk
     assert "原文抽取" in hk and "report_statements" in hk
     assert "利润质量与会计风险" in hk  # 共享骨架保留
 
@@ -1179,7 +1183,7 @@ def test_analysis_job_hk_market_end_to_end(db, monkeypatch):
     semantics = payload["meta"]["data_semantics"]
     assert "report_digests=披露易年报全文的 AI 摘要" in semantics
     assert "无审计意见/质押/增减持/解禁数据源" in semantics
-    assert "年报未设「主要風險」章节时该项为空" in semantics
+    assert "不证明年报没有风险章节" in semantics
     assert payload["profile"]["yahoo_fundamentals"][0]["currency"] == "CNY"
     year = payload["earnings_quality"]["per_year"]["2025"]
     assert year["cfo_ni_ratio"] == 1.5  # 300/200
@@ -2450,3 +2454,180 @@ def test_fast_analysis_still_reports_digest_gaps_and_drops_gross_margin_amount(d
     row = payload["profile"]["fina_indicator"][0]
     assert "gross_margin" not in row and row["grossprofit_margin"] == 31.5
     assert "grossprofit_margin" in payload["meta"]["data_semantics"]
+
+
+def test_earnings_quality_uses_annual_rows_not_the_caps_window():
+    """#265 前置：档案 caps 窗口（A股 8 个报告期）混着季报，只认年度行的利润质量指标此前
+    只剩约 2 年。年度取数与格雷厄姆同口径后覆盖全部年度（最多 8 年）。"""
+    from app.database import SessionLocal
+    from app.models.security_profile import SecurityProfileData
+    from app.services.earnings_quality import compute_earnings_quality, market_statements
+    from app.services.security_profile_service import load_annual_statement_datasets
+
+    db = SessionLocal()
+    symbol = "600EQYRS"
+    try:
+        db.query(SecurityProfileData).filter(SecurityProfileData.symbol == symbol).delete()
+
+        def add(dataset, period, payload):
+            db.add(
+                SecurityProfileData(
+                    symbol=symbol,
+                    market="A股",
+                    dataset=dataset,
+                    period_key=period,
+                    payload={"end_date": period, **payload},
+                )
+            )
+
+        for year in range(2018, 2026):
+            end = f"{year}1231"
+            add("income", end, {"n_income_attr_p": 100.0 + year, "total_revenue": 1000.0 + year})
+            add("balancesheet", end, {"total_assets": 5000.0, "accounts_receiv": 100.0})
+            add("cashflow", end, {"n_cashflow_act": 120.0 + year})
+            add("fina_indicator", end, {"grossprofit_margin": 30.0, "roe": 12.0})
+            for quarter in ("0331", "0630", "0930"):
+                period = f"{year}{quarter}"
+                add("income", period, {"n_income_attr_p": 50.0, "total_revenue": 500.0})
+                add("balancesheet", period, {"total_assets": 5000.0})
+                add("cashflow", period, {"n_cashflow_act": 60.0})
+                add("fina_indicator", period, {"grossprofit_margin": 30.0})
+        db.commit()
+
+        annual = load_annual_statement_datasets(db, symbol, "A股")
+        assert all(row["end_date"].endswith("1231") for rows in annual.values() for row in rows)
+        statements = market_statements("A股", annual)
+        quality = compute_earnings_quality(
+            statements["income"],
+            statements["balancesheet"],
+            statements["cashflow"],
+            statements["fina_indicator"],
+            market="A股",
+        )
+        assert len(quality["years"]) == 8, quality["years"]
+        assert load_annual_statement_datasets(db, symbol, "B股") is None  # 无年度口径的市场
+    finally:
+        db.query(SecurityProfileData).filter(SecurityProfileData.symbol == symbol).delete()
+        db.commit()
+        db.close()
+
+
+def test_analysis_job_drops_tags_contradicted_by_signals(db, monkeypatch):
+    """#265：模型贴「业绩增长」而最新财年归母净利同比下降——标签兜底丢掉该标签并落库记录，
+    整份分析照常成功；输入里带 signals 块与语义说明。"""
+    captured = []
+
+    def chat(messages, **kw):
+        captured.append(messages[1]["content"])
+        return {
+            "content": analysis_output(["业绩增长", "高股息"], risk_level="low"),
+            "model": "m",
+            "usage": {},
+        }
+
+    datasets = {
+        "income": [
+            {"end_date": "20251231", "total_revenue": 120.0e8, "n_income_attr_p": 8.0e8},
+            {"end_date": "20241231", "total_revenue": 100.0e8, "n_income_attr_p": 10.0e8},
+        ],
+        "fina_indicator": [{"end_date": "20251231", "roe": 15.0}],
+        "daily_basic": [{"trade_date": "20260925", "close": 40.0, "dv_ttm": 5.2}],
+    }
+    job = _run_job(db, monkeypatch, chat=chat, datasets=datasets)
+    assert job.status == "succeeded", job.error
+    analysis = db.query(SecurityAnalysis).one()
+    assert analysis.tags == ["高股息"]
+    dropped = [a for a in analysis.output_adjustments if a["type"] == "tag_dropped_by_signal"]
+    assert dropped and dropped[0]["tag"] == "业绩增长" and "-20.0" in dropped[0]["reason"]
+    payload = json.loads(captured[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    assert payload["signals"]["status"] == "ok"
+    assert payload["signals"]["period_signals"]["latest_fy"]["net_income"]["yoy_pct"] == -20.0
+    assert "signals=" in payload["meta"]["data_semantics"]
+
+
+def test_dividend_history_is_deduplicated_before_reaching_the_model():
+    """#289：同一次分配的多条「实施」（不同公告日）只留一条；已实施报告期的预案等过程行不送；
+    未实施的新预案保留。只送关键字段。"""
+    rows = [
+        {
+            "end_date": "20241231",
+            "ann_date": "20250321",
+            "div_proc": "实施",
+            "ex_date": "20250606",
+            "cash_div_tax": 2.29,
+            "record_date": "20250605",
+            "imp_ann_date": "20250530",
+        },
+        {
+            "end_date": "20241231",
+            "ann_date": "20250523",
+            "div_proc": "实施",
+            "ex_date": "20250606",
+            "cash_div_tax": 2.29,
+        },
+        {"end_date": "20241231", "ann_date": "20250320", "div_proc": "预案", "cash_div_tax": 2.29},
+        {
+            "end_date": "20250630",
+            "ann_date": "20250808",
+            "div_proc": "实施",
+            "ex_date": "20250901",
+            "cash_div_tax": 2.41,
+        },
+        {"end_date": "20251231", "ann_date": "20260320", "div_proc": "预案", "cash_div_tax": 2.5},
+    ]
+    compact = jobs._compact_statement_rows("dividend_history", rows)
+    assert [(r["end_date"], r["div_proc"]) for r in compact] == [
+        ("20251231", "预案"),
+        ("20250630", "实施"),
+        ("20241231", "实施"),
+    ]
+    kept = next(r for r in compact if r["end_date"] == "20241231")
+    # 修订先后按 implemented_dividends 的唯一定义：实施公告日优先（第一条有 20250530，
+    # 第二条缺失），与 signals 汇总选同一条
+    assert kept["ann_date"] == "20250321" and "record_date" not in kept
+
+
+def test_signal_sql_failure_is_isolated_and_the_analysis_still_persists(db, monkeypatch):
+    """PR #333 后评审：预计算信号取数里的**真实** SQL 错误（PostgreSQL 会让当前事务作废）只回滚到
+    保存点，分析照常调用 LLM 并落库；输入里 signals 记为 error。"""
+    from sqlalchemy import text
+
+    from app.services import security_profile_service as profile_svc
+
+    def broken_load(db_, symbol, market):
+        db_.execute(text("SELECT * FROM no_such_table_for_signals"))
+
+    monkeypatch.setattr(profile_svc, "load_signal_inputs", broken_load)
+    captured = []
+
+    def chat(messages, **kw):
+        captured.append(messages[1]["content"])
+        return {"content": VALID_LLM_OUTPUT, "model": "m", "usage": {}}
+
+    job = _run_job(db, monkeypatch, chat=chat)
+    assert job.status == "succeeded", job.error
+    assert db.query(SecurityAnalysis).count() == 1
+    payload = json.loads(captured[-1].split("```json\n", 1)[1].rsplit("\n```", 1)[0])
+    assert payload["signals"] == {"status": "error"}
+
+
+def test_signal_connection_failure_stops_before_the_llm(db, monkeypatch):
+    """连接失效等不可恢复的数据库错误直接上抛：不再往下调 LLM 白烧额度。"""
+    from sqlalchemy.exc import OperationalError
+
+    from app.services import security_profile_service as profile_svc
+
+    def lost_connection(db_, symbol, market):
+        raise OperationalError("SELECT 1", {}, Exception("server closed the connection"))
+
+    monkeypatch.setattr(profile_svc, "load_signal_inputs", lost_connection)
+    calls = []
+
+    def chat(messages, **kw):
+        calls.append(1)
+        return {"content": VALID_LLM_OUTPUT, "model": "m", "usage": {}}
+
+    job = _run_job(db, monkeypatch, chat=chat)
+    assert calls == []
+    assert job.status != "succeeded"
+    assert db.query(SecurityAnalysis).count() == 0

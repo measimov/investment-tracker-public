@@ -267,3 +267,159 @@ test('a failed list refresh never auto-selects from the stale list', async ({ pa
   await page.waitForTimeout(300)
   expect(detailARequests).toBe(detailRequestsBeforeDelete)
 })
+
+test('初载列表和定期配置失败保持未知，只读重试才能确认空与关闭', async ({ page, request }) => {
+  await setSession(page, await loginThroughApi(request))
+  let lists = 0
+  let schedules = 0
+  const writes: string[] = []
+  await page.route('**/api/llm-reports**', (route) => {
+    const req = route.request()
+    if (req.method() !== 'GET') {
+      writes.push(req.url())
+      return route.abort()
+    }
+    if (req.url().endsWith('/schedule')) {
+      schedules++
+      return route.fulfill(
+        schedules === 1
+          ? { status: 503, json: { detail: '虚构配置读取失败' } }
+          : { json: { cadence: 'off' } }
+      )
+    }
+    lists++
+    return route.fulfill(
+      lists === 1 ? { status: 503, json: { detail: '虚构列表读取失败' } } : { json: [] }
+    )
+  })
+  await page.goto('/reports')
+  await expect(page.getByRole('complementary', { name: '复盘报告列表' })).toContainText(
+    '虚构列表读取失败'
+  )
+  await expect(page.getByText('暂无报告，可生成第一份复盘')).toHaveCount(0)
+  const cadence = page.getByRole('combobox', { name: '定期生成频率' })
+  await expect(cadence).toBeDisabled()
+  await expect(cadence).toHaveValue('')
+  await page.getByRole('button', { name: '重新加载定期配置' }).click()
+  await expect(cadence).toBeEnabled()
+  await expect(cadence).toHaveValue('off')
+  await page.getByRole('button', { name: '重新加载报告列表' }).click()
+  await expect(page.getByText('暂无报告，可生成第一份复盘')).toBeVisible()
+  expect(writes).toEqual([])
+})
+
+test('B详情失败不得保留A正文或让A作为B追问删除，重试只读恢复B', async ({ page, request }) => {
+  await setSession(page, await loginThroughApi(request))
+  let readsB = 0
+  const writes: string[] = []
+  await page.route('**/api/llm-reports**', (route) => {
+    if (route.request().method() !== 'GET') {
+      writes.push(route.request().url())
+      return route.abort()
+    }
+    const url = route.request().url()
+    if (url.endsWith('/schedule')) return route.fulfill({ json: { cadence: 'off' } })
+    if (url.endsWith('/1'))
+      return route.fulfill({ json: detailPayload(REPORT_A, '# 明确虚构A正文') })
+    if (url.endsWith('/2')) {
+      readsB++
+      return route.fulfill(
+        readsB === 1
+          ? { status: 503, json: { detail: '虚构B读取失败' } }
+          : { json: detailPayload(REPORT_B, '# 明确虚构B正文') }
+      )
+    }
+    return route.fulfill({ json: [REPORT_A, REPORT_B] })
+  })
+  await page.goto('/reports')
+  await expect(page.locator('.report-detail')).toContainText('明确虚构A正文')
+  await page.locator('.report-item', { hasText: REPORT_B.title }).click()
+  await expect(page.getByRole('region', { name: '复盘报告正文' })).toContainText('虚构B读取失败')
+  await expect(page.locator('.report-item.active')).toContainText(REPORT_B.title)
+  await expect(page.locator('.markdown-body')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: '删除报告' })).toHaveCount(0)
+  await expect(page.getByRole('textbox', { name: '就所选报告追问' })).toHaveCount(0)
+  await page.getByRole('button', { name: '重新加载所选报告' }).click()
+  await expect(page.locator('.report-detail')).toContainText('明确虚构B正文')
+  expect([readsB, writes.length]).toEqual([2, 0])
+})
+
+test('A到B到A的旧详情不能覆盖最新A或解除最新加载状态', async ({ page, request }) => {
+  await setSession(page, await loginThroughApi(request))
+  let releaseOld!: () => void
+  const oldGate = new Promise<void>((resolve) => {
+    releaseOld = resolve
+  })
+  let readsA = 0
+  await page.route('**/api/llm-reports/schedule', (route) =>
+    route.fulfill({ json: { cadence: 'off' } })
+  )
+  await page.route('**/api/llm-reports', (route) => route.fulfill({ json: [REPORT_A, REPORT_B] }))
+  await page.route('**/api/llm-reports/2', (route) =>
+    route.fulfill({ json: detailPayload(REPORT_B, '# 虚构B正文') })
+  )
+  await page.route('**/api/llm-reports/1', async (route) => {
+    const number = ++readsA
+    if (number === 1) await oldGate
+    await route.fulfill({
+      json: detailPayload(REPORT_A, number === 1 ? '# 虚构旧A1正文' : '# 虚构最新A2正文')
+    })
+  })
+  await page.goto('/reports')
+  await expect.poll(() => readsA).toBe(1)
+  await page.locator('.report-item', { hasText: REPORT_B.title }).click()
+  await expect(page.locator('.report-detail')).toContainText('虚构B正文')
+  await page.locator('.report-item', { hasText: REPORT_A.title }).click()
+  await expect(page.locator('.report-detail')).toContainText('虚构最新A2正文')
+  const lateResponse = page.waitForResponse((r) => r.url().endsWith('/api/llm-reports/1'))
+  releaseOld()
+  await lateResponse
+  await expect(page.locator('.report-detail')).toContainText('虚构最新A2正文')
+  await expect(page.locator('.report-detail')).not.toContainText('虚构旧A1正文')
+})
+
+test('手机报告入口通过键盘展开选B后收起并呈现B，不泄漏A正文', async ({ page, request }) => {
+  await page.setViewportSize({ width: 393, height: 852 })
+  await setSession(page, await loginThroughApi(request))
+  const writes: string[] = []
+  await page.route('**/api/llm-reports**', (route) => {
+    const req = route.request()
+    if (req.method() !== 'GET') {
+      writes.push(req.url())
+      return route.abort()
+    }
+    if (req.url().endsWith('/schedule')) return route.fulfill({ json: { cadence: 'off' } })
+    if (req.url().endsWith('/1'))
+      return route.fulfill({ json: detailPayload(REPORT_A, '# 手机虚构A正文') })
+    if (req.url().endsWith('/2'))
+      return route.fulfill({ json: detailPayload(REPORT_B, '# 手机虚构B正文') })
+    return route.fulfill({ json: [REPORT_A, REPORT_B] })
+  })
+  await page.goto('/reports')
+  await expect(page.locator('.report-detail')).toContainText('手机虚构A正文')
+  const picker = page.locator('.report-picker')
+  await expect(picker).toContainText(REPORT_A.title)
+  await expect(picker).toHaveAttribute('aria-expanded', 'false')
+  await expect(page.locator('.report-item')).toHaveCount(2)
+  await expect(page.locator('.report-item').first()).toBeHidden()
+  await picker.focus()
+  await picker.press('Enter')
+  await expect(picker).toHaveAttribute('aria-expanded', 'true')
+  const reportB = page.locator('.report-item', { hasText: REPORT_B.title })
+  await expect(reportB).toBeVisible()
+  await reportB.focus()
+  await reportB.press('Enter')
+  await expect(picker).toHaveAttribute('aria-expanded', 'false')
+  await expect(picker).toContainText(REPORT_B.title)
+  await expect(picker).toBeFocused()
+  await expect(reportB).toBeHidden()
+  await expect(page.locator('.report-detail')).toContainText('手机虚构B正文')
+  await expect(page.locator('.report-detail')).not.toContainText('手机虚构A正文')
+  await expect(page.getByRole('textbox', { name: '就所选报告追问' })).toBeVisible()
+  await picker.press('Enter')
+  await reportB.focus()
+  await reportB.press('Escape')
+  await expect(picker).toHaveAttribute('aria-expanded', 'false')
+  await expect(picker).toBeFocused()
+  expect(writes).toEqual([])
+})

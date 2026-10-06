@@ -22,6 +22,7 @@ from ..market_data_service import (
     fetch_and_store_security_price_history_incremental,
     infer_price_currency,
 )
+from ..dividend_tax_service import load_dividend_tax_events
 from ..portfolio.benchmark import build_benchmark_series, calculate_benchmark_comparison
 from ..portfolio.curve import (
     build_return_curve,
@@ -29,13 +30,13 @@ from ..portfolio.curve import (
     corporate_action_inflows,
     decimal_close,
 )
-from ..portfolio.fx import ExchangeRateLookup
+from ..portfolio.fx import ExchangeRateLookup, dividend_tax_cash_flow
 from ..portfolio.metrics import (
     calculate_risk_metrics,
     calculate_trade_skill_metrics,
     xirr,
 )
-from ..portfolio.semantics import cash_dividend_amounts
+from ..portfolio.semantics import cash_dividend_amounts, dividend_cash_date, is_received_dividend
 from .aggregates import calculate_realized_pnl_fifo
 from .fifo_results import fifo_results_for_user
 from .fx import (
@@ -150,12 +151,20 @@ def _clamp_range(
     start_date: Optional[date],
     end_date: Optional[date],
     today: date,
+    dividend_tax_events=(),
 ) -> Tuple[date, date, Optional[date], Optional[date], bool]:
     """请求区间钳制到 [首笔交易日, 最后事件日]，回显 requested vs effective。"""
-    first_date = min(txn.transaction_date for txn in transactions)
+    first_date = min(
+        (
+            [txn.transaction_date for txn in transactions]
+            or [corporate_action_curve_date(action) for action in corporate_actions]
+        )
+        + [event.event_date for event in dividend_tax_events]
+    )
     last_event_date = max(
         [txn.transaction_date for txn in transactions]
         + [corporate_action_curve_date(action) for action in corporate_actions]
+        + [event.event_date for event in dividend_tax_events]
         + [today]
     )
     # 越界只会得到平直的边界填充点，钳制并回显，前端可提示"已按有效区间计算"。
@@ -243,6 +252,7 @@ def _build_range_summary(
     start_date: date,
     end_date: date,
     rate_lookup: ExchangeRateLookup,
+    dividend_tax_events=(),
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Set[str]]:
     """区间汇总 + 区间化交易能力指标。
 
@@ -264,17 +274,25 @@ def _build_range_summary(
     # 区间内税后股息（展示口径与股息摘要一致：最新汇率折算）
     range_dividends = []
     for action in corporate_actions:
-        if action.action_type != "CASH_DIVIDEND":
+        if not is_received_dividend(action, end_date):
             continue
-        flow_date = action.payment_date or action.ex_date
+        flow_date = dividend_cash_date(action)
         if flow_date is None or not (start_date <= flow_date <= end_date):
             continue
         _, _, net = cash_dividend_amounts(action)
         range_dividends.append((flow_date, net, action.currency or "CNY"))
+    range_dividend_count = len(range_dividends)
+    range_tax_events = [
+        event for event in dividend_tax_events if start_date <= event.event_date <= end_date
+    ]
     range_dividend_net_cny = Decimal("0")
     range_missing_rates: Set[str] = set()
     for _, net, currency in range_dividends:
         range_dividend_net_cny += to_cny_or_track_missing(db, net, currency, range_missing_rates)
+    for event in range_tax_events:
+        range_dividend_net_cny += to_cny_or_track_missing(
+            db, -event.amount, event.currency, range_missing_rates
+        )
 
     # 区间资金加权收益（XIRR）：期初市值作为区间起点的合成投入流，期末市值
     # 作为终点回收流，区间内买卖/股息按各自日期汇率折算。
@@ -301,6 +319,14 @@ def _build_range_summary(
                 to_cny_on_date(net, currency, flow_date, rate_lookup),
             )
         )
+    missing_tax_rates = set()
+    for event in range_tax_events:
+        flow = dividend_tax_cash_flow(event, rate_lookup)
+        if flow is None:
+            missing_tax_rates.add(event.currency)
+        else:
+            range_cash_flows.append(flow)
+    range_missing_rates.update(missing_tax_rates)
     # 区间内公司行动带来的外部投入（期初建仓按成本、配股按认购成本，#271）；区间前的已在期初市值里
     action_flows, unknown_cost_positions = corporate_action_inflows(
         corporate_actions,
@@ -313,14 +339,14 @@ def _build_range_summary(
     closing_market_value_cny = Decimal(str(curve[-1]["equity_cny"])) if curve else Decimal("0")
     if closing_market_value_cny > 0:
         range_cash_flows.append((end_date, closing_market_value_cny))
-    range_xirr = xirr(range_cash_flows)
+    range_xirr = None if missing_tax_rates else xirr(range_cash_flows)
 
     range_summary = {
-        "status": "experimental",
+        "status": "indeterminate" if missing_tax_rates else "experimental",
         "realized_pnl_cny": float(range_realized_pnl_cny),
         "closed_trade_count": len(range_closed_trades),
         "dividend_net_cny": float(range_dividend_net_cny),
-        "dividend_count": len(range_dividends),
+        "dividend_count": range_dividend_count,
         "opening_market_value_cny": float(opening_market_value_cny),
         "closing_market_value_cny": float(closing_market_value_cny),
         "xirr_annualized_rate": (
@@ -523,11 +549,12 @@ def calculate_performance_analytics(
         .all()
     )
 
-    if not transactions:
+    tax_events = load_dividend_tax_events(db, user_id)
+    if not transactions and not tax_events:
         return _empty_analytics_response()
 
     start_date, end_date, requested_start, requested_end, range_clamped = _clamp_range(
-        transactions, corporate_actions, start_date, end_date, today
+        transactions, corporate_actions, start_date, end_date, today, tax_events
     )
 
     symbols_by_key = {}
@@ -561,6 +588,7 @@ def calculate_performance_analytics(
         rate_lookup=rate_lookup,
         fallback_currency=infer_price_currency,
         today=today,
+        dividend_tax_events=tax_events,
     )
 
     # Reuse the transactions/corporate actions already loaded above instead of
@@ -589,6 +617,7 @@ def calculate_performance_analytics(
         start_date,
         end_date,
         rate_lookup,
+        tax_events,
     )
 
     missing_price_history = [
@@ -597,6 +626,21 @@ def calculate_performance_analytics(
         if price_counts.get((symbol, market), 0) == 0
     ]
     warnings = []
+    missing_tax_rates = curve_quality.get("missing_tax_rate_currencies", [])
+    if missing_tax_rates:
+        warnings.append(
+            f"股息税扣款日缺少汇率（{'、'.join(missing_tax_rates)}），税款未计入人民币曲线，"
+            "曲线收益不完整，相关年化与风险指标暂不展示。"
+        )
+        risk_metrics["status"] = "indeterminate"
+        for key in (
+            "annualized_return_rate",
+            "annualized_volatility",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "calmar_ratio",
+        ):
+            risk_metrics[key] = None
     if calculation_level == "event_level":
         warnings.append("未找到足够历史行情，当前曲线使用交易事件和最近价格估算。")
     if missing_price_history:
@@ -647,8 +691,13 @@ def calculate_performance_analytics(
     missing_rate_note = missing_rate_warning(analytics_missing_rates)
     if missing_rate_note:
         warnings.append(
-            f"{missing_rate_note}TTWR 曲线为保持连续性仍按原币数值参与，"
-            "故曲线与汇总口径在这些币种上不可直接比较。"
+            f"{missing_rate_note}"
+            + (
+                "股息税的历史汇率缺口已单列；其他缺汇率的交易/持仓在曲线中仍按原币数值参与，"
+                if missing_tax_rates
+                else "TTWR 曲线为保持连续性仍按原币数值参与，"
+            )
+            + "故曲线与汇总口径在这些币种上不可直接比较。"
         )
 
     benchmarks_payload = (
@@ -703,5 +752,6 @@ def calculate_performance_analytics(
             "invalid_position_events": invalid_position_events[:50],
             "return_method": "ttwr",
             "sync_results": sync_results,
+            **({"missing_tax_rate_currencies": missing_tax_rates} if missing_tax_rates else {}),
         },
     }

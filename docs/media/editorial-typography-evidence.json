@@ -1,0 +1,708 @@
+{
+  "notice": "明确虚构的浏览器验收数据，不对应真实账户；WebKit既有提示保留。",
+  "reading": [
+    {
+      "engine": "chromium",
+      "width": 320,
+      "theme": "light",
+      "layout": {
+        "width": 320,
+        "body": 320,
+        "doc": 320,
+        "theme": "light"
+      },
+      "roles": {
+        "report": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 254
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 184
+        },
+        "digest": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 262
+        },
+        "feed": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 258
+        },
+        "expanded": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 258
+        }
+      },
+      "rendered_report_fonts": [
+        {
+          "familyName": "Noto Serif SC ExtraLight",
+          "postScriptName": "NotoSerifSC-ExtraLight",
+          "isCustomFont": true,
+          "glyphCount": 46
+        }
+      ],
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": true
+    },
+    {
+      "engine": "chromium",
+      "width": 320,
+      "theme": "dark",
+      "layout": {
+        "width": 320,
+        "body": 320,
+        "doc": 320,
+        "theme": "dark"
+      },
+      "roles": {
+        "report": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 254
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 184
+        },
+        "digest": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 262
+        },
+        "feed": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 258
+        },
+        "expanded": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 258
+        }
+      },
+      "rendered_report_fonts": [
+        {
+          "familyName": "Noto Serif SC ExtraLight",
+          "postScriptName": "NotoSerifSC-ExtraLight",
+          "isCustomFont": true,
+          "glyphCount": 46
+        }
+      ],
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": true
+    },
+    {
+      "engine": "chromium",
+      "width": 393,
+      "theme": "light",
+      "layout": {
+        "width": 393,
+        "body": 393,
+        "doc": 393,
+        "theme": "light"
+      },
+      "roles": {
+        "report": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 327
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 257
+        },
+        "digest": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 335
+        },
+        "feed": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 331
+        },
+        "expanded": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 331
+        }
+      },
+      "rendered_report_fonts": [
+        {
+          "familyName": "Noto Serif SC ExtraLight",
+          "postScriptName": "NotoSerifSC-ExtraLight",
+          "isCustomFont": true,
+          "glyphCount": 46
+        }
+      ],
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": true
+    },
+    {
+      "engine": "chromium",
+      "width": 393,
+      "theme": "dark",
+      "layout": {
+        "width": 393,
+        "body": 393,
+        "doc": 393,
+        "theme": "dark"
+      },
+      "roles": {
+        "report": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 327
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 257
+        },
+        "digest": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 335
+        },
+        "feed": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 331
+        },
+        "expanded": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 331
+        }
+      },
+      "rendered_report_fonts": [
+        {
+          "familyName": "Noto Serif SC ExtraLight",
+          "postScriptName": "NotoSerifSC-ExtraLight",
+          "isCustomFont": true,
+          "glyphCount": 46
+        }
+      ],
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": true
+    },
+    {
+      "engine": "chromium",
+      "width": 1440,
+      "theme": "light",
+      "layout": {
+        "width": 1440,
+        "body": 1440,
+        "doc": 1440,
+        "theme": "light"
+      },
+      "roles": {
+        "report": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 684
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 486
+        },
+        "digest": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 684
+        },
+        "feed": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 684
+        },
+        "expanded": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 294.4375
+        }
+      },
+      "rendered_report_fonts": [
+        {
+          "familyName": "Noto Serif SC ExtraLight",
+          "postScriptName": "NotoSerifSC-ExtraLight",
+          "isCustomFont": true,
+          "glyphCount": 46
+        }
+      ],
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": null
+    },
+    {
+      "engine": "chromium",
+      "width": 1440,
+      "theme": "dark",
+      "layout": {
+        "width": 1440,
+        "body": 1440,
+        "doc": 1440,
+        "theme": "dark"
+      },
+      "roles": {
+        "report": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 684
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 486
+        },
+        "digest": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 684
+        },
+        "feed": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 684
+        },
+        "expanded": {
+          "size": "18px",
+          "line": "32.4px",
+          "width": 294.4375
+        }
+      },
+      "rendered_report_fonts": [
+        {
+          "familyName": "Noto Serif SC ExtraLight",
+          "postScriptName": "NotoSerifSC-ExtraLight",
+          "isCustomFont": true,
+          "glyphCount": 46
+        }
+      ],
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": null
+    },
+    {
+      "engine": "webkit",
+      "width": 393,
+      "theme": "light",
+      "layout": {
+        "width": 393,
+        "body": 385,
+        "doc": 385,
+        "theme": "light"
+      },
+      "roles": {
+        "report": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 319
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 249
+        },
+        "digest": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 327
+        },
+        "feed": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 323
+        },
+        "expanded": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 323
+        }
+      },
+      "rendered_report_fonts": null,
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": false
+    },
+    {
+      "engine": "webkit",
+      "width": 393,
+      "theme": "dark",
+      "layout": {
+        "width": 393,
+        "body": 385,
+        "doc": 385,
+        "theme": "dark"
+      },
+      "roles": {
+        "report": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 319
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 249
+        },
+        "digest": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 327
+        },
+        "feed": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 323
+        },
+        "expanded": {
+          "size": "17px",
+          "line": "30.6px",
+          "width": 323
+        }
+      },
+      "rendered_report_fonts": null,
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": false
+    },
+    {
+      "engine": "webkit",
+      "width": 1440,
+      "theme": "light",
+      "layout": {
+        "width": 1440,
+        "body": 1432,
+        "doc": 1432,
+        "theme": "light"
+      },
+      "roles": {
+        "report": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 684
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 486
+        },
+        "digest": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 684
+        },
+        "feed": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 684
+        },
+        "expanded": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 292.234375
+        }
+      },
+      "rendered_report_fonts": null,
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": null
+    },
+    {
+      "engine": "webkit",
+      "width": 1440,
+      "theme": "dark",
+      "layout": {
+        "width": 1440,
+        "body": 1432,
+        "doc": 1432,
+        "theme": "dark"
+      },
+      "roles": {
+        "report": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 684
+        },
+        "table": {
+          "size": "13px",
+          "line": "22.1px",
+          "width": 96
+        },
+        "chat": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 486
+        },
+        "digest": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 684
+        },
+        "feed": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 684
+        },
+        "expanded": {
+          "size": "18px",
+          "line": "32.400002px",
+          "width": 292.234375
+        }
+      },
+      "rendered_report_fonts": null,
+      "font_requests": {
+        "count": 23,
+        "bodyBytes": 1503616
+      },
+      "emphasis": {
+        "style": "normal",
+        "weight": "600",
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "text": "中文强调与 EBITDA 同用真实字重。"
+      },
+      "table_keyboard_focus": null
+    }
+  ],
+  "errors": [
+    {
+      "engine": "webkit",
+      "width": 393,
+      "theme": "light",
+      "path": "http://127.0.0.1:4181/reports",
+      "message": "ResizeObserver loop completed with undelivered notifications."
+    },
+    {
+      "engine": "webkit",
+      "width": 393,
+      "theme": "dark",
+      "path": "http://127.0.0.1:4181/reports",
+      "message": "ResizeObserver loop completed with undelivered notifications."
+    },
+    {
+      "engine": "webkit",
+      "width": 1440,
+      "theme": "light",
+      "path": "http://127.0.0.1:4181/reports",
+      "message": "ResizeObserver loop completed with undelivered notifications."
+    },
+    {
+      "engine": "webkit",
+      "width": 1440,
+      "theme": "dark",
+      "path": "http://127.0.0.1:4181/reports",
+      "message": "ResizeObserver loop completed with undelivered notifications."
+    }
+  ],
+  "blocked": [],
+  "font_delivery": {
+    "cache": [
+      {
+        "run": "cold",
+        "count": 9,
+        "bodyBytes": 536820,
+        "transferBytes": 539520
+      },
+      {
+        "run": "warm",
+        "count": 7,
+        "bodyBytes": 0,
+        "transferBytes": 2100
+      }
+    ],
+    "fallback": [
+      {
+        "width": 320,
+        "fonts": [
+          {
+            "familyName": "Noto Serif CJK SC",
+            "postScriptName": "NotoSerifCJKsc-Regular",
+            "isCustomFont": false,
+            "glyphCount": 46
+          }
+        ],
+        "body": 320,
+        "doc": 320,
+        "text": true
+      },
+      {
+        "width": 1440,
+        "fonts": [
+          {
+            "familyName": "Noto Serif CJK SC",
+            "postScriptName": "NotoSerifCJKsc-Regular",
+            "isCustomFont": false,
+            "glyphCount": 46
+          }
+        ],
+        "body": 1440,
+        "doc": 1440,
+        "text": true
+      }
+    ],
+    "delayed": {
+      "before": {
+        "text": "本报告是明确虚构的界面验收样例，不对应任何家庭账本、真实公司或投资建议，也没有调用模型生成。",
+        "height": 64.78125,
+        "fontStatus": "loading"
+      },
+      "after": {
+        "font": "\"Noto Serif SC Variable\", \"Noto Serif CJK SC\", \"Noto Serif SC\", \"Source Han Serif SC\", \"Songti SC\", STSong, SimSun, serif",
+        "size": "18px",
+        "line": "32.4px",
+        "width": 684,
+        "left": 569,
+        "right": 1253,
+        "text": "本报告是明确虚构的界面验收样例，不对应任何家庭账本、真实公司或投资建议，也没有调用模型生成。",
+        "color": "rgb(20, 20, 19)"
+      },
+      "sameText": true,
+      "proseFonts": [
+        {
+          "familyName": "Noto Serif SC ExtraLight",
+          "postScriptName": "NotoSerifSC-ExtraLight",
+          "isCustomFont": true,
+          "glyphCount": 420
+        }
+      ],
+      "uiFonts": [
+        {
+          "familyName": "Noto Sans SC Thin",
+          "postScriptName": "NotoSansSC-Thin",
+          "isCustomFont": true,
+          "glyphCount": 7
+        }
+      ]
+    }
+  }
+}

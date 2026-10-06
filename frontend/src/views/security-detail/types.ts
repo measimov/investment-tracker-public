@@ -1,27 +1,7 @@
 // 标的详情页页内类型（跨页共享形状见 types/index.ts）
 import type { AnalysisJob, OpinionAuthorStance } from '@/types'
-import type { OutputAdjustment, RiskLevelAdjustment } from './analysisTags'
-
-export interface AnalysisDetail {
-  id: number
-  name?: string | null
-  tags: string[]
-  risk_level: string
-  /** 风险等级按市场下限上调的记录（港股 low→medium）；未上调或旧分析行为 null */
-  risk_level_adjusted?: RiskLevelAdjustment | null
-  /** 解析层对模型输出的调整记录（标签归一/丢弃/截断、补免责声明）；无调整或旧分析行为 null */
-  output_adjustments?: OutputAdjustment[] | null
-  summary: string
-  content: string
-  model?: string
-  total_tokens?: number | null
-  created_at?: string | null
-  data_fetched_at?: string | null
-}
-
-// 档案端点是 Dict[str, Any]（无 OpenAPI schema），行形状随数据集而变
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type ProfileRow = Record<string, any>
+import type { AnalysisDetail, ProfileRow } from '@/types'
+export type { AnalysisDetail, ProfileRow } from '@/types'
 
 export type WatchState = 'unknown' | 'watching' | 'not-watching'
 
@@ -38,8 +18,8 @@ export interface GrahamBasis {
   price_source?: string
   share_ratio?: number
   share_ratio_note?: string
-  /** 换算比来源：用户特例规则 / 20-F 封面自动解析（ads_ratio_service） */
-  share_ratio_source?: 'rule' | '20-F'
+  /** 换算比来源：用户特例规则 / 年报（20-F、10-K）封面自动解析（ads_ratio_service） */
+  share_ratio_source?: 'rule' | '20-F' | '10-K'
   eps_ttm?: number
   method?: 'ttm' | 'annual'
   components?: Array<{
@@ -74,6 +54,12 @@ export interface GrahamCriterion {
 
 /** 详情页全部数据状态（useSecurityProfile 持有，tab 子组件只读） */
 export interface SecurityProfileState {
+  analysisLoading: boolean
+  profileLoading: boolean
+  analysisError: string
+  profileError: string
+  analysisHasLoaded: boolean
+  profileHasLoaded: boolean
   analysis: AnalysisDetail | null
   datasets: Record<string, ProfileRow[]>
   latestPeriods: Record<string, string | null>

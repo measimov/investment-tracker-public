@@ -33,7 +33,7 @@ test('exchange rate add, edit and deactivate through the UI', async ({ page, req
   await rateInput.fill('9.1234')
   await rateInput.blur()
   const dateInput = addDialog.locator('.el-form-item', { hasText: '生效日期' }).locator('input')
-  await dateInput.fill('2020-01-02')
+  await dateInput.fill('2020/01/02')
   await dateInput.press('Enter')
   await addDialog.getByRole('button', { name: '确定' }).click()
 
@@ -58,10 +58,7 @@ test('exchange rate add, edit and deactivate through the UI', async ({ page, req
 
   // 停用（#277：删除改为停用，保留审计）：确认框后行从默认列表消失，当前汇率卡片同步移除 GBP
   await rateRow.getByRole('button', { name: '停用' }).click()
-  await page
-    .locator('.el-message-box')
-    .getByRole('button', { name: /确定|OK/ })
-    .click()
+  await page.locator('.el-message-box').getByRole('button', { name: '停用', exact: true }).click()
   await expect(rateRow).toHaveCount(0)
   await expect(page.locator('.current-rates').getByText('GBP', { exact: true })).toHaveCount(0)
 })
@@ -126,7 +123,7 @@ test('transaction edit and delete through the dialog', async ({ page, request })
     const probeEmptySearch = async () => {
       await page.getByRole('button', { name: '新增交易' }).click()
       const probe = page.locator('.el-dialog', { hasText: '新增交易' })
-      await probe.locator('.el-form-item', { hasText: '股票代码' }).locator('input').click()
+      await probe.locator('.el-form-item', { hasText: '标的代码' }).locator('input').click()
       await page.waitForTimeout(400)
       await probe.getByRole('button', { name: '取消' }).click()
       await expect(probe).toBeHidden()
@@ -147,14 +144,14 @@ test('transaction edit and delete through the dialog', async ({ page, request })
     await priceInput.blur()
     await dialog.getByRole('button', { name: '确定' }).click()
 
-    await expect(page.getByText('更新成功')).toBeVisible()
+    await expect(page.getByText('交易记录已更新')).toBeVisible()
     await expect(row).toContainText('12.50')
     await probeEmptySearch()
     expect(emptySearchCalls).toBe(2) // PUT 后失效
 
     await row.getByRole('button', { name: '删除' }).click()
     await page.locator('.el-message-box').getByRole('button', { name: '删除' }).click()
-    await expect(page.getByText('删除成功')).toBeVisible()
+    await expect(page.getByText('交易记录已删除')).toBeVisible()
     await expect(row).toHaveCount(0)
     await probeEmptySearch()
     expect(emptySearchCalls).toBe(3) // DELETE 后失效
@@ -194,18 +191,29 @@ test('statistics price dialog what-if updates the FIFO performance card', async 
     await page.goto('/statistics')
 
     await page.getByRole('button', { name: '输入价格' }).click()
-    const dialog = page.locator('.el-dialog', { hasText: '输入当前价格' })
+    const dialog = page.getByRole('dialog', { name: '输入现价' })
     await expect(dialog).toBeVisible()
-    const priceInput = dialog.locator('tr', { hasText: 'PRC001' }).locator('input')
+    const priceInput = dialog.getByRole('textbox', { name: 'PRC001 A股 现价，CNY' })
     await priceInput.fill('12')
     await priceInput.blur()
+    const periodRequest = page.waitForRequest(
+      (req) => req.url().endsWith('/statistics/period-pnl') && req.method() === 'POST'
+    )
     await dialog.getByRole('button', { name: '计算' }).click()
+    expect((await periodRequest).postDataJSON()).toEqual({ 'PRC001:A股': 12 })
 
     await expect(page.getByText('计算完成')).toBeVisible()
     // 100 股 × (12 - 10)：当前市值 ¥1,200.00、浮盈率 +20.00%
-    const fifoCard = page.locator('.el-card', { hasText: '当前持仓表现' })
+    const fifoCard = page.locator('.fifo-section', { hasText: '当前持仓表现' })
     await expect(fifoCard).toContainText('¥1,200.00')
     await expect(fifoCard).toContainText('20.00')
+    await expect(page.getByTestId('statistics-period-pnl')).toBeVisible()
+    const serverPeriodRequest = page.waitForRequest(
+      (req) => req.url().endsWith('/statistics/period-pnl') && req.method() === 'GET'
+    )
+    await page.getByRole('button', { name: '退出试算' }).click()
+    await serverPeriodRequest
+    await expect(page.getByTestId('what-if-bar')).not.toBeVisible()
   } finally {
     await deleteTemporaryUser(request, adminToken, createdUser.id)
   }
@@ -246,7 +254,7 @@ test('watchlist add, edit, remove and detail-page integration', async ({ page, r
     const probeEmptySearch = async () => {
       await page.getByTestId('add-watchlist-button').click()
       const probe = page.locator('.el-dialog', { hasText: '添加观察标的' })
-      await probe.locator('.el-form-item', { hasText: '股票代码' }).locator('input').click()
+      await probe.locator('.el-form-item', { hasText: '标的代码' }).locator('input').click()
       await page.waitForTimeout(400) // el-autocomplete 聚焦取数有 200ms debounce
       await probe.getByRole('button', { name: '取消' }).click()
       await expect(probe).toBeHidden()
@@ -273,7 +281,7 @@ test('watchlist add, edit, remove and detail-page integration', async ({ page, r
     await page.getByTestId('add-watchlist-button').click()
     const dialog = page.locator('.el-dialog', { hasText: '添加观察标的' })
     await expect(dialog).toBeVisible()
-    await dialog.locator('.el-form-item', { hasText: '股票代码' }).locator('input').fill('WCH001')
+    await dialog.locator('.el-form-item', { hasText: '标的代码' }).locator('input').fill('WCH001')
     await dialog.locator('.el-form-item', { hasText: '市场' }).locator('.el-select').click()
     await page.locator('.el-select-dropdown:visible').getByRole('option', { name: 'A股' }).click()
     await dialog
@@ -290,7 +298,7 @@ test('watchlist add, edit, remove and detail-page integration', async ({ page, r
 
     // 重复添加 → 409 中文报错
     await page.getByTestId('add-watchlist-button').click()
-    await dialog.locator('.el-form-item', { hasText: '股票代码' }).locator('input').fill('WCH001')
+    await dialog.locator('.el-form-item', { hasText: '标的代码' }).locator('input').fill('WCH001')
     await dialog.locator('.el-form-item', { hasText: '市场' }).locator('.el-select').click()
     await page.locator('.el-select-dropdown:visible').getByRole('option', { name: 'A股' }).click()
     await page.getByTestId('watchlist-submit').click()
@@ -313,8 +321,8 @@ test('watchlist add, edit, remove and detail-page integration', async ({ page, r
     await probeEmptySearch()
     expect(emptySearchCalls).toBe(afterAdds + 1)
 
-    // 3) 代码链接进详情页 → 显示已在观察（el-link 无 href，不具 link role，按文本点）
-    await row.locator('.el-link', { hasText: 'WCH001' }).click()
+    // 3) 原生代码链接进详情页 → 显示已在观察
+    await row.getByRole('link', { name: 'WCH001', exact: true }).click()
     await expect(page).toHaveURL(/securities/)
     await expect(page.getByText('已在观察清单', { exact: true })).toBeVisible()
 
@@ -330,8 +338,11 @@ test('watchlist add, edit, remove and detail-page integration', async ({ page, r
     // 5) 清单页可见两条；移除一条
     await page.goto('/watchlist')
     await expect(page.locator('tr', { hasText: 'WCH002' })).toContainText('详情页加入的理由')
-    await page.locator('tr', { hasText: 'WCH002' }).getByRole('button', { name: '移除' }).click()
-    await page.locator('.el-message-box').getByRole('button', { name: '确定' }).click()
+    await page.locator('tr', { hasText: 'WCH002' }).getByRole('button', { name: '移出' }).click()
+    await page
+      .locator('.el-message-box')
+      .getByRole('button', { name: '移出观察', exact: true })
+      .click()
     await expect(page.getByText('已移出观察清单')).toBeVisible()
     await expect(page.locator('tr', { hasText: 'WCH002' })).toHaveCount(0)
     await expect(page.locator('tr', { hasText: 'WCH001' })).toHaveCount(1)
@@ -350,18 +361,32 @@ test('watchlist add, edit, remove and detail-page integration', async ({ page, r
 // （未启用），页面不得 5xx/白屏。
 // ---------------------------------------------------------------------------
 
-test('opinions page degrades explicitly without collected data', async ({ page, request }) => {
+test('unconfigured opinions are hidden for ordinary users; admin keeps explicit degradation', async ({
+  page,
+  request
+}) => {
   const token = await loginThroughApi(request)
   await setAuthenticatedSession(page, token)
 
+  await page.goto('/opinions')
+  await expect(page).toHaveURL('/')
+  await expect(page.getByRole('link', { name: '雪球观点', exact: true })).toHaveCount(0)
+  await page.goto('/securities/A股/600036')
+  await expect(page.getByRole('tab', { name: '公告', exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: '观点', exact: true })).toHaveCount(0)
+
+  await setAuthenticatedSession(page, await loginThroughApi(request, adminUser))
   await page.goto('/opinions')
   await expect(page.getByTestId('opinion-source-missing')).toBeVisible()
   await expect(page.getByTestId('opinion-batch-button')).toBeDisabled()
   await expect(page.getByTestId('opinion-symbols-table')).toBeVisible()
   await expect(page.getByTestId('xueqiu-collector-card')).toBeVisible()
   await expect(page.getByTestId('collector-health')).toHaveText('未启用')
-  // 更新 Cookie 仅管理员可见
-  await expect(page.getByTestId('collector-update-cookie')).toHaveCount(0)
+  // 管理员仍可首次配置，不因普通用户入口隐藏而丢失配置入口。
+  await page
+    .getByRole('button', { name: '运行详情、关注作者、跟踪组合与最近运行', exact: true })
+    .click()
+  await expect(page.getByTestId('collector-update-cookie')).toBeVisible()
   // 按标的采集从未运行：摘要行如实说明；「今日热帖」卡已下线（2026-09-28），不再渲染
   await expect(page.getByTestId('collector-symbols-summary')).toContainText('尚未运行')
   await expect(page.getByTestId('xueqiu-hots-card')).toHaveCount(0)
@@ -372,12 +397,10 @@ test('opinions page degrades explicitly without collected data', async ({ page, 
   await page.getByRole('tab', { name: '观点' }).click()
   await expect(page.getByTestId('opinion-section')).toBeVisible()
   await page.getByTestId('generate-opinion-button').click()
-  await expect(page.getByTestId('opinion-section').locator('.el-alert')).toContainText(
-    /未接入|未配置 LLM/
-  )
+  await expect(page.getByTestId('opinion-section')).toContainText(/未接入|未配置 LLM/)
 
   // 雪球公告/讨论折叠区：展开才拉取，库里没有数据时给空态与「尚未运行」提示
-  await page.getByTestId('xueqiu-symbol-feed').getByText('雪球公告 / 讨论').click()
+  await page.getByTestId('xueqiu-symbol-feed').getByText('雪球公告流 / 讨论').click()
   await expect(page.getByTestId('xueqiu-symbol-feed')).toContainText('按标的采集尚未运行过')
   await expect(page.getByTestId('xueqiu-announcements')).toContainText('暂无雪球公告')
 })
@@ -392,6 +415,9 @@ test('admin sees why the Xueqiu cookie cannot be updated from the UI', async ({
   await setAuthenticatedSession(page, token)
 
   await page.goto('/opinions')
+  await page
+    .getByRole('button', { name: '运行详情、关注作者、跟踪组合与最近运行', exact: true })
+    .click()
   await page.getByTestId('collector-update-cookie').click()
   const dialog = page.getByTestId('xueqiu-cookie-dialog')
   await expect(dialog.getByTestId('xueqiu-cookie-status')).toContainText('未配置')
@@ -499,7 +525,7 @@ test('security select fills the transaction form from the catalog and keeps user
         .filter({ has: page.locator('.el-form-item__label', { hasText: label }) })
         .first()
     // data-testid 经 el-autocomplete → el-input 透传落在原生 input 上，按表单项取 textbox 更稳
-    const symbolInput = formItem(/^股票代码$/).getByRole('textbox')
+    const symbolInput = formItem(/^标的代码$/).getByRole('textbox')
     const nameInput = dialog.getByPlaceholder('资产名称')
 
     // 1) 拼音检索 → 选中候选 → 名称/市场/币种一起回填

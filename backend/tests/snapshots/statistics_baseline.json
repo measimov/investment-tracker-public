@@ -637,6 +637,7 @@
       "unrealized_pnl_usd": 3283.411574
     },
     "dividend_summary": {
+      "amounts_incomplete_count": 0,
       "base_currency": "CNY",
       "by_symbol": [
         {
@@ -653,6 +654,14 @@
           "total_tax_cny": 36.0
         }
       ],
+      "forecast": {
+        "announced_gross_by_currency": {},
+        "overdue_count": 0,
+        "pending_count": 0,
+        "pending_gross_by_currency": {},
+        "unknown_amount_count": 0
+      },
+      "legacy_unreviewed_count": 1,
       "missing_rate_currencies": [],
       "total_dividend_gross": 360.0,
       "total_dividend_gross_cny": 360.0,
@@ -734,6 +743,34 @@
           "symbol": "AAPL"
         }
       ]
+    },
+    "receivable_return": {
+      "as_of": "<volatile:today-dependent>",
+      "base_currency": "CNY",
+      "cash_basis_return_cny": 31450.2,
+      "estimated_return_cny": 31450.2,
+      "fx_basis": "latest_rate",
+      "included_count": 0,
+      "is_partial": false,
+      "known_pending_gross_by_currency": {},
+      "known_pending_gross_cny": 0.0,
+      "missing_rate_currencies": [],
+      "overdue_count": 0,
+      "pending_overdue_count": 0,
+      "received_review_reasons": {
+        "currency_mismatch": 0,
+        "net_amount_only": 0,
+        "other": 0,
+        "payout_currency_unverified": 0
+      },
+      "review_counts": {
+        "amount": 0,
+        "entitlement": 0,
+        "possible_receipt": 0,
+        "received": 0,
+        "zero_remaining": 0
+      },
+      "unresolved_count": 0
     },
     "total_realized_return": {
       "base_currency": "CNY",

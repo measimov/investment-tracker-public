@@ -141,7 +141,7 @@ async function openStatistics(page: Page) {
   await page.goto('/statistics')
   // 等首屏渲染完（骨架屏退场）：提示条挂在 v-else 分支里
   await expect(page.locator('.statistics-page')).toBeVisible()
-  await expect(page.getByRole('main').getByText('含股息已实现收益：')).toBeVisible()
+  await expect(page.getByRole('main').getByText('已实现收益（含股息）：')).toBeVisible()
 }
 
 test.beforeEach(async ({ page, request }) => {

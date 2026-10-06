@@ -6,7 +6,8 @@
 不调 LLM（输出里的 `mapping_reused`）；只有解析结果真的变了的报告才重新映射。
 失败行保留 attempts 语义（确定性失败两次即封顶）。校验规则升版（validation_version）
 不必走本脚本，用 revalidate_report_statements.py 零下载零 LLM 重算即可；构建逻辑升版
-（STATEMENT_BUILD_VERSION）用 rebuild_report_statements.py。滚出十年窗口的旧报告不计入。
+（STATEMENT_BUILD_VERSION）用 rebuild_report_statements.py。滚出窗口的旧报告不计入；完整计划
+之外的其他遗留单独列出，不计入过期待办，不删除历史记录。没有完整计划时继续保守统计。
 
 用法：
     python scripts/rerun_report_statements.py --dry-run             # 只看会重跑哪些
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def _stale_rows(db, symbol: str | None):
-    """版本过期的抽取行；已滚出十年窗口的旧报告永远不会被计划处理，不算（不删数据）。"""
+    """返回有效过期待办与计划外遗留；完整计划未知时不排除记录，不删数据。"""
     from app.models.security_profile import SecurityProfileData
     from app.services.payload_versions import versions_current
     from app.services.report_statement_prompts import STATEMENT_PROMPT_VERSION
@@ -42,9 +43,14 @@ def _stale_rows(db, symbol: str | None):
     # 按每个标的最近一次完整计划的实际成员判断窗口（没有完整计划 → 保守：全部计入）
     plans = {sym: load_statement_plan(db, sym, "港股") for sym in {r.symbol for r in rows}}
     stale = []
+    unplanned = []
     for row in rows:
         payload = row.payload or {}
-        if outside_statement_window(row.period_key, plans[row.symbol]):
+        plan = plans[row.symbol]
+        if outside_statement_window(row.period_key, plan):
+            continue
+        if plan and plan.get("period_keys") and row.period_key not in plan["period_keys"]:
+            unplanned.append(row)
             continue
         if not versions_current(
             payload,
@@ -52,7 +58,7 @@ def _stale_rows(db, symbol: str | None):
             prompt_version=STATEMENT_PROMPT_VERSION,
         ):
             stale.append(row)
-    return stale
+    return stale, unplanned
 
 
 def main() -> int:
@@ -70,11 +76,15 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        stale = _stale_rows(db, args.symbol)
+        stale, unplanned = _stale_rows(db, args.symbol)
         symbols = sorted({row.symbol for row in stale})
         print(f"过期抽取 {len(stale)} 份，涉及 {len(symbols)} 只港股")
         for symbol in symbols:
             print(f"  {symbol}: {sum(1 for row in stale if row.symbol == symbol)} 份")
+        if unplanned:
+            print(f"计划外遗留 {len(unplanned)} 份（保留历史，不计入过期待办）")
+            for row in sorted(unplanned, key=lambda row: (row.symbol, row.period_key)):
+                print(f"  {row.symbol}: {row.period_key}")
         if args.dry_run:
             print("\n--dry-run：未做任何修改")
             return 0

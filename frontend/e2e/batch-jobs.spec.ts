@@ -6,6 +6,16 @@ import {
   mockHoldingsPage
 } from './helpers'
 
+// 任务入口使用可聚焦的原生操作；每次操作/互斥检查仍经过真实触发器。
+async function openResearchTasks(page: Page) {
+  await expect(page.locator('.el-overlay.is-message-box')).toBeHidden()
+  const trigger = page.getByRole('button', { name: '打开持仓研究任务' })
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') {
+    await expect(page.getByTestId('analyze-all-button')).toHaveCount(0)
+    await trigger.click()
+  }
+}
+
 // 后端目标预览：已排除清仓/EXCLUDE/现金管理标的，前端确认框必须用这个数
 async function mockBatchTargets(page: Page, total: number) {
   await page.route('**/api/securities/analysis-batch-targets', (route) =>
@@ -104,10 +114,9 @@ test('one-click batch analysis asks for confirmation and shows progress', async 
       ]
     }
   ]
-  let tick = 0
+  let finishBatch = false
   await page.route('**/api/securities/analysis-batch-jobs/batch-1', (route) => {
-    const payload = script[Math.min(tick, script.length - 1)]
-    tick += 1
+    const payload = script[finishBatch ? 1 : 0]
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -116,10 +125,21 @@ test('one-click batch analysis asks for confirmation and shows progress', async 
   })
 
   await page.goto('/holdings')
-  await expect(page.getByTestId('analyze-all-button')).toBeVisible()
+  const trigger = page.getByRole('button', { name: '打开持仓研究任务' })
+  await trigger.focus()
+  await page.keyboard.press('Space')
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+  await page.keyboard.press('Tab')
+  await expect(page.getByTestId('analyze-all-button')).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(trigger).toBeFocused()
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+  expect(startCalls).toBe(0)
 
-  // 二次确认必须给出数量与耗时量级；取消则不发请求
-  await page.getByTestId('analyze-all-button').click()
+  // 二次确认必须给出数量与耗时量级；键盘选择/取消均不能绕过确认
+  await page.keyboard.press('ArrowDown')
+  await expect(page.getByTestId('analyze-all-button')).toBeFocused()
+  await page.keyboard.press('Enter')
   const dialog = page.locator('.el-message-box')
   // 数量来自后端预览（1 只），不是前端按市场本地估算的 2 只
   await expect(dialog).toContainText('1 只')
@@ -127,7 +147,9 @@ test('one-click batch analysis asks for confirmation and shows progress', async 
   await expect(dialog).toContainText('自动跳过')
   await dialog.getByRole('button', { name: '取消' }).click()
   expect(startCalls).toBe(0)
+  await expect(trigger).toBeFocused()
 
+  await openResearchTasks(page)
   await page.getByTestId('analyze-all-button').click()
   await page.locator('.el-message-box').getByRole('button', { name: '开始分析' }).click()
   // 确认后到 POST 之间隔着预览 resolve 与 axios 往返，用 poll 而不是即刻断言
@@ -136,11 +158,13 @@ test('one-click batch analysis asks for confirmation and shows progress', async 
   const progress = page.getByTestId('batch-analysis-progress')
   await expect(progress).toContainText('1/2', { timeout: 15000 })
   // [评审回归] 启动后按钮只禁用、不转圈（轮询要跑数十分钟）
-  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+  await openResearchTasks(page)
+  await expect(page.getByTestId('analyze-all-button')).toHaveAttribute('aria-disabled', 'true')
   await expect(page.getByTestId('analyze-all-button').locator('.is-loading')).toHaveCount(0)
   await expect(progress).toContainText('BAT002 A股')
   await expect(progress).toContainText('成功 1 · 跳过 0 · 失败 0')
-  await expect(page.getByText('批量分析完成：成功 2 只')).toBeVisible({ timeout: 15000 })
+  finishBatch = true
+  await expect(page.getByText('批量分析持仓完成：成功 2 只')).toBeVisible({ timeout: 15000 })
   // 完成后标签列刷新
   await expect(page.getByTestId('ai-tags').first()).toBeVisible()
 })
@@ -202,7 +226,8 @@ test('batch analysis progress is restored when returning to the holdings page', 
   await expect(progress).toBeVisible({ timeout: 15000 })
   await expect(progress).toContainText('2/5')
   // 任务活跃时按钮禁用（避免重复发起）
-  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+  await openResearchTasks(page)
+  await expect(page.getByTestId('analyze-all-button')).toHaveAttribute('aria-disabled', 'true')
 })
 
 test('digest backfill button previews gaps and shows generated counts', async ({
@@ -283,10 +308,12 @@ test('digest backfill button previews gaps and shows generated counts', async ({
   })
 
   await page.goto('/holdings')
+  await openResearchTasks(page)
   const button = page.getByTestId('digest-backfill-button')
   await expect(button).toBeVisible()
 
   // 确认框数字来自纯 DB 预览；取消不发请求
+  await openResearchTasks(page)
   await button.click()
   const dialog = page.locator('.el-message-box')
   await expect(dialog).toContainText('2 只持仓标的')
@@ -295,6 +322,7 @@ test('digest backfill button previews gaps and shows generated counts', async ({
   await dialog.getByRole('button', { name: '取消' }).click()
   expect(startCalls).toBe(0)
 
+  await openResearchTasks(page)
   await button.click()
   await page.locator('.el-message-box').getByRole('button', { name: '开始回填' }).click()
   await expect.poll(() => startCalls, { timeout: 15000 }).toBe(1)
@@ -303,7 +331,8 @@ test('digest backfill button previews gaps and shows generated counts', async ({
   await expect(progress).toContainText('1/2', { timeout: 15000 })
   await expect(progress).toContainText('已生成摘要 4 份')
   // 回填活跃时一键分析禁用（互斥，后端 409 兜底、前端体验先行）
-  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+  await openResearchTasks(page)
+  await expect(page.getByTestId('analyze-all-button')).toHaveAttribute('aria-disabled', 'true')
   // 完成提示要说清"还有更早年份可续跑"——这是加深十年的唯一入口
   await expect(page.getByText(/新生成 7 份；1 只标的还有更早年份可补/)).toBeVisible({
     timeout: 15000
@@ -378,7 +407,8 @@ test('the batch button is disabled when no holding is analyzable', async ({ page
   )
 
   await page.goto('/holdings')
-  await expect(page.getByTestId('analyze-all-button')).toBeDisabled()
+  await openResearchTasks(page)
+  await expect(page.getByTestId('analyze-all-button')).toHaveAttribute('aria-disabled', 'true')
 })
 
 test('the confirm dialog waits for the server target preview', async ({ page, request }) => {
@@ -409,9 +439,11 @@ test('the confirm dialog waits for the server target preview', async ({ page, re
   })
 
   await page.goto('/holdings')
+  await openResearchTasks(page)
   await expect(page.getByTestId('analyze-all-button')).toBeVisible()
 
   // 预览仍挂起：点击后不得出现任何确认框（更不能显示本地估算的 2 只）
+  await openResearchTasks(page)
   await page.getByTestId('analyze-all-button').click()
   await page.waitForTimeout(1000)
   await expect(page.locator('.el-message-box')).toHaveCount(0)
@@ -455,6 +487,7 @@ test('a preview that resolves to zero explains instead of opening the confirm di
   })
 
   await page.goto('/holdings')
+  await openResearchTasks(page)
   await page.getByTestId('analyze-all-button').click()
   releasePreview!()
 

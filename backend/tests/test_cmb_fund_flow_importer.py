@@ -17,6 +17,7 @@ from app.models.ibkr_activity_flow import IbkrActivityFlow
 from app.models.security_rule import SecurityRule
 from app.models.import_batch import ImportBatch
 from app.models.transaction import Transaction
+from app.services import broker_import_common
 from app.services import cmb_fund_flow_importer as importer
 from app.services.cmb_fund_flow_importer import ParsedFlow, import_cmb_fund_flow
 from tests.helpers import load_migration, reset_tables, run_migration
@@ -236,7 +237,7 @@ def test_cmb_pdf_preview_rejects_misaligned_numbers_and_unattributed_tax(monkeyp
     assert len(rows) == 1
     assert rows[0].source_row_number == 5
     assert rows[0].security_code == ""
-    assert not rows[0].is_dividend_tax
+    assert rows[0].is_dividend_tax
     assert counts == {"证券买入": 2, "证券卖出": 1, "股息红利税补缴": 1}
     assert errors == [
         "row 2: invalid PDF numeric fields: 佣金",
@@ -261,7 +262,8 @@ def test_cmb_pdf_preview_rejects_misaligned_numbers_and_unattributed_tax(monkeyp
         warnings=warnings,
     )
     assert result["skipped_invalid_rows"] == 3
-    assert result["skipped_non_trade_rows"] == 1
+    assert result["skipped_non_trade_rows"] == 0
+    assert result["eligible_tax_rows"] == 1
     assert result["errors"] == errors
     assert result["warnings"] == warnings
 
@@ -467,14 +469,15 @@ def test_cmb_import_links_batch_account_and_keeps_duplicate_attempt(monkeypatch)
         action = db.query(CorporateAction).one()
         assert action.broker_account_id == account.id
         assert action.import_batch_id == result["import_batch_id"]
-        assert action.net_dividend == Decimal("90.00000000")
+        assert action.net_dividend == Decimal("100.00000000")
         flows = db.query(BrokerFundFlow).all()
         assert len(flows) == 3
         assert {flow.import_batch_id for flow in flows} == {result["import_batch_id"]}
         assert {flow.broker_account_id for flow in flows} == {account.id}
         assert {flow.statement_type for flow in flows} == {"cmb_statement_pdf"}
         assert sum(flow.transaction_id is not None for flow in flows) == 1
-        assert sum(flow.corporate_action_id == action.id for flow in flows) == 2
+        assert sum(flow.corporate_action_id == action.id for flow in flows) == 1
+        assert sum(flow.cash_event_id is not None for flow in flows) == 1
 
         batch = db.get(ImportBatch, result["import_batch_id"])
         assert batch.source_sha256 == hashlib.sha256(contents).hexdigest()
@@ -574,7 +577,7 @@ def test_cmb_import_preserves_unresolved_and_unsupported_source_rows(monkeypatch
         assert result["batch_status"] == "PARTIAL"
         assert result["imported_transactions"] == 0
         assert result["imported_corporate_actions"] == 0
-        assert result["imported_tax_adjustments"] == 0
+        assert result["imported_tax_adjustments"] == 1
         assert result["errors"] == []
         assert result["warnings"] == [
             "row 3: dividend tax missing security code; manual review required"
@@ -586,8 +589,8 @@ def test_cmb_import_preserves_unresolved_and_unsupported_source_rows(monkeypatch
         assert all(row.corporate_action_id is None for row in rows)
         batch = db.get(ImportBatch, result["import_batch_id"])
         assert batch.archived_count == 2
-        assert batch.imported_count == 0
-        assert batch.skipped_count == 2
+        assert batch.imported_count == 1
+        assert batch.skipped_count == 1
     finally:
         db.close()
 
@@ -857,11 +860,15 @@ def test_cmb_unassigned_tax_matches_only_unassigned_dividend():
 
         tax_flow = sample_flows()[2]
         assert (
-            importer.find_dividend_for_tax(db, 1, tax_flow, "A股", broker_account_id=None).id
+            broker_import_common.find_dividend_for_tax(
+                db, 1, tax_flow, "A股", broker_account_id=None
+            ).id
             == unassigned.id
         )
         assert (
-            importer.find_dividend_for_tax(db, 1, tax_flow, "A股", broker_account_id=account.id).id
+            broker_import_common.find_dividend_for_tax(
+                db, 1, tax_flow, "A股", broker_account_id=account.id
+            ).id
             == assigned.id
         )
     finally:
@@ -933,10 +940,10 @@ def test_cmb_tax_is_left_unlinked_when_account_has_multiple_candidate_dividends(
             broker_account_id=account.id,
         )
 
-        assert result["batch_status"] == "PARTIAL"
-        assert result["imported_tax_adjustments"] == 0
+        assert result["batch_status"] == "COMPLETED"
+        assert result["imported_tax_adjustments"] == 1
         assert result["errors"] == []
-        assert "expected exactly one account-scoped dividend" in result["warnings"][0]
+        assert result["warnings"] == []
         source = db.query(BrokerFundFlow).one()
         assert source.corporate_action_id is None
         assert {
@@ -1520,7 +1527,7 @@ def test_cmb_parser_version_tracks_booking_semantics():
 
     若本断言失败，说明你改了 parser 行为——请升级 PARSER_VERSION 并更新此处。
     """
-    assert importer.PARSER_VERSION == "14"
+    assert importer.PARSER_VERSION == "16"
 
 
 def test_cmb_excluded_security_rows_archive_without_booking(monkeypatch):
@@ -1934,26 +1941,27 @@ def test_cmb_unattributed_tax_is_recovered_on_reimport(monkeypatch):
         _patch_parse(monkeypatch, _tax_only_flows(), {"股息红利税补缴": 1})
         first = import_cmb_fund_flow(db, 1, b"%PDF-1", "cmb.pdf", broker_account_id=account.id)
 
-        assert first["imported_tax_adjustments"] == 0
+        assert first["imported_tax_adjustments"] == 1
         orphan = db.query(BrokerFundFlow).one()
         orphan_id = orphan.id
-        assert orphan.skip_reason == "unattributed_tax"
+        assert orphan.skip_reason is None
         assert orphan.corporate_action_id is None
         assert db.query(CorporateAction).count() == 0
 
         _patch_parse(monkeypatch, _dividend_and_tax_flows(), {"股息入账": 1, "股息红利税补缴": 1})
         second = import_cmb_fund_flow(db, 1, b"%PDF-2", "cmb.pdf", broker_account_id=account.id)
 
-        assert second["imported_tax_adjustments"] == 1
+        assert second["imported_tax_adjustments"] == 0
         action = db.query(CorporateAction).one()
-        assert action.tax_withheld == Decimal("10.00000000")
-        assert action.net_dividend == Decimal("90.00000000")
+        assert action.tax_withheld is None
+        assert action.net_dividend == Decimal("100.00000000")
 
         recovered = db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).one()
         assert recovered.id == orphan_id, "必须就地转正，不得插新行"
         assert recovered.skip_reason is None
-        assert recovered.corporate_action_id == action.id
-        assert "attributed during account-scoped re-import" in (recovered.notes or "")
+        assert recovered.corporate_action_id is None
+        assert recovered.cash_event_id is not None
+        assert db.query(CashEvent).filter_by(tax_kind="DIVIDEND").count() == 1
     finally:
         db.close()
 
@@ -1971,12 +1979,12 @@ def test_cmb_recovered_tax_is_not_applied_twice(monkeypatch):
         import_cmb_fund_flow(db, 1, b"%PDF-2", "cmb.pdf", broker_account_id=account.id)
 
         action = db.query(CorporateAction).one()
-        assert action.tax_withheld == Decimal("10.00000000")
+        assert action.tax_withheld is None
 
         third = import_cmb_fund_flow(db, 1, b"%PDF-3", "cmb.pdf", broker_account_id=account.id)
 
         db.refresh(action)
-        assert action.tax_withheld == Decimal("10.00000000"), "重导不得叠加税额"
+        assert action.tax_withheld is None, "重导不得叠加税额"
         assert third["imported_tax_adjustments"] == 0
         assert db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).count() == 1
     finally:
@@ -1996,7 +2004,9 @@ def test_cmb_unattributed_tax_is_not_duplicated_when_still_unmatched(monkeypatch
 
         rows = db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).all()
         assert len(rows) == 1, "未归属税行不得重复建行"
-        assert rows[0].skip_reason == "unattributed_tax"
+        assert rows[0].skip_reason is None
+        assert rows[0].cash_event_id is not None
+        assert db.query(CashEvent).filter_by(tax_kind="DIVIDEND").count() == 1
     finally:
         db.close()
 
@@ -2022,14 +2032,16 @@ def test_cmb_codeless_tax_reimport_is_duplicate_not_crash(monkeypatch):
                 security_name=None,
             )
         ]
-        assert codeless[0].is_dividend_tax is False
+        assert codeless[0].is_dividend_tax is True
 
         _patch_parse(monkeypatch, codeless, {"股息红利税补缴": 1})
         import_cmb_fund_flow(db, 1, b"%PDF-1", "cmb.pdf", broker_account_id=account.id)
         rows = db.query(BrokerFundFlow).filter_by(row_hash="d1" * 32).all()
         assert len(rows) == 1
         # 归档即带未归属标记（与 0011 回填口径一致）
-        assert rows[0].skip_reason == "unattributed_tax"
+        assert rows[0].skip_reason is None
+        assert rows[0].cash_event_id is not None
+        assert db.query(CashEvent).filter_by(tax_kind="DIVIDEND").count() == 1
 
         # 重导同一对账单：此前在这里 UniqueViolation 整批崩掉
         second = import_cmb_fund_flow(db, 1, b"%PDF-2", "cmb.pdf", broker_account_id=account.id)
@@ -2093,10 +2105,11 @@ def test_cmb_pre_migration_orphan_is_recoverable_after_backfill(monkeypatch):
 
         assert result["imported_tax_adjustments"] == 1, "存量孤儿未被恢复"
         action = db.query(CorporateAction).one()
-        assert action.tax_withheld == Decimal("10.00000000")
+        assert action.tax_withheld is None
         recovered = db.query(BrokerFundFlow).filter_by(row_hash=legacy_flow.row_hash).one()
         assert recovered.id == orphan_id
-        assert recovered.corporate_action_id == action.id
+        assert recovered.corporate_action_id is None
+        assert recovered.cash_event_id is not None
         assert recovered.skip_reason is None
     finally:
         db.close()
@@ -3335,3 +3348,124 @@ def test_cmb_custody_transfer_in_parse_validation(monkeypatch):
     assert len(errors) == 2
     assert any("quantity must be positive" in e for e in errors)
     assert any("zero-cash row" in e for e in errors)
+
+
+def _cash_drift(label, *, event_type="TRANSFER_OUT", business="质押回购拆出", **changes):
+    from dataclasses import replace
+
+    positive = event_type in {"TRANSFER_IN", "INTEREST", "DEPOSIT"}
+    flow = _drift_flow(
+        1,
+        _fake_hash(label),
+        price="1.365",
+        quantity="161",
+        amount="161006.02" if positive else "-161001.61",
+        business_name=business,
+        code="131810",
+    )
+    return replace(flow, cash_event_type=event_type, **changes)
+
+
+@pytest.mark.parametrize(
+    "business,event_type,extra",
+    [
+        ("质押回购拆出", "TRANSFER_OUT", {}),
+        ("拆出质押购回", "TRANSFER_IN", {}),
+        ("产品红利发放", "INTEREST", {"is_cash_management_symbol": True}),
+        ("股息红利税补缴", "TAX", {"security_code": ""}),
+    ],
+)
+def test_cmb_cash_precision_drift_preview_hold_and_confirm(
+    monkeypatch, business, event_type, extra
+):
+    from dataclasses import replace
+
+    with SessionLocal() as db:
+        reset_tables(db, RESET_MODELS)
+        account = _cmb_account(db, "现金精度账户")
+        old = _cash_drift("cash-old", event_type=event_type, business=business, **extra)
+        new = replace(old, row_hash=_fake_hash("cash-new"), trade_price=Decimal("1.37"))
+        first = _import(db, account, monkeypatch, [old])
+        assert first["imported_cash_events"] + first["imported_tax_adjustments"] == 1
+        before = db.query(BrokerFundFlow).count()
+        preview = _preview(db, account, monkeypatch, [new])
+        assert preview["suspected_duplicate_rows"] == 1
+        assert preview["import_samples"] == []
+        assert db.query(BrokerFundFlow).count() == before  # preview is read-only
+        assert preview["suspected_duplicate_samples"][0]["transaction_type"] == event_type
+        assert preview["suspected_duplicate_samples"][0]["currency"] == "CNY"
+        result = _import(db, account, monkeypatch, [new])
+        assert result["suspected_duplicate_rows"] == 1 and result["batch_status"] == "PARTIAL"
+        assert db.query(CashEvent).count() == 1
+        held_id = db.query(BrokerFundFlow).filter_by(row_hash=new.row_hash).one().id
+        repeat = _import(db, account, monkeypatch, [new])
+        assert repeat["duplicate_rows"] == 1 and repeat["suspected_duplicate_rows"] == 0
+        confirm = frozenset({new.row_hash})
+        preview = _preview(db, account, monkeypatch, [new], confirmed_row_hashes=confirm)
+        assert preview["duplicate_rows"] == preview["suspected_duplicate_rows"] == 0
+        result = _import(db, account, monkeypatch, [new], confirmed_row_hashes=confirm)
+        assert result["imported_cash_events"] + result["imported_tax_adjustments"] == 1
+        booked = db.get(BrokerFundFlow, held_id)
+        assert booked.cash_event_id is not None and booked.skip_reason is None
+        assert db.query(CashEvent).count() == 2
+        assert db.query(BrokerFundFlow).count() == 2
+        assert (
+            _import(db, account, monkeypatch, [new], confirmed_row_hashes=confirm)["duplicate_rows"]
+            == 1
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"amount": Decimal("-161001.62")},
+        {"currency": "HKD"},
+        {"trade_quantity": Decimal("-161")},
+        {"commission": Decimal("6")},
+        {"cash_balance": Decimal("9999")},
+        {"business_name": "其他转出"},
+        {"serial_number": "distinct"},
+    ],
+)
+def test_cmb_cash_distinct_facts_are_not_held(monkeypatch, change):
+    from dataclasses import replace
+
+    with SessionLocal() as db:
+        reset_tables(db, RESET_MODELS)
+        account = _cmb_account(db, "真实不同现金")
+        old = _cash_drift("cash-old")
+        _import(db, account, monkeypatch, [old])
+        new = replace(old, row_hash=_fake_hash("cash-new"), trade_price=Decimal("1.37"), **change)
+        result = _import(db, account, monkeypatch, [new])
+        assert result["suspected_duplicate_rows"] == 0 and result["imported_cash_events"] == 1
+        assert db.query(CashEvent).count() == 2
+
+
+def test_cmb_cash_occurrences_and_aliases_consume_one_fact(monkeypatch):
+    from dataclasses import replace
+
+    with SessionLocal() as db:
+        reset_tables(db, RESET_MODELS)
+        account = _cmb_account(db, "现金出现次数")
+        old = _cash_drift("cash-old")
+        _import(db, account, monkeypatch, [old])
+        source = db.query(BrokerFundFlow).filter_by(row_hash=old.row_hash).one()
+        alias = importer.create_broker_fund_flow(
+            user_id=1,
+            broker_account_id=account.id,
+            filename="alias.pdf",
+            flow=replace(old, row_hash=_fake_hash("alias")),
+            cash_event_id=source.cash_event_id,
+        )
+        db.add(alias)
+        db.commit()
+        new = replace(old, row_hash=_fake_hash("cash-new"), trade_price=Decimal("1.37"))
+        extra = replace(new, row_hash=_fake_hash("cash-extra"), source_row_number=2)
+        preview = _preview(db, account, monkeypatch, [new, extra])
+        assert preview["suspected_duplicate_rows"] == 1  # two sources, one cash fact
+        preview = _preview(db, account, monkeypatch, [old, new])
+        assert preview["duplicate_rows"] == 1 and preview["suspected_duplicate_rows"] == 0
+        # Same-batch genuine identical occurrences are allowed in a fresh account.
+        second = _cmb_account(db, "其他账户")
+        result = _import(db, second, monkeypatch, [new, extra])
+        assert result["suspected_duplicate_rows"] == 0 and result["imported_cash_events"] == 2

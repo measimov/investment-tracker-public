@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "architecture:build": "vite build --config vite.architecture.config.ts",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json --composite false && vue-tsc --noEmit -p tsconfig.node.json --composite false",
@@ -18,11 +19,16 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
+    "@fontsource-variable/inter": "5.3.0",
+    "@fontsource-variable/noto-sans-sc": "5.3.0",
+    "@fontsource-variable/noto-serif-sc": "5.3.0",
+    "@lucide/vue": "1.51.0",
     "axios": "^1.6.5",
     "dompurify": "^3.4.12",
     "echarts": "^5.4.3",
     "element-plus": "^2.5.4",
     "marked": "^18.0.7",
+    "naive-ui": "2.45.3",
     "pinia": "^2.1.7",
     "vue": "^3.4.15",
     "vue-echarts": "^6.6.8",
@@ -31,15 +37,21 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/node": "^20.19.43",
+    "@typescript-eslint/parser": "8.22.0",
     "@vitejs/plugin-vue": "^5.0.3",
+    "@vitest/coverage-istanbul": "2.1.9",
     "@vue/tsconfig": "^0.5.1",
+    "dependency-cruiser": "16.10.4",
+    "eslint": "9.39.1",
     "jsdom": "^25.0.1",
+    "mermaid": "11.17.2",
     "openapi-typescript": "^7.13.0",
     "prettier": "^3.8.3",
     "typescript": "~5.6",
     "unplugin-vue-components": "^32.1.0",
     "vite": "^5.0.11",
     "vitest": "^2.1.9",
+    "vue-eslint-parser": "10.2.0",
     "vue-tsc": "^2.2.12"
   }
 }

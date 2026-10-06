@@ -12,7 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from ..models.security_profile import SecurityProfileData
-from .report_digest_service import DIGEST_LOAD_LIMIT, digest_versions_current
+from .report_digest_service import DIGEST_LOAD_LIMIT, select_loadable_digests
 from .report_statement_service import EXTRACT_DATASET, STATEMENT_MARKETS
 
 
@@ -36,8 +36,8 @@ def latest_report_data_at(
 def latest_report_data_at_batch(db: Session, keys: List[tuple]) -> Dict[tuple, Optional[str]]:
     """多个标的的 `latest_data_at`，与详情页 profile 端点**同一判定**（`latest_report_data_at`）：
 
-    - 摘要：按 period_key 倒序看最新 2×DIGEST_LOAD_LIMIT 行、取 status=ok 且双版本当前的前 DIGEST_LOAD_LIMIT 份
-      （即 `load_report_digests` 的口径）的 fetched_at；
+    - 摘要：与 `load_report_digests` 同一选取函数 `select_loadable_digests`（年报全部 + 最新
+      一份中报、当前版本或失败行保存的旧版有效摘要，前 DIGEST_LOAD_LIMIT 份）的 fetched_at；
     - 港股报表：全部抽取行的最新 fetched_at（`statement_progress.last_extracted_at` 的口径）。
 
     只取 payload 里判定要用的三个键，不把摘要正文拉出库（持仓几十只 × 每只十几份）。
@@ -57,6 +57,8 @@ def latest_report_data_at_batch(db: Session, keys: List[tuple]) -> Dict[tuple, O
             payload["status"].as_string(),
             payload["extractor_version"].as_string(),
             payload["prompt_version"].as_string(),
+            payload["previous_ok"]["extractor_version"].as_string(),
+            payload["previous_ok"]["prompt_version"].as_string(),
         )
         .filter(
             SecurityProfileData.dataset == "report_digest",
@@ -66,22 +68,41 @@ def latest_report_data_at_batch(db: Session, keys: List[tuple]) -> Dict[tuple, O
         .order_by(SecurityProfileData.period_key.desc())
         .all()
     )
-    digests: Dict[tuple, List[Dict[str, Any]]] = {}
-    scanned: Dict[tuple, int] = {}
-    limit = DIGEST_LOAD_LIMIT
-    for symbol, market, _period, fetched_at, status, extractor, prompt in digest_rows:
+    rows_by_key: Dict[tuple, List[tuple]] = {}
+    fetched: Dict[tuple, Any] = {}
+    for (
+        symbol,
+        market,
+        period,
+        fetched_at,
+        status,
+        extractor,
+        prompt,
+        prev_extractor,
+        prev_prompt,
+    ) in digest_rows:
         key = (symbol, market)
         if key not in wanted:
             continue
-        scanned[key] = scanned.get(key, 0) + 1
-        if scanned[key] > limit * 2 or len(digests.get(key, [])) >= limit:
-            continue
-        meta = {"extractor_version": extractor, "prompt_version": prompt}
-        if status != "ok" or not digest_versions_current(meta):
-            continue
-        digests.setdefault(key, []).append(
-            {"fetched_at": fetched_at.isoformat() if fetched_at else None}
-        )
+        meta: Dict[str, Any] = {
+            "status": status,
+            "extractor_version": extractor,
+            "prompt_version": prompt,
+        }
+        if prev_extractor is not None or prev_prompt is not None:
+            meta["previous_ok"] = {
+                "extractor_version": prev_extractor,
+                "prompt_version": prev_prompt,
+            }
+        rows_by_key.setdefault(key, []).append((period, meta))
+        fetched[(symbol, market, period)] = fetched_at
+    digests: Dict[tuple, List[Dict[str, Any]]] = {}
+    for key, rows in rows_by_key.items():
+        for period, _payload in select_loadable_digests(rows, key[1], limit=DIGEST_LOAD_LIMIT):
+            fetched_at = fetched.get((*key, period))
+            digests.setdefault(key, []).append(
+                {"fetched_at": fetched_at.isoformat() if fetched_at else None}
+            )
 
     statement_latest: Dict[tuple, Any] = {}
     hk_symbols = sorted({symbol for symbol, market in wanted if market in STATEMENT_MARKETS})

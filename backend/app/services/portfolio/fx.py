@@ -108,3 +108,11 @@ def convert_on_date(
     if rate is None:
         return amount
     return amount * rate
+
+
+def dividend_tax_cash_flow(event, rate_lookup: ExchangeRateLookup):
+    """股息税的本币负现金流；缺 FX 时返回 None，不能把外币税当作 CNY。"""
+    rate = rate_lookup.get_rate_strictly_on_or_before(event.currency, "CNY", event.event_date)
+    if rate is None:
+        return None
+    return event.event_date, -Decimal(str(event.amount)) * rate

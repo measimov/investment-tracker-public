@@ -6,21 +6,43 @@ CNY 汇总按最新汇率折算、缺汇率剔除并记录币种，原币明细�
 """
 
 from decimal import Decimal
+from ..core.timeutil import local_today
 from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
 from ..models.corporate_action import CorporateAction
 from . import exchange_rate_service
-from .portfolio.semantics import cash_dividend_amounts
+from .portfolio.semantics import (
+    cash_dividend_amounts,
+    is_received_dividend,
+    dividend_amounts_complete,
+)
 
 
-def summarize_cash_dividends(db: Session, actions: List[CorporateAction]) -> Dict[str, Any]:
+def summarize_cash_dividends(
+    db: Session, actions: List[CorporateAction], *, tax_events=()
+) -> Dict[str, Any]:
     """按类型计数 + 现金股息的 CNY 折算汇总与原币分桶。"""
+    as_of = local_today()
+    actions = [
+        action
+        for action in actions
+        if action.action_type != "CASH_DIVIDEND" or is_received_dividend(action, as_of)
+    ]
+    tax_events = [event for event in tax_events if event.event_date <= as_of]
     summary: Dict[str, Any] = {
         "total_count": len(actions),
         "by_type": {},
         "cash_dividends": {
+            "legacy_unreviewed_count": sum(
+                a.action_type == "CASH_DIVIDEND" and a.amount_basis == "LEGACY" for a in actions
+            ),
+            "amounts_incomplete_count": sum(
+                not dividend_amounts_complete(a)
+                for a in actions
+                if a.action_type == "CASH_DIVIDEND"
+            ),
             "count": 0,
             "total_dividend": Decimal("0"),
             "total_tax": Decimal("0"),
@@ -71,6 +93,29 @@ def summarize_cash_dividends(db: Session, actions: List[CorporateAction]) -> Dic
             bucket["total_dividend"] += gross
             bucket["total_tax"] += tax
             bucket["net_dividend"] += net
+
+    # 税款在其实际日期过滤，不能按父股息日期筛掉，也不增加股息笔数。
+    for event in tax_events:
+        currency = event.currency
+        amount = event.amount
+        try:
+            amount_cny = exchange_rate_service.convert_to_cny(db, amount, currency)
+        except ValueError:
+            missing_rate_currencies.add(currency)
+            amount_cny = Decimal(0)
+        summary["cash_dividends"]["total_tax"] += amount_cny
+        summary["cash_dividends"]["net_dividend"] -= amount_cny
+        bucket = by_currency.setdefault(
+            currency,
+            {
+                "count": 0,
+                "total_dividend": Decimal(0),
+                "total_tax": Decimal(0),
+                "net_dividend": Decimal(0),
+            },
+        )
+        bucket["total_tax"] += amount
+        bucket["net_dividend"] -= amount
 
     # 转换Decimal为float以便JSON序列化
     summary["cash_dividends"]["total_dividend"] = float(summary["cash_dividends"]["total_dividend"])

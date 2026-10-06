@@ -21,46 +21,48 @@ SGI）一律不计并在 per_year[year].currency_change 标注；近 5 年累计
 currency_changes 等键——单币种序列（含 A股）的输出与改动前逐字节一致。
 """
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .edgar_facts import EDGAR_MISSING_OTHER_CURRENCY, EDGAR_ZERO_INFERENCE_MIN_VERSION
 from .payload_versions import stored_version
+from .periods import annual_by_year, annual_year_key, consecutive_run, coverage, years_adjacent
 
 METRIC_SEMANTICS = {
-    "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-    "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+    "cfo_ni_ratio": (
+        "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计"
+        "（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量"
+    ),
+    "cfo_ni_ratio_5y": (
+        "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；"
+        "缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计"
+    ),
     "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
     "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
     "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
     "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
     "net_margin_series": "净利率逐年序列",
-    "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益",
+    "recurring_profit_share": (
+        "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
+    ),
     "beneish_m_score": (
         "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。"
-        "LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。"
+        "LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。"
     ),
 }
 
+# 比率在净利润 ≤ 0 时不计的原因码（#349：-100/-150 得 1.5 显示「健康」，其实现金流出大于亏损）
+NI_NON_POSITIVE = "ni_non_positive"
+
 
 def _year_of(row: Dict[str, Any]) -> Optional[str]:
-    """年度行的年份键：A股=末日 1231；美股财年可止于任意月（Apple 9 月末），
-    以 fp=FY 标记年度行（pivot_rows_to_statements 透传该标记）。"""
-    end_date = str(row.get("end_date") or "")
-    if not end_date:
-        return None
-    if end_date.endswith("1231") or str(row.get("fp") or "") == "FY":
-        return end_date[:4]
-    return None
+    """年度行的财年键：A股=末日 1231；美股财年可止于任意月（Apple 9 月末），以 fp=FY 标记
+    年度行（pivot_rows_to_statements 透传该标记）。键按财年而不是公历年取（periods，#350）。"""
+    return annual_year_key(row)
 
 
 def _annual_by_year(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """年度行（end_date=XXXX1231 或 fp=FY）按年份索引；同年取首见（调用方已按最新排序）。"""
-    by_year: Dict[str, Dict[str, Any]] = {}
-    for row in rows:
-        year = _year_of(row)
-        if year and year not in by_year:
-            by_year[year] = row
-    return by_year
+    """年度行按财年键索引；同年取首见（调用方已按最新排序）。"""
+    return annual_by_year(rows)
 
 
 def _num(row: Optional[Dict[str, Any]], *fields: str) -> Optional[float]:
@@ -382,11 +384,6 @@ def compute_earnings_quality(
         return {"status": "no_data", "metric_semantics": METRIC_SEMANTICS}
 
     per_year: Dict[str, Dict[str, Any]] = {}
-    cum_cfo = cum_ni = 0.0
-    cum_years = 0
-    # 近 5 年累计只累加与最新可累计年度同币种的年份：USD 与 HKD 金额相加没有意义
-    cum_currency: Optional[str] = None
-    cum_stopped_at: Optional[str] = None
     currency_changes: List[Dict[str, str]] = []
     tables = [income, balance, cashflow]
     for year in years:
@@ -412,8 +409,16 @@ def compute_earnings_quality(
         receivable_growth = _growth_pct(receivable, receivable_prev)
         inventory_growth = _growth_pct(inventory, inventory_prev)
 
+        # 净利润 ≤ 0 时 CFO/NI 与扣非占比的方向失真（负除负、正除负），不计并注明原因
+        ni_positive = ni is not None and ni > 0
+        unavailable = {}
+        if ni is not None and not ni_positive:
+            if cfo is not None:
+                unavailable["cfo_ni_ratio"] = NI_NON_POSITIVE
+            if deducted is not None:
+                unavailable["recurring_profit_share"] = NI_NON_POSITIVE
         per_year[year] = {
-            "cfo_ni_ratio": _round(_ratio(cfo, ni)),
+            "cfo_ni_ratio": _round(_ratio(cfo, ni)) if ni_positive else None,
             "accruals_ratio": _round(
                 _ratio((ni - cfo) if ni is not None and cfo is not None else None, assets)
             ),
@@ -431,20 +436,12 @@ def compute_earnings_quality(
             ),
             "gross_margin": _num(fina.get(year), "grossprofit_margin"),
             "net_margin": _num(fina.get(year), "netprofit_margin"),
-            "recurring_profit_share": _round(_ratio(deducted, ni)),
+            "recurring_profit_share": _round(_ratio(deducted, ni)) if ni_positive else None,
         }
+        if unavailable:
+            per_year[year]["ratio_unavailable"] = unavailable
         if change:
             per_year[year]["currency_change"] = change
-        if ni is not None and cfo is not None and cum_years < 5 and cum_stopped_at is None:
-            currency = _currency_of(market, income.get(year), cashflow.get(year))
-            # 币种未知的年份不能与任何年份相加（首年未知则只取这一年）
-            if cum_years and (currency is None or currency != cum_currency):
-                cum_stopped_at = year
-            else:
-                cum_currency = currency
-                cum_ni += ni
-                cum_cfo += cfo
-                cum_years += 1
 
     m_scores = {
         year: score
@@ -453,11 +450,12 @@ def compute_earnings_quality(
         and (score := _beneish_m_score(income, balance, cashflow, fina, year)) is not None
     }
 
+    cumulative = _cumulative_cfo_ni(years, income, cashflow, market)
     result = {
         "status": "ok",
         "years": years,
         "per_year": per_year,
-        "cfo_ni_ratio_5y": _round(_ratio(cum_cfo, cum_ni)) if cum_years else None,
+        "cfo_ni_ratio_5y": cumulative["ratio"],
         "beneish_m_score": m_scores,
         "metric_semantics": METRIC_SEMANTICS,
     }
@@ -470,13 +468,97 @@ def compute_earnings_quality(
             "M-score 不计（不同币种金额不能直接相除，本层不做汇率折算）；同年内的比率"
             "（CFO/净利润、应计率、毛利率、净利率）不受影响"
         )
-    if cum_stopped_at is not None:
-        result["cfo_ni_ratio_5y_years"] = cum_years
-        result["cfo_ni_ratio_5y_note"] = (
-            f"近 5 年累计只含与最新年度同币种（{cum_currency or '币种未知'}）的 {cum_years} 年；"
-            f"{cum_stopped_at} 年起币种不同或无法确认相同，不混币累计"
-        )
+    if cumulative["note"]:
+        result["cfo_ni_ratio_5y_years"] = cumulative["years"]
+        result["cfo_ni_ratio_5y_note"] = cumulative["note"]
+    if cumulative["unavailable"]:
+        result["cfo_ni_ratio_5y_unavailable"] = cumulative["unavailable"]
     return result
+
+
+CUMULATIVE_YEARS = 5
+
+
+def _cumulative_cfo_ni(
+    years: List[str],
+    income: Dict[str, Dict[str, Any]],
+    cashflow: Dict[str, Dict[str, Any]],
+    market: Optional[str],
+) -> Dict[str, Any]:
+    """近 5 年累计 CFO/净利润：从最新一个 CFO 与净利润都有的财年起，往前只累加**连续**财年。
+
+    缺年（整年无行）、某年缺 CFO 或净利润、报告币种不同或无法确认相同即停——缺的那年情况未知，
+    跨过它累加会把 7 年的跨度当成 5 年；USD 与 HKD 金额相加没有意义。累计净利润 ≤ 0 时比率
+    方向失真，不计（#349）。"""
+
+    def values(year: str):
+        return (
+            _num(income.get(year), "n_income_attr_p", "n_income"),
+            _num(cashflow.get(year), "n_cashflow_act"),
+        )
+
+    start = next((i for i, year in enumerate(years) if None not in values(year)), None)
+    empty = {"ratio": None, "years": 0, "note": None, "unavailable": None}
+    if start is None:
+        return empty
+    first = years[start]
+    first_currency = _currency_of(market, income.get(first), cashflow.get(first))
+
+    def accumulable(year: str) -> Optional[bool]:
+        if None in values(year):
+            return None
+        if year == first:
+            return True
+        # 币种未知的年份不能与任何年份相加（首年未知则只取这一年）
+        currency = _currency_of(market, income.get(year), cashflow.get(year))
+        return currency is not None and currency == first_currency
+
+    run = consecutive_run(years[start:], accumulable, adjacent=years_adjacent)
+    taken = run.items[:CUMULATIVE_YEARS]
+    cum_ni = sum(values(year)[0] for year in taken)
+    cum_cfo = sum(values(year)[1] for year in taken)
+    out = dict(empty, years=len(taken))
+    if cum_ni > 0:
+        out["ratio"] = _round(cum_cfo / cum_ni)
+    else:
+        out["unavailable"] = NI_NON_POSITIVE
+    if len(taken) >= CUMULATIVE_YEARS or run.stop_reason is None:
+        return out
+    stopped = run.stopped_at
+    if run.stop_reason == "value":
+        out["note"] = (
+            f"近 5 年累计只含与最新年度同币种（{first_currency or '币种未知'}）的 {len(taken)} 年；"
+            f"{stopped} 年起币种不同或无法确认相同，不混币累计"
+        )
+    elif run.stop_reason == "gap":
+        missing = coverage([taken[-1], stopped])["missing"]
+        out["note"] = (
+            f"近 5 年累计只含 {first} 年往前连续的 {len(taken)} 年；"
+            f"缺 {'、'.join(missing)} 年的数据，不跨缺年累计"
+        )
+    else:
+        out["note"] = (
+            f"近 5 年累计只含 {first} 年往前连续的 {len(taken)} 年；"
+            f"{stopped} 年缺净利润或经营现金流，不跨缺年累计"
+        )
+    return out
+
+
+def _sga_pair(cur: Dict[str, Any], prev: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """两年的销售+管理费用。两年**披露的分项必须一致**才相加（#349）：缺一个分项按 0 补会让
+    上年少算一整块费用，SGAI 由 1.03 变成 3.33。港股/美股透视行只有合并 SGA（挂在 sell_exp 位），
+    两年都只有这一项，照常可比。"""
+    parts = ("sell_exp", "admin_exp")
+    cur_values = {field: _num(cur, field) for field in parts}
+    prev_values = {field: _num(prev, field) for field in parts}
+    present = {field for field, value in cur_values.items() if value is not None}
+    prev_present = {field for field, value in prev_values.items() if value is not None}
+    if not present or present != prev_present:
+        return None, None
+    return (
+        sum(cur_values[field] for field in present),
+        sum(prev_values[field] for field in present),
+    )
 
 
 def _beneish_m_score(
@@ -513,16 +595,7 @@ def _beneish_m_score(
     total_assets_prev = _num(prev_b, "total_assets")
     depreciation = _num(cur_c, "depr_fa_coga_dpba")
     depreciation_prev = _num(cashflow.get(prev), "depr_fa_coga_dpba")
-    sga = None
-    sga_prev = None
-    sell = _num(cur_i, "sell_exp")
-    admin = _num(cur_i, "admin_exp")
-    if sell is not None or admin is not None:
-        sga = (sell or 0.0) + (admin or 0.0)
-    sell_prev = _num(prev_i, "sell_exp")
-    admin_prev = _num(prev_i, "admin_exp")
-    if sell_prev is not None or admin_prev is not None:
-        sga_prev = (sell_prev or 0.0) + (admin_prev or 0.0)
+    sga, sga_prev = _sga_pair(cur_i, prev_i)
     total_liab = _num(cur_b, "total_liab")
     total_liab_prev = _num(prev_b, "total_liab")
     ni = _num(cur_i, "n_income_attr_p", "n_income")

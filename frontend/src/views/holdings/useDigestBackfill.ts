@@ -4,13 +4,14 @@
  * 这里只留回填特有的：预览确认框与完成汇总文案。
  */
 
-import type { DigestBatchJob } from '@/types'
+import type { DigestBatchJob, DigestBackfillPreview } from '@/types'
 import { reactive } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import { useBatchJobProgress } from '@/composables/useBatchJobProgress'
 import { BATCH_POLL_INTERVAL_MS, BATCH_POLL_MAX_ATTEMPTS } from './useBatchAnalysis'
 import { showApiError } from '@/utils/showApiError'
+import { backfillHasIssues } from '@/utils/reportBackfill'
 
 const DIGEST_STATUS_LABELS: Record<string, string> = {
   queued: '财报摘要回填排队中',
@@ -65,7 +66,7 @@ export function useDigestBackfill({ isUnmounted }: { isUnmounted: () => boolean 
         if (statementsSuspect) summary += `、${statementsSuspect} 期校验存疑`
       }
       // 有永久失败也不能弹绿：绿色 + "新生成 0 份" 会让用户以为一切正常
-      if (!failed && !blocked) ElMessage.success(summary)
+      if (!backfillHasIssues(job)) ElMessage.success(summary)
       else ElMessage.warning(summary)
     }
   })
@@ -74,11 +75,7 @@ export function useDigestBackfill({ isUnmounted }: { isUnmounted: () => boolean 
     starting.value = true
     // 预览是纯 DB 统计（不打外网），失败时如实说取不到，不用本地估算凑数——
     // 本地根本不知道每个标的已有几份摘要
-    let preview: {
-      targets_total: number
-      targets_without_digest: number
-      per_symbol_budget: number
-    }
+    let preview: DigestBackfillPreview
     try {
       preview = (await api.getDigestBackfillPreview()).data
     } catch (error) {
@@ -101,7 +98,7 @@ export function useDigestBackfill({ isUnmounted }: { isUnmounted: () => boolean 
           `每只本轮最多补 ${preview.per_symbol_budget} 份（新→旧）；已有的期数自动跳过，` +
           `再次点击本按钮可继续向更早年份加深，直至十年补满。\n` +
           `预计每只 2-8 分钟（下载与解析 PDF 为主），任务在后台运行，关闭页面不会中断。`,
-        '补齐财报摘要',
+        '财报摘要回填',
         { type: 'warning', confirmButtonText: '开始回填', cancelButtonText: '取消' }
       )
     } catch {

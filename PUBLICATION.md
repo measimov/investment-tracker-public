@@ -4,7 +4,7 @@ This repository is published as a clean snapshot without the private repository'
 Git history.
 
 Current snapshot source: private `main` at
-`b0dca1c` (2026-09-30).
+`9201384fae2226cbf3317498a85034095a717231` (2026-10-06).
 
 Before syncing a new public release:
 
@@ -24,7 +24,8 @@ Public-only adaptations:
   `DEMO_INITIAL_PASSWORD`.
 - Keep this file in the public repository even though it is not part of the
   private snapshot.
-- Exclude private operator guidance (`CLAUDE.md`) and `ops/`.
+- Exclude private operator guidance (`CLAUDE.md`, `AGENTS.md`), `ops/`, tests that depend only on private operator scripts (currently
+  `backend/tests/test_analysis_eval.py`), and private local-runner deployment/design notes.
 - Replace real-ledger reconciliation figures in `METRICS_AUDIT.md` with neutral
   isolated-test wording.
 - Keep `TUSHARE_TOKEN` optional (empty default) in `.env.example`,
@@ -35,13 +36,13 @@ Public-only adaptations:
   filings; they do not contain broker statements or user portfolio data.
 - Treat the squashed `20260728_0001_initial_schema.py` as a fresh pre-v1.0
   baseline; it is not an in-place upgrade from the first public snapshot.
-- For the current snapshot, the private repository depended on the private
-  `xueqiu-market` package (雪球 quotes / A-share fundamentals / opinion matching).
-  This public snapshot drops that requirement and the CI/Docker credential
-  plumbing for it; the
-  `xueqiu_source` wrapper degrades explicitly (`XueqiuUnavailable`) when the
-  package is not installed, and every dependent feature reports the data
-  source as unavailable instead of failing silently.
+- Keep the optional Xueqiu client installation path: the core
+  `requirements.txt` needs no private repository access; only
+  `requirements-xueqiu.txt` references the private client, without credentials.
+  Both public Compose services default to `WITH_XUEQIU: "0"` and have no build
+  secret bindings. Core Docker builds and CI run with the client absent.
+- Client-dependent sources report explicit unavailability; existing opinions,
+  capability checks, and administrator setup access remain available.
 - HKEX daily quotation and 披露易 annual/interim report fixtures are excerpts
   of public exchange data.
 - The built-in Xueqiu collector migration (`20260927_0024`) ships with an empty
@@ -54,26 +55,9 @@ Public-only adaptations:
 - The `xueqiu-collector` compose service builds from the same backend image
   without BuildKit secrets.
 
-## Next sync: optional Xueqiu client
+## Sync validation
 
-When syncing a source revision with `backend/requirements-xueqiu.txt` and
-`WITH_XUEQIU`, use its optional-client path instead of replaying the historical
-dependency removal above:
-
-- Keep both requirements files and the conditional Docker installation branch.
-  Core installation uses `requirements.txt`; only the optional file references
-  the private client. Dependency URLs must not contain credentials.
-- Set `WITH_XUEQIU: "0"` for both backend and collector builds in the public
-  Compose file. Keep build credentials and Compose secret bindings out of the
-  public deployment; no private repository access is needed for core builds.
-- Keep the upstream CI check that the client is absent and the tests for that
-  configuration. Do not add credential setup or manually remove a dependency
-  from the core requirements file.
-- Preserve explicit unavailability for client-dependent data sources. Existing
-  historical opinions remain readable; capability checks and administrator
-  setup access must not be replaced with unconditional hiding.
-
-Validate the resulting sanitized snapshot with an actual no-client installation,
-core Docker build, and its normal backend/frontend checks before publishing.
-This section records the next-sync procedure; it does not change the current
-snapshot source above or publish a new application snapshot.
+Preserve the optional-client path and public adaptations on future syncs.
+Validate a clean core installation, a Docker build with `WITH_XUEQIU=0`, and
+normal backend/frontend checks. Scan the exported snapshot for credentials,
+private deployment values, and personal follow lists before committing.

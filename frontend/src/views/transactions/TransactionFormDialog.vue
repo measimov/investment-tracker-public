@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { validateForm } from '@/utils/validateForm'
 import { useSecurityFormBinding } from '@/composables/useSecurityFormBinding'
 import { LEDGER_CURRENCY_OPTIONS } from '@/utils/currency'
 import { accountOptionLabel, transactionTypeLabel } from '@/utils/labels'
@@ -77,7 +78,7 @@ function positive(label: string): FormItemRule {
 }
 
 const rules: Record<string, FormItemRule[]> = {
-  symbol: [{ required: true, message: '请输入股票代码', trigger: 'blur' }],
+  symbol: [{ required: true, message: '请输入标的代码', trigger: 'blur' }],
   market: [{ required: true, message: '请选择市场', trigger: 'change' }],
   transaction_type: [{ required: true, message: '请选择交易类型', trigger: 'change' }],
   quantity: [positive('数量')],
@@ -149,7 +150,7 @@ function openEdit(row: Transaction) {
 }
 
 async function handleSubmit() {
-  const valid = await formRef.value?.validate()
+  const valid = await validateForm(formRef.value)
   if (!valid) return
 
   submitting.value = true
@@ -172,10 +173,10 @@ async function handleSubmit() {
     } as TransactionCreate
     if (isEdit.value) {
       await transactionsStore.updateTransaction(form.id as number, payload)
-      ElMessage.success('更新成功')
+      ElMessage.success('交易记录已更新')
     } else {
       await transactionsStore.createTransaction(payload)
-      ElMessage.success('创建成功')
+      ElMessage.success('交易记录已新增')
     }
     dialogVisible.value = false
     emit('saved')
@@ -190,9 +191,14 @@ defineExpose({ openAdd, openEdit })
 </script>
 
 <template>
-  <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑交易' : '新增交易'" width="560px">
+  <el-dialog
+    v-model="dialogVisible"
+    :title="isEdit ? '编辑交易' : '新增交易'"
+    width="560px"
+    :close-on-click-modal="false"
+  >
     <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
-      <el-form-item label="券商账户">
+      <el-form-item label="账户">
         <el-select
           v-model="form.broker_account_id"
           clearable
@@ -207,7 +213,7 @@ defineExpose({ openAdd, openEdit })
           />
         </el-select>
       </el-form-item>
-      <el-form-item label="股票代码" prop="symbol">
+      <el-form-item label="标的代码" prop="symbol">
         <SecuritySelect
           v-model="form.symbol"
           :market="form.market"

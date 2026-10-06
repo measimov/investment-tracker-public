@@ -33,7 +33,7 @@ export default defineConfig({
         'export PERIODIC_TASKS_ENABLED=false QUOTE_AUTO_REFRESH_ENABLED=false EVENT_NOTIFICATIONS_ENABLED=false;',
         // 后端从仓库根目录启动，但 alembic/seed 在 backend/ 下运行会读到 backend/.env 的真实凭证：
         // 显式置空，E2E 不应拿开发者的 Key 调外部服务
-        'export LLM_REPORT_API_KEY= TUSHARE_TOKEN= TIINGO_API_TOKEN= XUEQIU_COOKIES= XUEQIU_COOKIE_FILE= XUEQIU_COLLECTOR_PUSH_URL= NOTIFY_URLS=;',
+        'export LLM_REPORT_API_KEY= LLM_ARK_API_KEY= LLM_BAILIAN_API_KEY= LLM_OPENROUTER_API_KEY= TUSHARE_TOKEN= TIINGO_API_TOKEN= XUEQIU_COOKIES= XUEQIU_COOKIE_FILE= XUEQIU_COLLECTOR_PUSH_URL= NOTIFY_URLS=;',
         `cd ${backendSourcePath}`,
         '&&',
         'alembic upgrade head',

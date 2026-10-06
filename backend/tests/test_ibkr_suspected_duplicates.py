@@ -17,6 +17,7 @@ import pytest
 from app.database import SessionLocal
 from app.models.broker_account import BrokerAccount
 from app.models.broker_fund_flow import BrokerFundFlow
+from app.models.cash_event import CashEvent
 from app.models.corporate_action import CorporateAction
 from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
@@ -28,6 +29,7 @@ from tests.helpers import ibkr_csv, reset_tables
 
 
 RESET_MODELS = (
+    CashEvent,
     BrokerFundFlow,
     IbkrActivityFlow,
     Holding,
@@ -502,25 +504,24 @@ CSV_CNOOC_SPECIAL_TAX = (
 )
 
 
-def test_unattributed_tax_reimported_after_suggestion_dividend_reuses_archived_row(db, account):
-    """P2：未归属税行 → 后补跨币种公告股息 → 重导：原地改为疑似，不插第二条同 hash 行。"""
-    # 账本里还没有可归属的股息：税行报出并归档为「未归属税行」（评审复现的起点）
+def test_booked_tax_reimported_after_suggestion_keeps_cash_fact(db, account):
+    """先到税款已独立入账；后补跨币种公告后重导，不自动猜归属或重复扣款。"""
     _import(db, account, ibkr_csv(CSV_CNOOC_TAX))
     (archived,) = db.query(IbkrActivityFlow).all()
-    assert archived.skip_reason == "unattributed_tax"
-
+    assert archived.skip_reason is None
+    event_id = archived.cash_event_id
+    assert event_id is not None
     _suggestion_dividend(db, account)
     contents = ibkr_csv(CSV_CNOOC_TAX)
     preview = _preview(db, account, contents)
-    assert preview["errors"] == [] and preview["suspected_duplicate_rows"] == 1
-
+    assert preview["errors"] == [] and preview["duplicate_rows"] == 1
     result = _import(db, account, contents)
-    assert result["errors"] == []
-    assert result["suspected_duplicate_rows"] == 1
+    assert result["errors"] == [] and result["imported_tax_adjustments"] == 0
     rows = db.query(IbkrActivityFlow).all()
     assert len(rows) == 1 and rows[0].id == archived.id
-    assert rows[0].skip_reason == "suspected_duplicate"
+    assert rows[0].cash_event_id == event_id
     assert rows[0].corporate_action_id is None
+    assert db.query(CashEvent).filter_by(tax_kind="DIVIDEND").count() == 1
 
 
 def test_mixed_same_day_dividends_pair_taxes_by_per_share_description(db, account):
@@ -678,7 +679,11 @@ def test_confirmed_tax_is_not_attributed_to_a_dividend_with_other_per_share(db, 
         .one()
     )
     result = _import(db, account, taxes_only, confirmed_row_hashes=frozenset({held_tax.row_hash}))
-    assert any("found 0" in error for error in result["errors"])
+    assert result["errors"] == []
+    assert result["imported_tax_adjustments"] == 1
     assert all(a.tax_withheld == Decimal("0") for a in db.query(CorporateAction))
     db.refresh(held_tax)
-    assert held_tax.skip_reason == "unattributed_tax"
+    assert held_tax.skip_reason is None
+    assert held_tax.corporate_action_id is None
+    assert held_tax.cash_event_id is not None
+    assert db.get(CashEvent, held_tax.cash_event_id).unallocated_tax_amount > 0

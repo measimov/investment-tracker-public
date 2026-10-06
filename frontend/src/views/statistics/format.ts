@@ -11,6 +11,14 @@ import type { RiskFreeInfo } from './types'
 
 type Numeric = number | string | null | undefined
 
+/** 曲线缺值保留断点；非法或非有限值也不能成为图上的零收益。 */
+export function nullableFiniteNumber(value: unknown): number | null {
+  if (typeof value !== 'number' && typeof value !== 'string') return null
+  if (typeof value === 'string' && !value.trim()) return null
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
 export function formatNullableNumber(value: Numeric, precision = 2): string {
   return formatNumber(value, precision)
 }
@@ -20,17 +28,14 @@ export function formatNullablePercent(value: Numeric, precision = 2): string {
   return formatPercent(value, precision)
 }
 
-/** 无方向的百分比（胜率、占比、回撤）：12.34% / — */
-export function formatPlainPercent(value: Numeric, precision = 2): string {
-  const text = formatNumber(value, precision)
-  return text === EMPTY ? EMPTY : `${text}%`
-}
+export { formatPlainPercent } from '@/utils/helpers'
 
 /** el-statistic 的 formatter：带正号的数值（后缀 % 由组件加），规则同 formatPercent */
 export function signedNumber(value: Numeric, precision = 2): string {
   const text = formatNumber(value, precision)
   if (text === EMPTY) return EMPTY
-  return Number(value) >= 0 ? `+${text}` : text
+  if (Number(Number(value).toFixed(precision)) === 0) return formatNumber(0, precision)
+  return Number(value) > 0 ? `+${text}` : text
 }
 
 // 年化在短区间严重失真：近 1 月涨 5% 年化约 +79%。不改后端数值，只在前端标注
@@ -64,4 +69,12 @@ export function riskFreeText(info: RiskFreeInfo | null | undefined): string {
     ? `；区间开头 ${info.missing_points} 个观测点早于序列首值，按 0 计`
     : ''
   return `无风险利率按 ${info.label || info.series} 日序列逐期扣除，区间均值 ${average}%${partial}`
+}
+
+/** 仅压缩图表刻度；tooltip 与明细仍用完整金额格式。 */
+export function formatAmountTick(value: number): string {
+  const magnitude = Math.abs(value)
+  if (magnitude >= 100000000) return `${formatNumber(value / 100000000, 1).replace(/\.0$/, '')}亿`
+  if (magnitude >= 10000) return `${formatNumber(value / 10000, 1).replace(/\.0$/, '')}万`
+  return formatNumber(value, 0)
 }

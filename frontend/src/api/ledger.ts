@@ -7,6 +7,7 @@ import type {
   CashEvent,
   CashEventCreate,
   CashEventUpdate,
+  DividendTaxAllocationsUpdate,
   CorporateAction,
   CorporateActionCreate,
   CorporateActionUpdate,
@@ -21,6 +22,7 @@ import type {
   SecurityRule,
   SecurityRuleCreate,
   SuggestionAccept,
+  SuggestionReceiptsUpdate,
   Transaction,
   TransactionCreate,
   TransactionUpdate,
@@ -83,6 +85,9 @@ export const ledgerApi = {
   },
   deleteCashEvent(id: number | string) {
     return apiClient.delete<void>(`/cash-events/${id}`)
+  },
+  updateDividendTaxAllocations(id: number, data: DividendTaxAllocationsUpdate) {
+    return apiClient.put<CashEvent>(`/cash-events/${id}/dividend-allocations`, data)
   },
 
   // 账本特例规则（issue #82）：排除/现金管理/转板映射/名称覆盖/行情缺口豁免/招商现金业务
@@ -152,6 +157,12 @@ export const ledgerApi = {
   },
   listDividendSuggestions(params?: QueryParams) {
     return apiClient.get<DividendSuggestion[]>('/corporate-actions/suggestions', { params })
+  },
+  getDividendReceiptCandidates(id: number) {
+    return apiClient.get<CorporateAction[]>(`/corporate-actions/suggestions/${id}/receipts`)
+  },
+  updateDividendReceipts(id: number, data: SuggestionReceiptsUpdate) {
+    return apiClient.put<DividendSuggestion>(`/corporate-actions/suggestions/${id}/receipts`, data)
   },
   countDividendSuggestions() {
     return apiClient.get('/corporate-actions/suggestions/count')

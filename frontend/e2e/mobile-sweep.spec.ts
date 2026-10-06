@@ -1,6 +1,7 @@
 // 移动端兼容性全页扫描（阶段 4）：Pixel 5 视口（393×851，Chromium 系）逐页断言无横向溢出。
 // 横向滚动是移动端布局破损的最可靠信号——任何页面 body 都不得横向滚动。
 import { devices, expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { mockXueqiuCapabilities } from './helpers'
 
 const user = { username: 'demo', password: 'e2e-user-password' }
 const adminUser = { username: 'admin', password: 'e2e-admin-password' }
@@ -27,6 +28,7 @@ async function seedData(request: APIRequestContext, token: string) {
       response.ok(),
       `seed ${path} 失败: ${response.status()} ${await response.text()}`
     ).toBeTruthy()
+    return response.json()
   }
 
   // 券商账户：账户数据页的"新增事件/新增核对"在无账户时是禁用的，
@@ -72,7 +74,15 @@ async function seedData(request: APIRequestContext, token: string) {
   ]) {
     await seedPost('/api/transactions', txn)
   }
+  const dividendAccount = await seedPost('/api/broker-accounts', {
+    broker: '扫描',
+    account_name: '扫描',
+    base_currency: 'CNY'
+  })
   await seedPost('/api/corporate-actions/cash-dividend', {
+    broker_account_id: dividendAccount.id,
+    receipt_confirmed: true,
+    payment_date: '2026-03-01',
     symbol: '600000',
     name: '移动端扫描标的',
     market: 'A股',
@@ -146,7 +156,7 @@ const ROUTES: Array<[string, string]> = [
 // 在登录页上测"无横向溢出"是假通过
 const ADMIN_ROUTES: Array<[string, string]> = [
   ['/admin/users', '用户管理'],
-  ['/admin/holdings', '全部持仓'],
+  ['/admin/holdings', '查看所有持仓'],
   ['/admin/alerts', '系统告警']
 ]
 
@@ -235,7 +245,7 @@ test('mobile dialogs are constrained within the viewport', async ({ page, reques
   await setSession(page, token)
 
   async function assertDialogFits(label: string) {
-    const dialog = page.locator('.el-dialog:visible').first()
+    const dialog = page.getByRole('dialog').filter({ visible: true }).first()
     await expect(dialog, label).toBeVisible()
     const box = await dialog.boundingBox()
     const viewport = page.viewportSize()
@@ -253,7 +263,7 @@ test('mobile dialogs are constrained within the viewport', async ({ page, reques
     ['/transactions', '导入'],
     // 移动卡片里按钮写全称，桌面表格才是'转仓'
     ['/holdings', '转仓到其他账户'],
-    ['/statistics', '输入价格'],
+    ['/statistics', '输入价格试算'],
     ['/corporate-actions', '新增记录'],
     ['/account-data', '新增账户'],
     ['/account-data', '新增事件', '现金事件'],
@@ -290,7 +300,13 @@ test('mobile admin dialogs are constrained within the viewport', async ({ page, 
       await page.goto(route)
       await page.waitForLoadState('networkidle')
     }
-    await page.getByRole('button', { name: trigger, exact: true }).first().click()
+    await page
+      .getByRole('button', {
+        name: trigger === '重置密码' ? /^重置用户 .* 的密码$/ : trigger,
+        exact: true
+      })
+      .first()
+      .click()
     const dialog = page.locator('.el-dialog:visible').first()
     await expect(dialog, trigger).toBeVisible()
     const box = await dialog.boundingBox()
@@ -346,7 +362,7 @@ test('mobile cards keep long text and actions inside the viewport', async ({ pag
   ).toBeLessThanOrEqual(viewport.width)
 
   // 删除按钮必须真的可点：命中测试落在按钮自身上，而不是被裁到屏幕外
-  const deleteButton = actions.getByRole('button', { name: '删除空账户' })
+  const deleteButton = actions.getByRole('button', { name: /^删除 .+ 空账户$/ })
   await expect(deleteButton).toBeVisible()
   const buttonBox = (await deleteButton.boundingBox())!
   expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(viewport.width)
@@ -406,8 +422,8 @@ async function stubPopulatedSecurity(page: Page) {
   await page.route('**/api/securities/**/profile*', async (route) => {
     await route.fulfill({
       json: {
-        symbol: '600000',
-        market: 'A股',
+        symbol: 'PDD',
+        market: '美股',
         name: '移动端扫描标的股份有限公司',
         capabilities: { structured: true, report_digest: true, risk_signals: true },
         datasets: { yahoo_fundamentals: Array.from({ length: 12 }, (_, i) => pivotRow(2025 - i)) },
@@ -480,8 +496,8 @@ async function stubPopulatedSecurity(page: Page) {
   await page.route('**/api/securities/**/analysis*', async (route) => {
     await route.fulfill({
       json: {
-        symbol: '600000',
-        market: 'A股',
+        symbol: 'PDD',
+        market: '美股',
         tags: ['业绩增长', '现金流背离', '利润质量存疑', '估值偏高'],
         risk_level: 'medium',
         summary: '经营现金流对净利润覆盖充分，但应收增速持续快于营收，需关注渠道压货。',
@@ -507,11 +523,12 @@ test('mobile security detail page stays inside the viewport when populated', asy
   page,
   request
 }) => {
+  await mockXueqiuCapabilities(page, { configured: true })
   const token = await loginThroughApi(request)
   await setSession(page, token)
   await stubPopulatedSecurity(page)
 
-  await page.goto('/securities/A股/600000')
+  await page.goto('/securities/美股/PDD')
   await page.waitForLoadState('networkidle')
   await expect(page.locator('text=智能家居').first()).toBeVisible()
 
@@ -539,8 +556,11 @@ test('mobile security detail page stays inside the viewport when populated', asy
     `详情页横向溢出 ${JSON.stringify(overflow.worst)}`
   ).toBeLessThanOrEqual(1)
 
-  // 宽内容（年度科目表、分析全文里的表格）必须在**自己的容器里**横向滚动，
-  // 而不是把整页撑宽
+  // 年度科目表在美/港股的「报表」tab 懒渲染；先打开再检查实际宽表，
+  // 不能依赖分析页业务分部超宽来替这项断言提供样本。
+  await page.getByRole('tab', { name: '报表' }).click()
+  await expect(page.getByTestId('pivot-statements-section')).toBeVisible()
+  // 宽表必须在自己的容器里横向滚动，而不是把整页撑宽。
   const scrollers = await page.evaluate(() => {
     const results: string[] = []
     for (const el of document.querySelectorAll('body *')) {
@@ -603,7 +623,7 @@ test('mobile holding card title navigates to the security detail page', async ({
   // 取决于跑了哪些用例，写死代码会让这条测试依赖执行顺序
   const symbol = (await title.getByTestId('holding-card-symbol').innerText()).trim()
   const market = (
-    await page.getByTestId('holding-card').first().locator('.el-tag').first().innerText()
+    await page.getByTestId('holding-card').first().locator('.n-tag').first().innerText()
   ).trim()
 
   await title.click()

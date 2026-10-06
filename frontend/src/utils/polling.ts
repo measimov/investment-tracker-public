@@ -27,6 +27,15 @@ export interface PollJobOptions {
    * 任务在后台照跑；此前一次抖动就让数小时批量任务的进度卡报错停更（#219）。
    */
   maxConsecutiveFetchErrors?: number
+  /** A terminal failed job may still contain useful partial results. Opt in per caller. */
+  acceptFailedResult?: (job: BackgroundJob) => boolean
+}
+
+export class PollingTimeoutError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PollingTimeoutError'
+  }
 }
 
 /** 取状态请求的失败是否值得重试：无响应/超时/5xx 是暂态，4xx（任务不存在、无权限）不是 */
@@ -81,11 +90,12 @@ export async function pollJobUntilDone(
     }
 
     if (job.status === 'failed' || job.status === 'interrupted') {
+      if (job.status === 'failed' && options.acceptFailedResult?.(job)) return job
       throw new Error(job.error || job.result?.error || failureMessage)
     }
 
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
 
-  throw new Error(timeoutMessage)
+  throw new PollingTimeoutError(timeoutMessage)
 }

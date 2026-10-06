@@ -33,6 +33,7 @@ from ..models.transaction import Transaction
 from ..models.user import User
 from . import hkex_dividend_source
 from .background_job_store import JobOwnershipLostError
+from .broker_import_common import lock_broker_import
 from .hk_adjustment_factors import recompute_hk_adj_factors
 from .holding_service import (
     AccountReplayError,
@@ -109,6 +110,7 @@ def fetch_dividend_announcements(symbol: str, market: str) -> List[Dict[str, Any
             {
                 "end_date": _parse_ts_date(raw.get("end_date")),
                 "ann_date": _parse_ts_date(raw.get("ann_date")),
+                "imp_ann_date": _parse_ts_date(raw.get("imp_ann_date")),
                 "div_proc": str(raw.get("div_proc") or "").strip(),
                 "stk_div": _parse_ts_number(raw.get("stk_div")),
                 "cash_div": _parse_ts_number(raw.get("cash_div")),
@@ -241,6 +243,11 @@ def match_existing_action(
     best: Optional[Dict[str, Any]] = None
     in_window: List[CorporateAction] = []
     for action in existing_actions:
+        if (
+            action_type == "CASH_DIVIDEND"
+            and getattr(action, "receipt_status", None) == "UNVERIFIED"
+        ):
+            continue
         if action.action_type not in candidate_types:
             continue
         if (
@@ -314,14 +321,43 @@ def _upsert_suggestion(
     existing = db.query(CorporateActionSuggestion).filter_by(user_id=user_id, **identity).first()
     if existing is None:
         db.add(CorporateActionSuggestion(user_id=user_id, **identity, **values))
+        # autoflush=False：同轮后续公告必须能查到新身份，避免提交时撞唯一键。
+        # 只 flush，不 commit，仍与当前标的的其他写入一起成功或回滚。
+        db.flush()
         return "new"
     lock_record(db, "ca-suggestion-record", existing.id)
     db.refresh(existing)
     if existing.status in ("ACCEPTED", "IGNORED"):
         return "kept"
+    if existing.action_type == "CASH_DIVIDEND":
+        if any(
+            getattr(existing, key) != values.get(key, getattr(existing, key))
+            for key in ("estimated_total_dividend", "currency", "pay_date")
+        ):
+            existing.receipt_complete = False
+        if (existing.match_detail or {}).get("receipt_links_reviewed"):
+            values = {
+                **values,
+                "match_detail": {
+                    **(values.get("match_detail") or {}),
+                    "receipt_links_reviewed": True,
+                },
+            }
     for field, value in values.items():
         setattr(existing, field, value)
     return "refreshed"
+
+
+def _has_receipt_links(db, suggestion):
+    return (
+        db.query(CorporateAction.id)
+        .filter(
+            CorporateAction.user_id == suggestion.user_id,
+            CorporateAction.dividend_suggestion_id == suggestion.id,
+        )
+        .first()
+        is not None
+    )
 
 
 def _remove_stale_suggestions(
@@ -358,6 +394,9 @@ def _remove_stale_suggestions(
         db.refresh(row)
         if row.status not in ("NEW", "MATCHED"):
             continue  # 锁内重读发现已被接受/忽略：保留
+        if _has_receipt_links(db, row):
+            row.match_detail = {**(row.match_detail or {}), "forecast_withdrawn": True}
+            continue
         db.delete(row)
         removed += 1
     return removed
@@ -409,21 +448,25 @@ def _sync_symbol_events(
     """单标的事件落库：分红预案 + 财报披露计划 + 限售解禁。"""
     events_upserted = 0
 
-    # 分红预案/股东大会通过（尚未实施）且已知除权日 → DIVIDEND_PLAN
+    # 未实施预案没有除权日时按公告日提醒，不生成权益或到账记录。
     for row in dividend_rows:
         if row["div_proc"] not in ("预案", "股东大会通过"):
             continue
-        if row["ex_date"] is None or row["ex_date"] < lookback_start:
+        event_date = row["ex_date"] or row["ann_date"]
+        if event_date is None or event_date < lookback_start:
             continue
         if upsert_security_event(
             db,
             symbol,
             market,
             "DIVIDEND_PLAN",
-            row["ex_date"],
+            event_date,
             "tushare-dividend",
             payload={
                 "div_proc": row["div_proc"],
+                "date_basis": "ex_date" if row["ex_date"] else "announcement",
+                "ann_date": row["ann_date"].isoformat() if row["ann_date"] else None,
+                "ex_date": row["ex_date"].isoformat() if row["ex_date"] else None,
                 "cash_div_tax": float(row["cash_div_tax"]) if row["cash_div_tax"] else None,
                 "stk_div": float(row["stk_div"]) if row["stk_div"] else None,
                 "pay_date": row["pay_date"].isoformat() if row["pay_date"] else None,
@@ -499,6 +542,132 @@ def _cash_suggestion_values(
     return values
 
 
+def _tushare_distribution_key(row: Dict[str, Any], action_type: str) -> Optional[str]:
+    """发行期间 + 分配类型/比例标识同一分配；日期更正不改变身份。
+
+    缺少发行期间时不推断取代关系，不用相近日期删除其他公告。
+    """
+    period = row.get("end_date")
+    announcement_date = row.get("ann_date")
+    if not period or not announcement_date:
+        return None
+    values = (
+        (row.get("cash_div_tax") or row.get("cash_div"),)
+        if action_type == "CASH_DIVIDEND"
+        else (row.get("stk_div"),)
+    )
+    amounts = ":".join(format(Decimal(str(value or 0)).normalize(), "f") for value in values)
+    return f"tushare:{period.isoformat()}:{announcement_date.isoformat()}:{action_type}:{amounts}"
+
+
+def _same_distribution(suggestion, key):
+    if (suggestion.announcement_detail or {}).get("distribution_key") == key:
+        return True
+    parts = key.split(":")
+    amount = (
+        suggestion.cash_div_pre_tax
+        if suggestion.action_type == "CASH_DIVIDEND"
+        else suggestion.stk_div_per_share
+    )
+    return (
+        len(parts) == 5
+        and parts[0] == "tushare"
+        and suggestion.announcement_detail is None
+        and suggestion.source == "tushare-dividend"
+        and suggestion.ann_date is not None
+        and suggestion.ann_date.isoformat() == parts[2]
+        and amount is not None
+        and format(Decimal(str(amount)).normalize(), "f") == parts[4]
+    )
+
+
+def superseded_suggestion_date(suggestion) -> Optional[str]:
+    """修订只改变公告版本，不将旧 ACCEPTED/IGNORED 变成可重新入账建议。"""
+    return (suggestion.announcement_detail or {}).get("superseded_by_ex_date")
+
+
+def _accepted_distribution_match(
+    db, user_id, symbol, market, account_id, action_type, key, ex_date
+):
+    if not key:
+        return None
+    linked = (
+        db.query(CorporateActionSuggestion, CorporateAction)
+        .join(
+            CorporateAction,
+            (CorporateActionSuggestion.created_corporate_action_id == CorporateAction.id)
+            | (CorporateActionSuggestion.matched_corporate_action_id == CorporateAction.id),
+        )
+        .filter(
+            CorporateActionSuggestion.user_id == user_id,
+            CorporateActionSuggestion.symbol == symbol,
+            CorporateActionSuggestion.market == market,
+            CorporateActionSuggestion.action_type == action_type,
+            CorporateAction.user_id == user_id,
+            CorporateAction.symbol == symbol,
+            CorporateAction.market == market,
+            CorporateAction.action_type == action_type,
+        )
+        .order_by(CorporateActionSuggestion.id)
+    )
+    if action_type == "CASH_DIVIDEND":
+        # 接受时可纠正归属账户，最终在账账户才是判重范围。
+        linked = linked.filter(CorporateAction.broker_account_id == account_id)
+    for old, action in linked.all():
+        if _same_distribution(old, key):
+            return {
+                "matched_by": "announcement_revision",
+                "matched_action_id": action.id,
+                "date_gap_days": abs((old.ex_date - ex_date).days),
+            }
+    return None
+
+
+def _remove_revised_tushare_suggestions(db, user_id, symbol, market, row, action_type):
+    key = _tushare_distribution_key(row, action_type)
+    if not key:
+        return 0
+    removed = 0
+    changed = False
+    for old in (
+        db.query(CorporateActionSuggestion)
+        .filter(
+            CorporateActionSuggestion.user_id == user_id,
+            CorporateActionSuggestion.symbol == symbol,
+            CorporateActionSuggestion.market == market,
+            CorporateActionSuggestion.action_type == action_type,
+            CorporateActionSuggestion.source == "tushare-dividend",
+        )
+        .order_by(CorporateActionSuggestion.id)
+        .all()
+    ):
+        if not _same_distribution(old, key):
+            continue
+        lock_record(db, "ca-suggestion-record", old.id)
+        db.refresh(old)
+        changed = True
+        if (
+            old.ex_date != row["ex_date"]
+            and old.status in ("NEW", "MATCHED")
+            and not _has_receipt_links(db, old)
+        ):
+            db.delete(old)
+            removed += 1
+        else:
+            # 保留接受/忽略的历史；明确当前版本，不能靠日期大小或行 id
+            # 判断（公告也会把日期改回更早的既有版本）。
+            detail = {**(old.announcement_detail or {}), "distribution_key": key}
+            if old.ex_date != row["ex_date"]:
+                detail["superseded_by_ex_date"] = row["ex_date"].isoformat()
+            else:
+                detail.pop("superseded_by_ex_date", None)
+            old.announcement_detail = detail
+    if changed:
+        # Session 禁用 autoflush；后续 upsert 的锁内 refresh 不能丢失版本标记。
+        db.flush()
+    return removed
+
+
 def _upsert_cash_suggestions(
     db: Session,
     user_id: int,
@@ -534,6 +703,17 @@ def _upsert_cash_suggestions(
             broker_account_id=account_id,
             currency=match_currency,
         )
+        distribution_key = (base_values.get("announcement_detail") or {}).get("distribution_key")
+        match = match or _accepted_distribution_match(
+            db,
+            user_id,
+            symbol,
+            market,
+            account_id,
+            "CASH_DIVIDEND",
+            distribution_key,
+            announcement["ex_date"],
+        )
         outcome = _upsert_suggestion(
             db,
             user_id,
@@ -568,8 +748,13 @@ def _sync_tushare_symbol(
     result: Dict[str, Any],
 ) -> None:
     """A/B 股：Tushare dividend（div_proc="实施"）→ 建议；非实施阶段 → 事件。"""
-    rows = fetch_dividend_announcements(symbol, market)
+    # 实施公告日与预案/决案公告日是不同字段；修订优先按实施公告日从旧到新。
+    rows = sorted(
+        fetch_dividend_announcements(symbol, market),
+        key=lambda row: row.get("imp_ann_date") or row["ann_date"] or date.min,
+    )
     result["symbols_scanned"] += 1
+    lock_broker_import(db, user_id)
 
     existing_actions = (
         db.query(CorporateAction)
@@ -587,8 +772,17 @@ def _sync_tushare_symbol(
         if row["ex_date"] < lookback_start:
             continue
         result["announcements"] += 1
+        for revised_type in ("CASH_DIVIDEND", "STOCK_DIVIDEND"):
+            result["stale_removed"] += _remove_revised_tushare_suggestions(
+                db, user_id, symbol, market, row, revised_type
+            )
 
-        entitle_date = row["record_date"] or (row["ex_date"] - timedelta(days=1))
+        # B 股登记日包含交收滞后；账本按成交日重放，应截止除息前，不能计入除息后买卖。
+        entitle_date = (
+            row["ex_date"] - timedelta(days=1)
+            if market == "B股"
+            else row["record_date"] or (row["ex_date"] - timedelta(days=1))
+        )
         breakdown, basis = quantity_on_record_date(db, user_id, symbol, market, entitle_date)
         if not breakdown:
             result["skipped_no_position"] += 1
@@ -615,8 +809,18 @@ def _sync_tushare_symbol(
                     currency="CNY",
                     per_share_pre_tax=per_share_pre_tax,
                     per_share_after_tax=row["cash_div"],
+                    extra_values={
+                        "announcement_detail": {
+                            "distribution_key": _tushare_distribution_key(row, "CASH_DIVIDEND"),
+                            "end_date": row["end_date"].isoformat()
+                            if row.get("end_date")
+                            else None,
+                        }
+                    },
                 ),
                 per_share_pre_tax=per_share_pre_tax,
+                # Tushare 是人民币公告金额；B 股实际外币到账只能提示币种待核对，不能直接相减。
+                match_currency="CNY" if market == "B股" else None,
             )
 
         if breakdown and row["stk_div"] and row["stk_div"] > 0:
@@ -629,6 +833,16 @@ def _sync_tushare_symbol(
                 existing_actions,
                 match_window_days=settings.dividend_sync_match_window_days,
                 broker_account_id=None,
+            )
+            match = match or _accepted_distribution_match(
+                db,
+                user_id,
+                symbol,
+                market,
+                None,
+                "STOCK_DIVIDEND",
+                _tushare_distribution_key(row, "STOCK_DIVIDEND"),
+                row["ex_date"],
             )
             outcome = _upsert_suggestion(
                 db,
@@ -651,6 +865,10 @@ def _sync_tushare_symbol(
                     "status": "MATCHED" if match else "NEW",
                     "matched_corporate_action_id": (match["matched_action_id"] if match else None),
                     "match_detail": match,
+                    "announcement_detail": {
+                        "distribution_key": _tushare_distribution_key(row, "STOCK_DIVIDEND"),
+                        "end_date": row["end_date"].isoformat() if row.get("end_date") else None,
+                    },
                 },
             )
             _count_outcome(result, outcome, match)
@@ -914,6 +1132,7 @@ def _sync_hkex_symbol(
     for conflict in conflicts:
         result["hk_conflicts"].append({"symbol": symbol, **conflict})
 
+    lock_broker_import(db, user_id)
     existing_actions = (
         db.query(CorporateAction)
         .filter(
@@ -1150,6 +1369,7 @@ def accept_suggestion(
     账户归属取建议行自身的 broker_account_id（每账户一条建议），overrides
     仅允许纠正归属与税额；税额不得超过总额。STOCK_DIVIDEND 同事务重算持仓。
     """
+    lock_broker_import(db, user.id)
     lock_record(db, "ca-suggestion-record", suggestion_id)
     suggestion = (
         db.query(CorporateActionSuggestion)
@@ -1171,6 +1391,9 @@ def accept_suggestion(
                 "再次入账会导致股息双计；如确需入账请先核对并处理既有记录。"
             )
         raise SuggestionStateError(f"建议已处于 {suggestion.status} 状态，不能接受")
+
+    if revised_date := superseded_suggestion_date(suggestion):
+        raise SuggestionStateError(f"该公告已修订，请使用除权日为 {revised_date} 的当前建议")
 
     lock_security_timeline(db, user.id, suggestion.symbol, suggestion.market)
 
@@ -1211,6 +1434,16 @@ def accept_suggestion(
             suggestion.currency if suggestion.source == hkex_dividend_source.SOURCE else None
         ),
     )
+    late_match = late_match or _accepted_distribution_match(
+        db,
+        user.id,
+        suggestion.symbol,
+        suggestion.market,
+        broker_account_id,
+        suggestion.action_type,
+        (suggestion.announcement_detail or {}).get("distribution_key"),
+        suggestion.ex_date,
+    )
     if late_match:
         suggestion.status = "MATCHED"
         suggestion.matched_corporate_action_id = late_match["matched_action_id"]
@@ -1221,6 +1454,11 @@ def accept_suggestion(
             f"（公司行动 #{late_match['matched_action_id']}，可能来自券商导入或"
             "手工录入），未重复入账；建议已标记为已匹配。"
         )
+    if suggestion.action_type == "CASH_DIVIDEND":
+        raise SuggestionStateError(
+            "现金分红公告仅用于预计与待收统计，请导入实际到账凭证；不能通过接受公告入账"
+        )
+
     action_kwargs: Dict[str, Any] = {
         "user_id": user.id,
         "symbol": suggestion.symbol,
@@ -1234,36 +1472,9 @@ def accept_suggestion(
         "broker_account_id": broker_account_id,
         "notes": f"来自分红公告建议 #{suggestion.id}（{suggestion.source}）",
     }
-    quantity = Decimal(str(suggestion.record_date_quantity or 0))
-    if suggestion.action_type == "CASH_DIVIDEND":
-        per_share = Decimal(str(suggestion.cash_div_pre_tax or 0))
-        gross = (
-            Decimal(str(overrides["total_dividend"]))
-            if overrides.get("total_dividend") is not None
-            else per_share * quantity
-        )
-        tax = (
-            Decimal(str(overrides["tax_withheld"]))
-            if overrides.get("tax_withheld") is not None
-            else Decimal("0")
-        )
-        if tax > gross:
-            raise SuggestionStateError(
-                f"预扣税额（{tax}）不能超过股息总额（{gross}），净股息不能为负"
-            )
-        action_kwargs.update(
-            {
-                "dividend_per_share": per_share,
-                "total_dividend": gross,
-                "tax_withheld": tax,
-                "net_dividend": gross - tax,
-            }
-        )
-    else:  # STOCK_DIVIDEND：ratio 优先级语义（semantics.bonus_share_factor）
-        stk_div = Decimal(str(suggestion.stk_div_per_share or 0))
-        # 每股送转 → "10:N" 基数比例（format 'f' 防 normalize 产生科学计数法）
-        bonus_per_ten = format((stk_div * 10).normalize(), "f")
-        action_kwargs["distribution_ratio"] = f"10:{bonus_per_ten}"
+    stk_div = Decimal(str(suggestion.stk_div_per_share or 0))
+    bonus_per_ten = format((stk_div * 10).normalize(), "f")
+    action_kwargs["distribution_ratio"] = f"10:{bonus_per_ten}"
 
     db_action = CorporateAction(**action_kwargs)
     db.add(db_action)
@@ -1281,6 +1492,7 @@ def accept_suggestion(
 
 def _locked_suggestion(db: Session, user_id: int, suggestion_id: int) -> CorporateActionSuggestion:
     """记录锁内取回建议行（锁后重读，保证看到并发提交的最新状态）。"""
+    lock_broker_import(db, user_id)
     lock_record(db, "ca-suggestion-record", suggestion_id)
     suggestion = (
         db.query(CorporateActionSuggestion)
@@ -1317,6 +1529,8 @@ def restore_suggestion(db: Session, user_id: int, suggestion_id: int) -> Corpora
     suggestion = _locked_suggestion(db, user_id, suggestion_id)
     if suggestion.status != "IGNORED":
         raise SuggestionStateError("仅已忽略的建议可以恢复")
+    if revised_date := superseded_suggestion_date(suggestion):
+        raise SuggestionStateError(f"该公告已修订，请使用除权日为 {revised_date} 的当前建议")
     suggestion.status = "MATCHED" if suggestion.matched_corporate_action_id is not None else "NEW"
     db.commit()
     db.refresh(suggestion)

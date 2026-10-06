@@ -197,14 +197,14 @@ describe('公司行动表单映射（#284）', () => {
     expect(formFromAction({ ...row, tax_rate: null }).tax_rate_percent).toBeNull()
   })
 
-  it('提交：税率百分数转小数；新建空税额提交 0，编辑原样', () => {
+  it('提交：税率百分数转小数；未知税额保持为空', () => {
     const form = formFromAction(row)
     expect(payloadFromForm(form, { isEdit: true })).toMatchObject({
       tax_rate: 0.2,
       tax_withheld: null,
       total_dividend: 450
     })
-    expect(payloadFromForm({ ...form, id: undefined }, { isEdit: false }).tax_withheld).toBe(0)
+    expect(payloadFromForm({ ...form, id: undefined }, { isEdit: false }).tax_withheld).toBeNull()
   })
 
   it('只带该类型自己的字段', () => {

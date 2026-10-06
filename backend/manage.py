@@ -143,6 +143,15 @@ def build_parser() -> argparse.ArgumentParser:
         "(no network)",
     )
     reclassify.add_argument("--all", action="store_true", help="reclassify every row")
+    report_cache_cmd = subcommands.add_parser(
+        "report-cache",
+        help="show the raw report file cache usage; --prune applies the lifecycle "
+        "(unreferenced TTL + size cap)",
+    )
+    report_cache_cmd.add_argument("--prune", action="store_true", help="apply the lifecycle")
+    report_cache_cmd.add_argument(
+        "--dry-run", action="store_true", help="with --prune: only report what would be removed"
+    )
     return parser
 
 
@@ -662,6 +671,33 @@ def reclassify_announcements_command(all_rows: bool) -> int:
     return 0
 
 
+def report_cache_command(prune: bool, dry_run: bool) -> int:
+    from app.database import SessionLocal
+    from app.services.report_cache import cache_usage, prune_report_cache
+
+    usage = cache_usage()
+    if not usage["enabled"]:
+        print("report cache disabled (REPORT_CACHE_DIR missing or not writable)")
+        return 0
+    print(f"report cache: {usage['files']} files, {usage['bytes'] / 1e6:.1f} MB")
+    if not prune:
+        return 0
+    db = SessionLocal()
+    try:
+        result = prune_report_cache(db, dry_run=dry_run)
+    finally:
+        db.rollback()
+        db.close()
+    label = "would remove" if dry_run else "removed"
+    print(
+        f"{label} {result['removed_unreferenced']} unreferenced + "
+        f"{result['removed_over_cap']} over cap + {result['removed_orphans']} orphans "
+        f"({result['freed_bytes'] / 1e6:.1f} MB); "
+        f"{result['files']} files / {result['bytes'] / 1e6:.1f} MB remain"
+    )
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -719,6 +755,9 @@ def main() -> int:
 
     if args.command == "reclassify-announcements":
         return reclassify_announcements_command(args.all)
+
+    if args.command == "report-cache":
+        return report_cache_command(args.prune, args.dry_run)
 
     parser.error(f"Unknown command: {args.command}")
 

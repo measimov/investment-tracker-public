@@ -20,18 +20,14 @@ from ..models.reconciliation_snapshot import ReconciliationSnapshot
 from ..models.transaction import Transaction
 from ..services import broker_import_common
 from ..services.broker_import_common import (
-    append_note,
-    attribute_tax_source,
     base_import_result,
     booked_source_rows,
     disambiguated_row_hash,
     fail_broker_import,
-    find_dividend_for_tax,
     import_note,
     iso_date_range,
     load_unattributed_tax_sources,
     lock_broker_import,
-    mark_unattributed_tax,
     normalize_hash_value as normalize_hash_value,  # 测试断言导入器命名空间,
     parse_strict_decimal,
     ProspectiveCorporateAction,
@@ -41,6 +37,7 @@ from ..services.broker_import_common import (
     split_new_and_duplicate_rows,
     strip_text,
 )
+from .dividend_tax_service import create_dividend_tax_event, attribute_tax_cash_source
 from ..services.security_rule_service import get_excluded_symbols
 from ..services.holding_service import (
     account_precheck_events,
@@ -67,7 +64,8 @@ PARSER_NAME = "eastmoney_statement"
 #   v7 = 账户作用域判重与对账快照门
 #   v8 = 未归属红利税行改为可恢复（skip_reason=unattributed_tax）：不再计入
 #        判重的"已入账"，补齐股息后重导会在原归档行上就地转正（#132 子项 B）
-PARSER_VERSION = "8"
+#   v9 = 递延股息税独立按实际扣税日入账，归属可显式分摊
+PARSER_VERSION = "9"
 STOCK_FLOW_HEADER = [
     "发生日期",
     "买卖类别",
@@ -216,7 +214,6 @@ class ParsedEastmoneyFlow:
         return (
             self.skip_reason is None
             and self.business_name == DIVIDEND_TAX_BUSINESS_NAME
-            and bool(self.security_code)
             and self.amount < 0
         )
 
@@ -899,6 +896,35 @@ def reject_unassigned_legacy_sources(db: Session, user_id: int) -> None:
     broker_import_common.reject_unassigned_legacy_sources(db, user_id, BROKER_NAME)
 
 
+def _prepare_dividend_receipts(db, user_id, account_id, rows, existing_hashes, *, lock=False):
+    from .dividend_receipt_service import DividendReceipt, prepare_dividend_receipts
+
+    return prepare_dividend_receipts(
+        db,
+        user_id,
+        account_id,
+        [
+            DividendReceipt(
+                flow.row_hash,
+                flow.security_code,
+                infer_market(flow.security_code),
+                flow.trade_date,
+                flow.currency,
+                flow.amount,
+            )
+            for flow in rows
+            if flow.is_cash_dividend and infer_market(flow.security_code)
+        ],
+        existing_hashes=existing_hashes,
+        lock=lock,
+        securities={
+            (flow.security_code, infer_market(flow.security_code))
+            for flow in rows
+            if infer_market(flow.security_code)
+        },
+    )
+
+
 def preview_eastmoney_statement(
     db: Session,
     user_id: int,
@@ -991,6 +1017,14 @@ def preview_eastmoney_statement(
             blocking.append(
                 f"东方财富对账单持仓与账户交易记录不一致；整批未导入。 {snapshot.notes}"
             )
+    try:
+        dividend_plan = _prepare_dividend_receipts(
+            db, user_id, broker_account_id, parsed_rows, existing_hashes
+        )
+        result["warnings"] = [*result.get("warnings", []), *dividend_plan.warnings()]
+        result["merged_dividend_rows"] = len(dividend_plan.matches)
+    except ValueError as exc:
+        blocking.append(str(exc))
     if blocking:
         result["errors"] = [*result.get("errors", []), *blocking]
     return result
@@ -1345,6 +1379,9 @@ def import_eastmoney_statement(
             broker_account_id=broker_account_id,
         )
         duplicate_hashes = set(existing_hashes)
+        dividend_plan = _prepare_dividend_receipts(
+            db, user_id, broker_account_id, parsed_rows, existing_hashes, lock=True
+        )
 
         affected_symbols: set[tuple[str, str]] = set()
         transaction_ids: Dict[str, int] = {}
@@ -1367,7 +1404,6 @@ def import_eastmoney_statement(
             },
             broker_account_id=broker_account_id,
         )
-        unmatched_tax_hashes: set[str] = set()
         new_rows = [flow for flow in parsed_rows if flow.row_hash not in existing_hashes]
 
         for flow in new_rows:
@@ -1375,24 +1411,32 @@ def import_eastmoney_statement(
                 market = infer_market(flow.security_code)
                 if not market:
                     continue
-                action = CorporateAction(
-                    user_id=user_id,
-                    broker_account_id=broker_account_id,
-                    import_batch_id=batch_id,
-                    symbol=flow.security_code,
-                    name=flow.security_name,
-                    market=market,
-                    action_type="CASH_DIVIDEND",
-                    ex_date=flow.trade_date,
-                    payment_date=flow.trade_date,
-                    dividend_per_share=(flow.trade_price if flow.trade_price > 0 else None),
-                    total_dividend=flow.amount,
-                    tax_withheld=Decimal("0"),
-                    net_dividend=flow.amount,
-                    currency=flow.currency,
-                    notes=import_note(BROKER_NAME, flow.business_name),
+                action = dividend_plan.apply(
+                    flow.row_hash,
+                    batch_id=batch_id,
+                    source_note=import_note(BROKER_NAME, flow.business_name),
                 )
-                db.add(action)
+                if action is None:
+                    action = CorporateAction(
+                        user_id=user_id,
+                        broker_account_id=broker_account_id,
+                        import_batch_id=batch_id,
+                        symbol=flow.security_code,
+                        name=flow.security_name,
+                        market=market,
+                        action_type="CASH_DIVIDEND",
+                        ex_date=flow.trade_date,
+                        payment_date=flow.trade_date,
+                        dividend_per_share=(flow.trade_price if flow.trade_price > 0 else None),
+                        total_dividend=None,
+                        tax_withheld=None,
+                        amount_basis="NET_ONLY",
+                        receipt_status="RECEIVED",
+                        net_dividend=flow.amount,
+                        currency=flow.currency,
+                        notes=import_note(BROKER_NAME, flow.business_name),
+                    )
+                    db.add(action)
                 db.flush()
                 corporate_action_ids[flow.row_hash] = action.id
                 imported_corporate_actions += 1
@@ -1450,37 +1494,19 @@ def import_eastmoney_statement(
         for flow in new_rows:
             if not flow.is_dividend_tax:
                 continue
-            market = infer_market(flow.security_code)
-            if not market:
-                continue
-            action = find_dividend_for_tax(
+            event = create_dividend_tax_event(
                 db,
-                user_id,
-                flow,
-                market,
+                user_id=user_id,
                 broker_account_id=broker_account_id,
+                flow=flow,
+                broker_name=BROKER_NAME,
             )
-            if action:
-                tax_amount = abs(flow.amount)
-                action.tax_withheld = (action.tax_withheld or Decimal("0")) + tax_amount
-                if action.total_dividend is not None:
-                    action.net_dividend = max(
-                        Decimal("0"), action.total_dividend - action.tax_withheld
-                    )
-                action.notes = append_note(action.notes, f"{BROKER_NAME}红利税")
-                corporate_action_ids[flow.row_hash] = action.id
-                imported_tax_adjustments += 1
-                preserved = unattributed_tax_sources.pop(flow.row_hash, None)
-                if preserved is not None:
-                    # 上次未归属的那一行就地转正，不再作为 new_rows 建新行
-                    db.add(attribute_tax_source(preserved, action.id))
-                    recovered_tax_hashes.add(flow.row_hash)
-            else:
-                errors.append(
-                    f"row {flow.source_row_number}: no account-scoped dividend "
-                    f"found for tax on {flow.security_code}"
-                )
-                unmatched_tax_hashes.add(flow.row_hash)
+            cash_event_ids[flow.row_hash] = event.id
+            imported_tax_adjustments += 1
+            preserved = unattributed_tax_sources.pop(flow.row_hash, None)
+            if preserved is not None:
+                db.add(attribute_tax_cash_source(preserved, event.id))
+                recovered_tax_hashes.add(flow.row_hash)
 
         for flow in new_rows:
             if flow.row_hash in recovered_tax_hashes:
@@ -1495,13 +1521,6 @@ def import_eastmoney_statement(
                 corporate_action_id=corporate_action_ids.get(flow.row_hash),
                 cash_event_id=cash_event_ids.get(flow.row_hash),
             )
-            if flow.row_hash in unmatched_tax_hashes:
-                # 标记为未归属：补齐股息后重导会被放行并在此转正，
-                # 而不是因 hash 判重永久失联
-                mark_unattributed_tax(
-                    source,
-                    "preserved without canonical action: no account-scoped dividend found for tax",
-                )
             db.add(source)
 
         db.flush()
@@ -1552,6 +1571,8 @@ def import_eastmoney_statement(
         imported_source_rows = (
             db.query(BrokerFundFlow).filter(BrokerFundFlow.import_batch_id == batch_id).count()
         )
+        result["merged_dividend_rows"] = len(dividend_plan.matches)
+        result["warnings"] = [*result.get("warnings", []), *dividend_plan.warnings()]
         result["archived_source_rows"] = imported_source_rows
         completed_batch = complete_import_batch(
             db,

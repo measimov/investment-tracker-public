@@ -84,7 +84,7 @@ from ..services.report_digest_jobs import (
 from ..services.report_digest_service import REPORT_MARKETS, digest_progress, load_report_digests
 from ..services.report_statement_service import STATEMENT_MARKETS, statement_progress
 from ..services.security_catalog_service import display_names
-from ..services.security_profile_service import compute_graham_for
+from ..services.security_profile_service import compute_graham_for, load_annual_statement_datasets
 from ..services import xueqiu_opinion_source as opinion_source
 from ..services.xueqiu_opinion_source import KIND_LABELS, OpinionSourceUnavailable
 
@@ -363,8 +363,9 @@ def get_symbol_profile(
         profile["report_digests"], profile["statement_progress"]
     )
     profile["business"] = load_business_profile(db, symbol, market)
-    # 按市场取报表行（美股=EDGAR 透视、港股=Yahoo 透视），与分析输入同口径
-    statements = market_statements(market, profile["datasets"])
+    # 按市场取**年度**报表行（美股=EDGAR 透视、港股=PDF 行 + Yahoo 补缺），与分析输入同口径
+    annual = load_annual_statement_datasets(db, symbol, market)
+    statements = market_statements(market, annual if annual is not None else profile["datasets"])
     profile["earnings_quality"] = compute_earnings_quality(
         statements["income"],
         statements["balancesheet"],

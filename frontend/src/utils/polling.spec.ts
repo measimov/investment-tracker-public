@@ -2,7 +2,7 @@
 // 失败消息优先级与超时都是行为契约——批量分析/回填/历史同步全都压在它上面。
 // intervalMs 传 0：真实定时器零延迟，不引入 fake timers 的复杂度。
 import { describe, expect, test, vi } from 'vitest'
-import { pollJobUntilDone, type BackgroundJob } from './polling'
+import { pollJobUntilDone, PollingTimeoutError, type BackgroundJob } from './polling'
 
 function fetchSequence(jobs: BackgroundJob[]) {
   let index = 0
@@ -72,6 +72,22 @@ describe('pollJobUntilDone', () => {
       pollJobUntilDone(fetchJob, { intervalMs: 0, maxAttempts: 3, timeoutMessage: '仍在后台运行' })
     ).rejects.toThrow('仍在后台运行')
     expect(fetchJob).toHaveBeenCalledTimes(3)
+    await expect(
+      pollJobUntilDone(fetchJob, { intervalMs: 0, maxAttempts: 1 })
+    ).rejects.toBeInstanceOf(PollingTimeoutError)
+  })
+
+  test('partial results are returned only when the caller explicitly accepts them', async () => {
+    const partial = { status: 'failed', success_count: 2, failed_count: 1 }
+    await expect(pollJobUntilDone(fetchSequence([partial]), { intervalMs: 0 })).rejects.toThrow(
+      '后台任务失败'
+    )
+    expect(
+      await pollJobUntilDone(fetchSequence([partial]), {
+        intervalMs: 0,
+        acceptFailedResult: (job) => Number(job.success_count) > 0
+      })
+    ).toEqual(partial)
   })
 
   test('transient fetch errors (network / 5xx) are retried, not fatal', async () => {

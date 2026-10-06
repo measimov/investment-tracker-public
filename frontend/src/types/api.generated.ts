@@ -230,6 +230,23 @@ export interface paths {
     patch?: never
     trace?: never
   }
+  '/api/capabilities': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Capabilities */
+    get: operations['get_capabilities_api_capabilities_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
   '/api/cash-events': {
     parameters: {
       query?: never
@@ -262,6 +279,23 @@ export interface paths {
     post?: never
     /** Delete Cash Event */
     delete: operations['delete_cash_event_api_cash_events__event_id__delete']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/cash-events/{event_id}/dividend-allocations': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    /** Update Dividend Tax Allocations */
+    put: operations['update_dividend_tax_allocations_api_cash_events__event_id__dividend_allocations_put']
+    post?: never
+    delete?: never
     options?: never
     head?: never
     patch?: never
@@ -459,9 +493,26 @@ export interface paths {
     }
     /**
      * Count Suggestions
-     * @description 待处理建议计数（NEW 徽标）。
+     * @description 待处理预计与送转计数，与默认清单同口径。
      */
     get: operations['count_suggestions_api_corporate_actions_suggestions_count_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/corporate-actions/suggestions/forecast-summary': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Dividend Forecast Summary */
+    get: operations['get_dividend_forecast_summary_api_corporate_actions_suggestions_forecast_summary_get']
     put?: never
     post?: never
     delete?: never
@@ -506,6 +557,24 @@ export interface paths {
      * @description 忽略建议（幂等）；已接受的不可忽略。状态转换在服务层记录锁内进行。
      */
     post: operations['ignore_dividend_suggestion_api_corporate_actions_suggestions__suggestion_id__ignore_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/corporate-actions/suggestions/{suggestion_id}/receipts': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** List Suggestion Receipts */
+    get: operations['list_suggestion_receipts_api_corporate_actions_suggestions__suggestion_id__receipts_get']
+    /** Update Suggestion Receipts */
+    put: operations['update_suggestion_receipts_api_corporate_actions_suggestions__suggestion_id__receipts_put']
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -2183,7 +2252,11 @@ export interface paths {
      */
     get: operations['get_period_pnl_api_statistics_period_pnl_get']
     put?: never
-    post?: never
+    /**
+     * Get Period Pnl With Prices
+     * @description 与业绩摘要一致的手工价试算；月/年同时返回含待收股息的估算损益。
+     */
+    post: operations['get_period_pnl_with_prices_api_statistics_period_pnl_post']
     delete?: never
     options?: never
     head?: never
@@ -3325,6 +3398,11 @@ export interface components {
       /** Transaction Type */
       transaction_type: string
     }
+    /** CapabilitiesResponse */
+    CapabilitiesResponse: {
+      opinions: components['schemas']['EntryCapability']
+      xueqiu_symbol_feed: components['schemas']['EntryCapability']
+    }
     /**
      * CashDividendCreate
      * @description 现金股息快捷创建
@@ -3353,14 +3431,20 @@ export interface components {
       name?: string | null
       /** Notes */
       notes?: string | null
+      /** Payment Date */
+      payment_date?: string | null
+      /**
+       * Receipt Confirmed
+       * @default false
+       */
+      receipt_confirmed: boolean
       /** Symbol */
       symbol: string
       /**
        * Tax Rate
-       * @description 税率，默认10%
-       * @default 0.1
+       * @description 凭证确认税率；免税填 0，不预设税率
        */
-      tax_rate: number | string | null
+      tax_rate?: number | string | null
       /**
        * Total Dividend
        * @description 总股息
@@ -3400,6 +3484,8 @@ export interface components {
         | 'OTHER'
       /** Notes */
       notes?: string | null
+      /** Tax Kind */
+      tax_kind?: 'DIVIDEND' | null
     }
     /** CashEventResponse */
     CashEventResponse: {
@@ -3446,6 +3532,12 @@ export interface components {
        * @default false
        */
       read_only: boolean
+      /** Tax Allocations */
+      tax_allocations?: components['schemas']['DividendTaxAllocationResponse'][]
+      /** Tax Kind */
+      tax_kind?: 'DIVIDEND' | null
+      /** Unallocated Tax Amount */
+      unallocated_tax_amount?: string | null
       /**
        * Updated At
        * Format: date-time
@@ -3479,6 +3571,8 @@ export interface components {
         | null
       /** Notes */
       notes?: string | null
+      /** Tax Kind */
+      tax_kind?: 'DIVIDEND' | null
     }
     /** CatalogHealth */
     CatalogHealth: {
@@ -3775,6 +3869,12 @@ export interface components {
        * @description 期初建仓数量
        */
       adjusted_quantity?: number | string | null
+      /**
+       * Amount Basis
+       * @default GROSS_NET
+       * @enum {string}
+       */
+      amount_basis: 'GROSS_NET' | 'NET_ONLY'
       /** Broker Account Id */
       broker_account_id?: number | null
       /**
@@ -3835,6 +3935,12 @@ export interface components {
        */
       payment_date?: string | null
       /**
+       * Receipt Confirmed
+       * @description 已按凭证确认到账
+       * @default false
+       */
+      receipt_confirmed: boolean
+      /**
        * Record Date
        * @description 登记日
        */
@@ -3876,10 +3982,9 @@ export interface components {
       tax_rate?: number | string | null
       /**
        * Tax Withheld
-       * @description 预扣税金额
-       * @default 0
+       * @description 预扣税金额；未知留空，明确免税填 0
        */
-      tax_withheld: number | string | null
+      tax_withheld?: number | string | null
       /**
        * Total Dividend
        * @description 股息总额
@@ -3916,6 +4021,11 @@ export interface components {
        * @description 期初建仓数量
        */
       adjusted_quantity?: string | null
+      /**
+       * Amount Basis
+       * @default LEGACY
+       */
+      amount_basis: string
       /** Broker Account Id */
       broker_account_id?: number | null
       /**
@@ -3944,6 +4054,8 @@ export interface components {
        * @description 每股股息金额
        */
       dividend_per_share?: string | null
+      /** Dividend Suggestion Id */
+      dividend_suggestion_id?: number | null
       /**
        * Ex Date
        * Format: date
@@ -3990,6 +4102,11 @@ export interface components {
        */
       read_only: boolean
       /**
+       * Receipt Status
+       * @default RECEIVED
+       */
+      receipt_status: string
+      /**
        * Record Date
        * @description 登记日
        */
@@ -4031,10 +4148,9 @@ export interface components {
       tax_rate?: string | null
       /**
        * Tax Withheld
-       * @description 预扣税金额
-       * @default 0
+       * @description 预扣税金额；未知留空，明确免税填 0
        */
-      tax_withheld: string | null
+      tax_withheld?: string | null
       /**
        * Total Dividend
        * @description 股息总额
@@ -4069,6 +4185,8 @@ export interface components {
       adjusted_cost_per_share?: number | string | null
       /** Adjusted Quantity */
       adjusted_quantity?: number | string | null
+      /** Amount Basis */
+      amount_basis?: ('GROSS_NET' | 'NET_ONLY') | null
       /** Broker Account Id */
       broker_account_id?: number | null
       /** Cost Basis Adjustment */
@@ -4093,6 +4211,11 @@ export interface components {
       notes?: string | null
       /** Payment Date */
       payment_date?: string | null
+      /**
+       * Receipt Confirmed
+       * @default false
+       */
+      receipt_confirmed: boolean
       /** Record Date */
       record_date?: string | null
       /** Shares Received */
@@ -4113,6 +4236,35 @@ export interface components {
       tax_withheld?: number | string | null
       /** Total Dividend */
       total_dividend?: number | string | null
+    }
+    /** DividendTaxAllocationInput */
+    DividendTaxAllocationInput: {
+      /** Amount */
+      amount: number | string
+      /** Corporate Action Id */
+      corporate_action_id: number
+    }
+    /** DividendTaxAllocationResponse */
+    DividendTaxAllocationResponse: {
+      /** Amount */
+      amount: string
+      /** Corporate Action Id */
+      corporate_action_id: number
+    }
+    /** DividendTaxAllocationsUpdate */
+    DividendTaxAllocationsUpdate: {
+      /** Allocations */
+      allocations: components['schemas']['DividendTaxAllocationInput'][]
+    }
+    /** EntryCapability */
+    EntryCapability: {
+      /** Available */
+      available: boolean
+      /**
+       * Reason
+       * @enum {string}
+       */
+      reason: 'configured' | 'history' | 'unconfigured'
     }
     /** ExchangeRate */
     ExchangeRate: {
@@ -4985,6 +5137,24 @@ export interface components {
       /** Total Dividend */
       total_dividend?: number | string | null
     }
+    /**
+     * SuggestionReceiptsUpdate
+     * @description Explicit relationship/completion review; never edits cash amounts.
+     */
+    SuggestionReceiptsUpdate: {
+      /**
+       * Expected Updated At
+       * Format: date-time
+       */
+      expected_updated_at: string
+      /**
+       * Receipt Complete
+       * @default false
+       */
+      receipt_complete: boolean
+      /** Receipt Ids */
+      receipt_ids?: number[]
+    }
     /** SuggestionResponse */
     SuggestionResponse: {
       /** Action Type */
@@ -4999,6 +5169,10 @@ export interface components {
       cash_div_after_tax: string | null
       /** Cash Div Pre Tax */
       cash_div_pre_tax: string | null
+      /** Completion Date */
+      completion_date?: string | null
+      /** Completion Source */
+      completion_source?: ('manual' | 'statement') | null
       /**
        * Created At
        * Format: date-time
@@ -5025,14 +5199,36 @@ export interface components {
       matched_corporate_action_id: number | null
       /** Name */
       name: string | null
+      /**
+       * Overdue
+       * @default false
+       */
+      overdue: boolean
       /** Pay Date */
       pay_date: string | null
       /** Quantity Basis */
       quantity_basis: string | null
+      /**
+       * Receipt Complete
+       * @default false
+       */
+      receipt_complete: boolean
+      /** Receipt Ids */
+      receipt_ids?: number[]
+      /** Receipt State */
+      receipt_state?: string | null
+      /** Received By Currency */
+      received_by_currency?: {
+        [key: string]: string
+      }
       /** Record Date */
       record_date: string | null
       /** Record Date Quantity */
       record_date_quantity: string | null
+      /** Remaining Estimated Gross */
+      remaining_estimated_gross?: string | null
+      /** Review Reason */
+      review_reason?: string | null
       /** Source */
       source: string
       /**
@@ -6019,6 +6215,26 @@ export interface operations {
       }
     }
   }
+  get_capabilities_api_capabilities_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CapabilitiesResponse']
+        }
+      }
+    }
+  }
   list_cash_events_api_cash_events_get: {
     parameters: {
       query?: {
@@ -6185,6 +6401,41 @@ export interface operations {
           [name: string]: unknown
         }
         content?: never
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  update_dividend_tax_allocations_api_cash_events__event_id__dividend_allocations_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        event_id: number
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DividendTaxAllocationsUpdate']
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CashEventResponse']
+        }
       }
       /** @description Validation Error */
       422: {
@@ -6487,8 +6738,10 @@ export interface operations {
   list_suggestions_api_corporate_actions_suggestions_get: {
     parameters: {
       query?: {
-        /** @description 按状态筛选；缺省为 NEW+MATCHED */
+        /** @description 按状态筛选；缺省排除已忽略建议 */
         status?: string | null
+        /** @description 分页前筛选尚待处理的预计及送转 */
+        pending_only?: boolean
         symbol?: string | null
         market?: string | null
         skip?: number
@@ -6542,6 +6795,26 @@ export interface operations {
       }
     }
   }
+  get_dividend_forecast_summary_api_corporate_actions_suggestions_forecast_summary_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': unknown
+        }
+      }
+    }
+  }
   accept_dividend_suggestion_api_corporate_actions_suggestions__suggestion_id__accept_post: {
     parameters: {
       query?: never
@@ -6587,6 +6860,72 @@ export interface operations {
       cookie?: never
     }
     requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SuggestionResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  list_suggestion_receipts_api_corporate_actions_suggestions__suggestion_id__receipts_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        suggestion_id: number
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CorporateActionResponse'][]
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  update_suggestion_receipts_api_corporate_actions_suggestions__suggestion_id__receipts_put: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        suggestion_id: number
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SuggestionReceiptsUpdate']
+      }
+    }
     responses: {
       /** @description Successful Response */
       200: {
@@ -9408,6 +9747,41 @@ export interface operations {
       }
     }
   }
+  get_period_pnl_with_prices_api_statistics_period_pnl_post: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': {
+          [key: string]: number
+        }
+      }
+    }
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': Record<string, unknown>
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
   get_portfolio_snapshot_api_statistics_portfolio_snapshot_get: {
     parameters: {
       query?: never
@@ -9458,6 +9832,8 @@ export interface operations {
         transaction_type?: string | null
         broker_account_id?: number | null
         unassigned_account?: boolean
+        start_date?: string | null
+        end_date?: string | null
       }
       header?: never
       path?: never
@@ -9526,6 +9902,8 @@ export interface operations {
         transaction_type?: string | null
         broker_account_id?: number | null
         unassigned_account?: boolean
+        start_date?: string | null
+        end_date?: string | null
       }
       header?: never
       path?: never

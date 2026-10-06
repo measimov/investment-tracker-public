@@ -29,6 +29,7 @@ from .background_job_store import (
     set_job_progress,
     update_job,
 )
+from .llm_client import llm_job_context
 
 
 def run_job_inline(
@@ -50,7 +51,10 @@ def run_job_inline(
         logger.info("%s job %s was already claimed or no longer queued", label, job_id)
         return
     try:
-        execute(claimed)
+        with llm_job_context(claimed):
+            execute(claimed)
+    except JobOwnershipLostError:
+        logger.info("%s job %s was taken over; this attempt stopped", label, job_id)
     except Exception as exc:
         logger.exception("%s job %s failed", label, job_id)
         handle_job_failure(

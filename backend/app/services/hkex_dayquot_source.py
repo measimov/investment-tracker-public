@@ -5,8 +5,8 @@ URL: https://www.hkex.com.hk/eng/stat/smstat/dayquot/dYYMMDDe.htm
 - 官方、免鉴权：无 token、无 Cookie、无签名，可靠性优先于即时性的场景下
   是港股收盘价的第一权威来源（Tushare hk_daily 与腾讯 K 线都是二手转发）。
 - 每个交易日收市后发布一份定宽文本（≈25MB，主板 + GEM 全部证券，含
-  人民币柜台 / ETF / 窝轮牛熊证）；非交易日 404——不存在"空报表"，所以
-  404 就是"当天休市"的判据，不需要另查交易日历。
+  人民币柜台 / ETF / 窝轮牛熊证）；无报表时可能返回 404，也可能返回 HTTP 200
+  的官方公众假期 NO TRADING 页面（2026-10-01 实测），两者均视为无日报。
 - 站点只保留约一个月存档（实测 2026-08-03 可取、07-02 起 404），因此这是
   **只向前**的日更源：冷启动 / 深历史回填仍由用户区间驱动的 history-sync
   （Tushare hk_daily → 腾讯 K 线兜底）负责，与基准指数补尾同一策略；
@@ -247,14 +247,23 @@ def _throttle() -> None:
 
 def fetch_dayquot_text(report_date: date) -> Optional[str]:
     """下载某日报表原文；404（非交易日 / 尚未发布 / 超出存档）返回 None，
-    其他 HTTP 错误上抛。"""
+    明确的官方公众假期页同样返回 None；其他 HTTP 错误上抛，未知页面交解析器报错。"""
     _throttle()
     response = requests.get(report_url(report_date), headers=_HEADERS, timeout=_FETCH_TIMEOUT)
     if response.status_code == 404:
         return None
     response.raise_for_status()
     # 页面声明 iso-8859-1，且正文纯 ASCII；不用 response.text 的编码猜测
-    return response.content.decode("latin-1", "replace")
+    report = response.content.decode("latin-1", "replace")
+    # 港交所在公众假期也会以 200 返回简短占位页。只认完整休市声明，不能把维护页、
+    # 错误页或任意缺 DATE 的响应吞成休市；实际日报即使附有假期说明也必须照常解析。
+    header = report[:4000]
+    plain = " ".join(html.unescape(_TAG_RE.sub(" ", header)).split())
+    if not _DATE_RE.search(header) and re.search(
+        r"Daily Quotations\s+Hong Kong Public Holiday,\s+NO TRADING\.", plain, re.IGNORECASE
+    ):
+        return None
+    return report
 
 
 def hk_universe_symbols(db: Session) -> Set[str]:

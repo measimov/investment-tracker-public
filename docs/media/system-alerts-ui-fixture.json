@@ -1,0 +1,172 @@
+{
+  "notice": "全部合法虚构数据，管理员标志仅UI场景；不读写真实账本，不证明权限",
+  "alerts": {
+    "check_enabled": false,
+    "check_interval_minutes": 10,
+    "reminder_hours": 3.5,
+    "channels": {
+      "configured": true,
+      "count": 2,
+      "valid_count": 1,
+      "apprise_available": true,
+      "min_severity": "warning",
+      "channels": [
+        {
+          "kind": "bark",
+          "channel": "https://example.com/***",
+          "valid": true
+        },
+        {
+          "kind": "unknown",
+          "channel": "invalid://***",
+          "valid": false
+        }
+      ]
+    },
+    "counts": {
+      "active": 3,
+      "critical": 1,
+      "warning": 1,
+      "info": 1,
+      "recent_resolved": 1
+    },
+    "active": [
+      {
+        "alert_key": "ui_fixture_0",
+        "source": "external",
+        "severity": "critical",
+        "status": "active",
+        "title": "UI明确虚构critical告警",
+        "message": "明确虚构异常说明：本页必须完整保留错误原因、原渠道与推送状态。明确虚构异常说明：本页必须完整保留错误原因、原渠道与推送状态。明确虚构异常说明：本页必须完整保留错误原因、原渠道与推送状态。明确虚构异常说明：本页必须完整保留错误原因、原渠道与推送状态。明确虚构异常说明：本页必须完整保留错误原因、原渠道与推送状态。明确虚构异常说明：本页必须完整保留错误原因、原渠道与推送状态。",
+        "first_seen_at": "2026-09-29T23:30:00+00:00",
+        "last_seen_at": "2026-10-02T23:30:00+00:00",
+        "last_notified_at": null,
+        "notify_count": 0,
+        "resolved_at": null,
+        "resolve_notified_at": null,
+        "last_notify": {
+          "status": "failed"
+        },
+        "payload": {}
+      },
+      {
+        "alert_key": "ui_fixture_1",
+        "source": "fx",
+        "severity": "warning",
+        "status": "active",
+        "title": "UI明确虚构warning告警",
+        "message": "明确虚构说明",
+        "first_seen_at": "2026-09-29T23:30:00+00:00",
+        "last_seen_at": "2026-10-02T23:30:00+00:00",
+        "last_notified_at": "2026-10-02T23:30:00+00:00",
+        "notify_count": 2,
+        "resolved_at": null,
+        "resolve_notified_at": null,
+        "last_notify": {
+          "status": "sent"
+        },
+        "payload": {}
+      },
+      {
+        "alert_key": "ui_fixture_2",
+        "source": "background_jobs",
+        "severity": "info",
+        "status": "active",
+        "title": "UI明确虚构info告警",
+        "message": "明确虚构说明",
+        "first_seen_at": "2026-09-29T23:30:00+00:00",
+        "last_seen_at": "2026-10-02T23:30:00+00:00",
+        "last_notified_at": null,
+        "notify_count": 0,
+        "resolved_at": null,
+        "resolve_notified_at": null,
+        "last_notify": null,
+        "payload": {}
+      }
+    ],
+    "recent_resolved": [
+      {
+        "alert_key": "ui_fixture_resolved",
+        "source": "fx",
+        "severity": "warning",
+        "status": "resolved",
+        "title": "UI明确虚构已恢复告警",
+        "message": "明确虚构说明",
+        "first_seen_at": "2026-09-29T23:30:00+00:00",
+        "last_seen_at": "2026-10-02T23:30:00+00:00",
+        "last_notified_at": "2026-10-02T23:30:00+00:00",
+        "notify_count": 2,
+        "resolved_at": "2026-10-02T23:30:00+00:00",
+        "resolve_notified_at": "2026-10-02T23:30:00+00:00",
+        "last_notify": {
+          "status": "sent"
+        },
+        "payload": {}
+      }
+    ]
+  },
+  "events": {
+    "enabled": true,
+    "price_move_pct": 4.5,
+    "ex_date_days_ahead": 3,
+    "announcement_notify_enabled": true,
+    "items": [
+      {
+        "id": 95501,
+        "event_key": "ui_event_0",
+        "kind": "dividend_suggestion",
+        "user_id": 95301,
+        "title": "明确虚构提醒标题",
+        "message": "明确虚构dividend_suggestion事件正文",
+        "status": "pending",
+        "attempts": 0,
+        "last_error": null,
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "sent_at": null,
+        "payload": {}
+      },
+      {
+        "id": 95502,
+        "event_key": "ui_event_1",
+        "kind": "ex_date",
+        "user_id": 95301,
+        "title": "明确虚构提醒标题",
+        "message": "明确虚构ex_date事件正文",
+        "status": "sent",
+        "attempts": 1,
+        "last_error": null,
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "sent_at": "2026-10-02T23:30:00+00:00",
+        "payload": {}
+      },
+      {
+        "id": 95503,
+        "event_key": "ui_event_2",
+        "kind": "price_move",
+        "user_id": 95301,
+        "title": "明确虚构提醒标题",
+        "message": "明确虚构price_move事件正文",
+        "status": "failed",
+        "attempts": 3,
+        "last_error": "明确虚构通知失败：这不是实际外部推送结果，请保留完整失败说明。明确虚构通知失败：这不是实际外部推送结果，请保留完整失败说明。明确虚构通知失败：这不是实际外部推送结果，请保留完整失败说明。明确虚构通知失败：这不是实际外部推送结果，请保留完整失败说明。明确虚构通知失败：这不是实际外部推送结果，请保留完整失败说明。",
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "sent_at": null,
+        "payload": {}
+      },
+      {
+        "id": 95504,
+        "event_key": "ui_event_3",
+        "kind": "announcement",
+        "user_id": 95301,
+        "title": "明确虚构提醒标题",
+        "message": "明确虚构announcement事件正文",
+        "status": "skipped",
+        "attempts": 0,
+        "last_error": null,
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "sent_at": null,
+        "payload": {}
+      }
+    ]
+  }
+}

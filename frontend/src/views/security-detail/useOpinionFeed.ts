@@ -45,7 +45,7 @@ export function useOpinionFeed({
         per_author: OPINION_FEED_PER_AUTHOR
       })
       if (!owns()) return
-      authors.value = (response.data?.authors || []) as OpinionFeedAuthor[]
+      authors.value = response.data?.authors || []
       loaded.value = true
     } catch {
       // 动态流是锦上添花：失败静默，展开时显示空态

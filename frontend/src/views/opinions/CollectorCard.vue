@@ -5,7 +5,11 @@
  * 增删改、「立即运行」与「更新 Cookie」仅管理员可见。
  */
 import { computed, onMounted, ref } from 'vue'
+import { NAlert, NButton, NInput, NTag } from 'naive-ui'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import CollectorRecords from './CollectorRecords.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useXueqiuCapabilitiesStore } from '@/stores/xueqiuCapabilities'
 import { formatDateTime } from '@/utils/helpers'
 import CookieUpdateDialog from './CookieUpdateDialog.vue'
 import { useCollector } from './useCollector'
@@ -14,12 +18,16 @@ import {
   cookieTagType,
   runStatusLabel,
   runStatusType,
-  symbolsCycleSummary,
-  xueqiuCubeUrl,
-  xueqiuProfileUrl
+  symbolsCycleSummary
 } from './collectorStatus'
 
+const isMobile = useMediaQuery('(max-width:640px)')
 const auth = useAuthStore()
+const capabilities = useXueqiuCapabilitiesStore()
+function cookieUpdated() {
+  void load()
+  void capabilities.load(true)
+}
 const isAdmin = computed(() => auth.isAdmin)
 const {
   state,
@@ -36,6 +44,19 @@ const {
   removeCube
 } = useCollector()
 const symbolsSummary = computed(() => symbolsCycleSummary(state.status?.symbols))
+// 只决定说明的展示层级；健康与运行状态仍复用既有判定。
+const compact = computed(
+  () =>
+    !!state.status &&
+    !state.loading &&
+    !state.loadError &&
+    !state.requesting &&
+    health.value.type === 'success' &&
+    cookieTagType(state.status.cookie.level) === 'success' &&
+    !state.status.symbols.run_pending &&
+    !state.status.symbols.retry_pending &&
+    (!state.status.symbols.enabled || runStatusType(state.status.symbols.last_status) === 'success')
+)
 const expanded = ref<string[]>([])
 const cookieDialog = ref<InstanceType<typeof CookieUpdateDialog>>()
 
@@ -43,94 +64,192 @@ const enabledAuthors = computed(
   () => (state.status?.authors ?? []).filter((author) => author.enabled).length
 )
 
+function tagType(type: string) {
+  return type === 'danger'
+    ? 'error'
+    : type === 'info'
+      ? 'default'
+      : (type as 'success' | 'warning' | 'primary')
+}
 onMounted(load)
 </script>
 
 <template>
-  <el-card shadow="never" class="collector-card" data-testid="xueqiu-collector-card">
-    <div class="collector-header">
+  <section
+    aria-label="采集器状态"
+    class="collector-card"
+    :class="{ 'collector-compact': compact }"
+    data-testid="xueqiu-collector-card"
+  >
+    <div v-if="!compact" class="collector-header">
       <div class="collector-title">
-        <span class="title-text">采集器</span>
-        <el-tag :type="health.type" size="small" data-testid="collector-health">
+        <h2 class="title-text">采集器</h2>
+        <NTag :type="tagType(health.type)" size="small" data-testid="collector-health">
           {{ health.label }}
-        </el-tag>
+        </NTag>
+        <NTag
+          v-if="
+            state.status &&
+            runStatusType(state.status.last_cycle_status) === 'primary' &&
+            health.type !== 'primary'
+          "
+          type="primary"
+          size="small"
+          >{{ runStatusLabel(state.status.last_cycle_status) }}</NTag
+        >
         <span v-if="state.status" class="summary">
           上一轮 {{ formatDateTime(state.status.last_cycle_finished_at) }} · 关注
           {{ enabledAuthors }}/{{ state.status.authors.length }} 位作者 · Cookie
-          <el-tag :type="cookieTagType(state.status.cookie.level)" size="small">
+          <NTag :type="tagType(cookieTagType(state.status.cookie.level))" size="small">
             {{ cookieLabel(state.status.cookie) }}
-          </el-tag>
+          </NTag>
         </span>
       </div>
       <div class="collector-actions">
-        <el-button size="small" :loading="state.loading" @click="load">刷新</el-button>
-        <el-button
-          v-if="isAdmin"
-          size="small"
-          data-testid="collector-update-cookie"
-          @click="cookieDialog?.open()"
+        <NButton aria-label="重新加载采集器状态" :loading="state.loading" @click="load"
+          >重新加载</NButton
         >
-          更新 Cookie
-        </el-button>
-        <el-button
-          v-if="isAdmin"
-          size="small"
-          type="primary"
-          data-testid="collector-run-now"
-          :disabled="!state.status?.enabled || state.status?.run_pending"
-          :loading="state.requesting"
-          @click="runNow('authors')"
-        >
-          立即运行
-        </el-button>
-        <el-button
-          v-if="isAdmin"
-          size="small"
-          data-testid="collector-run-symbols"
-          :disabled="
-            !state.status?.enabled ||
-            !state.status?.symbols.enabled ||
-            state.status?.symbols.run_pending
-          "
-          :loading="state.requesting"
-          @click="runNow('symbols')"
-        >
-          立即跑按标的
-        </el-button>
       </div>
     </div>
-    <p v-if="health.hint" class="hint">{{ health.hint }}</p>
-    <p v-if="symbolsSummary" class="hint" data-testid="collector-symbols-summary">
+    <p v-if="!compact && health.hint" class="hint">{{ health.hint }}</p>
+    <p
+      v-if="
+        state.status?.cookie.message &&
+        cookieTagType(state.status.cookie.level) !== 'success' &&
+        health.hint !== state.status.cookie.message
+      "
+      class="hint"
+    >
+      {{ state.status.cookie.message }}
+    </p>
+    <p v-if="state.status?.run_pending && health.type !== 'primary'" class="hint">
+      已请求立即运行，等待采集器开始。
+    </p>
+    <p
+      v-if="
+        state.status?.last_cycle_message &&
+        runStatusType(state.status.last_cycle_status) === 'primary' &&
+        health.hint !== state.status.last_cycle_message
+      "
+      class="hint"
+    >
+      {{ state.status.last_cycle_message }}
+    </p>
+    <p v-if="!compact && symbolsSummary" class="hint" data-testid="collector-symbols-summary">
       {{ symbolsSummary }}
       <template v-if="state.status?.symbols.last_finished_at">
         （{{ formatDateTime(state.status.symbols.last_finished_at) }}）
       </template>
       <template v-if="state.status?.symbols.run_pending">· 已请求立即运行</template>
     </p>
-    <el-alert
-      v-if="state.loadError"
-      type="error"
-      :closable="false"
-      :title="state.loadError"
+    <p
+      v-if="
+        !compact &&
+        state.status?.symbols.last_message &&
+        runStatusType(state.status.symbols.last_status) !== 'success'
+      "
       class="hint"
-    />
+    >
+      {{ state.status.symbols.last_message }}
+    </p>
+    <NAlert v-if="state.loadError" type="error" :title="state.loadError" class="hint">{{
+      state.status
+        ? '保留上次成功的采集器状态，未确认最新结果。'
+        : '尚未确认采集器状态，不能据此判断运行正常或来源可用。'
+    }}</NAlert>
+    <p v-else-if="state.loading && state.status" class="hint">
+      正在重新加载，当前保留上次成功的采集器状态。
+    </p>
 
-    <el-collapse v-if="state.status" v-model="expanded" class="collector-detail">
+    <el-collapse v-model="expanded" class="collector-detail">
       <el-collapse-item name="detail" title="运行详情、关注作者、跟踪组合与最近运行">
-        <el-descriptions :column="2" size="small" border>
+        <template #title>
+          <div v-if="compact && state.status" class="collector-title compact-title">
+            <h2 class="title-text">采集器</h2>
+            <NTag :type="tagType(health.type)" size="small" data-testid="collector-health">
+              {{ health.label }}
+            </NTag>
+            <span class="summary"
+              >上一轮 {{ formatDateTime(state.status.last_cycle_finished_at) }}</span
+            >
+            <span v-if="!state.status.symbols.enabled" class="summary">按标的采集未启用</span>
+            <span class="maintenance-label">维护与运行详情</span>
+          </div>
+          <span v-else>运行详情、关注作者、跟踪组合与最近运行</span>
+        </template>
+        <div class="collector-actions maintenance-actions">
+          <NButton
+            v-if="compact"
+            aria-label="重新加载采集器状态"
+            :loading="state.loading"
+            @click="load"
+          >
+            重新加载
+          </NButton>
+          <NButton
+            v-if="isAdmin"
+            size="medium"
+            data-testid="collector-update-cookie"
+            @click="cookieDialog?.open()"
+          >
+            更新 Cookie
+          </NButton>
+          <NButton
+            v-if="isAdmin"
+            size="medium"
+            type="primary"
+            data-testid="collector-run-now"
+            :disabled="!state.status?.enabled || state.status?.run_pending"
+            :loading="state.requesting"
+            @click="runNow('authors')"
+            >立即运行</NButton
+          >
+          <NButton
+            v-if="isAdmin"
+            size="medium"
+            data-testid="collector-run-symbols"
+            :disabled="
+              !state.status?.enabled ||
+              !state.status?.symbols.enabled ||
+              state.status?.symbols.run_pending
+            "
+            :loading="state.requesting"
+            @click="runNow('symbols')"
+            >立即跑按标的</NButton
+          >
+        </div>
+        <template v-if="compact && state.status">
+          <p class="hint">
+            关注 {{ enabledAuthors }}/{{ state.status.authors.length }} 位作者 · Cookie
+            {{ cookieLabel(state.status.cookie) }}
+          </p>
+          <p v-if="symbolsSummary" class="hint" data-testid="collector-symbols-summary">
+            {{ symbolsSummary }}
+            <template v-if="state.status.symbols.last_finished_at">
+              （{{ formatDateTime(state.status.symbols.last_finished_at) }}）
+            </template>
+          </p>
+        </template>
+        <el-descriptions
+          v-if="state.status"
+          :column="isMobile ? 1 : 2"
+          :label-width="isMobile ? 80 : undefined"
+          size="small"
+          border
+        >
           <el-descriptions-item label="启用">
             {{ state.status.enabled ? '是' : '否（需在部署配置中开启）' }}
           </el-descriptions-item>
           <el-descriptions-item label="进程心跳">
             {{ formatDateTime(state.status.heartbeat_at) }}
-            <el-tag v-if="!state.status.alive" type="danger" size="small">超时</el-tag>
+            <NTag v-if="!state.status.alive" type="error" size="small">超时</NTag>
           </el-descriptions-item>
           <el-descriptions-item label="上一轮">
             {{ formatDateTime(state.status.last_cycle_started_at) }} →
             {{ formatDateTime(state.status.last_cycle_finished_at) }}
-            <el-tag :type="runStatusType(state.status.last_cycle_status)" size="small">
+            <NTag :type="tagType(runStatusType(state.status.last_cycle_status))" size="small">
               {{ runStatusLabel(state.status.last_cycle_status) }}
-            </el-tag>
+            </NTag>
           </el-descriptions-item>
           <el-descriptions-item label="节奏">
             每 {{ state.status.cycle_minutes }} 分钟一轮
@@ -147,247 +266,238 @@ onMounted(load)
           <el-descriptions-item label="Cookie">
             {{ state.status.cookie.message }}
           </el-descriptions-item>
-          <el-descriptions-item v-if="state.status.last_cycle_message" label="上一轮详情" :span="2">
+          <el-descriptions-item
+            v-if="state.status.last_cycle_message"
+            label="上一轮详情"
+            :span="isMobile ? 1 : 2"
+          >
             {{ state.status.last_cycle_message }}
           </el-descriptions-item>
-          <el-descriptions-item label="按标的采集" :span="2">
+          <el-descriptions-item label="按标的采集" :span="isMobile ? 1 : 2">
             每天 {{ state.status.symbols.run_after }} 后一轮（持仓∪自选的公告/讨论、组合调仓） ·
             上一轮 {{ formatDateTime(state.status.symbols.last_started_at) }} →
             {{ formatDateTime(state.status.symbols.last_finished_at) }}
-            <el-tag
+            <NTag
               v-if="state.status.symbols.last_status"
-              :type="runStatusType(state.status.symbols.last_status)"
+              :type="tagType(runStatusType(state.status.symbols.last_status))"
               size="small"
             >
               {{ runStatusLabel(state.status.symbols.last_status) }}
-            </el-tag>
+            </NTag>
           </el-descriptions-item>
           <el-descriptions-item
             v-if="state.status.symbols.last_message"
             label="按标的详情"
-            :span="2"
+            :span="isMobile ? 1 : 2"
           >
             {{ state.status.symbols.last_message }}
           </el-descriptions-item>
         </el-descriptions>
 
-        <h4 class="section-title">关注作者</h4>
-        <el-table
-          :data="state.status.authors"
-          size="small"
-          data-testid="collector-authors-table"
-          empty-text="关注名单为空"
+        <CollectorRecords
+          v-if="state.status"
+          :status="state.status"
+          :is-admin="isAdmin"
+          :saving="state.saving"
+          @toggle-author="toggleAuthor"
+          @remove-author="removeAuthor"
+          @toggle-cube="toggleCube"
+          @remove-cube="removeCube"
         >
-          <el-table-column label="作者" min-width="160">
-            <template #default="{ row }">
-              <el-link :href="xueqiuProfileUrl(row.xueqiu_user_id)" target="_blank" type="primary">
-                {{ row.display_name || row.xueqiu_user_id }}
-              </el-link>
-              <span v-if="row.display_name" class="muted"> {{ row.xueqiu_user_id }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="启用" width="80">
-            <template #default="{ row }">
-              <el-switch
-                :model-value="row.enabled"
-                :disabled="!isAdmin || state.saving"
+          <template #add-author>
+            <div v-if="isAdmin" class="add-form" data-testid="collector-add-author">
+              <NInput
+                v-model:value="state.form.userId"
+                :input-props="{ 'aria-label': '关注作者雪球用户 ID' }"
                 size="small"
-                @change="(value: string | number | boolean) => toggleAuthor(row, Boolean(value))"
+                placeholder="雪球用户 ID（数字）"
+                class="id-input"
               />
-            </template>
-          </el-table-column>
-          <el-table-column label="上次采集" min-width="150">
-            <template #default="{ row }">{{ formatDateTime(row.last_run_at) }}</template>
-          </el-table-column>
-          <el-table-column label="结果" min-width="200">
-            <template #default="{ row }">
-              <el-tag v-if="row.last_status" :type="runStatusType(row.last_status)" size="small">
-                {{ runStatusLabel(row.last_status) }}
-              </el-tag>
-              <span class="muted"> {{ row.last_message }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column v-if="isAdmin" label="" width="70">
-            <template #default="{ row }">
-              <el-button link type="danger" size="small" @click="removeAuthor(row)">
-                移出
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-
-        <div v-if="isAdmin" class="add-form" data-testid="collector-add-author">
-          <el-input
-            v-model="state.form.userId"
-            size="small"
-            placeholder="雪球用户 ID（数字）"
-            class="id-input"
-          />
-          <el-input
-            v-model="state.form.displayName"
-            size="small"
-            placeholder="展示名（可选）"
-            class="name-input"
-          />
-          <el-button
-            size="small"
-            type="primary"
-            :disabled="!formValid"
-            :loading="state.saving"
-            @click="addAuthor"
-          >
-            加入关注
-          </el-button>
-        </div>
-
-        <h4 class="section-title">跟踪组合（调仓记录，随按标的采集每日一轮）</h4>
-        <el-table
-          :data="state.status.cubes"
-          size="small"
-          data-testid="collector-cubes-table"
-          empty-text="没有跟踪的组合"
-        >
-          <el-table-column label="组合" min-width="160">
-            <template #default="{ row }">
-              <el-link :href="xueqiuCubeUrl(row.cube_id)" target="_blank" type="primary">
-                {{ row.display_name || row.cube_id }}
-              </el-link>
-              <span v-if="row.display_name" class="muted"> {{ row.cube_id }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="启用" width="80">
-            <template #default="{ row }">
-              <el-switch
-                :model-value="row.enabled"
-                :disabled="!isAdmin || state.saving"
+              <NInput
+                v-model:value="state.form.displayName"
+                :input-props="{ 'aria-label': '关注作者展示名' }"
                 size="small"
-                @change="(value: string | number | boolean) => toggleCube(row, Boolean(value))"
+                placeholder="展示名（可选）"
+                class="name-input"
               />
-            </template>
-          </el-table-column>
-          <el-table-column label="上次采集" min-width="150">
-            <template #default="{ row }">{{ formatDateTime(row.last_run_at) }}</template>
-          </el-table-column>
-          <el-table-column label="结果" min-width="200">
-            <template #default="{ row }">
-              <el-tag v-if="row.last_status" :type="runStatusType(row.last_status)" size="small">
-                {{ runStatusLabel(row.last_status) }}
-              </el-tag>
-              <span class="muted"> {{ row.last_message }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column v-if="isAdmin" label="" width="70">
-            <template #default="{ row }">
-              <el-button link type="danger" size="small" @click="removeCube(row)"> 移出 </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-
-        <div v-if="isAdmin" class="add-form" data-testid="collector-add-cube">
-          <el-input
-            v-model="state.cubeForm.cubeId"
-            size="small"
-            placeholder="组合代号（如 ZH000001）"
-            class="id-input"
-          />
-          <el-input
-            v-model="state.cubeForm.displayName"
-            size="small"
-            placeholder="展示名（可选）"
-            class="name-input"
-          />
-          <el-button
-            size="small"
-            type="primary"
-            :disabled="!cubeFormValid"
-            :loading="state.saving"
-            @click="addCube"
-          >
-            跟踪组合
-          </el-button>
-        </div>
-
-        <h4 class="section-title">最近运行（作者采集）</h4>
-        <el-table :data="state.status.recent_runs" size="small" empty-text="采集器还没有运行记录">
-          <el-table-column label="开始" min-width="140">
-            <template #default="{ row }">{{ formatDateTime(row.started_at) }}</template>
-          </el-table-column>
-          <el-table-column prop="author_user_id" label="作者" min-width="110" />
-          <el-table-column label="结果" width="100">
-            <template #default="{ row }">
-              <el-tag :type="runStatusType(row.status)" size="small">
-                {{ runStatusLabel(row.status) }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="候选/回复/发言" min-width="120">
-            <template #default="{ row }">
-              {{ row.candidate_count }} / {{ row.reply_count }} / {{ row.utterance_count }}
-            </template>
-          </el-table-column>
-          <el-table-column
-            prop="error_message"
-            label="错误"
-            min-width="180"
-            show-overflow-tooltip
-          />
-        </el-table>
+              <NButton
+                size="medium"
+                type="primary"
+                :disabled="!formValid"
+                :loading="state.saving"
+                @click="addAuthor"
+              >
+                加入关注
+              </NButton>
+            </div> </template
+          ><template #add-cube>
+            <div v-if="isAdmin" class="add-form" data-testid="collector-add-cube">
+              <NInput
+                v-model:value="state.cubeForm.cubeId"
+                :input-props="{ 'aria-label': '跟踪组合代号' }"
+                size="small"
+                placeholder="组合代号（如 ZH000001）"
+                class="id-input"
+              />
+              <NInput
+                v-model:value="state.cubeForm.displayName"
+                :input-props="{ 'aria-label': '跟踪组合展示名' }"
+                size="small"
+                placeholder="展示名（可选）"
+                class="name-input"
+              />
+              <NButton
+                size="medium"
+                type="primary"
+                :disabled="!cubeFormValid"
+                :loading="state.saving"
+                @click="addCube"
+              >
+                跟踪组合
+              </NButton>
+            </div>
+          </template>
+        </CollectorRecords>
       </el-collapse-item>
     </el-collapse>
-    <CookieUpdateDialog v-if="isAdmin" ref="cookieDialog" @updated="load" />
-  </el-card>
+    <CookieUpdateDialog v-if="isAdmin" ref="cookieDialog" @updated="cookieUpdated" />
+  </section>
 </template>
 
 <style scoped>
 .collector-card {
+  padding: 20px;
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  background: var(--app-surface-muted);
+  min-width: 0;
+}
+.collector-compact {
+  padding-block: 8px;
+}
+.collector-compact .collector-detail {
+  margin-top: 0;
+}
+.compact-title .summary {
+  margin: 0;
+}
+.maintenance-label {
+  color: var(--app-primary-strong);
+  font-size: 13px;
+}
+.maintenance-actions {
   margin-bottom: 12px;
 }
 .collector-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 .collector-title {
   display: flex;
+  gap: 12px;
   align-items: center;
-  gap: 8px;
   flex-wrap: wrap;
 }
 .title-text {
+  font-size: 18px;
   font-weight: 600;
+  margin: 0;
 }
-.summary {
-  font-size: 12px;
-  color: var(--app-text-muted);
+.collector-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
+.collector-actions :deep(.n-button) {
+  min-height: 36px;
+}
+.summary,
 .hint {
-  margin: 8px 0 0;
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.75;
   color: var(--app-text-muted);
+  margin: 12px 0 0;
+  overflow-wrap: anywhere;
 }
 .collector-detail {
-  margin-top: 8px;
+  margin-top: 12px;
+  --el-collapse-header-bg-color: var(--app-surface-muted);
+  --el-collapse-content-bg-color: var(--app-surface-muted);
+  --el-collapse-border-color: var(--app-border);
+  --el-collapse-header-text-color: var(--app-text);
+  --el-collapse-content-text-color: var(--app-text);
 }
-.section-title {
-  margin: 12px 0 6px;
-  font-size: 13px;
+.collector-detail :deep(.el-descriptions__body) {
+  background: var(--app-surface-muted);
+  color: var(--app-text);
 }
-.muted {
-  font-size: 12px;
-  color: var(--app-text-muted);
+.collector-detail :deep(.el-descriptions__label.is-bordered-label) {
+  background: var(--app-surface-secondary);
+  color: var(--app-text);
+}
+.collector-detail :deep(.el-descriptions__cell.is-bordered-content) {
+  background: var(--app-surface-muted);
+}
+.collector-detail :deep(.el-collapse-item__content) {
+  padding-bottom: 0;
+}
+.collector-detail :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: 44px;
+  line-height: 1.7;
+  padding: 12px 0;
+}
+.collector-detail :deep(.el-descriptions__cell) {
+  overflow-wrap: anywhere;
 }
 .add-form {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 12px;
   flex-wrap: wrap;
 }
 .id-input {
-  width: 200px;
+  width: 220px;
+  max-width: 100%;
 }
 .name-input {
-  width: 160px;
+  width: 180px;
+  max-width: 100%;
+}
+@media (max-width: 640px) {
+  .collector-card {
+    padding: 16px;
+  }
+  .collector-compact {
+    padding-block: 8px;
+  }
+  .collector-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .collector-actions :deep(.n-button__content) {
+    white-space: normal;
+  }
+  .collector-detail :deep(.el-descriptions__label.is-bordered-label) {
+    min-width: 80px;
+    white-space: nowrap;
+  }
+  .collector-actions :deep(.n-button),
+  .add-form :deep(.n-button) {
+    min-height: 44px;
+  }
+  .add-form :deep(.n-input-wrapper) {
+    min-height: 44px;
+    align-items: center;
+  }
+  .id-input,
+  .name-input {
+    width: 100%;
+  }
 }
 </style>

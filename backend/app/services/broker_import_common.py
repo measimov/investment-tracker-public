@@ -881,19 +881,23 @@ def classify_suspected_duplicates(
     user_id: int,
     broker_account_id: Optional[int],
     candidates: Sequence[Any],
-    key_of_flow: Callable[[Any], BookedTradeKey],
-    key_of_source: Callable[[Any], Optional[BookedTradeKey]],
+    key_of_flow: Callable[[Any], tuple],
+    key_of_source: Callable[[Any], Optional[tuple]],
     batch_hashes: set,
     previously_held: Optional[Dict[str, Any]] = None,
     confirmed_hashes: frozenset = frozenset(),
+    booked_link: str = "transaction_id",
 ) -> SuspectedDuplicateResolution:
     """按二级键把本批候选行分成"疑似重复（扣住）"与"照常入账"。
 
-    candidates: 会成为交易且 hash 不在库里的解析行（调用方已剔除 hash 命中行）；
-    key_of_flow / key_of_source: 解析行 / 归档行 → BookedTradeKey（归档行返回 None 表示
-    它不是成交行，不参与配对）；batch_hashes: 本批全部 row_hash——hash 已命中的
+    candidates: 待入账且 hash 不在库里的解析行（调用方已剔除 hash 命中行）；
+    booked_link: 默认只匹配交易，可显式按 cash_event_id 匹配现金事实。
+    key_of_flow / key_of_source: 解析行 / 归档行 → 语义键（代码、日期在前两位；
+    来源返回 None 表示不参与配对）；batch_hashes: 本批全部 row_hash——hash 已命中的
     已入账行由本批的重复行"解释"，不再占用额度。
     """
+    if booked_link not in {"transaction_id", "cash_event_id"}:
+        raise ValueError("Unsupported booked source link")
     previously_held = previously_held or {}
     resolution = SuspectedDuplicateResolution(
         previously_held=dict(previously_held), confirmed_hashes=confirmed_hashes
@@ -911,22 +915,35 @@ def classify_suspected_duplicates(
     keys = {key_of_flow(flow) for flow in pool}
     query = db.query(model).filter(
         model.user_id == user_id,
-        model.transaction_id.isnot(None),
+        getattr(model, booked_link).isnot(None),
         model.trade_date.in_(sorted({key[1] for key in keys})),
-        model.security_code.in_(sorted({key[0] for key in keys})),
     )
+    if booked_link == "transaction_id":
+        query = query.filter(model.security_code.in_(sorted({key[0] for key in keys})))
     if broker_account_id is not None:
         query = query.filter(model.broker_account_id == broker_account_id)
     else:
         query = query.filter(model.broker_account_id.is_(None))
-    existing_by_key: Dict[BookedTradeKey, List[Any]] = {}
-    for row in query.order_by(model.trade_date, model.security_code, model.id).all():
+    existing_by_key: Dict[tuple, List[Any]] = {}
+    rows = query.order_by(model.trade_date, model.security_code, model.id).all()
+    # 历史清理可能把两份来源链接到同一现金事实；别名不代表又一笔入账。
+    explained_cash_ids = (
+        {row.cash_event_id for row in rows if row.row_hash in batch_hashes}
+        if booked_link == "cash_event_id"
+        else set()
+    )
+    seen_cash_ids = set()
+    for row in rows:
         if row.row_hash in batch_hashes:
             continue  # 本批已有同 hash 行与之配对，不再占用额度
+        if booked_link == "cash_event_id":
+            if row.cash_event_id in explained_cash_ids or row.cash_event_id in seen_cash_ids:
+                continue
+            seen_cash_ids.add(row.cash_event_id)
         key = key_of_source(row)
         if key is not None and key in keys:
             existing_by_key.setdefault(key, []).append(row)
-    consumed: Dict[BookedTradeKey, int] = {}
+    consumed: Dict[tuple, int] = {}
     for flow in pool:
         key = key_of_flow(flow)
         budget = existing_by_key.get(key, [])

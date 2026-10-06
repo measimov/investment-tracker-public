@@ -224,6 +224,16 @@ def get_period_pnl(
     return result
 
 
+@router.post("/period-pnl", response_model=Dict[str, Any])
+def get_period_pnl_with_prices(
+    current_prices: Dict[str, float],
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """与业绩摘要一致的手工价试算；月/年同时返回含待收股息的估算损益。"""
+    return calculate_period_pnl(db, current_user.id, current_prices)
+
+
 @router.get("/benchmarks", response_model=List[Dict[str, Any]])
 def list_benchmarks(
     current_user: User = Depends(get_current_active_user),

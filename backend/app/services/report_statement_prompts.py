@@ -24,7 +24,9 @@ STATEMENT_PROMPT_VERSION = 5
 # `rebuild_report_statements` 零下载零 LLM 从已存抽取行重建，不必重抽 PDF 或重跑映射
 # v2：EPS 附注号守卫（basic/diluted_eps 映射到「每股盈利 13」小标题 → 改指基本/摊薄行或丢弃）
 # v3：中国准则 int_exp 由净额「財務費用」改指其下「其中：利息費用/支出」（#264）
-STATEMENT_BUILD_VERSION = 3
+# v4：所得税按带符号口径（开支为正、抵免为负，#342-1）；映射重复行 id 去重（#342-2）；比较期按表
+#     合并 derived_fields、同源重抽按表整体替换（#343-2/5）；比较列证据带版本（#343-4）
+STATEMENT_BUILD_VERSION = 4
 
 # 目标科目：与 report_fetchers.YAHOO_HK_FIELD_MAP / earnings_quality.pivot_rows_to_statements
 # 对齐（同名 = 同口径），下游利润质量/格雷厄姆/分析输入零改动即可消费
@@ -79,9 +81,11 @@ PER_SHARE_FIELDS = frozenset({"basic_eps", "diluted_eps"})
 # 费用类科目报表里多为括号负数，落库统一取**正的绝对值**——与 Yahoo（cost_of_revenue 为正）
 # 和 A 股 Tushare（sell_exp/admin_exp 为正）同口径，否则毛利率 = (收入−成本)/收入 会算成
 # 超过 100%、Beneish 的 SGAI 因子符号反转。capex 保持报表符号（Yahoo 亦为负）。
-# 已付股东股息同理取量级（格雷厄姆分红记录只看是否 > 0，与雅虎 CommonStockDividendPaid 的负号无关）
+# 已付股东股息同理取量级（格雷厄姆分红记录只看是否 > 0，与雅虎 CommonStockDividendPaid 的负号无关）。
+# 所得税**不**取量级（#342-1）：亏损年份常是税项抵免，取绝对值会把抵免存成开支；它按带符号口径
+# 落库（开支为正、抵免为负，与雅虎 TaxProvision 同号），见 report_statement_build.tax_sign_convention
 EXPENSE_MAGNITUDE_FIELDS = frozenset(
-    {"cost_of_revenue", "sga_exp", "int_exp", "income_tax", "depr_fa_coga_dpba", "div_paid_owners"}
+    {"cost_of_revenue", "sga_exp", "int_exp", "depr_fa_coga_dpba", "div_paid_owners"}
 )
 # 至少要解析出的科目：缺了说明定位到了别的表或映射失败，整份判确定性失败。每张表列出
 # 若干「备选组」，任一组齐全即可——港股净资产格式的財務狀況表没有「資產總值」行（09926/
@@ -95,11 +99,28 @@ REQUIRED_FIELDS: Dict[str, Tuple[Tuple[str, ...], ...]] = {
 # 未有收入的公司（18A 生物科技，09926 2020 中报）：損益表第一行就是「其他收入及收益淨額」，
 # 根本没有收入行。收入缺失时，若表里**没有任何收入行**且映射出了净利/税前利润，接受并记
 # unresolved——判据看行标签，不看模型说了什么（有收入行却没映射仍是确定性失败）
+# 收入词前允许的修饰（#342-3：09618「總收入」、「銷售收入」「來自客戶合約之收益」「Total revenues」曾
+# 被判成「表内无收入行」而接受缺收入的映射）。仍按行首锚定，不在任意位置找「收入/收益」——
+# 未有收入的公司表内照样有「利息收入」「財務收入」「公平值收益」，任意位置匹配会把它们当成收入行、
+# 让 09926 2020 中报那类合法的无收入映射判失败
+_REVENUE_QUALIFIERS = (
+    r"(?:總|总|銷售|销售|來自客戶合約之|来自客户合约之|來自客戶合約的|来自客户合约的|客戶合約|客户合约"
+    r"|total\s*|net\s*)?"
+)
 REVENUE_LABEL_RE = re.compile(
-    r"^(?!其他|other)(?:[\d\s、.．()（）一二三四五六七八九十]*)?"
-    r"(?:營業總收入|营业总收入|營業收入|营业收入|收入|收益|營業額|营业额|revenue|turnover)",
+    r"^(?!其他|其它|other)(?:[\d\s、.．()（）一二三四五六七八九十]*)?"
+    + _REVENUE_QUALIFIERS
+    + r"(?:營業總收入|营业总收入|營業收入|营业收入|收入|收益|營業額|营业额|revenues?|turnover)",
     re.I,
 )
+
+
+def is_revenue_label(label: str) -> bool:
+    """行标签是否是收入行（原文与去空格后各判一次：字间空格的「總 收 入」）。"""
+    text = (label or "").strip()
+    return bool(REVENUE_LABEL_RE.match(text) or REVENUE_LABEL_RE.match(re.sub(r"\s+", "", text)))
+
+
 PRE_REVENUE_FALLBACK_FIELDS = ("n_income_attr_p", "total_profit")
 # 软必需：缺了不整份判失败，而是**丢掉这张表**并记 unresolved——01133 式的现金流量表块
 # 越界到乱码表时，损益/資產負債表本身是好的；没有经营现金流的 capex 单独也没用
@@ -230,6 +251,10 @@ def parse_statement_mapping(
                 unresolved.append(f"{kind}.{field}:type")
                 continue
             ids = [item.strip() for item in value if item.strip()]
+            # 重复的行 id 会让同一行被求和两次、科目静默翻倍（#342-2）：按序去重并记下
+            duplicated = sorted({item for item in ids if ids.count(item) > 1})
+            unresolved.extend(f"{kind}.{field}:dup:{item}" for item in duplicated)
+            ids = list(dict.fromkeys(ids))
             good = [item for item in ids if item in valid]
             unresolved.extend(f"{kind}.{field}:{item}" for item in ids if item not in valid)
             if good:
@@ -244,9 +269,7 @@ def parse_statement_mapping(
             if (
                 kind == "income"
                 and labels is not None
-                and not any(
-                    REVENUE_LABEL_RE.match((label or "").strip()) for label in labels.get(kind, ())
-                )
+                and not any(is_revenue_label(label) for label in labels.get(kind, ()))
                 and any(field in resolved_fields for field in PRE_REVENUE_FALLBACK_FIELDS)
             ):
                 unresolved.append("income.total_revenue:no_revenue_line")

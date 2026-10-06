@@ -64,6 +64,8 @@ ANNUAL = {
     "hk_00799_20161231": ((80, 81), (82, 83), (86, 87), 1_000, "USD", [2016, 2015]),
     "hk_02313_20161231": ((128, 129), (130, 131), (133, 135), 1_000, "CNY", [2016, 2015]),
     "hk_03900_20201231": ((131, 131), (132, 134), (137, 139), 1_000, "CNY", [2020, 2019]),
+    # 抽取器 v13：逗号前断字与分组金额的前导数字被拆开
+    "hk_03900_20161231": ((103, 103), (104, 105), (107, 109), 1_000, "CNY", [2016, 2015]),
     "hk_09926_20201231": ((121, 122), (123, 124), (127, 128), 1_000, "CNY", [2020, 2019]),
 }
 # 行在主导列数上的最低占比。中国准则报表把零值格留空（01133 2017 現金流量表 39 行里 6 行只有
@@ -887,6 +889,60 @@ def test_malformed_thousands_group_is_glued_with_or_without_column_count():
         Decimal("854843"),
         Decimal("416975"),
     ]
+
+
+def test_greentown_2016_split_amounts_use_production_parser():
+    balance = rs.locate_statements(_pages("hk_03900_20161231"), report_type="annual")["balance"]
+    expected = {
+        "銀行結 餘及現金": ("23", ["22677917", "14879912"]),
+        "遞延稅 項負債": ("20", ["4744710", "4629993"]),
+        "儲備": ("", ["24481284", "23792070"]),
+        "非控股 股東權益": ("", ["9037406", "9644341"]),
+    }
+    for label, (note, values) in expected.items():
+        row = next(r for r in balance.rows if r.label == label)
+        assert row.note == note
+        assert row.values == [Decimal(v) for v in values]
+
+
+def test_split_comma_and_leading_digit_preserve_note_and_amount_columns():
+    line = "銀行結 餘及現金 23 22 ,677,917 1 4,879,912"
+    assert rs.parse_row(line, expected_columns=2) == (
+        "銀行結 餘及現金",
+        "23",
+        [Decimal("22677917"), Decimal("14879912")],
+    )
+    # 列数未知：逗号前空格是明确断字；两个合法数字 token 不猜测合并。
+    assert rs.parse_row(line)[2] == [
+        Decimal("23"),
+        Decimal("22677917"),
+        Decimal("1"),
+        Decimal("4879912"),
+    ]
+    assert rs.parse_row("現金 12(a) 22 ,677,917 1 4,879,912", expected_columns=2) == (
+        "現金",
+        "12(a)",
+        [Decimal("22677917"), Decimal("14879912")],
+    )
+
+
+@pytest.mark.parametrize(
+    "line,columns,values",
+    [
+        ("現金 1 4,879,912", 2, ["1", "4879912"]),
+        ("現金 23 22,677,917 1 4,879,912", 3, ["22677917", "1", "4879912"]),
+        ("現金 12(a) 1 4,879,912", 2, ["1", "4879912"]),
+        ("現金 1 4,879,912 2 6,677,917", 2, ["1", "4879912", "2", "6677917"]),
+        (
+            "現金 22,677,917 1 4,879,912 2 6,677,917",
+            4,
+            ["22677917", "1", "4879912", "2", "6677917"],
+        ),
+        ("現金 (22 ,677,917) (1 4,879,912)", 2, ["-22677917", "-14879912"]),
+    ],
+)
+def test_leading_digit_glue_respects_valid_or_ambiguous_columns(line, columns, values):
+    assert rs.parse_row(line, expected_columns=columns)[2] == [Decimal(v) for v in values]
 
 
 def test_legal_two_column_decimals_are_never_glued():

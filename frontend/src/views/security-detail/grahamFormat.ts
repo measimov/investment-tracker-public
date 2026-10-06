@@ -8,6 +8,16 @@ import { EMPTY, formatPrice } from '@/utils/helpers'
 import { formatFixed, formatPeriod } from './format'
 import type { GrahamBasis, GrahamSupplement } from './types'
 
+/** 全部准则达标才用绿色；缺失或不可判定不能视为达标。 */
+export function grahamSummaryTagType(summary: Record<string, unknown>) {
+  if (Number(summary.failed || 0) > 0) return 'warning'
+  const passed = Number(summary.passed || 0)
+  const total = Array.isArray(summary.criteria)
+    ? summary.criteria.length
+    : Number(summary.total || 0)
+  return passed > 0 && passed === total ? 'success' : 'info'
+}
+
 function periodText(period: string): string {
   const [end, fp] = period.split('|')
   return `${formatPeriod(end)}${fp && fp !== 'FY' ? ` ${fp}` : ' 年报'}`

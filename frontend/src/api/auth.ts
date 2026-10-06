@@ -1,8 +1,11 @@
 /** 登录、会话探测、改密码。 */
 import { apiClient } from './client'
-import type { LoginResponse, User } from '@/types'
+import type { Capabilities, LoginResponse, User } from '@/types'
 
 export const authApi = {
+  getCapabilities() {
+    return apiClient.get<Capabilities>('/capabilities', { skipGlobalErrorNotification: true })
+  },
   // Authentication
   login(username: string, password: string) {
     return apiClient.post<LoginResponse>(

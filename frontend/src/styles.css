@@ -1,45 +1,16 @@
 :root {
-  /* ── Flat, data-dense palette (slate neutrals + solid indigo accent) ──
-     无渐变、无玻璃、无装饰阴影：层次只靠底色差 + 1px 描边。
-     改这里的 hex 必须同步 styles/tokens.ts（画布侧无法读 CSS 变量）。 */
-  --app-bg: #f5f6f8;
-  --app-surface: #ffffff;
-  --app-surface-muted: #f8f9fb;
-  --app-surface-secondary: #f1f3f6;
-  --app-border: #dcdfe5;
-  --app-border-soft: #e5e7eb;
-  --app-separator: #eceef1;
-  --app-hover: #f1f3f6;
-
-  --app-text: #0f172a;
-  --app-text-muted: #475569;
-  --app-text-soft: #64748b;
-  --app-text-tertiary: #94a3b8;
-
-  --app-primary: #4f46e5;
-  --app-primary-strong: #4338ca;
-  --app-primary-pressed: #3730a3;
-  --app-primary-soft: rgba(79, 70, 229, 0.08);
-  --app-primary-tint: rgba(79, 70, 229, 0.14);
-  --app-on-primary: #ffffff;
-
-  --app-success: #059669;
-  --app-success-soft: rgba(5, 150, 105, 0.1);
-
-  --app-danger: #e11d48;
-  --app-danger-soft: rgba(225, 29, 72, 0.1);
-  --app-danger-text: #9f1239;
-  --app-danger-border: #fecdd3;
-  --app-danger-surface: #fff1f2;
-
-  --app-warning: #d97706;
-  --app-warning-soft: rgba(217, 119, 6, 0.12);
-
-  --app-info: #0ea5e9;
-
-  /* ── Shadows：只留浮层（下拉/对话框/消息）的功能性阴影 ─────── */
-  --app-shadow-popover: 0 6px 16px rgba(15, 23, 42, 0.12);
-
+  --app-font-sans:
+    'Inter Variable', 'Noto Sans SC Variable', -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+    'SF Pro Display', 'Inter', 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  --app-number-hero: 36px;
+  --app-number-cumulative: 28px;
+  --app-number-secondary: 22px;
+  --app-font-serif-system:
+    'Noto Serif CJK SC', 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', SimSun,
+    serif;
+  --app-font-serif: 'Noto Serif SC Variable', var(--app-font-serif-system);
+  --el-font-family: var(--app-font-sans);
   /* ── Geometry ───────────────────────────────────────────────── */
   /* 间距 scale：视图层禁止再发明新的间距值 */
   --app-space-xs: 8px;
@@ -49,54 +20,36 @@
   --app-space-xl: 24px;
   --app-header-height: 52px;
 
-  --app-radius: 6px;
+  --app-radius: 8px;
   --app-radius-inner: 4px;
   --app-radius-sm: 4px;
 
-  /* ── Motion：只做颜色过渡，不做位移/缩放 ───────────────────── */
+  /* ── Motion：导航几何与正文同步，其余控件保留轻量颜色过渡 ── */
   --apple-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
   --app-duration: 0.15s;
+  --app-navigation-duration: 200ms;
+  --app-navigation-label-duration: 120ms;
+  --app-navigation-icon-column: 48px;
 
-  /* ── Element Plus palette sync ──────────────────────────────── */
-  --el-color-primary: #4f46e5;
-  --el-color-primary-light-3: #8580ec;
-  --el-color-primary-light-5: #b3aef3;
-  --el-color-primary-light-7: #d1cef9;
-  --el-color-primary-light-8: #e0defb;
-  --el-color-primary-light-9: #efeefd;
-  --el-color-primary-dark-2: #4338ca;
-
-  /* success/danger 与 --app-success/--app-danger 同色：标签绿 = 盈亏文字绿 */
-  --el-color-success: #059669;
-  --el-color-success-light-3: #50b696;
-  --el-color-success-light-5: #82cab4;
-  --el-color-success-light-7: #b4e0d2;
-  --el-color-success-light-8: #cdeae1;
-  --el-color-success-light-9: #e6f4f0;
-  --el-color-success-dark-2: #047854;
-
-  --el-color-warning: #f59e0b;
-  --el-color-warning-light-3: #f8bc4e;
-  --el-color-warning-light-5: #fad485;
-  --el-color-warning-light-7: #fce5b8;
-  --el-color-warning-light-8: #fdeccf;
-  --el-color-warning-light-9: #fef5e7;
-  --el-color-warning-dark-2: #d97706;
-
-  --el-color-danger: #e11d48;
-  --el-color-danger-light-3: #ea617f;
-  --el-color-danger-light-5: #f08ea4;
-  --el-color-danger-light-7: #f6bbc8;
-  --el-color-danger-light-8: #f9d2da;
-  --el-color-danger-light-9: #fce8ed;
-  --el-color-danger-dark-2: #b4173a;
-
-  --el-border-color: var(--app-border);
-  --el-border-color-light: var(--app-border-soft);
-  --el-border-color-lighter: var(--app-separator);
   --el-border-radius-base: 4px;
   --el-border-radius-small: 3px;
   --el-border-radius-round: 4px;
+}
+
+@media (min-width: 1025px) {
+  :root {
+    --app-number-hero: 30px;
+    --app-number-cumulative: 22px;
+    --app-number-secondary: 20px;
+  }
+  .app-main
+    .n-data-table:not(.watchlist-table)
+    .n-data-table-td:where(:not(.n-data-table-td--expand):not(.n-data-table-td--selection)) {
+    padding: 10px var(--app-space-sm);
+  }
+  .app-main .n-data-table .n-data-table-th:where(:not(.n-data-table-th--selection)) {
+    padding: var(--app-space-xs) var(--app-space-sm);
+  }
 }
 
 /* ── Reset & Base ─────────────────────────────────────────────── */
@@ -119,9 +72,7 @@ body {
   margin: 0;
   background: var(--app-bg);
   color: var(--app-text);
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Inter', 'Segoe UI', Roboto,
-    'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  font-family: var(--app-font-sans);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -145,14 +96,14 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(15, 23, 42, 0.16);
+  background: var(--app-scrollbar);
   border-radius: 4px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(15, 23, 42, 0.32);
+  background: var(--app-scrollbar-hover);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -189,7 +140,9 @@ body {
    Element Plus 的按钮样式按组件懒加载，可能排在本文件之后；覆写一律
    走组件变量 + 双类选择器，不直接写 background 以免被后加载的同权重规则盖掉。 */
 .el-button {
-  border-radius: var(--app-radius-inner);
+  --el-button-border-radius: 6px;
+  font-family: inherit;
+  border-radius: 6px;
   font-weight: 500;
   padding: 7px 14px;
   transition:
@@ -203,6 +156,10 @@ body {
   --el-button-hover-border-color: var(--app-primary-strong);
   --el-button-active-bg-color: var(--app-primary-pressed);
   --el-button-active-border-color: var(--app-primary-pressed);
+}
+
+.el-link.el-link--primary {
+  --el-link-hover-text-color: var(--app-primary-strong);
 }
 
 .el-button.el-button--success:not(.is-plain):not(.is-text):not(.is-link) {
@@ -339,10 +296,7 @@ body {
   background-color: var(--el-table-row-hover-bg-color) !important;
 }
 
-/* ── Tags — small squared labels; default (primary) is neutral ──
-   Element Plus 默认 type 就是 primary，未指定 type 的市场/来源标签
-   占绝大多数，因此 primary 走中性灰；语义色（success/warning/danger/
-   info）保持不变。 */
+/* ── Tags — small squared labels; colors/effects use Element Plus theme variables ── */
 .el-tag {
   border-radius: var(--el-border-radius-small);
   font-weight: 500;
@@ -350,37 +304,7 @@ body {
   padding: 1px 6px;
   height: auto;
   line-height: 18px;
-  border: 1px solid transparent;
-}
-
-.el-tag--success {
-  background-color: var(--app-success-soft);
-  color: var(--app-success);
-}
-
-.el-tag--danger {
-  background-color: var(--app-danger-soft);
-  color: var(--app-danger);
-}
-
-.el-tag--warning {
-  background-color: var(--app-warning-soft);
-  color: var(--app-warning);
-}
-
-.el-tag--info {
-  background-color: var(--app-surface-secondary);
-  color: var(--app-text-soft);
-}
-
-.el-tag--primary {
-  background-color: var(--app-surface-secondary);
-  color: var(--app-text-muted);
-}
-
-.el-tag.el-tag--plain {
-  background-color: var(--app-surface);
-  border-color: var(--app-border);
+  border: 1px solid var(--el-tag-border-color);
 }
 
 /* ── Dialogs — flat sheet; the only elevation is the overlay shadow ── */
@@ -540,22 +464,15 @@ body {
    此前 Transactions 与 Holdings 各揣一份 drift 的双胞胎（卡片间距、
    动作区分隔线、指标字号互不相同），改一处修不到另一处。视图只保留
    自己特有的行（如持仓的价格输入行），通用外观一律走这里。
-   断点 640 与各视图 useMediaQuery('(max-width: 640px)') 一致——
-   v-if 与 CSS 必须同宽，否则中间宽度会两边都不渲染。 */
+   视图通过 useMediaQuery 和 v-if 选择表格或卡片；此处只负责外观。
+   WebKit 的滚动条可能使 CSS 与 matchMedia 的临界宽度暂时不一致，
+   不再用 CSS 二次隐藏已经由视图选中的明细。 */
 .mobile-card-list {
-  display: none;
+  display: grid;
+  gap: 12px;
 }
 
 @media (max-width: 640px) {
-  .desktop-data-table {
-    display: none;
-  }
-
-  .mobile-card-list {
-    display: grid;
-    gap: 12px;
-  }
-
   .mobile-card {
     /* grid item 默认 min-width:auto，长账户名/备注会把卡片撑到几千 px，
        按钮被外层裁到屏幕外——而根节点 scrollWidth 不变，"无横滚"会假通过 */
@@ -756,37 +673,62 @@ body {
 }
 
 /* ── Metric Colors ────────────────────────────────────────────── */
-.metric-positive {
-  color: var(--app-success);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.metric-negative {
-  color: var(--app-danger);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
 /* ── LLM Markdown 正文（renderMarkdown 输出）──────────────────────
    Reports / SecurityDetail / 雪球观点共用；此前只在 Reports 的 scoped 块里，
    其余两处的表格没有边框、宽表会把页面撑宽。宽表在自身容器内横向滚动。 */
-.markdown-body h2 {
-  margin: 18px 0 10px;
+.markdown-body {
+  color: var(--app-text);
+  max-width: 38em;
+  font-family: var(--app-font-serif);
   font-size: 18px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+.markdown-body h1 {
+  font-size: 1.6em;
+  line-height: 1.5;
+}
+
+.markdown-body h2 {
+  margin: 24px 0 12px;
+  font-size: 1.35em;
+  line-height: 1.5;
   border-bottom: 1px solid var(--app-border-soft);
   padding-bottom: 6px;
 }
 
 .markdown-body h3 {
-  margin: 14px 0 8px;
-  font-size: 15px;
+  margin: 20px 0 10px;
+  font-size: 1.15em;
+  line-height: 1.6;
+}
+
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  font-size: 1em;
+}
+
+.markdown-body p {
+  margin: 0 0 1em;
+}
+
+.markdown-body em {
+  font-style: normal;
+  font-weight: 600;
+}
+
+.markdown-body blockquote {
+  margin: 1em 0;
+  padding-left: 1em;
+  border-left: 2px solid var(--app-border-soft);
 }
 
 .markdown-body p,
 .markdown-body li {
-  line-height: 1.7;
-  font-size: 14px;
+  line-height: inherit;
+  font-size: inherit;
 }
 
 .markdown-body table {
@@ -795,6 +737,9 @@ body {
   max-width: 100%;
   display: block;
   overflow-x: auto;
+  font-family: var(--app-font-sans);
+  font-size: 13px;
+  line-height: 1.7;
   font-variant-numeric: tabular-nums;
 }
 
@@ -809,6 +754,35 @@ body {
   background: var(--app-surface-secondary);
 }
 
+.markdown-body table p,
+.markdown-body table li {
+  font-family: var(--app-font-sans);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.markdown-body code,
+.markdown-body pre {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.markdown-body pre {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+
+.markdown-body pre code {
+  font-size: inherit;
+}
+
+@media (max-width: 640px) {
+  .markdown-body {
+    font-size: 17px;
+  }
+}
+
 /* ── Pagination ───────────────────────────────────────────────── */
 .el-pagination {
   --el-pagination-button-bg-color: var(--app-surface);
@@ -820,8 +794,8 @@ body {
 }
 
 .el-pagination .el-pager li.is-active {
-  background: var(--app-primary);
-  color: var(--app-on-primary);
+  background: var(--app-primary-fill);
+  color: var(--app-on-primary-fill);
 }
 
 /* ── Dropdown Menu ────────────────────────────────────────────── */
@@ -973,8 +947,23 @@ body {
   }
 
   /* Prevent iOS auto-zoom on focus (needs >= 16px input text) */
-  .el-input__inner,
-  .el-textarea__inner {
+  .el-input__inner:not([readonly]):not(:disabled),
+  .el-textarea__inner:not([readonly]):not(:disabled),
+  .el-select__input:not([readonly]):not(:disabled),
+  .el-select__input:not([readonly]):not(:disabled) ~ .el-select__input-calculator,
+  .el-select__input-wrapper:has(.el-select__input:not([readonly]):not(:disabled))
+    ~ .el-select__placeholder,
+  input.n-base-selection-input:not([readonly]):not(:disabled),
+  .n-base-selection-input-tag__input:not([readonly]):not(:disabled),
+  .n-base-selection-input-tag__input:not([readonly]):not(:disabled)
+    ~ .n-base-selection-input-tag__mirror,
+  .n-base-selection:has(input:not([readonly]):not(:disabled)) .n-base-selection-placeholder,
+  .n-input__input-el:not([readonly]):not(:disabled),
+  .n-input__input-el:not([readonly]):not(:disabled) ~ .n-input__input-mirror,
+  .n-input__input-el:not([readonly]):not(:disabled) ~ .n-input__placeholder,
+  .n-input__textarea-el:not([readonly]):not(:disabled),
+  .n-input__textarea-el:not([readonly]):not(:disabled) ~ .n-input__textarea-mirror,
+  .n-input__textarea-el:not([readonly]):not(:disabled) ~ .n-input__placeholder {
     font-size: 16px;
   }
 
@@ -1075,11 +1064,15 @@ body {
   font-size: 12px;
 }
 
-.amount-positive {
+.pnl-flat {
+  color: inherit;
+}
+
+.pnl-pos {
   color: var(--app-success);
 }
 
-.amount-negative {
+.pnl-neg {
   color: var(--app-danger);
 }
 
@@ -1174,14 +1167,6 @@ body {
   text-align: right;
 }
 
-.statistics-page .stat-item .value.success {
-  color: var(--app-success);
-}
-
-.statistics-page .stat-item .value.danger {
-  color: var(--app-danger);
-}
-
 .statistics-page .stat-note {
   color: var(--app-text-muted);
   font-size: 12px;
@@ -1234,5 +1219,143 @@ body {
     max-width: 100%;
     text-align: left;
     overflow-wrap: anywhere;
+  }
+}
+
+h1,
+h2,
+.section-title,
+.section-heading h3 {
+  font-family: var(--app-font-serif);
+}
+
+svg.lucide {
+  stroke-width: 1.75;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+/* Opt-in ledger filters: transaction and corporate-action records only. */
+.filter-form.ledger-filter-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(240px, 1.5fr) auto;
+  align-items: flex-end;
+  gap: 12px;
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--app-font-sans);
+}
+.ledger-filter-form > .n-form-item {
+  min-width: 0;
+  margin: 0;
+}
+.ledger-filter-form .n-form-item-label {
+  color: var(--app-text-muted);
+  font-family: var(--app-font-sans);
+  font-size: 13px;
+  padding-bottom: 6px;
+}
+.ledger-filter-form .n-form-item-blank {
+  min-height: 36px;
+}
+.ledger-filter-form .filter-symbol,
+.ledger-filter-form .el-input {
+  width: 100%;
+  --el-component-size: 36px;
+  --el-color-info: var(--app-text-soft);
+  --el-text-color-placeholder: var(--app-text-soft);
+}
+.ledger-filter-form .el-input__wrapper,
+.ledger-filter-form .n-button {
+  height: 36px;
+  min-height: 36px;
+  box-sizing: border-box;
+}
+.ledger-filter-form select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 3px;
+  color: var(--app-text);
+  background: var(--app-surface);
+  font: 14px var(--app-font-sans);
+}
+.ledger-filter-form select:focus-visible {
+  outline: 2px solid var(--app-primary-strong);
+  outline-offset: 2px;
+}
+.filter-form.ledger-filter-form > .filter-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+@container (max-width: 1050px) {
+  .filter-form.ledger-filter-form {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .ledger-filter-form > .date-filter-item {
+    grid-column: span 3;
+  }
+  .filter-form.ledger-filter-form > .filter-actions {
+    justify-content: flex-end;
+  }
+}
+@container (max-width: 720px) {
+  .filter-form.ledger-filter-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 8px;
+  }
+  .ledger-filter-form > .date-filter-item,
+  .filter-form.ledger-filter-form > .filter-actions {
+    grid-column: 1 / -1;
+  }
+  .filter-form.ledger-filter-form > .filter-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .ledger-filter-form .el-input__wrapper,
+  .ledger-filter-form .n-button,
+  .ledger-filter-form select,
+  .ledger-filter-form .n-form-item-blank {
+    height: 44px;
+    min-height: 44px;
+  }
+  .ledger-filter-form .filter-symbol {
+    --el-component-size: 44px;
+  }
+}
+
+/* Navigation-page headings; security names and the not-found result keep their own hierarchy. */
+.page-title {
+  margin: 0;
+  font-family: var(--app-font-serif);
+  font-size: 34px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.page-description {
+  margin: 8px 0 0;
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+@media (min-width: 1025px) {
+  .page-title {
+    font-size: 28px;
+  }
+  .page-description {
+    margin-top: 6px;
+  }
+}
+@media (max-width: 640px) {
+  .page-title {
+    font-size: 28px;
   }
 }

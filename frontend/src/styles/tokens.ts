@@ -1,35 +1,9 @@
-/**
- * 画布侧设计令牌：ECharts 等 canvas 场景无法读 CSS 变量，这里的 hex
- * 必须与 styles.css 的 :root 保持一致（唯一允许重复 hex 的地方）。
- * 键与 CSS 变量一一对应：primary=--app-primary、success=--app-success
- * （= --el-color-success）、danger=--app-danger（= --el-color-danger）、
- * warning=--app-warning、info=--app-info、textMuted=--app-text-muted。
- */
-export const COLOR = {
-  primary: '#4f46e5',
-  success: '#059669',
-  danger: '#e11d48',
-  warning: '#d97706',
-  info: '#0ea5e9',
-  textMuted: '#475569'
-} as const
+/** 图表字体与分类索引；所有颜色由 chartTheme 读取已解析的公共 CSS 变量。 */
+export const CHART_SYSTEM_FONT_FAMILY =
+  "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI', Roboto, 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif"
 
-export const CHART_FONT_FAMILY =
-  "-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif"
+export const CHART_FONT_FAMILY = `'Inter Variable', 'Noto Sans SC Variable', ${CHART_SYSTEM_FONT_FAMILY}`
 
-/** 图表分类色板：品牌 indigo 起手，避免 ECharts 默认蓝绿黄与主题脱节 */
-export const CHART_PALETTE = [
-  '#4f46e5',
-  '#0ea5e9',
-  '#059669',
-  '#d97706',
-  '#e11d48',
-  '#8b5cf6',
-  '#14b8a6'
-]
-
-export const chartTooltipCurrency = (value: number | string, currency = '¥'): string =>
-  `${currency}${Number(value).toLocaleString('zh-CN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  })}`
+/** 分类维度保持原市场及基准顺序；实际颜色由 chartTheme 读取公共 CSS 配色。 */
+export const MARKET_CHART_INDICES = [0, 1, 3, 5, 6]
+export const BENCHMARK_CHART_INDICES = [3, 5, 6]

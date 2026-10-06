@@ -13,6 +13,7 @@ from app.models.security_profile import SecurityProfileData
 from app.services import report_digest_jobs as backfill_jobs
 from app.services import hk_report_catalog
 from app.services import report_digest_service as svc
+from app.services import llm_client
 from app.services.llm_client import LLMClientError
 from app.services.report_digest_prompts import parse_digest_output
 
@@ -60,7 +61,7 @@ def _targets(years):
     ]
 
 
-def _patch_pipeline(monkeypatch, *, years, llm_content=VALID_DIGEST):
+def _patch_pipeline(monkeypatch, *, years, llm_content=VALID_DIGEST, generation_meta=None):
     monkeypatch.setattr(
         svc,
         "cached_report_targets_detailed",
@@ -75,10 +76,12 @@ def _patch_pipeline(monkeypatch, *, years, llm_content=VALID_DIGEST):
 
     def fake_llm(messages, **kw):
         calls.append(messages)
+        assert all("generation_meta" not in message["content"] for message in messages)
         return {
             "content": llm_content,
             "model": "deepseek-v4-pro",
             "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            **({"generation_meta": generation_meta} if generation_meta is not None else {}),
         }
 
     monkeypatch.setattr(svc, "chat_completion", fake_llm)
@@ -154,8 +157,8 @@ def test_plan_targets_prefers_revised_and_filters_noise(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_digest_generated_and_cached(db, monkeypatch):
-    calls = _patch_pipeline(monkeypatch, years=[2025, 2024])
+def test_digest_generated_and_cached(db, monkeypatch, generation_meta):
+    calls = _patch_pipeline(monkeypatch, years=[2025, 2024], generation_meta=generation_meta)
     result = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
     assert result == {
         "total": 2,
@@ -169,8 +172,12 @@ def test_digest_generated_and_cached(db, monkeypatch):
         "pending_periods": [],
         "gaps": [],
         "fatal": None,
+        "digest_reused": 0,
     }
     assert len(calls) == 2
+    for row in db.query(SecurityProfileData).filter_by(dataset="report_digest").all():
+        assert row.payload.get("generation_meta") == generation_meta
+        assert ("generation_meta" in row.payload) == (generation_meta is not None)
 
     # 二次调用：全部缓存命中，零 LLM 调用
     result = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
@@ -186,7 +193,9 @@ def test_digest_generated_and_cached(db, monkeypatch):
     assert all(d["fetched_at"] for d in digests)
     # 分析输入按字段挑选，展示字段不得混入
     serialized = svc.serialize_digest_for_analysis(digests)
-    assert all(set(item) == {"end_date", "report_type", "digest"} for item in serialized)
+    assert all(
+        set(item) == {"end_date", "report_type", "digest", "numeric_qa"} for item in serialized
+    )
 
 
 def test_max_new_guardrail_reports_remaining(db, monkeypatch):
@@ -233,6 +242,49 @@ def test_transient_llm_failure_does_not_count_attempts(db, monkeypatch):
     svc.ensure_report_digests(db, "600036", "A股", max_new=4)
     row = db.query(SecurityProfileData).filter_by(dataset="report_digest").one()
     assert row.payload["attempts"] == 0  # 瞬时失败不计，下次可重试
+
+
+def test_raw_llm_resource_exhaustion_does_not_cap_digest_retry(
+    db, monkeypatch, raw_llm_completions
+):
+    _patch_pipeline(monkeypatch, years=[2025])
+    monkeypatch.setattr(svc, "chat_completion", llm_client.chat_completion)
+    raw_llm_completions["responses"].extend([("", "insufficient_system_resource")] * 2)
+    for _ in range(2):
+        result = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+        assert result["attempted"] == result["failed"] == 1
+        assert result["permanently_failed"] == 0 and result["fatal"] is None
+        row = db.query(SecurityProfileData).filter_by(dataset="report_digest").one()
+        assert row.payload["status"] == "failed"
+        assert row.payload["attempts"] == 0
+
+    raw_llm_completions["responses"].append((VALID_DIGEST, "stop"))
+    recovered = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    assert recovered["generated"] == 1 and recovered["permanently_failed"] == 0
+    row = db.query(SecurityProfileData).filter_by(dataset="report_digest").one()
+    assert row.payload["status"] == "ok"
+    assert row.payload["digest"]["经营回顾"] == "稳健"
+    assert raw_llm_completions["calls"] == ["https://deepseek.test.invalid/v1/chat/completions"] * 3
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "untrusted-private-reason"])
+def test_raw_llm_permanent_output_failures_still_cap_digest_attempts(
+    db, monkeypatch, raw_llm_completions, finish_reason
+):
+    _patch_pipeline(monkeypatch, years=[2025])
+    monkeypatch.setattr(svc, "chat_completion", llm_client.chat_completion)
+    raw_llm_completions["responses"].extend([("", finish_reason)] * 2)
+    for attempt in (1, 2):
+        result = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+        assert result["failed"] == 1
+        row = db.query(SecurityProfileData).filter_by(dataset="report_digest").one()
+        assert row.payload["status"] == "failed" and row.payload["attempts"] == attempt
+        if finish_reason == "untrusted-private-reason":
+            assert finish_reason not in row.payload["error"]
+
+    capped = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    assert capped["permanently_failed"] == 1 and capped["attempted"] == 0
+    assert len(raw_llm_completions["calls"]) == 2
 
 
 def test_truncated_llm_output_counts_attempts(db, monkeypatch):
@@ -798,6 +850,10 @@ def test_pending_summary_survives_gap_truncation(db, monkeypatch):
     from app.services import security_analysis_jobs as analysis_jobs
 
     years = list(range(2025, 2015, -1))  # 10 份
+    # 两阶段清单长度不同、分档会漂移；失败行要求档位完全一致（#347-3），固定成同一档
+    monkeypatch.setattr(
+        svc, "assign_digest_tiers", lambda targets: {t["period_key"]: "B" for t in targets}
+    )
     # 先让最旧的 6 份烧到封顶失败
     _patch_pipeline(monkeypatch, years=years[4:], llm_content="不是JSON")
     for _ in range(2):
@@ -1070,11 +1126,15 @@ def test_backfill_job_unsupported_market(db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _patch_hkex(monkeypatch, reports):
+def _patch_hkex(monkeypatch, reports, interim_reports=None):
     from app.services import report_fetchers
 
     monkeypatch.setattr(
-        report_fetchers, "hkex_reports", lambda symbol, report_type="annual", limit=12: reports
+        report_fetchers,
+        "hkex_reports",
+        lambda symbol, report_type="annual", limit=12: (
+            reports if report_type == "annual" else (interim_reports or [])
+        ),
     )
     return report_fetchers
 
@@ -1123,6 +1183,60 @@ def test_hkex_failure_marks_plan_incomplete(monkeypatch):
     planned = svc.plan_report_targets_detailed("00700", "港股")
     assert planned["targets"] == []
     assert planned["complete"] is False
+
+
+def test_hk_plan_keeps_ten_annual_reports_and_latest_interim(monkeypatch):
+    _patch_hkex(
+        monkeypatch,
+        [
+            {"title": f"{year} 年報", "ann_date": f"09/04/{year + 1}", "url": f"a-{year}"}
+            for year in range(2025, 2014, -1)
+        ],
+        [
+            {"title": f"{year} 中期報告", "ann_date": f"28/08/{year}", "url": f"h-{year}"}
+            for year in (2026, 2025)
+        ],
+    )
+    planned = svc.plan_report_targets_detailed("00700", "港股")
+    assert planned["complete"] is True
+    assert [t["period_key"] for t in planned["targets"]] == [
+        "20260630|interim",
+        *[f"{year}1231|annual" for year in range(2025, 2015, -1)],
+    ]
+    assert [t["period_key"] for t in svc._newest_of_each_kind(planned["targets"])] == [
+        "20260630|interim",
+        "20251231|annual",
+    ]
+    from app.services.report_digest_prompts import assign_digest_tiers, build_digest_messages
+
+    tiers = assign_digest_tiers(planned["targets"])
+    assert tiers["20260630|interim"] == tiers["20251231|annual"] == "A"
+    assert tiers["20211231|annual"] == "B" and tiers["20201231|annual"] == "C"
+    messages = build_digest_messages("00700", "港股", "interim", "20260630", {"mdna": "业务"})
+    assert "20260630 中期报告" in messages[1]["content"]
+
+
+@pytest.mark.parametrize("failed_kind", ["annual", "interim"])
+def test_hk_partial_plan_preserves_other_kind_and_reports_gap(db, monkeypatch, failed_kind):
+    from app.services import report_fetchers
+
+    def listing(symbol, report_type, limit):
+        if report_type == failed_kind:
+            raise RuntimeError("503")
+        return [
+            {"title": "2025 年報", "ann_date": "09/04/2026", "url": "annual"}
+            if report_type == "annual"
+            else {"title": "2026 中期報告", "ann_date": "28/08/2026", "url": "interim"}
+        ]
+
+    monkeypatch.setattr(report_fetchers, "hkex_reports", listing)
+    planned = svc.plan_report_targets_detailed("00700", "港股")
+    assert planned["failed_kinds"] == [failed_kind]
+    assert {t["report_type"] for t in planned["targets"]} == {"annual", "interim"} - {failed_kind}
+    cached = svc.cached_report_targets_detailed(db, "00700", "港股")
+    assert cached["complete"] is False
+    assert svc.cached_report_targets_detailed(db, "00700", "港股")["complete"] is False
+    assert any("清单检索失败或不完整" in gap for gap in svc.digest_gap_preview(db, "00700", "港股"))
 
 
 @pytest.mark.parametrize(
@@ -1847,9 +1961,208 @@ def test_digest_gap_preview_is_read_only_and_matches_ensure_wording(db, monkeypa
     _write_row(
         db, "report_target_plan", "current", {"status": "partial", "targets": _targets(years)}
     )
-    assert svc.digest_gap_preview(db, "600036", "A股")[0].startswith("年报清单检索失败或不完整")
+    assert svc.digest_gap_preview(db, "600036", "A股")[0].startswith("财报清单检索失败或不完整")
 
 
 def test_digest_gap_preview_without_cached_plan(db):
     gaps = svc.digest_gap_preview(db, "600036", "A股")
     assert len(gaps) == 1 and "年报清单尚未检索" in gaps[0]
+
+
+# ---------------------------------------------------------------------------
+# 章节抽取 v6 配套（#347 生命周期 / 抽取器升版的摘要沿用）
+# ---------------------------------------------------------------------------
+
+
+class _FakePdf:
+    pages: list = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _fake_extraction(monkeypatch, sections):
+    """让 _ensure_section 真跑一遍（下载与抽取打桩）：抽出的节选由 `sections` 决定。"""
+    from app.services.report_sections import SectionResult
+
+    downloads = []
+    monkeypatch.setattr(
+        svc, "download_report_pdf", lambda url, **kw: downloads.append(url) or b"%PDF-"
+    )
+    monkeypatch.setattr(svc.pdfplumber, "open", lambda stream: _FakePdf())
+    monkeypatch.setattr(svc, "pages_to_text", lambda pages: "全文")
+    monkeypatch.setattr(
+        svc,
+        "extract_cn_sections",
+        lambda text: {
+            name: SectionResult(text=body, locator="bare_heading", truncated=False)
+            for name, body in sections.items()
+        },
+    )
+    return downloads
+
+
+def _seed_generation(db, monkeypatch, sections, *, generation_meta=None):
+    """按旧抽取器版本生成一份摘要（节选 + 摘要行都是 v-1）。"""
+    target = _targets([2025])[0]
+    monkeypatch.setattr(
+        svc,
+        "cached_report_targets_detailed",
+        lambda db, symbol, market, **kw: {"targets": [target], "complete": True},
+    )
+    _fake_extraction(monkeypatch, sections)
+    calls = []
+
+    def fake_llm(messages, **kw):
+        calls.append(messages)
+        return {
+            "content": VALID_DIGEST,
+            "model": "m",
+            "usage": {},
+            **({"generation_meta": generation_meta} if generation_meta is not None else {}),
+        }
+
+    monkeypatch.setattr(svc, "chat_completion", fake_llm)
+    svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    assert len(calls) == 1
+    old = svc.section_extractor_version("A股") - 1
+    for dataset in ("report_section", "report_digest"):
+        row = db.query(SecurityProfileData).filter_by(dataset=dataset).one()
+        _write_row(db, dataset, row.period_key, {**row.payload, "extractor_version": old})
+    return calls, old
+
+
+def test_extractor_bump_reuses_digest_when_sections_are_byte_identical(
+    db, monkeypatch, generation_meta
+):
+    """抽取器升版后重抽出的节选与旧版逐字节相同：沿用旧摘要、零 LLM（mapping_reused 同一思路）。"""
+    sections = {"business": "主营业务 经营模式 产品", "mdna": "营业收入同比增长 10%"}
+    calls, old = _seed_generation(db, monkeypatch, sections, generation_meta=generation_meta)
+    downloads = _fake_extraction(monkeypatch, sections)
+    result = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    assert len(calls) == 1  # 没有新的 LLM 调用
+    assert downloads  # 但确实重下载重抽了
+    assert result["digest_reused"] == 1 and result["generated"] == 0
+    assert result["completed"] == 1
+    digest = db.query(SecurityProfileData).filter_by(dataset="report_digest").one().payload
+    assert digest["extractor_version"] == svc.section_extractor_version("A股")
+    assert digest["reused_from_extractor"] == old
+    assert digest.get("generation_meta") == generation_meta
+    assert ("generation_meta" in digest) == (generation_meta is not None)
+    section = db.query(SecurityProfileData).filter_by(dataset="report_section").one().payload
+    assert section["sections_unchanged_since"] == old
+    assert svc.load_report_digests(db, "600036", "A股")
+
+
+def test_extractor_bump_regenerates_when_sections_changed(db, monkeypatch):
+    calls, _ = _seed_generation(db, monkeypatch, {"mdna": "旧节选"})
+    _fake_extraction(monkeypatch, {"mdna": "新节选：补回了金额 2,225.4"})
+    result = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    assert result["generated"] == 1 and result["digest_reused"] == 0
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("interim_type", ["semi", "interim"])
+def test_only_the_newest_interim_digest_is_loaded(db, interim_type):
+    """#347-1：旧中报行从不出清，曾挤占十年年报名额、商业画像拿到过期中报。"""
+    for period_key, end_date, report_type in (
+        (f"20260630|{interim_type}", "20260630", interim_type),
+        ("20251231|annual", "20251231", "annual"),
+        (f"20250630|{interim_type}", "20250630", interim_type),
+        ("20241231|annual", "20241231", "annual"),
+    ):
+        _write_row(
+            db,
+            "report_digest",
+            period_key,
+            {
+                "status": "ok",
+                "report_type": report_type,
+                "end_date": end_date,
+                "extractor_version": svc.section_extractor_version("A股"),
+                "prompt_version": svc.DIGEST_PROMPT_VERSION,
+                "digest": {"经营回顾": end_date},
+            },
+        )
+    loaded = svc.load_report_digests(db, "600036", "A股")
+    assert [d["period_key"] for d in loaded] == [
+        f"20260630|{interim_type}",
+        "20251231|annual",
+        "20241231|annual",
+    ]
+    assert [d["period_key"] for d in svc.load_report_digests(db, "600036", "A股", limit=3)] == [
+        f"20260630|{interim_type}",
+        "20251231|annual",
+        "20241231|annual",
+    ]
+    from app.services.report_freshness import latest_report_data_at_batch
+
+    batch = latest_report_data_at_batch(db, [("600036", "A股")])
+    assert batch[("600036", "A股")] == max(d["fetched_at"] for d in loaded)
+
+
+def test_revision_failure_keeps_serving_the_previous_digest(db, monkeypatch):
+    """#347-4：报告出修订版、新摘要生成失败时，旧版有效摘要继续提供，不从分析输入里消失。"""
+    _patch_pipeline(monkeypatch, years=[2025])
+    svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    revised = {**_targets([2025])[0], "url": "https://static.cninfo.com.cn/final/2025v2.PDF"}
+    monkeypatch.setattr(
+        svc,
+        "cached_report_targets_detailed",
+        lambda db, symbol, market, **kw: {"targets": [revised], "complete": True},
+    )
+    monkeypatch.setattr(
+        svc,
+        "chat_completion",
+        lambda messages, **kw: {"content": "不是JSON", "model": "m", "usage": {}},
+    )
+    result = svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    assert result["failed"] == 1
+    row = db.query(SecurityProfileData).filter_by(dataset="report_digest").one().payload
+    assert row["status"] == "failed" and row["previous_ok"]["status"] == "ok"
+    (loaded,) = svc.load_report_digests(db, "600036", "A股")
+    assert loaded["revision_pending"] is True
+    assert loaded["digest"]["经营回顾"] == "稳健"
+    # 再失败一次（封顶）仍保留旧版
+    svc.ensure_report_digests(db, "600036", "A股", max_new=4)
+    assert svc.load_report_digests(db, "600036", "A股")
+
+
+def test_capped_failure_of_a_richer_tier_does_not_block_a_cheaper_tier(db, monkeypatch):
+    """#347-3：A 档全字段 schema 下封顶的报告，到需要 C 档时应拿到 C 档 prompt 重试。"""
+    target = _targets([2016])[0]
+    _write_row(
+        db,
+        "report_digest",
+        target["period_key"],
+        {
+            "status": "failed",
+            "attempts": svc.MAX_ATTEMPTS,
+            "digest_tier": "A",
+            "source_fingerprint": svc.source_fingerprint(target),
+            "extractor_version": svc.section_extractor_version("A股"),
+            "prompt_version": svc.DIGEST_PROMPT_VERSION,
+        },
+    )
+    state, _ = svc._target_digest_state(db, "600036", "A股", target, "C")
+    assert state == "todo"
+    state, _ = svc._target_digest_state(db, "600036", "A股", target, "A")
+    assert state == "digest_capped"
+
+
+@pytest.mark.parametrize(
+    ("result", "failed"),
+    [
+        ({"generated": 0, "failed": 2, "gaps": ["x"]}, True),
+        ({"generated": 0, "failed": 0, "plan_incomplete": True}, True),
+        ({"generated": 1, "failed": 1, "gaps": []}, False),
+        ({"generated": 0, "digest_reused": 1, "failed": 1, "gaps": []}, False),
+        ({"generated": 0, "failed": 0, "completed": 3}, False),
+    ],
+)
+def test_single_symbol_backfill_failure_contract(result, failed):
+    """#347-5：与批量回填同一契约，全部失败或清单不完整不得弹绿色「回填完成」。"""
+    assert (backfill_jobs.backfill_failure_message(result) is not None) is failed

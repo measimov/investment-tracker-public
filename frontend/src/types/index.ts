@@ -22,6 +22,7 @@ import type { components } from './api.generated'
 // ---------------------------------------------------------------------------
 
 export type BrokerAccount = components['schemas']['BrokerAccountResponse']
+export type Capabilities = components['schemas']['CapabilitiesResponse']
 export type Transaction = components['schemas']['TransactionResponse']
 export type CorporateAction = components['schemas']['CorporateActionResponse']
 export type HoldingResponse = components['schemas']['HoldingResponse']
@@ -88,6 +89,34 @@ export interface StandardImportResult {
 }
 
 /** GET /statistics/by-market 单项（Dashboard 与 Statistics 共用） */
+/** 服务端累计收益双口径。待收按已知税前金额估算，缺口不冒充零。 */
+export interface ReceivableReturn {
+  as_of: string
+  cash_basis_return_cny: number | null
+  known_pending_gross_cny: number
+  known_pending_gross_by_currency: Record<string, number>
+  estimated_return_cny: number | null
+  included_count: number
+  unresolved_count: number
+  overdue_count: number
+  pending_overdue_count: number
+  review_counts: {
+    received: number
+    possible_receipt: number
+    entitlement: number
+    amount: number
+    zero_remaining: number
+  }
+  received_review_reasons: {
+    net_amount_only: number
+    currency_mismatch: number
+    payout_currency_unverified: number
+    other: number
+  }
+  missing_rate_currencies: string[]
+  is_partial: boolean
+}
+
 export interface MarketStat {
   market: string
   total_cost: number
@@ -171,6 +200,18 @@ export interface PeriodPnlBasis {
   basis_source: string
 }
 
+/** 期间损益 = 实收损益 + 期末待收 - 期初待收；两端按各自日期汇率折算。 */
+export interface PeriodReceivablePnl {
+  cash_basis_pnl_cny: number | null
+  opening_receivable_cny: number
+  closing_receivable_cny: number
+  receivable_change_cny: number
+  estimated_pnl_cny: number | null
+  is_partial: boolean
+  unresolved_count: number
+  missing_rate_currencies: string[]
+}
+
 export interface PeriodPnlSummary {
   label: string
   start_date: string
@@ -200,6 +241,8 @@ export interface PeriodPnlSummary {
   unpriced_positions: Array<{ symbol: string; market: string }>
   stale_price_positions: Array<{ symbol: string; market: string }>
   estimated_inflow_events?: number
+  /** 本月 / 本年补充待收口径；当日仍按实收计算。 */
+  receivable_pnl?: PeriodReceivablePnl
 }
 
 export interface PeriodPnlResponse {
@@ -361,11 +404,122 @@ export interface ActiveAnalysisJob {
 /** 入队接口的返回：任务一定带 id（进度形状里 id 可选，是因为状态对象也用于本地占位） */
 export type StartedJob<T> = T & { id: string }
 
+export interface RiskLevelAdjustment {
+  from: string
+  to: string
+  reason?: string | null
+}
+
+export interface OutputAdjustment {
+  type: string
+  tag?: string
+  from?: string
+  to?: string
+  reason?: string
+  dropped?: string[]
+  sections?: string[]
+  tags?: string[]
+  reasons?: string[]
+}
+
+export interface AnalysisDetail {
+  id: number
+  name?: string | null
+  tags: string[]
+  risk_level: string
+  /** 风险等级按市场下限上调的记录（港股 low→medium）；未上调或旧分析行为 null */
+  risk_level_adjusted?: RiskLevelAdjustment | null
+  /** 解析层对模型输出的调整记录（标签归一/丢弃/截断、补免责声明）；无调整或旧分析行为 null */
+  output_adjustments?: OutputAdjustment[] | null
+  summary: string
+  content: string
+  model?: string
+  total_tokens?: number | null
+  created_at?: string | null
+  data_fetched_at?: string | null
+}
+
+// 档案端点是 Dict[str, Any]（无 OpenAPI schema），行形状随数据集而变
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ProfileRow = Record<string, any>
+
+export interface OpinionBatchTarget {
+  symbol: string
+  market: string
+  origin: string
+  matched_count: number
+  recent_count: number
+  latest_matched_at?: string | null
+}
+
+/** 研究 API 的固定响应外壳；数据集内部仍保留实际动态形状。 */
+export interface SecurityProfileResponse {
+  symbol: string
+  market: string
+  datasets: Record<string, ProfileRow[]>
+  fetched_at: string | null
+  row_counts: Record<string, number>
+  latest_periods: Record<string, string | null>
+  events: ProfileRow[]
+  supported: boolean
+  capabilities: ProfileRow
+  report_digests: ProfileRow[]
+  digest_progress: { digested: number; failed_capped: number }
+  statement_progress: ProfileRow | null
+  latest_data_at: string | null
+  business: ProfileRow
+  earnings_quality: ProfileRow
+  graham_screen: ProfileRow
+}
+
+export interface OpinionFeedResponse {
+  source_available: boolean
+  freshness: OpinionFreshness
+  authors: OpinionFeedAuthor[]
+}
+
+export interface AnalysisBatchTargetsResponse {
+  total: number
+  targets: Array<{ symbol: string; market: string }>
+}
+
+export interface OpinionBatchTargetsResponse {
+  targets: OpinionBatchTarget[]
+  source_available: boolean
+  freshness: OpinionFreshness
+}
+
+export interface DigestBackfillPreview {
+  targets_total: number
+  targets_without_digest: number
+  digests_existing: number
+  per_symbol_budget: number
+}
+
+/** result 在排队时为 null；失败任务也可能保留部分回填结果。 */
+export interface ReportBackfillJob {
+  id: string
+  status: string
+  result: ProfileRow | null
+  error?: string | null
+  [key: string]: unknown
+}
+
+/** report_id 仅在报告成功落库后写入，排队/运行/失败时可能仍为 null。 */
+export interface LlmReportJob {
+  id: string
+  status: string
+  report_id: number | null
+  error?: string | null
+  [key: string]: unknown
+}
+
 // 写接口的请求体（#284：api 层写方法此前一律 Record<string, unknown>）
 export type BrokerAccountCreate = components['schemas']['BrokerAccountCreate']
 export type BrokerAccountUpdate = components['schemas']['BrokerAccountUpdate']
 export type CashEventCreate = components['schemas']['CashEventCreate']
 export type CashEventUpdate = components['schemas']['CashEventUpdate']
+export type DividendTaxAllocationsUpdate = components['schemas']['DividendTaxAllocationsUpdate']
 export type CorporateActionCreate = components['schemas']['CorporateActionCreate']
 export type CorporateActionUpdate = components['schemas']['CorporateActionUpdate']
 export type ExchangeRateCreate = components['schemas']['ExchangeRateCreate']
@@ -374,6 +528,7 @@ export type OpeningPositionCostUpdate = components['schemas']['OpeningPositionCo
 export type ReconciliationSnapshotCreate = components['schemas']['ReconciliationSnapshotCreate']
 export type ReconciliationSnapshotUpdate = components['schemas']['ReconciliationSnapshotUpdate']
 export type SecurityRuleCreate = components['schemas']['SecurityRuleCreate']
+export type SuggestionReceiptsUpdate = components['schemas']['SuggestionReceiptsUpdate']
 export type SuggestionAccept = components['schemas']['SuggestionAccept']
 export type TransactionCreate = components['schemas']['TransactionCreate']
 export type TransactionUpdate = components['schemas']['TransactionUpdate']
@@ -382,3 +537,259 @@ export type UserCreate = components['schemas']['UserCreate']
 export type UserUpdate = components['schemas']['UserUpdate']
 export type WatchlistItemCreate = components['schemas']['WatchlistItemCreate']
 export type WatchlistItemUpdate = components['schemas']['WatchlistItemUpdate']
+
+// 统计 Dict API 响应的唯一权威形状。
+export interface TimeStat {
+  period: string
+  buy_amount: number
+  sell_amount: number
+  [key: string]: unknown
+}
+
+/** 持仓排行（后端按标的合并各账户行、按 CNY 成本降序） */
+export interface ProfitLossItem {
+  symbol: string
+  name?: string | null
+  market: string
+  quantity: number
+  avg_cost: number
+  total_cost: number
+  currency: string
+  /** 最新汇率折 CNY；缺汇率时为 null */
+  total_cost_cny?: number | null
+  missing_rate?: boolean
+  account_count?: number
+  [key: string]: unknown
+}
+
+export interface SummaryStats {
+  total_invested_cny?: number
+  missing_rate_currencies?: string[]
+  [key: string]: unknown
+}
+
+export interface CurrentPerformance {
+  current_market_value_usd?: number | null
+  unrealized_pnl_cny: number | null
+  current_holdings_cost_cny: number | null
+  unrealized_pnl_rate: number | null
+  current_market_value_cny: number | null
+  holdings_detail: Array<Record<string, unknown>>
+  missing_rate_currencies?: string[]
+  data_quality?: { warnings?: string[]; unpriced_position_count?: number }
+  [key: string]: unknown
+}
+
+export interface RealizedPnL {
+  realized_pnl: number | null
+  sold_cost: number | null
+  realized_pnl_rate: number | null
+  trades_detail: Array<Record<string, unknown>>
+  missing_rate_currencies?: string[]
+  data_quality?: { warnings?: string[] }
+  [key: string]: unknown
+}
+
+export interface DividendSummary {
+  legacy_unreviewed_count?: number
+  amounts_incomplete_count?: number
+  forecast?: {
+    pending_count: number
+    overdue_count: number
+    unknown_amount_count: number
+    pending_gross_by_currency: Record<string, number | string>
+    announced_gross_by_currency: Record<string, number | string>
+  }
+  total_dividend_gross: number | null
+  total_tax: number | null
+  total_dividend_net: number | null
+  unallocated_tax_cny?: number
+  unallocated_tax_count?: number
+  by_symbol: Array<Record<string, unknown>>
+  missing_rate_currencies?: string[]
+  [key: string]: unknown
+}
+
+export interface TotalRealizedReturn {
+  total_realized_return_cny?: number | null
+  realized_trading_pnl_cny: number | null
+  net_dividend_income_cny: number | null
+  total_realized_return: number | null
+  total_realized_return_rate: number | null
+  sold_cost_cny: number | null
+  [key: string]: unknown
+}
+
+export interface AccountReturn {
+  total_return_cny?: number | null
+  total_return: number | null
+  total_return_rate: number | null
+  annualized_return_rate: number | null
+  net_invested_principal_cny: number | null
+  current_market_value_cny: number | null
+  realized_trading_pnl_cny: number | null
+  unrealized_pnl_cny: number | null
+  net_dividend_income_cny: number | null
+  /** 收益率分母口径：净投入为正时用净投入，否则（清仓后）用峰值投入 */
+  rate_denominator?: string
+  peak_invested_principal_cny?: number | null
+  [key: string]: unknown
+}
+
+export interface CurvePoint {
+  date: string
+  cumulative_return_rate?: number | string | null
+  drawdown_rate?: number | string | null
+  [key: string]: unknown
+}
+
+export interface AnalyticsMetrics {
+  annualized_return_rate?: number | null
+  observation_span_days?: number
+  risk_free_rate?: number
+  max_drawdown_rate?: number | null
+  sharpe_ratio?: number | null
+  sortino_ratio?: number | null
+  calmar_ratio?: number | null
+  [key: string]: unknown
+}
+
+export interface TradeSkill {
+  /** 无有效平仓样本时为 null（不是 0%） */
+  win_rate?: number | null
+  sample_count?: number
+  payoff_ratio?: number | null
+  profit_factor?: number | null
+  [key: string]: unknown
+}
+
+export interface RangeSummary {
+  realized_pnl_cny?: number | null
+  dividend_net_cny?: number | null
+  xirr_annualized_rate?: number | null
+  [key: string]: unknown
+}
+
+export interface BenchmarkComparison {
+  benchmark_total_return_rate?: number | null
+  excess_return_rate?: number | null
+  benchmark_max_drawdown_rate?: number | null
+  [key: string]: unknown
+}
+
+export interface BenchmarkBlock {
+  code: string
+  name: string
+  status: string
+  alignment?: string
+  points?: CurvePoint[]
+  total_return_rate?: number | null
+  comparison?: BenchmarkComparison | null
+  [key: string]: unknown
+}
+
+/** 夏普/索提诺所用无风险利率的口径（#200） */
+export interface RiskFreeInfo {
+  /** series = 参考利率日序列；constant = 请求指定常量；none = 无数据按 0 */
+  basis: 'series' | 'constant' | 'none'
+  series?: string | null
+  label?: string | null
+  currency?: string
+  /** 各收益点所用年化利率（%）的均值 */
+  average?: number | null
+  first_date?: string
+  last_date?: string
+  published_points?: number
+  missing_points?: number
+  note?: string
+}
+
+export interface PerformanceAnalytics {
+  calculation_level: string
+  risk_free?: RiskFreeInfo
+  curve: CurvePoint[]
+  benchmarks?: BenchmarkBlock[]
+  metrics: AnalyticsMetrics
+  trade_skill: TradeSkill
+  range_summary?: RangeSummary
+  date_range?: { start_date?: string; end_date?: string; clamped?: boolean } | null
+  data_quality?: { warnings?: string[] }
+  [key: string]: unknown
+}
+
+export interface HistorySyncJob {
+  id: string
+  status?: string
+  progress_percent?: number | string | null
+  completed?: number
+  total?: number
+  current_symbol?: string | null
+  current_market?: string | null
+  success_count?: number
+  skipped_count?: number
+  failed_count?: number
+  error?: string | null
+  [key: string]: unknown
+}
+
+/** POST 返回共同六块；GET 另附价格新鲜度。 */
+export interface PerformanceSummary {
+  current_performance: CurrentPerformance
+  realized_pnl: RealizedPnL
+  dividend_summary: DividendSummary
+  total_realized_return: TotalRealizedReturn
+  account_return: AccountReturn
+  receivable_return?: ReceivableReturn
+  price_freshness?: Record<string, PriceFreshnessEntry>
+}
+export interface BenchmarkCatalogItem {
+  code: string
+  name: string
+  currency: string
+}
+export interface ReconciliationBadge {
+  status?: string
+  all_scoped?: boolean
+  [key: string]: unknown
+}
+
+interface AccountBadge {
+  id: number
+  account_name: string
+  latest_reconciliation?: ReconciliationBadge | null
+  [key: string]: unknown
+}
+
+export type RecentTransaction = Pick<
+  Transaction,
+  | 'symbol'
+  | 'name'
+  | 'market'
+  | 'transaction_type'
+  | 'quantity'
+  | 'price'
+  | 'transaction_date'
+  | 'currency'
+>
+
+export interface PortfolioSnapshot {
+  performance: PerformanceSummary
+  prices: {
+    missing_keys?: string[]
+    stale_keys?: string[]
+    freshness?: Record<string, PriceFreshnessEntry>
+  }
+  markets: MarketStat[]
+  recent_transactions: RecentTransaction[]
+  accounts: AccountBadge[]
+  data_quality?: { warnings?: string[] }
+  [key: string]: unknown
+}
+
+export interface PriceFreshnessEntry {
+  source?: string
+  price_as_of?: string | null
+  price_date?: string | null
+  stale?: boolean
+  name?: string | null
+}

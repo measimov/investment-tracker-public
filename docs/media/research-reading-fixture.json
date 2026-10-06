@@ -1,0 +1,542 @@
+{
+  "notice": "明确虚构的界面验收样例；不对应真实公司、财务事实或投资判断，不得导入生产库。",
+  "analysis": {
+    "id": 9191,
+    "name": "虚构阅读样例（非真实公司）",
+    "tags": ["业绩增长", "周期波动"],
+    "risk_level": "medium",
+    "summary": "本内容仅用于验证阅读排版与交互，不代表真实公司或投资判断。",
+    "content": "# 虚构研究内容\n\n以下是明确虚构的界面验收样例。经营、来源和数值仅用于检查未知、精度及长文排版，不对应任何真实公司。\n\n## 经营与现金流\n\n采用原有消毒流程显示Markdown；用户应能连续阅读，而不被卡片边框分割。\n\n| 样例期别 | 虚构信息 | 依据限制 |\n|---|---|---|\n| 2025年度 | 正向现金流 | 仅用于宽表验收 |\n| 2025中报 | 六个月口径 | 不与年度直接相比 |\n\n## 风险与限制\n\n虚构业务分部的長趋势应有独立段落，未披露信息保留未知。本界面样例不构成实际投资分析。",
+    "model": "UI fixture",
+    "total_tokens": 0,
+    "created_at": "2026-01-03T08:00:00Z",
+    "data_fetched_at": "2026-01-02T08:00:00Z"
+  },
+  "profile": {
+    "supported": true,
+    "capabilities": {
+      "structured": true,
+      "report_digest": true,
+      "risk_signals": true,
+      "statements": true
+    },
+    "datasets": {
+      "fina_indicator": [
+        {
+          "end_date": "20251231",
+          "eps": 0.0851,
+          "roe": 1.409,
+          "grossprofit_margin": 10.2,
+          "netprofit_margin": -3.1,
+          "debt_to_assets": 42,
+          "or_yoy": 5.2,
+          "netprofit_yoy": null
+        },
+        {
+          "end_date": "20250630",
+          "eps": 0.0125,
+          "roe": 0,
+          "grossprofit_margin": 12.1,
+          "netprofit_margin": 2.5,
+          "debt_to_assets": 38,
+          "or_yoy": 1.1,
+          "netprofit_yoy": 0
+        }
+      ],
+      "daily_basic": [
+        {
+          "trade_date": "20260102",
+          "close": 0.0851,
+          "pe_ttm": null,
+          "pb": 1.409,
+          "ps_ttm": 2,
+          "dv_ttm": 0,
+          "total_mv": 150000
+        }
+      ],
+      "dividend_history": [
+        {
+          "div_proc": "实施",
+          "end_date": "20251231",
+          "ann_date": "20260102",
+          "ex_date": "20260103",
+          "cash_div_tax": 0.0851,
+          "stk_div": 0.125
+        }
+      ],
+      "income": [
+        {
+          "end_date": "20251231",
+          "total_revenue": 150000000,
+          "operate_profit": -50000000,
+          "n_income_attr_p": 5000000
+        }
+      ],
+      "cashflow": [
+        {
+          "end_date": "20251231",
+          "n_cashflow_act": 10000000,
+          "n_cashflow_inv_act": -30000000
+        }
+      ],
+      "balancesheet": [
+        {
+          "end_date": "20251231",
+          "total_assets": 200000000,
+          "total_hldr_eqy_exc_min_int": 100000000
+        }
+      ]
+    },
+    "latest_periods": {
+      "fina_indicator": "20251231",
+      "income": "20251231"
+    },
+    "events": [],
+    "latest_data_at": "2026-01-04T08:00:00Z",
+    "business": {
+      "industry": "虚构行业",
+      "peers": [
+        {
+          "symbol": "UI-PEER",
+          "name": "虚构同业（非真实公司）"
+        },
+        {
+          "name": "无代码虚构同业"
+        }
+      ],
+      "profile": {
+        "商业模式": "明确虚构的业务描述，用于检查长文阅读、缺值和商业画像排版。",
+        "行业与竞争": "这是虚构的行业信息。",
+        "供应商集中度": "未披露",
+        "客户集中度": "未披露",
+        "业务分部": [
+          {
+            "名称": "虚构业务分部",
+            "收入占比": "65.0%",
+            "毛利率": "未披露",
+            "趋势": "虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。"
+          }
+        ],
+        "估值观察因子": [
+          {
+            "因子": "虚构因子",
+            "方向": "未知",
+            "传导": "未披露"
+          }
+        ],
+        "上游依赖": [],
+        "下游需求": []
+      }
+    },
+    "graham_screen": {
+      "status": "ok",
+      "passed": 0,
+      "as_of_year": 2025,
+      "criteria": [
+        {
+          "criterion": "pe",
+          "verdict": "indeterminate",
+          "reason": "虚构样例：依据不足，不能判为达标",
+          "supplement": {
+            "static_pe": 1.409,
+            "static_basis": "虚构年报口径，非真实财务事实"
+          }
+        }
+      ]
+    },
+    "report_digests": [
+      {
+        "period_key": "2025-annual",
+        "end_date": "20251231",
+        "report_type": "annual",
+        "digest_tier": "C",
+        "source_url": "https://example.com/fictional-report.pdf",
+        "digest": {
+          "经营回顾": "明确虚构的年报阅读样例。",
+          "主营收入结构": "虚构业务分部，没有真实公司内容。",
+          "会计信号": "未披露",
+          "关键数字": ["虚构金额1.50亿元", "未知税额—"]
+        }
+      }
+    ],
+    "digest_progress": {
+      "digested": 1,
+      "failed_capped": 0
+    },
+    "statement_progress": null,
+    "earnings_quality": {
+      "status": "ok",
+      "cfo_ni_ratio_5y": 0.7,
+      "per_year": {
+        "2025": {
+          "cfo_ni_ratio": 0.7,
+          "accruals_ratio": 0.12,
+          "receivable_vs_revenue_gap_pp": 21,
+          "inventory_vs_revenue_gap_pp": null,
+          "gross_margin": 10,
+          "recurring_profit_share": null
+        }
+      }
+    }
+  },
+  "hkProfile": {
+    "supported": true,
+    "capabilities": {
+      "structured": true,
+      "report_digest": true,
+      "statements": true
+    },
+    "datasets": {
+      "report_statements": [
+        {
+          "end_date": "20251231",
+          "fp": "FY",
+          "currency": "HKD",
+          "total_revenue": 150000000,
+          "n_income_attr_p": 5000000,
+          "n_cashflow_act": 10000000,
+          "total_assets": null,
+          "total_hldr_eqy_exc_min_int": 100000000,
+          "basic_eps": 0.0851,
+          "eps_unit": {
+            "divisor": 100,
+            "basis": "label"
+          },
+          "repaired_fields": {
+            "total_assets": {
+              "from_row": "虚构行",
+              "to_row": "虚构合计"
+            }
+          },
+          "validation": {
+            "status": "suspect",
+            "row_level": false,
+            "suspect_fields": ["total_revenue"],
+            "checks": [
+              {
+                "id": "fictional",
+                "status": "suspect",
+                "severity": "error",
+                "detail": "虚构营业收入校验存疑，不代表真实财务判断"
+              }
+            ]
+          }
+        },
+        {
+          "end_date": "20250630",
+          "fp": "H1",
+          "currency": "HKD",
+          "total_revenue": 60000000,
+          "basic_eps": 0.0125,
+          "validation": {
+            "status": "ok",
+            "suspect_fields": [],
+            "checks": []
+          }
+        },
+        {
+          "end_date": "20241231",
+          "fp": "FY",
+          "currency": "CNY",
+          "total_revenue": 140000000,
+          "basic_eps": 0.05,
+          "validation": {
+            "status": "ok",
+            "suspect_fields": [],
+            "checks": []
+          }
+        }
+      ],
+      "yahoo_fundamentals": [
+        {
+          "end_date": "20251231",
+          "fp": "FY",
+          "currency": "HKD",
+          "total_assets": 200000000
+        }
+      ]
+    },
+    "latest_periods": {
+      "fina_indicator": "20251231",
+      "income": "20251231"
+    },
+    "events": [],
+    "latest_data_at": "2026-01-04T08:00:00Z",
+    "business": {
+      "industry": "虚构行业",
+      "peers": [
+        {
+          "symbol": "UI-PEER",
+          "name": "虚构同业（非真实公司）"
+        },
+        {
+          "name": "无代码虚构同业"
+        }
+      ],
+      "profile": {
+        "商业模式": "明确虚构的业务描述，用于检查长文阅读、缺值和商业画像排版。",
+        "行业与竞争": "这是虚构的行业信息。",
+        "供应商集中度": "未披露",
+        "客户集中度": "未披露",
+        "业务分部": [
+          {
+            "名称": "虚构业务分部",
+            "收入占比": "65.0%",
+            "毛利率": "未披露",
+            "趋势": "虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。"
+          }
+        ],
+        "估值观察因子": [
+          {
+            "因子": "虚构因子",
+            "方向": "未知",
+            "传导": "未披露"
+          }
+        ],
+        "上游依赖": [],
+        "下游需求": []
+      }
+    },
+    "graham_screen": {
+      "status": "ok",
+      "passed": 0,
+      "as_of_year": 2025,
+      "criteria": [
+        {
+          "criterion": "pe",
+          "verdict": "indeterminate",
+          "reason": "虚构样例：依据不足，不能判为达标",
+          "supplement": {
+            "static_pe": 1.409,
+            "static_basis": "虚构年报口径，非真实财务事实"
+          }
+        }
+      ]
+    },
+    "report_digests": [
+      {
+        "period_key": "2025-annual",
+        "end_date": "20251231",
+        "report_type": "annual",
+        "digest_tier": "C",
+        "source_url": "https://example.com/fictional-report.pdf",
+        "digest": {
+          "经营回顾": "明确虚构的年报阅读样例。",
+          "主营收入结构": "虚构业务分部，没有真实公司内容。",
+          "会计信号": "未披露",
+          "关键数字": ["虚构金额1.50亿元", "未知税额—"]
+        }
+      }
+    ],
+    "digest_progress": {
+      "digested": 1,
+      "failed_capped": 0
+    },
+    "statement_progress": {
+      "annual_periods": ["2025", "2024"],
+      "interim_periods": ["2025H1"],
+      "planned_interim": 1,
+      "reports_failed": 1,
+      "reports_capped": 0,
+      "failed_reports": [
+        {
+          "end_date": "20231231",
+          "report_type": "annual",
+          "attempts": 2,
+          "capped": false,
+          "error": "虚构报告读取失败，非真实源状态"
+        }
+      ]
+    },
+    "earnings_quality": {
+      "status": "ok",
+      "cfo_ni_ratio_5y": 0.7,
+      "per_year": {
+        "2025": {
+          "cfo_ni_ratio": 0.7,
+          "accruals_ratio": 0.12,
+          "receivable_vs_revenue_gap_pp": 21,
+          "inventory_vs_revenue_gap_pp": null,
+          "gross_margin": 10,
+          "recurring_profit_share": null
+        }
+      }
+    }
+  },
+  "usProfile": {
+    "supported": true,
+    "capabilities": {
+      "structured": true,
+      "report_digest": true
+    },
+    "datasets": {
+      "edgar_companyfacts": [
+        {
+          "end_date": "20251231",
+          "fp": "FY",
+          "currency": "CNY",
+          "total_revenue": 150000000,
+          "n_income_attr_p": 5000000,
+          "n_cashflow_act": 10000000,
+          "total_assets": 200000000,
+          "total_hldr_eqy_exc_min_int": 100000000,
+          "basic_eps": 0.0851
+        },
+        {
+          "end_date": "20250930",
+          "fp": "Q3",
+          "currency": "USD",
+          "total_revenue": 60000000
+        }
+      ]
+    },
+    "latest_periods": {
+      "fina_indicator": "20251231",
+      "income": "20251231"
+    },
+    "events": [],
+    "latest_data_at": "2026-01-04T08:00:00Z",
+    "business": {
+      "industry": "虚构行业",
+      "peers": [
+        {
+          "symbol": "UI-PEER",
+          "name": "虚构同业（非真实公司）"
+        },
+        {
+          "name": "无代码虚构同业"
+        }
+      ],
+      "profile": {
+        "商业模式": "明确虚构的业务描述，用于检查长文阅读、缺值和商业画像排版。",
+        "行业与竞争": "这是虚构的行业信息。",
+        "供应商集中度": "未披露",
+        "客户集中度": "未披露",
+        "业务分部": [
+          {
+            "名称": "虚构业务分部",
+            "收入占比": "65.0%",
+            "毛利率": "未披露",
+            "趋势": "虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。虚构长趋势：需要完整阅读的趋势与依据。这里不放入任何真实公司的事实、预测或模型结论。重复较长的说明用于验证手机换行与宽表附近的阅读空间。"
+          }
+        ],
+        "估值观察因子": [
+          {
+            "因子": "虚构因子",
+            "方向": "未知",
+            "传导": "未披露"
+          }
+        ],
+        "上游依赖": [],
+        "下游需求": []
+      }
+    },
+    "graham_screen": {
+      "status": "ok",
+      "passed": 0,
+      "as_of_year": 2025,
+      "criteria": [
+        {
+          "criterion": "pe",
+          "verdict": "indeterminate",
+          "reason": "虚构样例：依据不足，不能判为达标",
+          "supplement": {
+            "static_pe": 1.409,
+            "static_basis": "虚构年报口径，非真实财务事实"
+          }
+        }
+      ]
+    },
+    "report_digests": [
+      {
+        "period_key": "2025-annual",
+        "end_date": "20251231",
+        "report_type": "annual",
+        "digest_tier": "C",
+        "source_url": "https://example.com/fictional-report.pdf",
+        "digest": {
+          "经营回顾": "明确虚构的年报阅读样例。",
+          "主营收入结构": "虚构业务分部，没有真实公司内容。",
+          "会计信号": "未披露",
+          "关键数字": ["虚构金额1.50亿元", "未知税额—"]
+        }
+      }
+    ],
+    "digest_progress": {
+      "digested": 1,
+      "failed_capped": 0
+    },
+    "statement_progress": null,
+    "earnings_quality": {
+      "status": "ok",
+      "cfo_ni_ratio_5y": 0.7,
+      "per_year": {
+        "2025": {
+          "cfo_ni_ratio": 0.7,
+          "accruals_ratio": 0.12,
+          "receivable_vs_revenue_gap_pp": 21,
+          "inventory_vs_revenue_gap_pp": null,
+          "gross_margin": 10,
+          "recurring_profit_share": null
+        }
+      }
+    }
+  },
+  "opinion": {
+    "id": 9191,
+    "name": "虚构阅读样例（非真实公司）",
+    "tags": ["偏多", "近期转多", "近期转空", "新增关注"],
+    "risk_level": "medium",
+    "summary": "本内容仅用于验证阅读排版与交互，不代表真实公司或投资判断。",
+    "content": "# 虚构研究内容\n\n以下是明确虚构的界面验收样例。经营、来源和数值仅用于检查未知、精度及长文排版，不对应任何真实公司。\n\n## 经营与现金流\n\n采用原有消毒流程显示Markdown；用户应能连续阅读，而不被卡片边框分割。\n\n| 样例期别 | 虚构信息 | 依据限制 |\n|---|---|---|\n| 2025年度 | 正向现金流 | 仅用于宽表验收 |\n| 2025中报 | 六个月口径 | 不与年度直接相比 |\n\n## 风险与限制\n\n虚构业务分部的長趋势应有独立段落，未披露信息保留未知。本界面样例不构成实际投资分析。",
+    "model": "UI fixture",
+    "total_tokens": 0,
+    "created_at": "2026-01-03T08:00:00Z",
+    "data_fetched_at": "2026-01-02T08:00:00Z",
+    "symbol": "UI-RESEARCH",
+    "market": "A股",
+    "lookback_days": 30,
+    "recent_days": 7,
+    "latest_utterance_at": "2026-01-03T08:00:00Z",
+    "utterance_count": 8,
+    "recent_utterance_count": 2,
+    "author_stances": [
+      {
+        "author": "虚构作者（非真实观点）",
+        "stance": "中性",
+        "recent_change": "新增",
+        "evidence": "明确虚构的完整长引述，验证手机宽表原文换行，不应只剩悬停缩略。明确虚构的完整长引述，验证手机宽表原文换行，不应只剩悬停缩略。明确虚构的完整长引述，验证手机宽表原文换行，不应只剩悬停缩略。明确虚构的完整长引述，验证手机宽表原文换行，不应只剩悬停缩略。"
+      }
+    ]
+  },
+  "announcements": {
+    "groups": [
+      {
+        "group_key": "fixture",
+        "ann_date": "2026-01-03",
+        "title": "明确虚构的官方公告标题（非真实公告）",
+        "category_label": "定期报告",
+        "category": "periodic",
+        "importance": "major",
+        "source": "cninfo",
+        "url": "https://example.com/fictional-announcement.pdf",
+        "document_count": 2,
+        "documents": [
+          {
+            "title": "虚构文档一",
+            "url": "https://example.com/fictional-one.pdf",
+            "published_at": "2026-01-03T08:00:00Z"
+          },
+          {
+            "title": "虚构文档二",
+            "url": "https://example.com/fictional-two.pdf",
+            "published_at": "2026-01-03T08:00:00Z"
+          }
+        ]
+      }
+    ],
+    "has_more": false,
+    "sync_status": "synced",
+    "last_synced": "2026-01-03T08:00:00Z"
+  }
+}

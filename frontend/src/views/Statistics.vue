@@ -1,108 +1,99 @@
 <template>
   <div class="statistics-page" v-loading="loading && !initialLoading">
-    <template v-if="initialLoading">
-      <el-row :gutter="20" class="performance-cards">
-        <el-col :span="24">
-          <el-card class="stat-card" shadow="never">
-            <template #header>
-              <el-skeleton animated>
-                <template #template>
-                  <el-skeleton-item variant="text" class="skeleton-heading" />
-                </template>
-              </el-skeleton>
-            </template>
-            <el-row :gutter="20">
-              <el-col v-for="index in 3" :key="index" :xs="24" :sm="8">
-                <div class="statistic-skeleton-block">
-                  <el-skeleton animated>
-                    <template #template>
-                      <el-skeleton-item variant="text" class="skeleton-label" />
-                      <el-skeleton-item variant="h3" class="skeleton-number" />
-                    </template>
-                  </el-skeleton>
-                </div>
-              </el-col>
-            </el-row>
-            <el-divider />
-            <el-skeleton animated :rows="5" />
-          </el-card>
-        </el-col>
-      </el-row>
-
-      <el-row :gutter="20" class="performance-cards">
-        <el-col v-for="index in 2" :key="index" :xs="24" :md="12">
-          <el-card class="stat-card" shadow="never">
-            <el-skeleton animated>
-              <template #template>
-                <el-skeleton-item variant="text" class="skeleton-heading" />
-                <div class="stat-card-skeleton-grid">
-                  <el-skeleton-item variant="h3" />
-                  <el-skeleton-item variant="h3" />
-                </div>
-                <el-skeleton-item v-for="row in 4" :key="row" variant="text" />
-              </template>
-            </el-skeleton>
-          </el-card>
-        </el-col>
-      </el-row>
-
-      <el-row :gutter="20">
-        <el-col :xs="24" :md="12">
-          <el-card class="stat-card">
-            <el-skeleton animated>
-              <template #template>
-                <el-skeleton-item variant="text" class="skeleton-heading" />
-                <el-skeleton-item variant="circle" class="chart-circle-skeleton" />
-              </template>
-            </el-skeleton>
-          </el-card>
-        </el-col>
-        <el-col :xs="24" :md="12">
-          <el-card class="stat-card">
-            <el-skeleton animated :rows="8" />
-          </el-card>
-        </el-col>
-      </el-row>
-    </template>
-
+    <header class="statistics-heading">
+      <div class="statistics-title">
+        <h1 class="page-title">统计分析</h1>
+        <HelpTip label="查看统计分析与价格试算范围"
+          >刷新价格与输入价格试算影响当前业绩、月/年损益、TTWR
+          与风险指标；区间选择仅影响区间分析。</HelpTip
+        >
+      </div>
+      <div class="statistics-actions">
+        <NButton :loading="refreshing" :disabled="initialLoading" @click="refreshPricesAndCalculate"
+          >刷新价格</NButton
+        >
+        <NButton
+          type="primary"
+          :disabled="initialLoading"
+          @click="prices.openDialog(summary.pricing.serverPrices)"
+          >输入价格试算</NButton
+        >
+      </div>
+    </header>
+    <section
+      v-if="initialLoading"
+      class="statistics-loading"
+      aria-label="统计数据加载中"
+      aria-busy="true"
+    >
+      <NSkeleton text :repeat="2" />
+      <div class="loading-metrics"><NSkeleton v-for="index in 3" :key="index" height="42px" /></div>
+      <NSkeleton height="260px" />
+    </section>
     <template v-else>
+      <NAlert
+        v-if="summary.state.error"
+        data-testid="summary-error"
+        type="warning"
+        :closable="false"
+        :title="`业绩摘要加载失败：${summary.state.error}${summary.state.loaded ? '；以下保留上次成功数据' : '；尚无可用数据'}`"
+      />
       <PriceIssuesAlert
         :freshness="summary.pricing.priceFreshness"
         :refreshing="refreshing"
         @refresh="refreshPricesAndCalculate"
       />
       <!-- 与仪表盘同一严重度（#286：此前这里红色、仪表盘黄色） -->
-      <el-alert
+      <NAlert
         v-for="warning in summaryWarnings"
         :key="warning"
         :title="warning"
         type="warning"
-        show-icon
         :closable="false"
         class="summary-warning"
       />
 
       <!-- 手工价试算中：摘要与 TTWR 曲线都按弹窗里的价格计算，直到退出 -->
       <div v-if="whatIfActive" class="what-if-bar" data-testid="what-if-bar">
-        <el-tag type="warning" effect="dark" size="small">手工价试算中</el-tag>
+        <NTag type="warning" :bordered="false" size="small">手工价试算中</NTag>
         <span class="what-if-text">
-          当前业绩、TTWR 与风险指标按「输入价格」里的价格估值（{{ whatIfCount }}
-          个标的），不是服务端最新价；切换区间/基准仍沿用这组价格。
+          当前业绩、月/年损益、TTWR 与风险指标按「输入价格」里的价格估值（{{ whatIfCount }}
+          只标的），不是服务端最新价；切换区间/基准仍沿用这组价格。
         </span>
-        <el-button size="small" :loading="loading" @click="exitWhatIf">退出试算</el-button>
+        <NButton size="small" :loading="loading" @click="exitWhatIf">退出试算</NButton>
       </div>
 
-      <EquityReturnCard :account-return="summary.state.accountReturn" />
-
       <AnalyticsCard :analytics="analytics" />
+
+      <section class="cumulative-section" aria-labelledby="cumulative-title">
+        <header class="cumulative-heading">
+          <h2 id="cumulative-title">累计收益与组成</h2>
+          <HelpTip label="查看累计收益统计范围">自建账累计，不随上方区间选择变化。</HelpTip>
+          <router-link class="section-link" to="/corporate-actions">核对股息</router-link>
+        </header>
+        <div class="cumulative-grid" :class="{ 'has-receivable': summary.state.receivableReturn }">
+          <ReceivableReturnCard
+            compact
+            embedded
+            hide-review-link
+            :summary="summary.state.receivableReturn"
+            :return-rate="summary.state.accountReturn.total_return_rate"
+            :annualized-rate="summary.state.accountReturn.annualized_return_rate"
+            :legacy-unreviewed-count="summary.state.dividendSummary.legacy_unreviewed_count"
+          />
+          <EquityReturnCard
+            :account-return="summary.state.accountReturn"
+            :show-metrics="!summary.state.receivableReturn"
+          />
+        </div>
+      </section>
+
+      <PeriodPnlSection :summary="periods.state.data" :error="periods.state.error" />
 
       <FifoPerformanceCards
         :current-performance="summary.state.currentPerformance"
         :realized-pn-l="summary.state.realizedPnL"
         :total-realized-return="summary.state.totalRealizedReturn"
-        :refreshing="refreshing"
-        @refresh-prices="refreshPricesAndCalculate"
-        @open-price-dialog="prices.openDialog(summary.pricing.serverPrices)"
       />
 
       <DividendSummaryCard :dividend-summary="summary.state.dividendSummary" />
@@ -115,7 +106,12 @@
 </template>
 
 <script setup lang="ts">
+import HelpTip from '@/components/HelpTip.vue'
+import { NAlert, NButton, NSkeleton, NTag } from 'naive-ui'
 import PriceIssuesAlert from '@/components/PriceIssuesAlert.vue'
+import ReceivableReturnCard from '@/components/ReceivableReturnCard.vue'
+import PeriodPnlSection from './statistics/PeriodPnlSection.vue'
+import { usePeriodPnl } from './statistics/usePeriodPnl'
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useExchangeRates } from '../composables/useExchangeRates'
@@ -146,6 +142,7 @@ const { isUnmounted } = useAliveGuard()
 const { refreshPrices: runPriceRefresh, notifyRefreshResult } = useRefreshPrices(isUnmounted)
 
 const summary = usePerformanceSummary()
+const periods = usePeriodPnl()
 const analytics = useAnalytics({ isUnmounted })
 const prices = usePriceInputs()
 const dist = useDistributionStats()
@@ -193,7 +190,12 @@ async function loadAllData() {
 
     // Server-side pricing (issue #46) lets these run concurrently: the two
     // heavy endpoints no longer wait for the holdings price payload.
-    await Promise.all([prices.loadHoldingsForPrice(), summary.load(), analytics.load()])
+    await Promise.all([
+      prices.loadHoldingsForPrice(),
+      summary.load(),
+      periods.load(),
+      analytics.load()
+    ])
     initialLoading.value = false
     await supportingDataPromise
   } finally {
@@ -208,7 +210,12 @@ async function calculatePerformance() {
     // analytics 状态，之后切区间/基准的重算都沿用，直到「退出试算」
     const currentPrices = prices.getCurrentPrices()
     analytics.state.whatIfPrices = currentPrices
-    await Promise.all([summary.load(currentPrices), analytics.load()])
+    const results = await Promise.all([
+      summary.load(currentPrices),
+      periods.load(currentPrices),
+      analytics.load()
+    ])
+    if (!results.every(Boolean)) return
     prices.state.dialogVisible = false
     ElMessage.success('计算完成')
   } catch (error) {
@@ -221,7 +228,7 @@ async function calculatePerformance() {
 // 回到服务端定价（GET：Holding 现价优先、历史收盘兜底，附陈价/缺价标记）
 async function reloadServerPriced() {
   analytics.state.whatIfPrices = null
-  await Promise.all([summary.load(), analytics.load()])
+  return (await Promise.all([summary.load(), periods.load(), analytics.load()])).every(Boolean)
 }
 
 async function exitWhatIf() {
@@ -247,13 +254,19 @@ async function refreshPricesAndCalculate() {
     // what-if 价 POST 上去：那会丢掉服务端的历史收盘兜底，只靠历史收盘定价的
     // 持仓会被当成「无价」剔除（#218）。刷新即退出手工价试算。
     loading.value = true
+    let calculated = false
     try {
-      await Promise.all([prices.loadHoldingsForPrice({ force: true }), reloadServerPriced()])
+      const [, result] = await Promise.all([
+        prices.loadHoldingsForPrice({ force: true }),
+        reloadServerPriced()
+      ])
+      calculated = result
     } finally {
       loading.value = false
     }
 
-    notifyRefreshResult(refreshResult, '，并完成计算')
+    if (calculated) notifyRefreshResult(refreshResult, '，并完成计算')
+    else ElMessage.warning('股价刷新已完成，但业绩摘要、期间损益或曲线重算失败，请重试')
   } catch (error) {
     if (!isUnmounted()) {
       showApiError(error, { prefix: '刷新失败' })
@@ -275,41 +288,136 @@ onMounted(() => {
   width: 100%;
 }
 
-.skeleton-heading {
-  width: 160px;
-  height: 18px;
-}
-
-.statistic-skeleton-block {
-  min-height: 86px;
-  padding: 8px 0;
-}
-
-.skeleton-label {
-  width: 90px;
-  height: 14px;
-  margin-bottom: 12px;
-}
-
-.skeleton-number {
-  width: 70%;
-  height: 28px;
-}
-
-.stat-card-skeleton-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.statistics-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
-  margin: 24px 0;
+  margin-bottom: 28px;
 }
-
-.chart-circle-skeleton {
-  display: block;
-  width: 180px;
-  height: 180px;
-  margin: 32px auto 16px;
+.statistics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
-
+.statistics-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.section-link {
+  margin-left: auto;
+  color: var(--app-primary-strong);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.section-link:hover,
+.section-link:focus-visible {
+  text-decoration: underline;
+}
+.statistics-page :deep(.n-alert) {
+  background: var(--app-surface-secondary);
+  font-size: 13px;
+}
+.statistics-page :deep(.n-alert__border) {
+  border-color: var(--app-border);
+}
+.statistics-page :deep(.n-alert-body__title) {
+  font-weight: 400;
+  font-size: 13px;
+}
+.cumulative-section {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius);
+  background: var(--app-surface);
+}
+.cumulative-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+.cumulative-heading h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+  font-family: var(--app-font-sans);
+}
+.cumulative-heading span {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--app-text);
+}
+.cumulative-grid {
+  display: grid;
+  min-width: 0;
+}
+.cumulative-grid.has-receivable {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+.cumulative-grid :deep(.equity-return) {
+  padding: 0;
+  border-top: 0;
+  min-width: 0;
+}
+.cumulative-grid.has-receivable :deep(.return-components) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.cumulative-grid :deep(.stat-item) {
+  flex-direction: row;
+  align-items: baseline;
+}
+.cumulative-grid :deep(.compact-return-grid) {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.cumulative-grid :deep(.compact-return-grid > div + div) {
+  border-left: 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--app-border-soft);
+}
+.cumulative-grid :deep(.compact-return-value) {
+  font-size: var(--app-number-cumulative);
+}
+.cumulative-grid :deep(.compact-return-label) {
+  gap: 4px;
+}
+.cumulative-grid :deep(.compact-return-tools) {
+  margin-left: 0;
+}
+.statistics-page :deep(.period-heading) {
+  align-items: center;
+  gap: 4px;
+}
+.statistics-page :deep(.compact-period-heading) {
+  grid-template-columns: minmax(0, max-content) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 4px;
+}
+.statistics-page :deep(.compact-explanation-trigger) {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+}
+.statistics-loading {
+  display: grid;
+  gap: 24px;
+  padding: 24px 0;
+}
+.loading-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+}
+.statistics-page :deep(.receivable-card) {
+  margin: 0;
+}
 .summary-warning {
   margin-bottom: 16px;
 }
@@ -331,5 +439,45 @@ onMounted(() => {
   min-width: 200px;
   color: var(--app-text-muted);
   font-size: 13px;
+}
+@media (max-width: 640px) {
+  .cumulative-grid.has-receivable {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+  .cumulative-grid.has-receivable :deep(.equity-return) {
+    padding-top: 16px;
+    border-top: 1px solid var(--app-border);
+  }
+  .cumulative-grid :deep(.stat-item) {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .statistics-actions .n-button,
+  .what-if-bar .n-button {
+    min-height: 44px;
+  }
+}
+
+@media (pointer: coarse) {
+  .statistics-page :deep(.compact-explanation-trigger) {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+    margin-block: -10px;
+  }
+}
+
+@media (min-width: 1025px) {
+  .statistics-heading {
+    margin-bottom: 16px;
+  }
+  .statistics-loading {
+    gap: 16px;
+    padding: 16px 0;
+  }
+  .loading-metrics {
+    gap: 16px;
+  }
 }
 </style>

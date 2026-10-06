@@ -1,0 +1,57 @@
+.naive-page .n-data-table {
+  --n-font-size: 13px;
+}
+
+.naive-page .n-data-table-th,
+.naive-page .n-data-table-td {
+  vertical-align: top;
+}
+
+.naive-page .n-data-table-th {
+  vertical-align: middle;
+}
+
+.naive-page .n-data-table-td {
+  padding: 12px;
+}
+
+.naive-page .n-data-table-th {
+  padding: 12px;
+}
+
+.naive-sort-button {
+  appearance: none;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  padding: 2px 0;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.naive-sort-button:focus-visible {
+  outline: 2px solid #a6533c;
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.naive-dialog .n-form-item {
+  margin: 0;
+}
+
+.naive-dialog .n-date-picker,
+.naive-dialog .n-input-number {
+  width: 100%;
+}
+
+.naive-dialog .n-form-item-feedback-wrapper {
+  min-height: 0;
+}
+
+.naive-dialog .dialog-actions {
+  margin-top: 18px;
+}
+
+.naive-page .filter-field .n-date-picker {
+  width: 100%;
+}

@@ -160,3 +160,40 @@ def drifted_last_seen_column(db):
             )
         )
         db.commit()
+
+
+def seed_legacy_accepted_dividend(db, user, suggestion_id, overrides=None):
+    """Seed a pre-0042 announcement booking for history/revision regression tests.
+
+    Never use the removed cash-accept API to construct historical fixtures.
+    Stock acceptance remains exercised through the live service.
+    """
+    from app.models.corporate_action import CorporateAction
+    from app.models.corporate_action_suggestion import CorporateActionSuggestion
+    from app.services.dividend_sync_service import accept_suggestion
+
+    suggestion = db.get(CorporateActionSuggestion, suggestion_id)
+    if suggestion.action_type != "CASH_DIVIDEND":
+        return accept_suggestion(db, user, suggestion_id, overrides or {})
+    values = overrides or {}
+    gross = Decimal(str(values.get("total_dividend", suggestion.estimated_total_dividend or 0)))
+    tax = Decimal(str(values.get("tax_withheld", 0)))
+    action = CorporateAction(
+        user_id=user.id,
+        symbol=suggestion.symbol,
+        market=suggestion.market,
+        broker_account_id=values.get("broker_account_id", suggestion.broker_account_id),
+        action_type="CASH_DIVIDEND",
+        ex_date=suggestion.ex_date,
+        payment_date=suggestion.pay_date,
+        currency=suggestion.currency,
+        total_dividend=gross,
+        tax_withheld=tax,
+        net_dividend=gross - tax,
+    )
+    db.add(action)
+    db.flush()
+    suggestion.status = "ACCEPTED"
+    suggestion.created_corporate_action_id = action.id
+    db.commit()
+    return action

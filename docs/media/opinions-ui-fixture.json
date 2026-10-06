@@ -1,0 +1,268 @@
+{
+  "notice": "所有内容明确虚构，仅浏览器只读响应，不入数据库；管理员标志仅UI场景，不作权限证明",
+  "summaries": {
+    "source_available": true,
+    "freshness": {
+      "available": true,
+      "latest_scan_at": "2026-10-02T23:30:00+00:00",
+      "latest_utterance_at": "2026-10-02T23:30:00+00:00",
+      "stale": false
+    },
+    "recent_days": 30,
+    "items": [
+      {
+        "id": 95102,
+        "symbol": "UIB",
+        "market": "港股",
+        "name": null,
+        "tags": [],
+        "summary": null,
+        "author_stances": [],
+        "utterance_count": 8,
+        "recent_utterance_count": 3,
+        "recent_days": 30,
+        "latest_utterance_at": "2026-10-02T23:30:00+00:00",
+        "created_at": null,
+        "origin": "watchlist",
+        "matched_count": 0,
+        "new_utterance_count": 0
+      },
+      {
+        "id": 95101,
+        "symbol": "UIA",
+        "market": "美股",
+        "name": "UI明确虚构长证券名称（不是实际证券）",
+        "tags": [
+          "偏多",
+          "近期转空"
+        ],
+        "summary": "UI明确虚构摘要。完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；完整论据与风险条件应该保留，不能只靠悬停才能读到；",
+        "author_stances": [],
+        "utterance_count": 8,
+        "recent_utterance_count": 3,
+        "recent_days": 30,
+        "latest_utterance_at": "2026-10-02T23:30:00+00:00",
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "origin": "both",
+        "matched_count": 12,
+        "new_utterance_count": 2
+      },
+      {
+        "id": 95103,
+        "symbol": "UIC",
+        "market": "A股",
+        "name": "UI虚构多新发言",
+        "tags": [
+          "新增关注"
+        ],
+        "summary": "UI明确虚构短摘要",
+        "author_stances": [],
+        "utterance_count": 8,
+        "recent_utterance_count": 3,
+        "recent_days": 30,
+        "latest_utterance_at": "2026-10-02T23:30:00+00:00",
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "origin": "holding",
+        "matched_count": 100,
+        "new_utterance_count": 100
+      }
+    ]
+  },
+  "feed": {
+    "source_available": true,
+    "freshness": {
+      "available": true,
+      "latest_scan_at": "2026-10-02T23:30:00+00:00",
+      "latest_utterance_at": "2026-10-02T23:30:00+00:00",
+      "stale": false
+    },
+    "authors": [
+      {
+        "author": "UI明确虚构作者与组合的完整长名称，用于检查手机与键盘阅读，不是投资建议",
+        "total": 187,
+        "items": [
+          {
+            "date": "2026-10-02T23:30:00+00:00",
+            "kind": "发言",
+            "text": "UI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\n",
+            "context": "UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。",
+            "post_url": "https://xueqiu.com/95001/95002",
+            "symbols": [
+              {
+                "symbol": "UIA",
+                "market": "美股"
+              },
+              {
+                "symbol": "UIB",
+                "market": "港股"
+              }
+            ]
+          },
+          {
+            "date": null,
+            "kind": "发言",
+            "text": "UI明确虚构第二条，日期未知",
+            "context": null,
+            "post_url": null,
+            "symbols": [
+              {
+                "symbol": "UIA",
+                "market": "美股"
+              },
+              {
+                "symbol": "UIB",
+                "market": "港股"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "author": "UI明确虚构作者乙",
+        "total": 1,
+        "items": [
+          {
+            "date": "2026-10-01T12:00:00+00:00",
+            "kind": "发言",
+            "text": "UI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\nUI明确虚构发言，验证完整多行文字、中文与长词。\n",
+            "context": "UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。UI明确虚构引用上下文。",
+            "post_url": "https://xueqiu.com/95001/95002",
+            "symbols": [
+              {
+                "symbol": "UIA",
+                "market": "美股"
+              },
+              {
+                "symbol": "UIB",
+                "market": "港股"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "collector": {
+    "enabled": true,
+    "alive": true,
+    "heartbeat_at": "2026-10-02T23:30:00+00:00",
+    "cycle_minutes": 60,
+    "last_cycle_started_at": "2026-10-02T23:20:00+00:00",
+    "last_cycle_finished_at": "2026-10-02T23:30:00+00:00",
+    "last_cycle_status": "partial",
+    "last_cycle_message": "UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。UI明确虚构上一轮部分成功。",
+    "last_waf_at": null,
+    "waf_cooldown_until": null,
+    "run_requested_at": null,
+    "run_pending": false,
+    "cookie": {
+      "level": "warning",
+      "message": "UI明确虚构到期预警，不含凭证",
+      "days_left": 2.5
+    },
+    "recent_runs": [
+      {
+        "run_id": 95201,
+        "author_user_id": "9500001",
+        "started_at": "2026-10-02T23:20:00+00:00",
+        "finished_at": "2026-10-02T23:30:00+00:00",
+        "status": "partial",
+        "candidate_count": 20,
+        "reply_count": 2,
+        "utterance_count": 3,
+        "stopped_early": true,
+        "waf_hit": false,
+        "error_message": "UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。UI明确虚构最近运行原因。"
+      }
+    ],
+    "authors": [
+      {
+        "xueqiu_user_id": "9500001",
+        "display_name": "UI明确虚构作者与组合的完整长名称，用于检查手机与键盘阅读，不是投资建议",
+        "enabled": true,
+        "note": "",
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "last_run_at": "2026-10-02T23:30:00+00:00",
+        "last_status": "partial",
+        "last_message": "UI明确虚构部分成功说明，完整保留可核对原因"
+      },
+      {
+        "xueqiu_user_id": "9500002",
+        "display_name": "UI虚构已关闭作者",
+        "enabled": false,
+        "note": "",
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "last_run_at": null,
+        "last_status": "",
+        "last_message": ""
+      }
+    ],
+    "symbols": {
+      "enabled": true,
+      "run_after": "09:15",
+      "last_started_at": "2026-10-02T23:20:00+00:00",
+      "last_finished_at": "2026-10-02T23:30:00+00:00",
+      "last_status": "partial",
+      "last_message": "UI明确虚构按标的部分成功",
+      "last_business_date": "2026-10-03",
+      "last_stats": {
+        "symbols": 3,
+        "announcement": {
+          "new": 1
+        },
+        "discussion": {
+          "new": 2
+        },
+        "failures": 1
+      },
+      "run_requested_at": null,
+      "run_pending": false,
+      "retry_pending": true,
+      "retry_attempts": 2,
+      "retry_item_count": 1
+    },
+    "cubes": [
+      {
+        "cube_id": "ZH950001",
+        "display_name": "UI明确虚构作者与组合的完整长名称，用于检查手机与键盘阅读，不是投资建议",
+        "enabled": true,
+        "note": "",
+        "created_at": "2026-10-02T23:30:00+00:00",
+        "last_run_at": "2026-10-02T23:30:00+00:00",
+        "last_status": "failed",
+        "last_message": "UI明确虚构组合读取失败说明"
+      }
+    ]
+  },
+  "cookie": {
+    "source": "file",
+    "file_path": "/fiction/ui-only/cookie.json",
+    "file_exists": true,
+    "file_mtime": "2026-10-02T23:30:00+00:00",
+    "backup_exists": false,
+    "backup_mtime": null,
+    "writable": true,
+    "writable_reason": null,
+    "level": "warning",
+    "message": "UI明确虚构管理状态，不含凭证",
+    "keys": [
+      "xq_a_token",
+      "xqat"
+    ],
+    "primary": [
+      {
+        "name": "xq_a_token",
+        "present": true,
+        "expires_at": "2026-10-05T23:30:00+00:00",
+        "days_left": 2.5
+      },
+      {
+        "name": "xqat",
+        "present": true,
+        "expires_at": null,
+        "days_left": null
+      }
+    ],
+    "read_error": null
+  }
+}

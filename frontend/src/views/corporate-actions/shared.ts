@@ -5,6 +5,22 @@
 
 import type { CorporateActionCreate } from '@/types'
 
+/** 说明自动核对为何停下，不把所有问题都称为“权益待核对”。 */
+export function dividendReviewReason(reason: string | null | undefined): string {
+  const descriptions: Record<string, string> = {
+    currency_unverified: '公告的实际派息币种待核实，暂不能判断是否收齐。',
+    receipt_currency_mismatch: '公告与到账币种不同，对账单缺少可核对的原币金额或换汇依据。',
+    ambiguous_receipt: '同一到账记录可能对应多份公告，需要确认属于哪一次派息。',
+    receipt_period_unverified: '历史到账关联与本次派息日期不符，请重新核对所属期次。',
+    entitlement_unverified: '账户或权益日持股数量不明确，暂不能核对全部应收金额。',
+    announced_amount_unknown: '公告的应收总额尚不明确，暂不能判断是否收齐。',
+    statement_evidence_missing: '已有到账记录，但缺少可验证的对账单明细；可凭实际收款人工确认。',
+    receipt_amount_unresolved: '对账单金额与公告应收总额尚未对齐，请核对税费、分次到账或漏记。',
+    manual_review_pending: '此前已人工核对关联，并保留为未收齐；系统不会覆盖这一判断。'
+  }
+  return reason ? descriptions[reason] || '到账依据尚待核对，暂不能自动确认收齐。' : ''
+}
+
 /** 期初建仓的成本状态：两个成本字段都空 = 成本未知（派生状态，与后端一致） */
 export function openingPositionCostKnown(row: {
   adjusted_cost_per_share?: unknown
@@ -199,6 +215,10 @@ export interface CorporateActionForm {
   market: string
   action_type: string
   ex_date: string
+  payment_date: string
+  receipt_confirmed: boolean
+  amount_basis: 'GROSS_NET' | 'NET_ONLY'
+  net_dividend: number | null
   dividend_per_share: number | null
   total_dividend: number | null
   /** 实际预扣税额（统计与对账只读税额）；税率只是辅助，可按「总额×税率」填入税额 */
@@ -220,6 +240,10 @@ export interface CorporateActionForm {
 
 /** 换类型时清空的类型专属字段 */
 export const TYPE_SPECIFIC_FIELDS_EMPTY = {
+  payment_date: '',
+  receipt_confirmed: false,
+  amount_basis: 'GROSS_NET' as const,
+  net_dividend: null,
   dividend_per_share: null,
   total_dividend: null,
   tax_withheld: null,
@@ -261,6 +285,9 @@ export function formFromAction(row: {
   market: string
   action_type: string
   ex_date: string
+  payment_date?: string | null
+  amount_basis?: string
+  net_dividend?: Numeric
   dividend_per_share?: Numeric
   total_dividend?: Numeric
   tax_withheld?: Numeric
@@ -284,6 +311,10 @@ export function formFromAction(row: {
     market: row.market,
     action_type: row.action_type,
     ex_date: row.ex_date,
+    payment_date: row.payment_date || '',
+    receipt_confirmed: false,
+    amount_basis: row.amount_basis === 'NET_ONLY' ? 'NET_ONLY' : 'GROSS_NET',
+    net_dividend: row.net_dividend == null ? null : Number(row.net_dividend),
     dividend_per_share: numberOrNull(row.dividend_per_share),
     total_dividend: numberOrNull(row.total_dividend),
     tax_withheld:
@@ -308,7 +339,7 @@ export function formFromAction(row: {
 /** 表单 → 请求体：通用字段 + 该类型自己的字段。 */
 export function payloadFromForm(
   form: CorporateActionForm,
-  { isEdit }: { isEdit: boolean }
+  _options: { isEdit: boolean }
 ): CorporateActionCreate {
   const payload: Record<string, unknown> = {
     broker_account_id: form.broker_account_id || null,
@@ -322,11 +353,14 @@ export function payloadFromForm(
   }
   switch (form.action_type) {
     case 'CASH_DIVIDEND':
+      payload.payment_date = form.payment_date || null
+      payload.receipt_confirmed = form.receipt_confirmed
+      payload.amount_basis = form.amount_basis
+      payload.net_dividend = form.amount_basis === 'NET_ONLY' ? form.net_dividend : null
       payload.dividend_per_share = form.dividend_per_share
       payload.total_dividend = form.total_dividend
-      // 新建时空税额提交为 0（后端只按税额计税）；编辑时原样提交——空税额回写成 0 在语义上
-      // 等价，但保持原字段不变更稳妥（PR #228 评审 P2：别让非金额编辑碰金额字段）
-      payload.tax_withheld = isEdit ? form.tax_withheld : (form.tax_withheld ?? 0)
+      // 未知税额保持为空，明确免税才提交 0。
+      payload.tax_withheld = form.tax_withheld
       payload.tax_rate =
         form.tax_rate_percent === null ? null : Math.round(form.tax_rate_percent * 100) / 10000
       break

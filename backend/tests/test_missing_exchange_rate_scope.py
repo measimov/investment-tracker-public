@@ -11,6 +11,7 @@ from decimal import Decimal
 import pytest
 
 from app.database import SessionLocal
+from app.models.cash_event import CashEvent
 from app.models.corporate_action import CorporateAction
 from app.models.exchange_rate import ExchangeRate
 from app.models.holding import Holding
@@ -26,7 +27,7 @@ from app.services.statistics import (
 
 from .helpers import add_transaction, reset_tables
 
-RESET_MODELS = [SecurityPrice, Holding, CorporateAction, Transaction, ExchangeRate]
+RESET_MODELS = [CashEvent, SecurityPrice, Holding, CorporateAction, Transaction, ExchangeRate]
 
 
 @pytest.fixture

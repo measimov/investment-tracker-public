@@ -7,6 +7,10 @@
 不符的行视同未摘要并重新生成，所以本脚本**不删任何行**——只是驱动重跑并报告
 进度。失败行保留 attempts 语义（确定性失败两次即封顶）。
 
+只升了抽取器版本时，每份报告都要重下载重抽节选，但节选与旧版本**逐字节相同**的沿用旧摘要、
+不调 LLM（输出里的 `reused`）；只有节选真的变了的报告才重新生成摘要。抽取器版本分市场
+（`report_sections.SECTION_EXTRACTOR_VERSIONS`），可用 `--market` 只跑受影响的市场。
+
 `business_profile` 不需要显式清除：它按输入内容指纹（digests + business 节选）
 缓存，摘要一变指纹就变，自动重算。
 
@@ -35,7 +39,7 @@ def _stale_rows(db, symbol: str | None, market: str | None):
     stale = []
     for row in query.all():
         payload = row.payload or {}
-        if not digest_versions_current(payload):
+        if not digest_versions_current(payload, row.market):
             stale.append(row)
     return stale
 
@@ -76,7 +80,8 @@ def main() -> int:
             result = ensure_report_digests(db, symbol, market, max_new=args.max_new)
             print(
                 f"  total={result['total']} completed={result['completed']}"
-                f" generated={result['generated']} remaining={result['remaining']}"
+                f" generated={result['generated']} reused={result.get('digest_reused', 0)}"
+                f" remaining={result['remaining']}"
             )
             for gap in result["gaps"]:
                 print(f"  ! {gap}")

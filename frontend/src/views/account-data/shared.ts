@@ -8,7 +8,7 @@
 import { ElMessage, type FormInstance } from 'element-plus'
 import { MARKETS } from '@/utils/securities'
 import { DELETED_ACCOUNT_LABEL, UNASSIGNED_ACCOUNT_LABEL } from '@/utils/labels'
-import type { Ref } from 'vue'
+import { h, type Ref } from 'vue'
 import type {
   BrokerAccount,
   CashEvent,
@@ -105,7 +105,8 @@ export function makeSaver<TPayload>({
   reload: () => Promise<unknown>
 }) {
   return async () => {
-    if (!(await formRef.value?.validate().catch(() => false))) return
+    if (dialog.saving) return
+    if (!(await formRef.value?.validate().catch(() => false)) || dialog.saving) return
     dialog.saving = true
     try {
       const payload = buildPayload()
@@ -149,3 +150,10 @@ export function reconciledAccountSummary(
   }
   return { matched, total: active.length }
 }
+
+/** 只收起本页长备注；完整正文仍在原位置由原生 disclosure 公开。 */
+export const isLongNote = (value: string | null | undefined) => Boolean(value && value.length > 80)
+export const renderNote = (value: string | null | undefined) =>
+  isLongNote(value)
+    ? h('details', { class: 'read-details' }, [h('summary', '查看完整备注'), h('p', value!)])
+    : value || '—'

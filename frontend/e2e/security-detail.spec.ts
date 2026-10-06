@@ -576,7 +576,7 @@ test('a failed analysis keeps the progress block with its error', async ({ page,
   const progress = page.getByTestId('analysis-progress')
   await expect(progress).toBeVisible({ timeout: 15000 })
   await expect(progress).toContainText('LLM 输出解析失败')
-  await expect(progress.locator('.el-progress.is-exception')).toHaveCount(1)
+  await expect(progress.getByRole('progressbar')).toHaveClass(/n-progress--error/)
   // 按钮恢复可用（不再 loading）
   await expect(page.getByTestId('generate-analysis-button')).toBeEnabled()
 })

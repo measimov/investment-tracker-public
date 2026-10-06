@@ -35,7 +35,7 @@ export function useRefreshPrices(isUnmounted: () => boolean) {
 
   /** 汇总文案（一处拼装；调用方可加后缀如"并完成计算"） */
   function refreshSummaryText(result: PriceRefreshResult): string {
-    let message = `成功更新 ${result.success_count} 只股票`
+    let message = `成功更新 ${result.success_count} 只标的`
     if (result.skipped_count > 0) message += `，跳过 ${result.skipped_count} 只（最近已更新）`
     if (result.failed_count > 0) message += `，${result.failed_count} 只更新失败`
     return message

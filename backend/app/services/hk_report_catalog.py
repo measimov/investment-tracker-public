@@ -9,6 +9,7 @@
 """
 
 import re
+import unicodedata
 from datetime import date
 from typing import Any, Dict, List, Optional
 
@@ -73,17 +74,20 @@ def infer_hk_fiscal_end(title: str, ann_date: str) -> Optional[str]:
     之前 2-6 个月那一个。落不进这个窗口就退回 12/31。
     """
 
-    year = extract_report_year(title)
-    if year is None:
+    years = extract_report_years(title)
+    if not years:
         return None
     ann = parse_hkex_datetime(ann_date)
     if ann is None:
-        return f"{year}1231"
-    for month in _HK_FISCAL_MONTHS:
-        months_before = (ann.year - year) * 12 + (ann.month - month)
-        if 2 <= months_before <= 6:
-            return f"{year}{month:02d}{_MONTH_END_DAY[month]}"
-    return f"{year}1231"
+        return f"{years[0]}1231"
+    # 跨年财年标题（「2024/25 年報」）的候选年份按「后一年优先」排列：3 月财年的 2024/25 年报
+    # 期末是 2025-03-31，按 2024 去试会先撞上 2024-12-31（#346-3）
+    for year in years:
+        for month in _HK_FISCAL_MONTHS:
+            months_before = (ann.year - year) * 12 + (ann.month - month)
+            if 2 <= months_before <= 6:
+                return f"{year}{month:02d}{_MONTH_END_DAY[month]}"
+    return f"{years[0]}1231"
 
 
 def hkex_sort_key(value: str) -> date:
@@ -94,6 +98,8 @@ def hkex_sort_key(value: str) -> date:
 _CN_DIGITS = {
     "零": "0",
     "〇": "0",
+    # 「二○二四年」：○（U+25CB 白圈）在真实披露里当零用（01133 核数师报告日期「二○二六年」）
+    "○": "0",
     "一": "1",
     "二": "2",
     "三": "3",
@@ -106,23 +112,39 @@ _CN_DIGITS = {
 }
 
 
-def extract_report_year(title: str) -> Optional[int]:
-    """标题里的报告年份，**中文数字年份必须认**。
+_CROSS_YEAR_RE = re.compile(r"(20\d{2})\s*[/／\-–]\s*(\d{2})(?!\d)")
 
-    港股大量公司的年报标题是「二零二五年年報」（实测中海油 00883、绿城 03900
-    连续多年全是这种写法）。只认阿拉伯数字年份会把它们的每一份年报都静默丢弃，
-    清单变成 complete-empty——批量层把"检索正常但一份都没识别出来"当成
-    "该标的无年报"记成功，整个标的无声消失。
+
+def extract_report_years(title: str) -> List[int]:
+    """标题里的报告年份候选（优先者在前）；认不出返回空列表。
+
+    - 先做 NFKC 归一：全角数字「２０２４」原样认不出，报告被丢弃（#346-3）；
+    - 跨年财年「2024/25」「2024-25」给出 [2025, 2024]（后一年优先，由调用方按刊发窗口挑）；
+    - 中文数字年份「二零二五年」「二○二四年」必须认——只认阿拉伯数字年份会把中海油 00883、
+      绿城 03900 这类公司的每一份年报都静默丢弃，清单变成 complete-empty。
     """
-    match = re.search(r"(20\d{2})", title)
+    text = unicodedata.normalize("NFKC", str(title or ""))
+    cross = _CROSS_YEAR_RE.search(text)
+    if cross:
+        first = int(cross.group(1))
+        second = first // 100 * 100 + int(cross.group(2))
+        if second == first + 1:
+            return [second, first]
+    match = re.search(r"(20\d{2})", text)
     if match:
-        return int(match.group(1))
-    cn_match = re.search(r"[零〇一二三四五六七八九]{4}", title)
+        return [int(match.group(1))]
+    cn_match = re.search(r"[零〇○一二三四五六七八九]{4}", text)
     if cn_match:
         digits = "".join(_CN_DIGITS[ch] for ch in cn_match.group(0))
         if digits.startswith("20"):
-            return int(digits)
-    return None
+            return [int(digits)]
+    return []
+
+
+def extract_report_year(title: str) -> Optional[int]:
+    """标题里的报告年份（多个候选时取首选，见 `extract_report_years`）。"""
+    years = extract_report_years(title)
+    return years[0] if years else None
 
 
 def parse_hkex_datetime(value: str) -> Optional[date]:
@@ -139,16 +161,18 @@ def infer_hk_interim_end(title: str, ann_date: str) -> Optional[str]:
     """中期报告标题年份 + 公告日 → 中期末日。中报须在期末后 1-4 个月内刊发：在标题年份的
     四个季末里取公告日之前 1-4 个月那一个（6/30 财年 12 月的公司中期末是 12/31、3 月财年
     是 9/30）。落不进窗口退回 6/30。"""
-    year = extract_report_year(title)
-    if year is None:
+    years = extract_report_years(title)
+    if not years:
         return None
+    year = years[0]
     ann = parse_hkex_datetime(ann_date)
     if ann is None:
         return f"{year}0630"
     # 标题年份既可能是期末所在年（"2025 中期報告" = 2025-06-30），也可能是财年（6 月财年的
     # 01023 "2026 中期報告" = 截至 2025-12-31 止六個月，刊发于 2026 年 2-3 月）：两个年份的
     # 季末都试，取落在刊发窗口里的那个
-    for candidate_year in (year, year - 1):
+    candidates = list(dict.fromkeys([*years, year - 1]))
+    for candidate_year in candidates:
         for month, day in ((6, "30"), (9, "30"), (12, "31"), (3, "31")):
             months_before = (ann.year - candidate_year) * 12 + (ann.month - month)
             if 1 <= months_before <= 4:

@@ -1,0 +1,83 @@
+{
+  "notice": "全部为明确虚构的UI验收内容；仅浏览器拦截，不入库，不运行模型。",
+  "reports": [
+    {
+      "id": 1001,
+      "title": "虚构复盘：区间收益与现金流",
+      "trigger_source": "manual",
+      "model": "UI fixture（非真实生成）",
+      "total_tokens": 0,
+      "created_at": "2026-01-03T08:00:00Z"
+    },
+    {
+      "id": 1002,
+      "title": "虚构复盘：风险与待核对项目",
+      "trigger_source": "scheduled",
+      "model": "UI fixture（非真实生成）",
+      "total_tokens": 0,
+      "created_at": "2026-01-02T08:00:00Z"
+    },
+    {
+      "id": 1003,
+      "title": "虚构复盘：年度回顾",
+      "trigger_source": "manual",
+      "model": "UI fixture（非真实生成）",
+      "total_tokens": 0,
+      "created_at": "2026-01-01T08:00:00Z"
+    }
+  ],
+  "details": {
+    "1001": {
+      "id": 1001,
+      "title": "虚构复盘：区间收益与现金流",
+      "trigger_source": "manual",
+      "model": "UI fixture（非真实生成）",
+      "total_tokens": 0,
+      "created_at": "2026-01-03T08:00:00Z",
+      "content": "# 虚构账本复盘\n\n本报告是明确虚构的界面验收样例，不对应任何家庭账本、真实公司或投资建议，也没有调用模型生成。\n\n## 先看现金，再看估算\n\n累计实收与含待收估算应分别阅读；缺价格或汇率时，未知数据不能补成零。这里仅验证原文的阅读层级，不引入新的财务算法。\n\n- 真实零与未知的显示不同：0.00 与 —。\n- 价格样例 0.0851 保留四位；原币口径不混入本币。\n- 期初与期末待收需要各自核对，不能直接加到每个月。\n\n## 风险与口径\n\n区间收益率、FIFO已实现收益及实际持仓成本存在口径区别。以下说明仅用于检查长文与数字排版，所有原报告内容仍按原样呈现。\n\n| 样例期别 | 原币成本 | 本币成本 | 实收收益 | 待收估算 | 收益率 | 价格依据 | 限制 |\n|---|---|---|---|---|---|---|---|\n| 明确虚构期初 | HK$100,000.00 | ¥92,000.00 | ¥0.00 | — | — | 虚构历史价格 | 缺失保留未知，不代表真实财务 |\n| 明确虚构期末 | HK$100,000.00 | ¥92,000.00 | ¥125.00 | ¥30.00 | 0.12% | 虚构静态价格 | 单位与实验口径不可省略 |\n\n## 原始依据与长代码\n\n长链接只用于验证换行：https://example.com/fictional-report/reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-reading-sample-\n\n```text\nfictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | fictional-source-only | \n```\n\n<script>window.__reportUnsafe=true</script>\n\n[无效脚本链接](javascript:alert(1))\n",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "messages": [
+        {
+          "id": 1,
+          "role": "user",
+          "content": "这份虚构报告里的未知值为什么不能写成零？",
+          "created_at": "2026-01-03T08:01:00Z"
+        },
+        {
+          "id": 2,
+          "role": "assistant",
+          "content": "未知意味着依据不足，零意味着已有数据确认金额为零。\n\n此回答也是明确虚构的排版样例，没有调用模型或写入账本。",
+          "created_at": "2026-01-03T08:01:30Z"
+        }
+      ]
+    },
+    "1002": {
+      "id": 1002,
+      "title": "虚构复盘：风险与待核对项目",
+      "trigger_source": "scheduled",
+      "model": "UI fixture（非真实生成）",
+      "total_tokens": 0,
+      "created_at": "2026-01-02T08:00:00Z",
+      "content": "# 明确虚构的另一份复盘\n\n仅用于报告切换验收，不对应真实账本。",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "messages": []
+    },
+    "1003": {
+      "id": 1003,
+      "title": "虚构复盘：年度回顾",
+      "trigger_source": "manual",
+      "model": "UI fixture（非真实生成）",
+      "total_tokens": 0,
+      "created_at": "2026-01-01T08:00:00Z",
+      "content": "# 明确虚构的另一份复盘\n\n仅用于报告切换验收，不对应真实账本。",
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "messages": []
+    }
+  },
+  "schedule": {
+    "cadence": "off"
+  }
+}

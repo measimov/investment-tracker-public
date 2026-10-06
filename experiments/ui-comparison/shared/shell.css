@@ -1,0 +1,211 @@
+:root {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  color: #242321;
+  background: #faf9f5;
+  font-size: 14px;
+  line-height: 1.5;
+  color-scheme: light;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+select {
+  font: inherit;
+}
+.comparison-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 24px;
+}
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.page-heading h1 {
+  font-size: 24px;
+  line-height: 1.3;
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+.page-heading p {
+  margin: 0;
+  color: #5f5b53;
+  font-size: 13px;
+}
+.comparison-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.comparison-links a {
+  color: #a6533c;
+  text-underline-offset: 4px;
+}
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  background: #fff;
+  border: 1px solid #e5e1d8;
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.filter-field {
+  display: grid;
+  gap: 6px;
+  min-width: 150px;
+}
+.filter-field > label {
+  font-size: 13px;
+  color: #5f5b53;
+}
+.filter-search {
+  width: 240px;
+}
+.filter-date {
+  width: 165px;
+}
+.summary-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0;
+  font-size: 13px;
+  color: #5f5b53;
+}
+.table-region {
+  background: #fff;
+  border: 1px solid #e5e1d8;
+  border-radius: 6px;
+  min-width: 0;
+}
+.cell-name {
+  white-space: normal;
+  line-height: 1.5;
+}
+.security-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #242321;
+}
+.sub {
+  font-size: 12px;
+  color: #5f5b53;
+  margin-top: 3px;
+}
+.row-note {
+  color: #85572a;
+  font-size: 12px;
+  margin-top: 5px;
+  white-space: normal;
+}
+.financial-cell {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.positive {
+  color: #047857;
+}
+.negative {
+  color: #b4233e;
+}
+.financial-cell.positive .sub {
+  color: #047857;
+}
+.financial-cell.negative .sub {
+  color: #b4233e;
+}
+.expanded-detail {
+  padding: 16px 24px;
+  background: #faf9f5;
+  color: #5f5b53;
+  font-size: 13px;
+}
+.expanded-detail strong {
+  color: #242321;
+}
+.dialog-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.dialog-fields .field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.dialog-fields label {
+  font-size: 13px;
+}
+.field-error {
+  color: #b4233e;
+  font-size: 12px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 22px;
+}
+.demo-notice {
+  padding: 10px 12px;
+  border-radius: 4px;
+  background: #f2e8e1;
+  color: #5f5b53;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+.saved-receipt {
+  border: 1px solid #e5e1d8;
+  background: #fff;
+  padding: 12px 16px;
+  margin-top: 16px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.page-footnote {
+  color: #5f5b53;
+  font-size: 12px;
+  margin-top: 16px;
+}
+@media (max-width: 640px) {
+  .comparison-page {
+    padding: 16px;
+  }
+  .filters {
+    padding: 12px;
+    gap: 12px;
+  }
+  .filter-field,
+  .filter-search,
+  .filter-date {
+    width: 100%;
+    min-width: 0;
+  }
+  .dialog-fields {
+    grid-template-columns: 1fr;
+  }
+  input {
+    font-size: 16px !important;
+  }
+  .page-heading h1 {
+    font-size: 22px;
+  }
+}

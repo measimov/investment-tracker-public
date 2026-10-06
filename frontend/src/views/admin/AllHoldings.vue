@@ -1,285 +1,386 @@
-<template>
-  <div class="all-holdings-page">
-    <el-card>
-      <template #header>
-        <div class="page-header">
-          <span>全部持仓查看</span>
-        </div>
-      </template>
-
-      <!-- User Selector -->
-      <div class="user-selector">
-        <el-form :inline="true">
-          <el-form-item label="选择用户">
-            <!--
-              「所有用户」用哨兵 0 而不是 null：EP 2.13 把 null 当空值，初始会显示占位符，
-              清空后还会请求 /holdings/admin/users/undefined（#219）。清空即回到汇总。
-            -->
-            <el-select
-              v-model="selectedUserId"
-              placeholder="请选择用户"
-              clearable
-              :value-on-clear="ALL_USERS"
-              @change="handleUserChange"
-              class="user-select"
-            >
-              <el-option label="所有用户（汇总）" :value="ALL_USERS" />
-              <el-option
-                v-for="user in users"
-                :key="user.id"
-                :label="userLabel(user)"
-                :value="user.id"
-              />
-            </el-select>
-          </el-form-item>
-        </el-form>
-      </div>
-
-      <!-- Summary Statistics：各币种先折人民币再相加；缺汇率/缺现价的行不计入并提示 -->
-      <div class="summary-stats" v-if="holdings.length > 0">
-        <el-row :gutter="20">
-          <el-col :xs="12" :md="6">
-            <el-statistic title="持仓品种数" :value="holdings.length" />
-          </el-col>
-          <el-col :xs="12" :md="6">
-            <el-statistic title="总成本 (CNY)" :value="summary.totalCostCNY" :precision="2" />
-          </el-col>
-          <el-col :xs="12" :md="6">
-            <el-statistic title="总市值 (CNY)" :value="summary.totalValueCNY" :precision="2" />
-          </el-col>
-          <el-col :xs="12" :md="6">
-            <el-statistic title="浮动盈亏 (CNY)" :value="summary.profitCNY" :precision="2" />
-          </el-col>
-        </el-row>
-        <el-alert
-          v-for="note in summaryNotes"
-          :key="note"
-          :title="note"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="summary-note"
-        />
-      </div>
-
-      <!-- Holdings Table -->
-      <div class="responsive-table holdings-table">
-        <el-table :data="holdings" v-loading="loading" stripe>
-          <el-table-column
-            prop="user_id"
-            label="用户ID"
-            width="80"
-            v-if="selectedUserId === ALL_USERS"
-          />
-          <el-table-column
-            prop="username"
-            label="用户名"
-            width="120"
-            v-if="selectedUserId === ALL_USERS"
-          />
-          <el-table-column prop="symbol" label="代码" min-width="90" />
-          <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip />
-          <el-table-column prop="market" label="市场" width="80" />
-          <el-table-column prop="quantity" label="持仓量" min-width="105" align="right">
-            <template #default="{ row }">
-              {{ formatQuantity(row.quantity) }}
-            </template>
-          </el-table-column>
-          <el-table-column prop="avg_cost" label="平均成本" min-width="105" align="right">
-            <template #default="{ row }">
-              {{ formatPrice(row.avg_cost) }}
-            </template>
-          </el-table-column>
-          <el-table-column prop="current_price" label="当前价格" min-width="105" align="right">
-            <template #default="{ row }">
-              {{ formatPrice(row.current_price) }}
-            </template>
-          </el-table-column>
-          <el-table-column prop="currency" label="币种" width="70" />
-          <el-table-column label="总成本" min-width="110" align="right">
-            <template #default="{ row }">
-              {{ formatNumber(row.total_cost, 2) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="当前市值" min-width="110" align="right">
-            <template #default="{ row }">
-              {{ formatNumber(rowMarketValue(row), 2) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="盈亏" min-width="105" align="right">
-            <template #default="{ row }">
-              <span :class="profitClass(row)">
-                {{ formatNumber(rowProfit(row), 2) }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="盈亏率" min-width="90" align="right">
-            <template #default="{ row }">
-              <span :class="profitClass(row)">
-                {{ formatPercent(rowProfitPercent(row)) }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="updated_at" label="最后更新" min-width="150" sortable>
-            <template #default="{ row }">
-              {{ formatDateTime(row.updated_at) }}
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </el-card>
-  </div>
-</template>
-
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import api from '../../api'
-import {
-  formatDateTime,
-  formatNumber,
-  formatPercent,
-  formatPrice,
-  formatQuantity
-} from '../../utils/helpers'
-import { showApiError } from '../../utils/showApiError'
-import { useExchangeRates } from '../../composables/useExchangeRates'
-import type { AdminHolding, User } from '../../types'
-import {
-  rowMarketValue,
-  rowProfit,
-  rowProfitPercent,
-  summarizeAdminHoldings
-} from './adminHoldings'
+import { NAlert, NButton } from 'naive-ui'
+import api from '@/api'
+import { formatCurrency, profitColor } from '@/utils/helpers'
+import { showApiError } from '@/utils/showApiError'
+import { useExchangeRates } from '@/composables/useExchangeRates'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import FinancialStatistic from '@/components/FinancialStatistic.vue'
+import AdminHoldingsTable from './holdings/AdminHoldingsTable.vue'
+import type { AdminHolding, User } from '@/types'
+import { summarizeAdminHoldings } from './adminHoldings'
 
-// 后端 schema 为准（PR #172 复审：此前手写并对 getUsers() 显式强转）
-type AdminUser = User
-type AdminHoldingRow = AdminHolding
-
-/** 「所有用户（汇总）」的哨兵值：用户 id 从 1 起，0 不会与真实用户冲突 */
 const ALL_USERS = 0
-
-const loading = ref(false)
-const users = ref<AdminUser[]>([])
-const holdings = ref<AdminHoldingRow[]>([])
+const loading = ref(false),
+  loadError = ref(false)
+const usersLoading = ref(false),
+  usersLoaded = ref(false),
+  usersError = ref(false)
+const users = ref<User[]>([]),
+  usersReturned = ref(0),
+  holdings = ref<AdminHolding[]>([])
 const selectedUserId = ref<number>(ALL_USERS)
-
-const { loadExchangeRates, convertToCNY } = useExchangeRates()
-
+const loadedUserId = ref<number | null>(null)
+const holdingsRequest = useLatestRequest(),
+  usersRequest = useLatestRequest()
+const { loadExchangeRates, convertToCNY, loadFailed: ratesFailed } = useExchangeRates()
+const hasLoaded = computed(() => loadedUserId.value !== null)
+const scopeOutdated = computed(() => hasLoaded.value && loadedUserId.value !== selectedUserId.value)
 const summary = computed(() => summarizeAdminHoldings(holdings.value, convertToCNY))
-
+const costCovered = computed(() => holdings.value.length - summary.value.missingRateCount)
+const valueCovered = computed(() => costCovered.value - summary.value.unpricedCount)
+const knownCost = computed(
+  () => hasLoaded.value && (!holdings.value.length || costCovered.value > 0)
+)
+const knownValue = computed(
+  () => hasLoaded.value && (!holdings.value.length || valueCovered.value > 0)
+)
+const emptyDescription = computed(() =>
+  loading.value
+    ? '正在加载持仓记录'
+    : !hasLoaded.value
+      ? '持仓记录尚未加载成功'
+      : '该范围暂无持仓记录'
+)
+function userLabel(user: User) {
+  return user.email ? `${user.username} (${user.email})` : user.username
+}
+function scopeLabel(id: number | null) {
+  if (id === null) return '尚未确认'
+  if (id === ALL_USERS) return '所有用户（汇总）'
+  const username =
+    users.value.find((user) => user.id === id)?.username ||
+    holdings.value.find((row) => row.user_id === id)?.username
+  return username || `用户 ${id}`
+}
 const summaryNotes = computed(() => {
-  const notes: string[] = []
-  const s = summary.value
-  if (s.missingRateCount > 0) {
+  const notes: string[] = [],
+    s = summary.value
+  if (s.missingRateCount > 0)
     notes.push(
       `缺少 ${s.missingRateCurrencies.join('、')} 对人民币的汇率，${s.missingRateCount} 个持仓未计入汇总`
     )
-  }
-  if (s.unpricedCount > 0) {
-    notes.push(`${s.unpricedCount} 个持仓缺少当前价格，只计入总成本，未计入市值与盈亏`)
-  }
+  if (s.unpricedCount > 0)
+    notes.push(`${s.unpricedCount} 个持仓缺少现价，只计入总成本，未计入市值与盈亏`)
   return notes
 })
-
-// email 可为空：不再拼出「demo (null)」
-function userLabel(user: AdminUser): string {
-  return user.email ? `${user.username} (${user.email})` : user.username
-}
-
-function profitClass(row: AdminHoldingRow): string {
-  const profit = rowProfit(row)
-  if (profit === null || profit === 0) return ''
-  return profit > 0 ? 'profit-positive' : 'profit-negative'
-}
-
 async function loadUsers() {
+  const request = usersRequest.begin()
+  usersLoading.value = true
+  usersError.value = false
   try {
     const response = await api.getUsers()
+    if (!usersRequest.isCurrent(request)) return
+    usersReturned.value = response.data.length
     users.value = response.data.filter((user) => user.is_active)
+    usersLoaded.value = true
   } catch (error) {
+    if (!usersRequest.isCurrent(request)) return
+    usersError.value = true
     showApiError(error, '加载用户列表失败')
+  } finally {
+    if (usersRequest.isCurrent(request)) usersLoading.value = false
   }
 }
-
 async function loadHoldings() {
+  const token = holdingsRequest.begin(),
+    scope = selectedUserId.value
   loading.value = true
+  loadError.value = false
   try {
     const response =
-      selectedUserId.value === ALL_USERS
-        ? await api.getAllHoldingsAdmin()
-        : await api.getUserHoldingsAdmin(selectedUserId.value)
+      scope === ALL_USERS ? await api.getAllHoldingsAdmin() : await api.getUserHoldingsAdmin(scope)
+    if (!holdingsRequest.isCurrent(token)) return
     holdings.value = response.data
+    loadedUserId.value = scope
   } catch (error) {
+    if (!holdingsRequest.isCurrent(token)) return
+    loadError.value = true
     showApiError(error, '加载持仓数据失败')
-    holdings.value = []
   } finally {
-    loading.value = false
+    if (holdingsRequest.isCurrent(token)) loading.value = false
   }
 }
-
-function handleUserChange() {
-  loadHoldings()
-}
-
 onMounted(() => {
   loadExchangeRates()
   loadUsers()
   loadHoldings()
 })
 </script>
-
+<template>
+  <div class="all-holdings-page">
+    <header class="page-heading">
+      <div>
+        <h1 class="page-title">查看所有持仓</h1>
+        <p class="page-intro page-description">按用户查看原币持仓明细，汇总统一折为人民币。</p>
+      </div>
+      <NButton :loading="loading" aria-label="重新加载管理员持仓" @click="loadHoldings"
+        >重新加载</NButton
+      >
+    </header>
+    <div class="user-selector">
+      <label id="admin-holdings-user-label">选择用户</label>
+      <el-select
+        v-model="selectedUserId"
+        aria-label="选择用户"
+        placeholder="请选择用户"
+        clearable
+        :fit-input-width="true"
+        :value-on-clear="ALL_USERS"
+        @change="loadHoldings"
+        class="user-select"
+        :loading="usersLoading"
+      >
+        <el-option label="所有用户（汇总）" :value="ALL_USERS" />
+        <el-option
+          v-for="user in users"
+          :key="user.id"
+          :label="userLabel(user)"
+          :value="user.id"
+          class="user-option"
+        />
+      </el-select>
+      <NButton
+        text
+        type="primary"
+        :loading="usersLoading"
+        aria-label="重新加载用户目录"
+        @click="loadUsers"
+        >重新加载用户目录</NButton
+      >
+    </div>
+    <NAlert
+      v-if="usersError"
+      type="warning"
+      :show-icon="false"
+      title="用户目录加载失败"
+      class="read-alert"
+      >{{
+        usersLoaded
+          ? '保留上次成功的活跃用户目录，尚未确认最新名单。'
+          : '尚未确认活跃用户目录，所有用户汇总仍可独立读取。'
+      }}<NButton text type="primary" aria-label="重试用户目录" @click="loadUsers"
+        >重试加载</NButton
+      ></NAlert
+    >
+    <p v-else-if="!usersLoaded" class="read-note">
+      {{ usersLoading ? '正在读取活跃用户目录。' : '用户目录尚未加载成功。' }}
+    </p>
+    <p v-if="usersReturned >= 100" class="read-note">
+      用户目录取自当前最多 100 条用户记录，仅列出其中的活跃用户，不代表全部用户。
+    </p>
+    <NAlert
+      v-if="loadError"
+      type="warning"
+      :show-icon="false"
+      title="持仓记录加载失败"
+      class="read-alert"
+      >{{
+        hasLoaded
+          ? `保留上次成功范围：${scopeLabel(loadedUserId)}。当前选择的最新结果尚未确认。`
+          : '尚未确认当前范围的持仓，请重试。'
+      }}<NButton text type="primary" aria-label="重试管理员持仓" @click="loadHoldings"
+        >重试加载</NButton
+      ></NAlert
+    >
+    <p v-if="scopeOutdated" class="read-note" role="status">
+      当前选择：{{ scopeLabel(selectedUserId) }}；下方仍为上次成功范围：{{
+        scopeLabel(loadedUserId)
+      }}。{{ loading ? '正在读取当前选择。' : '当前选择尚未成功加载。' }}
+    </p>
+    <p v-else-if="loading && hasLoaded" class="read-note" role="status">
+      正在重新加载，下方为上次成功的持仓。
+    </p>
+    <NAlert
+      v-if="ratesFailed"
+      type="warning"
+      :show-icon="false"
+      title="汇率加载失败"
+      class="read-alert"
+      >外币折算暂使用已有汇率；缺汇率记录不计入人民币汇总，尚未确认最新汇率。<NButton
+        text
+        type="primary"
+        aria-label="重试汇率读取"
+        @click="loadExchangeRates"
+        >重试加载汇率</NButton
+      ></NAlert
+    >
+    <section class="holdings-summary" aria-label="管理员持仓汇总">
+      <div class="section-heading">
+        <h2>持仓概览</h2>
+        <span>{{ scopeLabel(loadedUserId) }}</span>
+      </div>
+      <div class="summary-stats">
+        <FinancialStatistic
+          title="持仓记录数"
+          :value="hasLoaded ? holdings.length : null"
+          :precision="0"
+        />
+        <FinancialStatistic
+          title="总成本（CNY）"
+          :value="knownCost ? summary.totalCostCNY : null"
+          :formatter="(value) => formatCurrency(value, 'CNY')"
+        />
+        <FinancialStatistic
+          title="总市值（CNY）"
+          :value="knownValue ? summary.totalValueCNY : null"
+          :formatter="(value) => formatCurrency(value, 'CNY')"
+        />
+        <FinancialStatistic
+          title="浮动盈亏（CNY）"
+          :value="knownValue ? summary.profitCNY : null"
+          :formatter="(value) => formatCurrency(value, 'CNY')"
+          :value-style="{ color: profitColor(knownValue ? summary.profitCNY : null) }"
+        />
+      </div>
+      <p class="read-note">
+        持仓按账户记录计数。成本含有汇率的记录；市值与盈亏仅含有现价及汇率的同一批记录。
+      </p>
+      <NAlert
+        v-for="note in summaryNotes"
+        :key="note"
+        type="warning"
+        :show-icon="false"
+        class="read-alert"
+        >{{ note }}</NAlert
+      >
+    </section>
+    <section class="holdings-detail" aria-label="管理员持仓明细">
+      <div class="section-heading">
+        <h2>持仓明细</h2>
+        <span>{{ scopeLabel(loadedUserId) }}</span>
+      </div>
+      <AdminHoldingsTable
+        :rows="holdings"
+        :loading="loading"
+        :all-users="loadedUserId === ALL_USERS"
+        :empty-description="emptyDescription"
+      />
+    </section>
+  </div>
+</template>
 <style scoped>
 .all-holdings-page {
   width: 100%;
+  min-width: 0;
 }
-
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 28px;
+}
 .user-selector {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 20px;
 }
-
+.user-selector label {
+  font-size: 13px;
+  color: var(--app-text-muted);
+}
 .user-select {
-  width: 250px;
+  width: 360px;
+  max-width: 100%;
+  --el-text-color-placeholder: var(--app-text-soft);
 }
-
+.user-option {
+  height: auto;
+  min-height: 34px;
+  padding-block: 8px;
+  white-space: normal;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+.section-heading > span {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.holdings-summary {
+  margin: 24px 0;
+}
 .summary-stats {
-  padding: 20px;
-  background-color: var(--app-surface-secondary);
-  border-radius: var(--app-radius);
-  margin-bottom: 20px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 24px;
+  border-block: 1px solid var(--app-border);
+  padding-block: 20px;
 }
-
-.holdings-table {
-  margin-top: 20px;
+.read-note {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 12px 0;
 }
-
-.profit-positive {
-  color: var(--app-success);
-  font-weight: 600;
+.read-alert {
+  margin: 12px 0;
 }
-
-.profit-negative {
-  color: var(--app-danger);
-  font-weight: 600;
+.holdings-detail {
+  min-width: 0;
 }
-
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
+  .summary-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .page-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .page-heading :deep(.n-button),
+  .user-selector :deep(.n-button),
+  .read-alert :deep(.n-button),
+  .user-select :deep(.el-select__wrapper) {
+    min-height: 44px;
+  }
   .user-select {
     width: 100%;
   }
-
   .summary-stats {
-    padding: 14px;
-  }
-
-  .summary-stats :deep(.el-col) {
-    margin-bottom: 12px;
+    gap: 20px;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
-</style>
 
-<!-- #219 汇总提示的间距（单独成块：主样式块由扁平主题改造负责） -->
-<style scoped>
-.summary-note {
-  margin-top: 12px;
+@media (min-width: 1025px) {
+  .page-heading {
+    margin-bottom: 16px;
+  }
+  .user-selector {
+    margin-bottom: 12px;
+  }
+  .section-heading {
+    margin-bottom: 12px;
+  }
+  h2 {
+    font-size: 18px;
+  }
+  .holdings-summary {
+    margin: 16px 0;
+  }
+  .summary-stats {
+    gap: 20px;
+  }
 }
 </style>

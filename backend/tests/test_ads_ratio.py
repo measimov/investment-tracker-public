@@ -8,6 +8,8 @@ Section 12(g) 行）与正文术语定义段的裁剪。覆盖的真实原文形
   BIDU 2020「(ten American depositary shares representing one Class A ordinary share)」= 0.1
 - NTES 2026「five」、NTES 2020「25」（数字）；TCOM「(each representing one ordinary share …)」；
   BILI「one Class Z ordinary share」
+- 10-K（v3，#352）：ONC（BeOne）2026-02「each representing 13 Ordinary Shares」、ZLAB（再鼎医药）
+  2026-02「each representing 10 Ordinary Shares」——以 ADS 交易的 10-K 申报人；NFLX 2026-01 普通股（无 ADS）
 """
 
 from datetime import timedelta
@@ -142,11 +144,63 @@ def test_negative_cases(text):
         "Section 12(b) One hundred ADSs represent one ordinary share Section 12(g)",
         "Section 12(b) One hundred and twenty ADSs represent one ordinary share Section 12(g)",
         "Section 12(b) one thousand american depositary shares represent one class a ordinary share Section 12(g)",
-        "Section 12(b) two hundred ADSs, each representing one ordinary share Section 12(g)",
     ],
 )
 def test_unsupported_ads_quantity_is_none(text):
     assert ads.parse_ads_ratio(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 「N ADSs, each representing M shares」在语法上就是每份 M 股：前导数量（哪怕是不支持的
+        # two hundred）不参与换算（v3，#352；此前按「数量没识别全」判 None）
+        "Section 12(b) two hundred ADSs, each representing one ordinary share Section 12(g)",
+        "Section 12(b) 2 American depositary shares, each representing one ordinary share Section 12(g)",
+        "Section 12(b) 2 ADSs, each of which represents one ordinary share Section 12(g)",
+    ],
+)
+def test_per_each_phrase_ignores_leading_quantity(text):
+    result = ads.parse_ads_ratio(text)
+    assert result is not None and result["ratio"] == Decimal(1)
+
+
+def test_cover_footnote_number_is_not_read_as_ads_quantity():
+    """#352：BABA 2026 版式——港交所那一格带脚注上标，html_to_text 把 <sup>2</sup> 转成孤立的 2，
+    与下一格的 ADS 连成「… hong kong limited 2 american depositary shares, each representing
+    eight …」。v2 解析成 2 ADS = 8 股（比例 4），应为 8。"""
+    text = _fixture("BABA_20-F_2026-05-20.cover.txt").replace(
+        "The Stock Exchange of Hong Kong Limited\n", "The Stock Exchange of Hong Kong Limited 2\n"
+    )
+    assert "limited 2 american depositary" in ads._normalize(text)
+    assert ads.parse_ads_ratio(text)["ratio"] == Decimal(8)
+    html = (
+        "<p>Securities registered or to be registered pursuant to Section 12(b) of the Act:</p>"
+        "<table><tr><td>Ordinary Shares</td><td>9988</td>"
+        "<td>The Stock Exchange of Hong Kong Limited<sup>2</sup></td></tr>"
+        "<tr><td>American Depositary Shares, each representing eight Ordinary Shares</td>"
+        "<td>BABA</td><td>New York Stock Exchange</td></tr></table>"
+        "<p>Securities registered or to be registered pursuant to Section 12(g) of the Act: None</p>"
+    )
+    assert ads.parse_ads_ratio_html(html)["ratio"] == Decimal(8)
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [("ONC_10-K_2026-02-26", "13"), ("ZLAB_10-K_2026-02-26", "10")],
+)
+def test_10k_ads_issuer_covers(name, expected):
+    text = _fixture(f"{name}.cover.txt")
+    assert ads.ads_listed_on_cover(text) is True
+    result = ads.parse_ads_ratio(text, form="10-K")
+    assert result["ratio"] == Decimal(expected) and result["section"] == "cover"
+
+
+def test_10k_common_stock_cover_has_no_ads():
+    text = _fixture("NFLX_10-K_2026-01-23.cover.txt")
+    assert ads.ads_listed_on_cover(text) is False
+    assert ads.parse_ads_ratio(text, form="10-K") is None
+    assert ads.ads_listed_on_cover("no cover here") is None
 
 
 def test_unsupported_quantity_in_body_definition_is_none():
@@ -323,8 +377,46 @@ def test_ensure_not_found_is_cached_and_version_bump_retries(db, monkeypatch):
     assert fake.downloads == 2
 
 
-def test_ensure_skips_10k_issuers(db, monkeypatch):
-    fake = _FakeEdgar(monkeypatch, form="10-K")
+def test_ensure_10k_without_ads_is_no_ads_and_cached(db, monkeypatch):
+    """v3（#352）：10-K 也下载封面；普通股封面记 no_ads（估值 1:1），同一份 10-K 只下载一次。"""
+    fake = _FakeEdgar(monkeypatch, form="10-K", html=_fixture("NFLX_10-K_2026-01-23.cover.txt"))
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "no_ads"
+    stored = _stored(db)
+    assert stored["status"] == "no_ads" and stored["ads_listed"] is False
+    assert stored["ratio"] is None
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "cached"
+    assert fake.downloads == 1
+    assert ads.resolve_ads_ratio(db, SYMBOL) is None  # 1:1，不标缺
+
+
+def test_ensure_10k_ads_issuer_parses_ratio(db, monkeypatch):
+    _FakeEdgar(monkeypatch, form="10-K", html=_fixture("ONC_10-K_2026-02-26.cover.txt"))
+    outcome = ads.ensure_ads_ratio(db, SYMBOL)
+    assert outcome["status"] == "ok" and outcome["ratio"] == "13"
+    resolved = ads.resolve_ads_ratio(db, SYMBOL)
+    assert resolved["ratio"] == Decimal(13) and resolved["source"] == "10-K"
+    assert resolved["note"] == "1 ADS = 13 股（10-K 封面 2026-04-29）"
+
+
+def test_ensure_10k_ads_without_ratio_is_marked_missing(db, monkeypatch):
+    html = _cover("American Depositary Shares ONC The Nasdaq Global Select Market")
+    _FakeEdgar(monkeypatch, form="10-K", html=html)
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "not_found"
+    assert _stored(db)["ads_listed"] is True
+    assert ads.resolve_ads_ratio(db, SYMBOL) == {"ratio": None, "missing": True, "form": "10-K"}
+
+
+def test_ensure_10k_ignores_body_definition_without_cover_ads(db, monkeypatch):
+    """10-K 只认封面登记表：普通股封面 + 正文里的 ADS 术语定义句不足以按 ADS 换算。"""
+    html = _fixture("NFLX_10-K_2026-01-23.cover.txt") + (
+        '\n"ADSs" are to the American depositary shares, each of which represents four shares.'
+    )
+    _FakeEdgar(monkeypatch, form="10-K", html=html)
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "no_ads"
+
+
+def test_ensure_skips_other_annual_forms(db, monkeypatch):
+    fake = _FakeEdgar(monkeypatch, form="40-F")
     assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "not_20f"
     assert fake.downloads == 0 and _stored(db) is None
 
@@ -405,12 +497,12 @@ def test_rule_without_parsed_value(db):
 # ---------------------------------------------------------------------------- 格雷厄姆取用
 
 
-def _seed_us_20f(db, close="77.57"):
+def _seed_us_20f(db, close="77.57", form="20-F"):
     for year, eps in ((2025, 4.0), (2024, 3.0), (2023, 2.0)):
         row = {
             "end_date": f"{year}1231",
             "fp": "FY",
-            "form": "20-F",
+            "form": form,
             "currency": "USD",
             "basic_eps": eps,
             "n_income_attr_p": eps * 1000.0,
@@ -472,6 +564,134 @@ def test_graham_without_ratio_is_indeterminate_with_hint(db, monkeypatch):
     pe = _pe(svc.compute_graham_for(db, SYMBOL, "美股"))
     assert pe["verdict"] == "indeterminate"
     assert "20-F 封面未解析出 ADS 换算比，可在特例规则中手动填写" in pe["reason"]
+
+
+def _store_10k(db, *, ads_listed, ratio=None):
+    status = "ok" if ratio else ("not_found" if ads_listed else "no_ads")
+    profile_store.upsert_profile_row(
+        db,
+        SYMBOL,
+        "美股",
+        ads.DATASET,
+        ads.PERIOD_KEY,
+        {
+            "status": status,
+            "ratio": ratio,
+            "ads_listed": ads_listed,
+            "filing_date": "2026-02-26",
+            "section": "cover" if ratio else None,
+            "form": "10-K",
+            "parser_version": ads.ADS_PARSER_VERSION,
+        },
+    )
+    db.commit()
+
+
+def test_graham_10k_ads_issuer_without_ratio_is_indeterminate(db, monkeypatch):
+    """#352：10-K 封面登记了 ADS 却无比例 → 不按 1:1 估值。"""
+    monkeypatch.setattr(svc, "_rate_lookup_for", lambda _db, _markets: None)
+    _seed_us_20f(db, form="10-K")
+    _store_10k(db, ads_listed=True)
+    pe = _pe(svc.compute_graham_for(db, SYMBOL, "美股"))
+    assert pe["verdict"] == "indeterminate"
+    assert "10-K 发行人以 ADS 交易" in pe["reason"]
+    assert "10-K 封面未解析出 ADS 换算比，可在特例规则中手动填写" in pe["reason"]
+
+
+def test_graham_10k_ads_issuer_uses_parsed_ratio(db, monkeypatch):
+    monkeypatch.setattr(svc, "_rate_lookup_for", lambda _db, _markets: None)
+    _seed_us_20f(db, form="10-K")
+    _store_10k(db, ads_listed=True, ratio="13")
+    pe = _pe(svc.compute_graham_for(db, SYMBOL, "美股"))
+    assert pe["basis"]["share_ratio"] == 13.0
+    assert pe["basis"]["share_ratio_source"] == "10-K"
+    assert pe["basis"]["eps_ttm"] == pytest.approx(4.0 * 13)
+
+
+def test_graham_10k_common_stock_stays_one_to_one(db, monkeypatch):
+    monkeypatch.setattr(svc, "_rate_lookup_for", lambda _db, _markets: None)
+    _seed_us_20f(db, form="10-K")
+    _store_10k(db, ads_listed=False)
+    pe = _pe(svc.compute_graham_for(db, SYMBOL, "美股"))
+    assert pe["verdict"] != "indeterminate"
+    assert pe["basis"]["eps_ttm"] == pytest.approx(4.0)
+    assert "share_ratio" not in pe["basis"]
+
+
+# 10-K 主文档里找不到 Section 12(b) 登记表（下载截断、SEC 返回错误页、版式没认出来）
+_UNRECOGNIZED_10K = "FORM 10-K\nAnnual report of Example Corp.\nItem 1. Business\nWe sell things.\n"
+
+
+def test_unrecognized_10k_cover_is_unknown_not_one_to_one_end_to_end(db, monkeypatch):
+    """PR #358 评审 P2：封面无法识别 ≠ 普通股。走真实 ensure_ads_ratio（只桩 EDGAR 下载）：
+    不落 no_ads、不进永久缓存、按次数重试到上限；解析器升版重新计数；估值两项 indeterminate。"""
+    monkeypatch.setattr(svc, "_rate_lookup_for", lambda _db, _markets: None)
+    _seed_us_20f(db, form="10-K")
+    fake = _FakeEdgar(monkeypatch, form="10-K", html=_UNRECOGNIZED_10K)
+
+    first = ads.ensure_ads_ratio(db, SYMBOL)
+    assert first["status"] == "cover_unknown" and "12(b)" in first["error"]
+    stored = _stored(db)
+    assert stored["status"] == "cover_unknown" and stored["ads_listed"] is None
+    assert stored["ratio"] is None and stored["fetch_attempts"] == 1
+
+    # 不缓存：同一份年报再次调用会重新下载，直到重试上限
+    for _ in range(ads.MAX_FETCH_ATTEMPTS - 1):
+        assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "cover_unknown"
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "capped"
+    assert fake.downloads == ads.MAX_FETCH_ATTEMPTS
+
+    # 解析器 / 估值：不可确定，而不是按 1:1
+    assert ads.resolve_ads_ratio(db, SYMBOL) == {
+        "ratio": None,
+        "missing": True,
+        "form": "10-K",
+        "unknown": True,
+    }
+    pe = _pe(svc.compute_graham_for(db, SYMBOL, "美股"))
+    assert pe["verdict"] == "indeterminate"
+    assert "10-K 封面未识别出证券登记表，无法确认是否以 ADS 交易" in pe["reason"]
+    pb = next(
+        i
+        for i in svc.compute_graham_for(db, SYMBOL, "美股")["criteria"]
+        if i["criterion"] == "pb_or_product"
+    )
+    assert pb["verdict"] == "indeterminate"
+
+    # 解析器升版：同一份年报重新计数、重新尝试（修好的解析器不会被上限挡住）
+    monkeypatch.setattr(ads, "ADS_PARSER_VERSION", ads.ADS_PARSER_VERSION + 1)
+    fake.html = _fixture("NFLX_10-K_2026-01-23.cover.txt")
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "no_ads"
+    assert fake.downloads == ads.MAX_FETCH_ATTEMPTS + 1
+    stored = _stored(db)
+    assert stored["ads_listed"] is False and "fetch_attempts" not in stored
+    # 明确普通股 → 1:1
+    assert ads.resolve_ads_ratio(db, SYMBOL) is None
+    pe = _pe(svc.compute_graham_for(db, SYMBOL, "美股"))
+    assert pe["verdict"] != "indeterminate" and pe["basis"]["eps_ttm"] == pytest.approx(4.0)
+
+
+def test_unrecognized_new_10k_keeps_previous_explicit_result(db, monkeypatch):
+    """上一份年报有明确结论时，新一份封面无法识别只记重试、沿用旧结论（不被覆盖成未知）。"""
+    fake = _FakeEdgar(monkeypatch, form="10-K", html=_fixture("ONC_10-K_2026-02-26.cover.txt"))
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "ok"
+    fake.accession = "0001-27-000001"
+    fake.html = _UNRECOGNIZED_10K
+    assert ads.ensure_ads_ratio(db, SYMBOL)["status"] == "cover_unknown"
+    stored = _stored(db)
+    assert stored["status"] == "ok" and stored["ratio"] == "13"
+    assert stored["accession"] == "0001-26-000001"
+    assert stored["pending_accession"] == "0001-27-000001" and stored["fetch_attempts"] == 1
+    assert ads.resolve_ads_ratio(db, SYMBOL)["ratio"] == Decimal(13)
+
+
+def test_analysis_gap_names_unrecognized_cover(db, monkeypatch):
+    from app.services.security_analysis_jobs import _ensure_ads_ratio_gap
+
+    _FakeEdgar(monkeypatch, form="10-K", html=_UNRECOGNIZED_10K)
+    assert _ensure_ads_ratio_gap(db, SYMBOL, "美股") == [
+        "ADS 换算比无法确定（年报封面未识别出证券登记表），美股估值两项不可确定"
+    ]
 
 
 # ---------------------------------------------------------------------------- 规则 API

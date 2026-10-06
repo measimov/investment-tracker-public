@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ..config import settings
 from ..core.logging import get_app_logger
 from . import background_job_store as store
+from .llm_client import llm_job_context
 
 logger = get_app_logger(__name__)
 
@@ -241,7 +242,10 @@ def execute_claimed_job(claimed: Dict[str, Any]) -> None:
         )
         return
     try:
-        runner(claimed)
+        with llm_job_context(claimed):
+            runner(claimed)
+    except store.JobOwnershipLostError:
+        logger.info("Background job %s was taken over; this attempt stopped", claimed["id"])
     except Exception as exc:  # noqa: BLE001 - the retry path needs every failure
         logger.exception(
             "Background job %s (%s) attempt %s failed",

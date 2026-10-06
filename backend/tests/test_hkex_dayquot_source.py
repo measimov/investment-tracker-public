@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import requests
 
 from app.database import SessionLocal
 from app.models.hkex_dayquot_report import HkexDayquotReport
@@ -49,6 +50,47 @@ def test_report_url_uses_yymmdd():
     assert dq.report_url(REPORT_DATE) == (
         "https://www.hkex.com.hk/eng/stat/smstat/dayquot/d260901e.htm"
     )
+
+
+@pytest.fixture
+def mock_download(monkeypatch):
+    response = requests.Response()
+    response.status_code = 200
+    monkeypatch.setattr(dq, "_throttle", lambda: None)
+    monkeypatch.setattr(dq.requests, "get", lambda *args, **kwargs: response)
+    return response
+
+
+def test_official_http_200_public_holiday_is_no_report(mock_download):
+    mock_download._content = FIXTURE.with_name("dayquot_d261001e_holiday.htm").read_bytes()
+    assert dq.fetch_dayquot_text(date(2026, 10, 1)) is None
+
+
+@pytest.mark.parametrize("status", [404, 503])
+def test_download_http_status_handling(mock_download, status):
+    mock_download.status_code = status
+    if status == 404:
+        assert dq.fetch_dayquot_text(REPORT_DATE) is None
+    else:
+        with pytest.raises(requests.HTTPError):
+            dq.fetch_dayquot_text(REPORT_DATE)
+
+
+@pytest.mark.parametrize("body", ["<html>Service unavailable</html>", "NO TRADING"])
+def test_unknown_http_200_page_still_reports_parse_error(mock_download, body):
+    mock_download._content = body.encode("latin-1")
+    report = dq.fetch_dayquot_text(REPORT_DATE)
+    assert report == body
+    with pytest.raises(dq.DayquotFormatError):
+        dq.parse_dayquot(report, expected_date=REPORT_DATE)
+
+
+def test_valid_report_with_holiday_notice_is_still_parsed(mock_download, sample_text):
+    body = sample_text + "<p>Daily Quotations Hong Kong Public Holiday, NO TRADING.</p>"
+    mock_download._content = body.encode("latin-1")
+    report = dq.fetch_dayquot_text(REPORT_DATE)
+    assert report == body
+    assert len(dq.parse_dayquot(report, expected_date=REPORT_DATE)) == 14
 
 
 def test_parse_sample_rows(sample_text):

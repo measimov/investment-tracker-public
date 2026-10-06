@@ -1,0 +1,1163 @@
+{
+ "symbol": "300759",
+ "market": "A股",
+ "exported_from": "production (read-only), 2026-09-30",
+ "annual": {
+  "income": [
+   {
+    "ann_date": "20260331",
+    "end_date": "20251231",
+    "basic_eps": 0.9443,
+    "total_revenue": 14095078734.95,
+    "revenue": 14095078734.95,
+    "n_income_attr_p": 1663898879.44
+   },
+   {
+    "ann_date": "20250327",
+    "end_date": "20241231",
+    "basic_eps": 1.0133,
+    "total_revenue": 12275774875.03,
+    "revenue": 12275774875.03,
+    "n_income_attr_p": 1793350814.5
+   },
+   {
+    "ann_date": "20240328",
+    "end_date": "20231231",
+    "basic_eps": 0.9033,
+    "total_revenue": 11537996314.78,
+    "revenue": 11537996314.78,
+    "n_income_attr_p": 1601096033.08
+   },
+   {
+    "ann_date": "20230331",
+    "end_date": "20221231",
+    "basic_eps": 1.1625,
+    "total_revenue": 10266288179.53,
+    "revenue": 10266288179.53,
+    "n_income_attr_p": 1374604224.18
+   },
+   {
+    "ann_date": "20220328",
+    "end_date": "20211231",
+    "basic_eps": 2.0982,
+    "total_revenue": 7443769724.38,
+    "revenue": 7443769724.38,
+    "n_income_attr_p": 1661028567.53
+   },
+   {
+    "ann_date": "20210329",
+    "end_date": "20201231",
+    "basic_eps": 1.4825,
+    "total_revenue": 5133596758.68,
+    "revenue": 5133596758.68,
+    "n_income_attr_p": 1172382387.8
+   },
+   {
+    "ann_date": "20200330",
+    "end_date": "20191231",
+    "basic_eps": 0.8284,
+    "total_revenue": 3757160086.84,
+    "revenue": 3757160086.84,
+    "n_income_attr_p": 547191486.94
+   },
+   {
+    "ann_date": "20190419",
+    "end_date": "20181231",
+    "basic_eps": 0.57,
+    "total_revenue": 2908123033.72,
+    "revenue": 2908123033.72,
+    "n_income_attr_p": 339224479.28
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20171231",
+    "basic_eps": 0.39,
+    "total_revenue": 2294118066.74,
+    "revenue": 2294118066.74,
+    "n_income_attr_p": 230857087.95
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20161231",
+    "basic_eps": 0.35,
+    "total_revenue": 1634238680.42,
+    "revenue": 1634238680.42,
+    "n_income_attr_p": 176911924.66
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20151231",
+    "basic_eps": null,
+    "total_revenue": 1128037558.46,
+    "revenue": 1128037558.46,
+    "n_income_attr_p": 73846442.67
+   },
+   {
+    "ann_date": "20170630",
+    "end_date": "20141231",
+    "basic_eps": null,
+    "total_revenue": 790440047.52,
+    "revenue": 790440047.52,
+    "n_income_attr_p": 20995240.72
+   }
+  ],
+  "balancesheet": [
+   {
+    "ann_date": "20260331",
+    "end_date": "20251231",
+    "money_cap": 1017482059.69,
+    "accounts_receiv": 2707105477.69,
+    "inventories": 1472304694.15,
+    "total_assets": 27093782579.04,
+    "lt_borr": 1771805796.68,
+    "st_borr": 1265397031.24,
+    "non_cur_liab_due_1y": 3623789203.03,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 15064159256.08
+   },
+   {
+    "ann_date": "20250327",
+    "end_date": "20241231",
+    "money_cap": 1689916082.15,
+    "accounts_receiv": 2409025783.46,
+    "inventories": 1116665159.58,
+    "total_assets": 23927398321.23,
+    "lt_borr": 4377367879.56,
+    "st_borr": 764970042.21,
+    "non_cur_liab_due_1y": 431847229.29,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 13619333910.0
+   },
+   {
+    "ann_date": "20240328",
+    "end_date": "20231231",
+    "money_cap": 5918915276.72,
+    "accounts_receiv": 2242025579.78,
+    "inventories": 1013079365.83,
+    "total_assets": 26476712835.6,
+    "lt_borr": 4308164504.99,
+    "st_borr": 577071212.28,
+    "non_cur_liab_due_1y": 335656839.78,
+    "bond_payable": 3891500601.59,
+    "total_hldr_eqy_exc_min_int": 12556797361.42
+   },
+   {
+    "ann_date": "20230331",
+    "end_date": "20221231",
+    "money_cap": 1497483832.74,
+    "accounts_receiv": 1881882496.4,
+    "inventories": 1041461328.57,
+    "total_assets": 20492557228.07,
+    "lt_borr": 713341596.37,
+    "st_borr": 662767390.14,
+    "non_cur_liab_due_1y": 238979262.01,
+    "bond_payable": 3740919424.93,
+    "total_hldr_eqy_exc_min_int": 10548615357.2
+   },
+   {
+    "ann_date": "20220328",
+    "end_date": "20211231",
+    "money_cap": 3543819700.44,
+    "accounts_receiv": 1228848978.96,
+    "inventories": 680039960.57,
+    "total_assets": 18389124353.35,
+    "lt_borr": 956095015.68,
+    "st_borr": 421756516.12,
+    "non_cur_liab_due_1y": 155836844.06,
+    "bond_payable": 3467090042.68,
+    "total_hldr_eqy_exc_min_int": 10129240934.77
+   },
+   {
+    "ann_date": "20210329",
+    "end_date": "20201231",
+    "money_cap": 2942352739.79,
+    "accounts_receiv": 1076613848.97,
+    "inventories": 281617169.89,
+    "total_assets": 11908792687.05,
+    "lt_borr": 394810891.08,
+    "st_borr": 377265354.81,
+    "non_cur_liab_due_1y": 92805094.82,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 8870319872.38
+   },
+   {
+    "ann_date": "20200330",
+    "end_date": "20191231",
+    "money_cap": 4459852482.83,
+    "accounts_receiv": 857069268.23,
+    "inventories": 157396992.46,
+    "total_assets": 9935038258.59,
+    "lt_borr": 542027262.1,
+    "st_borr": 213951498.57,
+    "non_cur_liab_due_1y": 150852535.08,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 7767063398.51
+   },
+   {
+    "ann_date": "20190419",
+    "end_date": "20181231",
+    "money_cap": 320711243.32,
+    "accounts_receiv": 655410782.11,
+    "inventories": 120461661.05,
+    "total_assets": 4625479165.18,
+    "lt_borr": 876134521.26,
+    "st_borr": 381844993.97,
+    "non_cur_liab_due_1y": 157961821.96,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 2328927980.43
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20171231",
+    "money_cap": 305499558.89,
+    "accounts_receiv": 542530516.88,
+    "inventories": 93266692.26,
+    "total_assets": 3919173997.9,
+    "lt_borr": 829467620.92,
+    "st_borr": 275090786.64,
+    "non_cur_liab_due_1y": 196649890.73,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 1997673600.54
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20161231",
+    "money_cap": 470209327.92,
+    "accounts_receiv": 390503298.58,
+    "inventories": 92576915.82,
+    "total_assets": 2804562982.07,
+    "lt_borr": 315000000.0,
+    "st_borr": 211059820.08,
+    "non_cur_liab_due_1y": 98682028.61,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 1763423685.3
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20151231",
+    "money_cap": 87050217.99,
+    "accounts_receiv": 249286101.17,
+    "inventories": 47773329.12,
+    "total_assets": 1174546275.85,
+    "lt_borr": 2975211.02,
+    "st_borr": 169807733.54,
+    "non_cur_liab_due_1y": 38408958.77,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 168431656.54
+   },
+   {
+    "ann_date": "20170630",
+    "end_date": "20141231",
+    "money_cap": 41020637.3,
+    "accounts_receiv": 185605183.7,
+    "inventories": 30124360.58,
+    "total_assets": 931464827.5,
+    "lt_borr": 5465074.65,
+    "st_borr": 153073351.74,
+    "non_cur_liab_due_1y": 30719591.75,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 258245133.29
+   }
+  ],
+  "cashflow": [
+   {
+    "ann_date": "20260331",
+    "end_date": "20251231",
+    "n_cashflow_act": 3221047215.59,
+    "c_pay_acq_const_fiolta": 2669077843.09,
+    "free_cashflow": -447344678.3896
+   },
+   {
+    "ann_date": "20250327",
+    "end_date": "20241231",
+    "n_cashflow_act": 2576656397.08,
+    "c_pay_acq_const_fiolta": 2040641185.79,
+    "free_cashflow": 432080932.8496
+   },
+   {
+    "ann_date": "20240328",
+    "end_date": "20231231",
+    "n_cashflow_act": 2753538934.89,
+    "c_pay_acq_const_fiolta": 2865320812.38,
+    "free_cashflow": 125526806.7841
+   },
+   {
+    "ann_date": "20230331",
+    "end_date": "20221231",
+    "n_cashflow_act": 2142816416.93,
+    "c_pay_acq_const_fiolta": 2949861151.85,
+    "free_cashflow": -856065178.0732
+   },
+   {
+    "ann_date": "20220328",
+    "end_date": "20211231",
+    "n_cashflow_act": 2058043830.38,
+    "c_pay_acq_const_fiolta": 2092821567.79,
+    "free_cashflow": -1830473813.7182
+   },
+   {
+    "ann_date": "20210329",
+    "end_date": "20201231",
+    "n_cashflow_act": 1648609957.11,
+    "c_pay_acq_const_fiolta": 1315838354.81,
+    "free_cashflow": -460025205.038
+   },
+   {
+    "ann_date": "20200330",
+    "end_date": "20191231",
+    "n_cashflow_act": 938586321.07,
+    "c_pay_acq_const_fiolta": 754605945.31,
+    "free_cashflow": -87400046.196
+   },
+   {
+    "ann_date": "20190419",
+    "end_date": "20181231",
+    "n_cashflow_act": 737258351.53,
+    "c_pay_acq_const_fiolta": 640985635.35,
+    "free_cashflow": 30183605.0347
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20171231",
+    "n_cashflow_act": 552215324.46,
+    "c_pay_acq_const_fiolta": 934666537.86,
+    "free_cashflow": -476983161.9299
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20161231",
+    "n_cashflow_act": 235767733.77,
+    "c_pay_acq_const_fiolta": 1055489315.54,
+    "free_cashflow": -1422352195.3602
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20151231",
+    "n_cashflow_act": 216939062.37,
+    "c_pay_acq_const_fiolta": 258322853.88,
+    "free_cashflow": 207204185.5335
+   },
+   {
+    "ann_date": "20170630",
+    "end_date": "20141231",
+    "n_cashflow_act": 12134613.57,
+    "c_pay_acq_const_fiolta": 81939410.76,
+    "free_cashflow": null
+   }
+  ],
+  "fina_indicator": [
+   {
+    "ann_date": "20260331",
+    "end_date": "20251231",
+    "profit_dedt": 1538328956.14,
+    "roe": 11.6018,
+    "roe_waa": 11.6,
+    "roe_dt": 10.7262
+   },
+   {
+    "ann_date": "20250327",
+    "end_date": "20241231",
+    "profit_dedt": 1107913860.99,
+    "roe": 13.7022,
+    "roe_waa": 13.7,
+    "roe_dt": 8.4651
+   },
+   {
+    "ann_date": "20240328",
+    "end_date": "20231231",
+    "profit_dedt": 1513870443.51,
+    "roe": 13.8591,
+    "roe_waa": 13.91,
+    "roe_dt": 13.104
+   },
+   {
+    "ann_date": "20230331",
+    "end_date": "20221231",
+    "profit_dedt": 1421388329.84,
+    "roe": 13.2954,
+    "roe_waa": 13.28,
+    "roe_dt": 13.7479
+   },
+   {
+    "ann_date": "20220328",
+    "end_date": "20211231",
+    "profit_dedt": 1340802324.63,
+    "roe": 17.4849,
+    "roe_waa": 17.31,
+    "roe_dt": 14.114
+   },
+   {
+    "ann_date": "20210329",
+    "end_date": "20201231",
+    "profit_dedt": 800680286.11,
+    "roe": 14.0934,
+    "roe_waa": 14.13,
+    "roe_dt": 9.6251
+   },
+   {
+    "ann_date": "20200330",
+    "end_date": "20191231",
+    "profit_dedt": 505137676.97,
+    "roe": 10.8398,
+    "roe_waa": 16.7,
+    "roe_dt": 10.0067
+   },
+   {
+    "ann_date": "20190419",
+    "end_date": "20181231",
+    "profit_dedt": 325591082.91,
+    "roe": 15.6809,
+    "roe_waa": 15.68,
+    "roe_dt": 15.0507
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20171231",
+    "profit_dedt": 218695900.0,
+    "roe": 12.276,
+    "roe_waa": 12.28,
+    "roe_dt": 11.6294
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20161231",
+    "profit_dedt": 185873100.0,
+    "roe": 18.3152,
+    "roe_waa": 18.32,
+    "roe_dt": 19.243
+   },
+   {
+    "ann_date": "20190107",
+    "end_date": "20151231",
+    "profit_dedt": 45384300.0,
+    "roe": 34.6147,
+    "roe_waa": 26.77,
+    "roe_dt": 21.2734
+   },
+   {
+    "ann_date": "20170630",
+    "end_date": "20141231",
+    "profit_dedt": 28117000.0,
+    "roe": 8.13,
+    "roe_waa": 8.85,
+    "roe_dt": 10.8877
+   }
+  ]
+ },
+ "interim": {
+  "income": [
+   {
+    "ann_date": "20260821",
+    "end_date": "20260630",
+    "basic_eps": 0.4138,
+    "total_revenue": 7595423821.51,
+    "revenue": 7595423821.51,
+    "n_income_attr_p": 750194149.88
+   },
+   {
+    "ann_date": "20260429",
+    "end_date": "20260331",
+    "basic_eps": 0.186,
+    "total_revenue": 3578424402.86,
+    "revenue": 3578424402.86,
+    "n_income_attr_p": 335359234.94
+   },
+   {
+    "ann_date": "20251029",
+    "end_date": "20250930",
+    "basic_eps": 0.6477,
+    "total_revenue": 10085623192.99,
+    "revenue": 10085623192.99,
+    "n_income_attr_p": 1140912186.84
+   },
+   {
+    "ann_date": "20250822",
+    "end_date": "20250630",
+    "basic_eps": 0.3984,
+    "total_revenue": 6440950789.99,
+    "revenue": 6440950789.99,
+    "n_income_attr_p": 701395834.72
+   },
+   {
+    "ann_date": "20250428",
+    "end_date": "20250331",
+    "basic_eps": 0.1736,
+    "total_revenue": 3098813569.89,
+    "revenue": 3098813569.89,
+    "n_income_attr_p": 305575186.04
+   },
+   {
+    "ann_date": "20241030",
+    "end_date": "20240930",
+    "basic_eps": 0.8028,
+    "total_revenue": 8817275052.0,
+    "revenue": 8817275052.0,
+    "n_income_attr_p": 1421799112.63
+   },
+   {
+    "ann_date": "20240828",
+    "end_date": "20240630",
+    "basic_eps": 0.6282,
+    "total_revenue": 5604463354.87,
+    "revenue": 5604463354.87,
+    "n_income_attr_p": 1113403032.5
+   },
+   {
+    "ann_date": "20240426",
+    "end_date": "20240331",
+    "basic_eps": 0.13,
+    "total_revenue": 2670740738.16,
+    "revenue": 2670740738.16,
+    "n_income_attr_p": 230557834.7
+   }
+  ],
+  "balancesheet": [
+   {
+    "ann_date": "20260821",
+    "end_date": "20260630",
+    "money_cap": 1576125215.98,
+    "accounts_receiv": 2855958282.52,
+    "inventories": 1934777299.39,
+    "total_assets": 28946314805.51,
+    "lt_borr": 1920498864.06,
+    "st_borr": 1139377020.73,
+    "non_cur_liab_due_1y": 3541213437.24,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 16348774163.56
+   },
+   {
+    "ann_date": "20260429",
+    "end_date": "20260331",
+    "money_cap": 2378989128.19,
+    "accounts_receiv": 2660923269.99,
+    "inventories": 1693670515.27,
+    "total_assets": 28561705821.71,
+    "lt_borr": 1843721417.59,
+    "st_borr": 1196780464.58,
+    "non_cur_liab_due_1y": 3664014697.58,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 16458476083.78
+   },
+   {
+    "ann_date": "20251029",
+    "end_date": "20250930",
+    "money_cap": 1204510479.67,
+    "accounts_receiv": 2466886778.47,
+    "inventories": 1396218576.32,
+    "total_assets": 25801120466.5,
+    "lt_borr": 4296416336.43,
+    "st_borr": 1239119673.07,
+    "non_cur_liab_due_1y": 471795725.42,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 14612996632.04
+   },
+   {
+    "ann_date": "20250822",
+    "end_date": "20250630",
+    "money_cap": 1301728328.16,
+    "accounts_receiv": 2544688491.63,
+    "inventories": 1305149095.05,
+    "total_assets": 25197008155.37,
+    "lt_borr": 4209325766.81,
+    "st_borr": 1002329622.37,
+    "non_cur_liab_due_1y": 468211846.96,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 14265949611.81
+   },
+   {
+    "ann_date": "20250428",
+    "end_date": "20250331",
+    "money_cap": 1262763166.96,
+    "accounts_receiv": 2281492955.73,
+    "inventories": 1166580816.12,
+    "total_assets": 24332822720.98,
+    "lt_borr": 4357275040.55,
+    "st_borr": 799194532.87,
+    "non_cur_liab_due_1y": 426700559.34,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 14042171870.45
+   },
+   {
+    "ann_date": "20241030",
+    "end_date": "20240930",
+    "money_cap": 2001124529.33,
+    "accounts_receiv": 2271110194.18,
+    "inventories": 1195752161.5,
+    "total_assets": 23570041501.34,
+    "lt_borr": 4330224099.54,
+    "st_borr": 644671535.91,
+    "non_cur_liab_due_1y": 451989956.32,
+    "bond_payable": null,
+    "total_hldr_eqy_exc_min_int": 13387169858.4
+   },
+   {
+    "ann_date": "20240828",
+    "end_date": "20240630",
+    "money_cap": 2400955908.65,
+    "accounts_receiv": 2179284277.89,
+    "inventories": 1188002213.05,
+    "total_assets": 22996596857.47,
+    "lt_borr": 4327099630.75,
+    "st_borr": 556134699.56,
+    "non_cur_liab_due_1y": 449394844.95,
+    "bond_payable": 10258952.56,
+    "total_hldr_eqy_exc_min_int": 13012863682.22
+   },
+   {
+    "ann_date": "20240426",
+    "end_date": "20240331",
+    "money_cap": 4633337568.45,
+    "accounts_receiv": 2086825230.47,
+    "inventories": 1071430884.44,
+    "total_assets": 25243967050.83,
+    "lt_borr": 4392085547.88,
+    "st_borr": 534473540.58,
+    "non_cur_liab_due_1y": 329991358.56,
+    "bond_payable": 2530105298.14,
+    "total_hldr_eqy_exc_min_int": 12687089142.67
+   }
+  ],
+  "cashflow": [
+   {
+    "ann_date": "20260821",
+    "end_date": "20260630",
+    "n_cashflow_act": 1084644919.94,
+    "c_pay_acq_const_fiolta": 1368323788.17,
+    "free_cashflow": 330245667.606
+   },
+   {
+    "ann_date": "20260429",
+    "end_date": "20260331",
+    "n_cashflow_act": 604439916.55,
+    "c_pay_acq_const_fiolta": 579140750.7,
+    "free_cashflow": -228122798.0617
+   },
+   {
+    "ann_date": "20251029",
+    "end_date": "20250930",
+    "n_cashflow_act": 2436103508.31,
+    "c_pay_acq_const_fiolta": 1900501842.47,
+    "free_cashflow": -1000074723.0188
+   },
+   {
+    "ann_date": "20250822",
+    "end_date": "20250630",
+    "n_cashflow_act": 1408277139.23,
+    "c_pay_acq_const_fiolta": 1154147267.99,
+    "free_cashflow": 53001343.6274
+   },
+   {
+    "ann_date": "20250428",
+    "end_date": "20250331",
+    "n_cashflow_act": 852829144.27,
+    "c_pay_acq_const_fiolta": 555720062.54,
+    "free_cashflow": -298109934.6574
+   },
+   {
+    "ann_date": "20241030",
+    "end_date": "20240930",
+    "n_cashflow_act": 1770502528.88,
+    "c_pay_acq_const_fiolta": 1499084002.8,
+    "free_cashflow": -499632323.3997
+   },
+   {
+    "ann_date": "20240828",
+    "end_date": "20240630",
+    "n_cashflow_act": 1099735310.22,
+    "c_pay_acq_const_fiolta": 950212247.37,
+    "free_cashflow": 626642804.6891
+   },
+   {
+    "ann_date": "20240426",
+    "end_date": "20240331",
+    "n_cashflow_act": 745630586.78,
+    "c_pay_acq_const_fiolta": 498619941.26,
+    "free_cashflow": -147091680.4186
+   }
+  ],
+  "fina_indicator": [
+   {
+    "ann_date": "20260821",
+    "end_date": "20260630",
+    "profit_dedt": 693133811.4,
+    "roe": 4.7763,
+    "roe_waa": 4.61,
+    "roe_dt": 4.413
+   },
+   {
+    "ann_date": "20260429",
+    "end_date": "20260331",
+    "profit_dedt": 343439584.32,
+    "roe": 2.1277,
+    "roe_waa": 2.1,
+    "roe_dt": 2.179
+   },
+   {
+    "ann_date": "20251029",
+    "end_date": "20250930",
+    "profit_dedt": 1034061391.98,
+    "roe": 8.0823,
+    "roe_waa": 8.05,
+    "roe_dt": 7.3254
+   },
+   {
+    "ann_date": "20250822",
+    "end_date": "20250630",
+    "profit_dedt": 636657156.0,
+    "roe": 5.0306,
+    "roe_waa": 4.97,
+    "roe_dt": 4.5663
+   },
+   {
+    "ann_date": "20250428",
+    "end_date": "20250331",
+    "profit_dedt": 292410967.83,
+    "roe": 2.2094,
+    "roe_waa": 2.21,
+    "roe_dt": 2.1142
+   },
+   {
+    "ann_date": "20241030",
+    "end_date": "20240930",
+    "profit_dedt": 783159332.95,
+    "roe": 10.9605,
+    "roe_waa": 10.9,
+    "roe_dt": 6.0373
+   },
+   {
+    "ann_date": "20240828",
+    "end_date": "20240630",
+    "profit_dedt": 465882931.8,
+    "roe": 8.7088,
+    "roe_waa": 8.54,
+    "roe_dt": 3.644
+   },
+   {
+    "ann_date": "20240426",
+    "end_date": "20240331",
+    "profit_dedt": 187348765.62,
+    "roe": 1.8266,
+    "roe_waa": 1.83,
+    "roe_dt": 1.4843
+   }
+  ]
+ },
+ "dividend_rows": [
+  {
+   "end_date": "20260630",
+   "ann_date": "20260821",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20260630",
+   "ann_date": "20260821",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20251231",
+   "ann_date": "20260331",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.2,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20251231",
+   "ann_date": "20260331",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.2,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20251231",
+   "ann_date": "20260612",
+   "div_proc": "实施",
+   "cash_div": 0.2,
+   "cash_div_tax": 0.2,
+   "ex_date": "20260707",
+   "imp_ann_date": "20260630"
+  },
+  {
+   "end_date": "20250630",
+   "ann_date": "20250822",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20250630",
+   "ann_date": "20250822",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20241231",
+   "ann_date": "20250327",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.2,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20241231",
+   "ann_date": "20250327",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.2,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20241231",
+   "ann_date": "20250620",
+   "div_proc": "实施",
+   "cash_div": 0.2,
+   "cash_div_tax": 0.2,
+   "ex_date": "20250704",
+   "imp_ann_date": "20250627"
+  },
+  {
+   "end_date": "20240630",
+   "ann_date": "20240828",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20240630",
+   "ann_date": "20240828",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20231231",
+   "ann_date": "20240328",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.2,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20231231",
+   "ann_date": "20240328",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.2,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20231231",
+   "ann_date": "20240606",
+   "div_proc": "实施",
+   "cash_div": 0.2,
+   "cash_div_tax": 0.2,
+   "ex_date": "20240627",
+   "imp_ann_date": "20240619"
+  },
+  {
+   "end_date": "20230630",
+   "ann_date": "20230828",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20230630",
+   "ann_date": "20230828",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20221231",
+   "ann_date": "20230331",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.3,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20221231",
+   "ann_date": "20230331",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.3,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20221231",
+   "ann_date": "20230621",
+   "div_proc": "实施",
+   "cash_div": 0.3,
+   "cash_div_tax": 0.3,
+   "ex_date": "20230727",
+   "imp_ann_date": "20230719"
+  },
+  {
+   "end_date": "20220630",
+   "ann_date": "20220830",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20220630",
+   "ann_date": "20220830",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20211231",
+   "ann_date": "20220328",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.45,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20211231",
+   "ann_date": "20220328",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.45,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20211231",
+   "ann_date": "20220531",
+   "div_proc": "实施",
+   "cash_div": 0.45,
+   "cash_div_tax": 0.45,
+   "ex_date": "20220614",
+   "imp_ann_date": "20220607"
+  },
+  {
+   "end_date": "20210630",
+   "ann_date": "20210830",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20210630",
+   "ann_date": "20210830",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20201231",
+   "ann_date": "20210329",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.3,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20201231",
+   "ann_date": "20210329",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.3,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20201231",
+   "ann_date": "20210528",
+   "div_proc": "实施",
+   "cash_div": 0.3,
+   "cash_div_tax": 0.3,
+   "ex_date": "20210630",
+   "imp_ann_date": "20210623"
+  },
+  {
+   "end_date": "20200630",
+   "ann_date": "20200827",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20200630",
+   "ann_date": "20200827",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20191231",
+   "ann_date": "20200330",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.15,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20191231",
+   "ann_date": "20200330",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.15,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20191231",
+   "ann_date": "20200528",
+   "div_proc": "实施",
+   "cash_div": 0.15,
+   "cash_div_tax": 0.15,
+   "ex_date": "20200715",
+   "imp_ann_date": "20200708"
+  },
+  {
+   "end_date": "20190630",
+   "ann_date": "20190816",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.0,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20190630",
+   "ann_date": "20190816",
+   "div_proc": "股东大会通过",
+   "cash_div": null,
+   "cash_div_tax": null,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20181231",
+   "ann_date": "20190419",
+   "div_proc": "预案",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.11,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20181231",
+   "ann_date": "20190419",
+   "div_proc": "股东大会通过",
+   "cash_div": 0.0,
+   "cash_div_tax": 0.11,
+   "ex_date": null,
+   "imp_ann_date": null
+  },
+  {
+   "end_date": "20181231",
+   "ann_date": "20190515",
+   "div_proc": "实施",
+   "cash_div": 0.11,
+   "cash_div_tax": 0.11,
+   "ex_date": "20190708",
+   "imp_ann_date": "20190702"
+  }
+ ],
+ "daily_basic": [
+  {
+   "trade_date": "20260929",
+   "close": 42.98,
+   "dv_ttm": 0.4653
+  }
+ ],
+ "graham": {
+  "status": "ok",
+  "criteria": [
+   {
+    "criterion": "current_ratio",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "lt_debt_vs_net_current_assets",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_stability",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "dividend_record",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "earnings_growth",
+    "verdict": "pass",
+    "basis": {}
+   },
+   {
+    "criterion": "pe",
+    "verdict": "fail",
+    "basis": {}
+   },
+   {
+    "criterion": "pb_or_product",
+    "verdict": "fail",
+    "basis": {
+     "price": 42.98,
+     "price_currency": "CNY",
+     "price_date": "20260929",
+     "implied_shares": null,
+     "share_ratio": null,
+     "bvps": null,
+     "equity": null,
+     "equity_currency": null
+    }
+   }
+  ]
+ }
+}

@@ -1,197 +1,269 @@
 <template>
-  <!-- 中文 locale：Element Plus 默认英文，空表「No Data」、分页「25/page」、日期选择器月份都是英文（#219） -->
   <el-config-provider :locale="zhCn">
-    <el-container class="app-container">
-      <el-header class="app-header">
-        <div class="header-content">
-          <router-link to="/" class="brand-link">
-            <span class="brand-mark" aria-hidden="true">
-              <span></span>
-              <span></span>
-              <span></span>
-            </span>
-            <span class="brand-title">投资追踪系统</span>
-          </router-link>
-          <el-button
-            v-if="authStore.isAuthenticated"
-            class="mobile-nav-button"
-            :icon="Menu"
-            circle
-            aria-label="打开导航"
-            @click="mobileNavVisible = true"
-          />
-          <el-menu
-            v-if="authStore.isAuthenticated"
-            :default-active="activeMenu"
-            mode="horizontal"
-            router
-            class="header-menu"
-          >
-            <el-menu-item v-for="item in primaryNavItems" :key="item.path" :index="item.path">
-              <el-icon><component :is="item.icon" /></el-icon>
-              <span>{{ item.label }}</span>
-            </el-menu-item>
-            <!-- 低频页主动收进「更多」：常用页不会因宽度不够被挤进 EP 的「…」 -->
-            <el-sub-menu index="more" class="header-more-menu">
-              <template #title>
-                <el-icon><MoreFilled /></el-icon>
-                <span>更多</span>
-              </template>
-              <el-menu-item v-for="item in moreNavItems" :key="item.path" :index="item.path">
-                <el-icon><component :is="item.icon" /></el-icon>
-                <span>{{ item.label }}</span>
-              </el-menu-item>
-            </el-sub-menu>
-          </el-menu>
-          <div v-if="authStore.isAuthenticated" class="user-info">
-            <el-dropdown @command="handleUserCommand">
-              <span class="user-dropdown">
-                <span class="user-avatar" aria-hidden="true">{{ userInitial }}</span>
-                <span class="username">{{ authStore.user?.username }}</span>
-                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-              </span>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item disabled>
-                    <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
-                    <el-tag v-else type="info" size="small">普通用户</el-tag>
-                  </el-dropdown-item>
-                  <el-dropdown-item divided command="password">
-                    <el-icon><Lock /></el-icon>
-                    修改密码
-                  </el-dropdown-item>
-                  <el-dropdown-item command="logout">
-                    <el-icon><SwitchButton /></el-icon>
-                    退出登录
-                  </el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
-          </div>
-        </div>
-        <el-drawer
-          v-model="mobileNavVisible"
-          class="mobile-nav-drawer"
-          direction="rtl"
-          size="82%"
-          :with-header="false"
-          append-to-body
+    <NConfigProvider
+      :theme="theme.resolved.value === 'dark' ? darkTheme : null"
+      :theme-overrides="holdingsTheme"
+      :locale="zhCN"
+      :date-locale="dateZhCN"
+    >
+      <div
+        class="app-container"
+        :class="{
+          'has-sidebar': authStore.isAuthenticated,
+          'sidebar-expanded': authStore.isAuthenticated && !sidebarCollapsed
+        }"
+      >
+        <aside
+          v-if="authStore.isAuthenticated"
+          id="desktop-navigation"
+          class="desktop-sidebar"
+          :class="{ 'is-collapsed': sidebarCollapsed }"
         >
-          <div class="mobile-nav-panel">
-            <div class="mobile-nav-user">
-              <div class="mobile-nav-identity">
-                <span class="user-avatar user-avatar-lg" aria-hidden="true">{{ userInitial }}</span>
+          <div class="sidebar-heading">
+            <router-link to="/" class="brand-link sidebar-brand" aria-label="投资追踪系统首页">
+              <span class="brand-mark" aria-hidden="true"></span>
+              <span class="brand-title sidebar-label" :aria-hidden="sidebarCollapsed"
+                >投资追踪系统</span
+              >
+            </router-link>
+            <button
+              ref="navigationToggle"
+              type="button"
+              class="navigation-toggle"
+              :aria-label="sidebarCollapsed ? '展开导航' : '收起导航'"
+              :title="sidebarCollapsed ? '展开导航' : '收起导航'"
+              :aria-expanded="isCompact ? mobileNavVisible : desktopExpanded"
+              :aria-controls="isCompact ? 'mobile-navigation' : 'desktop-navigation'"
+              @click="toggleNavigation"
+            >
+              <NIcon :size="20" aria-hidden="true"
+                ><component :is="sidebarCollapsed ? Expand : Fold"
+              /></NIcon>
+              <span class="sidebar-label" :aria-hidden="sidebarCollapsed">收起导航</span>
+            </button>
+          </div>
+          <AppNavigation
+            class="sidebar-navigation"
+            :primary-items="primaryNavItems"
+            :more-items="moreNavItems"
+            :active-path="activeMenu"
+            :collapsed="sidebarCollapsed"
+          />
+          <div class="sidebar-footer">
+            <NTooltip
+              v-if="route.name === 'SecurityDetail'"
+              placement="right"
+              :disabled="!sidebarCollapsed"
+              :delay="200"
+            >
+              <template #trigger>
+                <button type="button" class="sidebar-back" aria-label="返回" @click="goBack">
+                  <ArrowLeft :size="20" aria-hidden="true" />
+                  <span class="sidebar-label" :aria-hidden="sidebarCollapsed">返回</span>
+                </button>
+              </template>
+              返回
+            </NTooltip>
+            <AppSettings :collapsed="sidebarCollapsed" @command="handleUserCommand" />
+          </div>
+        </aside>
+        <div v-else class="public-settings">
+          <AppSettings collapsed />
+        </div>
+        <div class="app-content">
+          <transition name="status-banner">
+            <div v-if="appStatus.hasBlockingIssue" class="status-overlay">
+              <div class="status-content">
+                <NIcon :size="20"><WarningFilled /></NIcon>
                 <div>
-                  <div class="mobile-nav-name">{{ authStore.user?.username }}</div>
-                  <el-tag v-if="authStore.isAdmin" type="danger" size="small">管理员</el-tag>
-                  <el-tag v-else type="info" size="small">普通用户</el-tag>
+                  <strong>{{ appStatus.statusTitle }}</strong
+                  ><span>{{ appStatus.message }}</span>
                 </div>
               </div>
-              <el-button
-                :icon="Close"
-                circle
-                aria-label="关闭导航"
-                @click="mobileNavVisible = false"
+              <NButton size="small" @click="appStatus.clear">关闭</NButton>
+            </div>
+          </transition>
+          <main class="app-main">
+            <div v-if="initialNavigationPending" class="app-boot-loading" role="status">
+              <NIcon class="is-loading"><Loading /></NIcon><span>正在连接服务…</span>
+            </div>
+            <router-view />
+          </main>
+        </div>
+        <NDrawer
+          v-if="authStore.isAuthenticated"
+          v-model:show="mobileNavVisible"
+          placement="left"
+          :width="288"
+          class="mobile-nav-drawer"
+          aria-label="应用导航"
+          @after-leave="finishNavigationClose"
+        >
+          <NDrawerContent
+            :body-content-style="{ padding: '0', display: 'flex', flexDirection: 'column' }"
+            :header-style="{ padding: '4px' }"
+            :footer-style="{
+              padding: '8px 4px',
+              paddingBottom: 'max(8px, env(safe-area-inset-bottom))'
+            }"
+          >
+            <template #header
+              ><div class="drawer-heading">
+                <router-link
+                  to="/"
+                  class="brand-link sidebar-brand"
+                  @click="mobileNavVisible = false"
+                >
+                  <span class="brand-mark" aria-hidden="true"></span>
+                  <span class="brand-title">投资追踪系统</span>
+                </router-link>
+                <button
+                  type="button"
+                  class="navigation-toggle"
+                  aria-label="收起导航"
+                  @click="mobileNavVisible = false"
+                >
+                  <NIcon :size="20" aria-hidden="true"><Fold /></NIcon><span>收起导航</span>
+                </button>
+              </div></template
+            >
+            <div id="mobile-navigation" class="mobile-nav-panel">
+              <AppNavigation
+                class="sidebar-navigation"
+                :primary-items="primaryNavItems"
+                :more-items="moreNavItems"
+                :active-path="activeMenu"
+                @navigate="mobileNavVisible = false"
               />
             </div>
-            <el-menu
-              :default-active="activeMenu"
-              router
-              class="mobile-nav-menu"
-              @select="mobileNavVisible = false"
-            >
-              <el-menu-item v-for="item in primaryNavItems" :key="item.path" :index="item.path">
-                <el-icon><component :is="item.icon" /></el-icon>
-                <span>{{ item.label }}</span>
-              </el-menu-item>
-              <!-- 抽屉里空间充足：「更多」平铺成分组，不再折叠一层 -->
-              <el-menu-item-group title="更多">
-                <el-menu-item v-for="item in moreNavItems" :key="item.path" :index="item.path">
-                  <el-icon><component :is="item.icon" /></el-icon>
-                  <span>{{ item.label }}</span>
-                </el-menu-item>
-              </el-menu-item-group>
-            </el-menu>
-            <div class="mobile-account-actions">
-              <el-button :icon="Lock" @click="handleUserCommand('password')">修改密码</el-button>
-              <el-button
-                class="mobile-logout-button"
-                :icon="SwitchButton"
-                @click="handleUserCommand('logout')"
-              >
-                退出登录
-              </el-button>
-            </div>
-          </div>
-        </el-drawer>
-      </el-header>
-      <transition name="status-banner">
-        <div v-if="appStatus.hasBlockingIssue" class="status-overlay">
-          <div class="status-content">
-            <el-icon><WarningFilled /></el-icon>
-            <div>
-              <strong>{{ appStatus.statusTitle }}</strong>
-              <span>{{ appStatus.message }}</span>
-            </div>
-          </div>
-          <el-button size="small" @click="appStatus.clear">关闭</el-button>
-        </div>
-      </transition>
-      <el-main class="app-main">
-        <!-- 首次导航要等会话探测（/auth/me）返回；此前 router-view 为空，页面是整块白屏 -->
-        <div v-if="initialNavigationPending" class="app-boot-loading" role="status">
-          <el-icon class="is-loading"><Loading /></el-icon>
-          <span>正在连接服务…</span>
-        </div>
-        <router-view />
-      </el-main>
-    </el-container>
-    <ChangePasswordDialog v-if="authStore.isAuthenticated" v-model="passwordDialogVisible" />
+            <template #footer>
+              <div class="drawer-footer-actions">
+                <button
+                  v-if="route.name === 'SecurityDetail'"
+                  type="button"
+                  class="sidebar-back"
+                  aria-label="返回"
+                  @click="goBack"
+                >
+                  <ArrowLeft :size="20" aria-hidden="true" />
+                  <span>返回</span>
+                </button>
+                <AppSettings @command="handleUserCommand" />
+              </div>
+            </template>
+          </NDrawerContent>
+        </NDrawer>
+      </div>
+      <ChangePasswordDialog v-if="authStore.isAuthenticated" v-model="passwordDialogVisible" />
+    </NConfigProvider>
   </el-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, type Component } from 'vue'
+import { computed, ref, watch, nextTick, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import {
+  darkTheme,
+  NButton,
+  NConfigProvider,
+  NDrawer,
+  NDrawerContent,
+  NIcon,
+  NTooltip,
+  zhCN,
+  dateZhCN
+} from 'naive-ui'
 import { useAuthStore } from './stores/auth'
 import { useAppStatusStore } from './stores/appStatus'
+import { useMediaQuery } from './composables/useMediaQuery'
 import { ElMessage } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import { useHoldingsTheme } from './styles/naive'
+import { useTheme } from './styles/theme'
+const theme = useTheme()
+const holdingsTheme = useHoldingsTheme()
+import { useXueqiuCapabilitiesStore } from './stores/xueqiuCapabilities'
 import ChangePasswordDialog from './components/ChangePasswordDialog.vue'
+import AppNavigation from './components/AppNavigation.vue'
+import AppSettings from './components/AppSettings.vue'
 import {
-  ArrowDown,
+  ArrowLeft,
   Bell,
-  ChatDotRound,
-  Close,
-  DataBoard,
-  View,
-  MagicStick,
-  DocumentCopy,
+  MessagesSquare as ChatDotRound,
+  LayoutDashboard as DataBoard,
+  Eye as View,
+  Sparkles as MagicStick,
+  Files as DocumentCopy,
   List,
-  Lock,
-  Menu,
-  Money,
-  MoreFilled,
-  Odometer,
-  SwitchButton,
-  Tickets,
-  TrendCharts,
-  User,
-  Loading,
+  Banknote as Money,
+  Gauge as Odometer,
+  ChartNoAxesCombined as TrendCharts,
+  PanelsTopLeft as Tickets,
+  UserRound as User,
+  LoaderCircle as Loading,
   Wallet,
-  WarningFilled
-} from '@element-plus/icons-vue'
+  TriangleAlert as WarningFilled,
+  PanelLeftClose as Fold,
+  PanelLeftOpen as Expand
+} from '@lucide/vue'
 
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const xueqiuCapabilities = useXueqiuCapabilitiesStore()
 const appStatus = useAppStatusStore()
+const isCompact = useMediaQuery('(max-width: 1100px)')
+const navigationToggle = ref<HTMLButtonElement | null>(null)
+const preferenceKey = 'investment-navigation-expanded'
+function readDesktopPreference() {
+  try {
+    return localStorage.getItem(preferenceKey) !== 'false'
+  } catch {
+    return true
+  }
+}
+const desktopExpanded = ref(readDesktopPreference())
 const mobileNavVisible = ref(false)
-// 首次导航完成前 route 还是 START_LOCATION（没有匹配记录）
+const sidebarCollapsed = computed(() => isCompact.value || !desktopExpanded.value)
 const initialNavigationPending = computed(() => route.matched.length === 0)
+function goBack() {
+  mobileNavVisible.value = false
+  const previous = window.history.state?.back
+  if (previous && router.resolve(previous).name !== 'Login') router.back()
+  else router.push('/holdings')
+}
+function toggleNavigation() {
+  if (isCompact.value) mobileNavVisible.value = !mobileNavVisible.value
+  else {
+    desktopExpanded.value = !desktopExpanded.value
+    try {
+      localStorage.setItem(preferenceKey, String(desktopExpanded.value))
+    } catch {
+      /* 本地偏好不可写时本次会话仍可使用。 */
+    }
+  }
+}
+watch(isCompact, async (compact) => {
+  const focusedInSidebar = compact && document.activeElement?.closest('.desktop-sidebar')
+  mobileNavVisible.value = false
+  if (focusedInSidebar) {
+    await nextTick()
+    navigationToggle.value?.focus()
+  }
+})
+watch(
+  () => route.fullPath,
+  () => {
+    mobileNavVisible.value = false
+  }
+)
+watch(
+  () => authStore.isAuthenticated,
+  () => {
+    mobileNavVisible.value = false
+  }
+)
 
-// 导航项集中定义，桌面端与移动端菜单共用（认证状态由路由守卫恢复）。
-// 按使用频率排：常用页在前；低频页主动收进「更多」，不等宽度不够时被 EP 挤进「…」
 interface NavItem {
   path: string
   label: string
@@ -218,21 +290,29 @@ const moreNav: NavItem[] = [
   { path: '/admin/alerts', label: '系统告警', icon: Bell, adminOnly: true }
 ]
 
-const visible = (item: NavItem) => !item.adminOnly || authStore.isAdmin
+const visible = (item: NavItem) =>
+  (!item.adminOnly || authStore.isAdmin) &&
+  (item.path !== '/opinions' || xueqiuCapabilities.showOpinions)
 const primaryNavItems = computed(() => primaryNav.filter(visible))
 const moreNavItems = computed(() => moreNav.filter(visible))
-
-const userInitial = computed(() => authStore.user?.username?.trim().charAt(0).toUpperCase() || '?')
 
 // 详情/嵌套路由用 meta.nav 指向所属菜单（标的档案 → 当前持仓），否则按 path 高亮
 const activeMenu = computed(() => route.meta.nav ?? route.path)
 
 const passwordDialogVisible = ref(false)
-
+let openPasswordAfterDrawer = false
+function finishNavigationClose() {
+  if (openPasswordAfterDrawer) {
+    openPasswordAfterDrawer = false
+    passwordDialogVisible.value = true
+  }
+}
 const handleUserCommand = async (command: string) => {
   if (command === 'password') {
-    mobileNavVisible.value = false
-    passwordDialogVisible.value = true
+    if (mobileNavVisible.value) {
+      openPasswordAfterDrawer = true
+      mobileNavVisible.value = false
+    } else passwordDialogVisible.value = true
   } else if (command === 'logout') {
     mobileNavVisible.value = false
     await authStore.logout()
@@ -246,435 +326,240 @@ const handleUserCommand = async (command: string) => {
 .app-container {
   min-height: 100vh;
   background: var(--app-bg);
+  --sidebar-width: 0px;
+  --app-header-height: 0px;
 }
-
-.app-header {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  height: auto;
-  min-height: var(--app-header-height);
-  background-color: var(--app-surface);
-  border-bottom: 1px solid var(--app-border-soft);
-  padding: 0;
+.app-container.has-sidebar {
+  --sidebar-width: 56px;
 }
-
-.header-content {
-  max-width: 1440px;
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  height: 100%;
-  min-height: var(--app-header-height);
-  padding: 0 24px;
-  gap: 20px;
+.app-container.sidebar-expanded {
+  --sidebar-width: 208px;
 }
-
-.brand-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 170px;
-  color: var(--app-text);
-  text-decoration: none;
-}
-
-.brand-mark {
-  display: grid;
-  grid-template-columns: repeat(3, 5px);
-  align-items: end;
-  gap: 3px;
-  width: 28px;
-  height: 28px;
-  padding: 5px;
-  background: var(--app-primary);
-  border: none;
-  border-radius: var(--app-radius-inner);
-}
-
-.brand-mark span {
-  display: block;
-  width: 5px;
-  border-radius: 1px 1px 0 0;
-  background: var(--app-on-primary);
-}
-
-.brand-mark span:nth-child(1) {
-  height: 11px;
-  opacity: 0.75;
-}
-
-.brand-mark span:nth-child(2) {
-  height: 17px;
-}
-
-.brand-mark span:nth-child(3) {
-  height: 8px;
-  opacity: 0.6;
-}
-
-.brand-title {
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.022em;
-  white-space: nowrap;
-  color: var(--app-text);
-}
-
-.header-menu {
-  flex: 1;
+.app-content {
+  margin-left: var(--sidebar-width);
   min-width: 0;
-  border-bottom: none;
-  background: transparent !important;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
+  transition: margin-left var(--app-navigation-duration) var(--apple-ease);
 }
-
-.header-menu::-webkit-scrollbar {
-  display: none;
+.public-settings {
+  position: fixed;
+  left: 8px;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  width: 44px;
+  z-index: 100;
 }
-
-:deep(.header-menu.el-menu--horizontal) {
-  height: 52px;
-  background: transparent !important;
-}
-
-:deep(.header-menu.el-menu--horizontal > .el-menu-item) {
-  height: 36px;
-  line-height: 36px;
-  margin: 8px 3px;
-  padding: 0 14px;
-  border: none !important;
-  border-radius: var(--app-radius-inner);
-  color: var(--app-text-muted) !important;
-  font-weight: 500;
-  font-size: 14px;
-  letter-spacing: -0.01em;
-  background: transparent !important;
-  transition:
-    color var(--app-duration) var(--apple-ease),
-    background-color var(--app-duration) var(--apple-ease);
-}
-
-:deep(.header-menu.el-menu--horizontal > .el-menu-item.is-active) {
-  color: var(--app-primary) !important;
-  background: var(--app-primary-soft) !important;
-  font-weight: 600;
-}
-
-:deep(.header-menu.el-menu--horizontal > .el-menu-item:hover) {
-  color: var(--app-text) !important;
-  background: var(--app-hover) !important;
-}
-
-.user-info {
-  margin-left: auto;
+.desktop-sidebar {
+  position: fixed;
+  inset: 0 auto 0 0;
   display: flex;
+  flex-direction: column;
+  width: var(--sidebar-width);
+  height: 100vh;
+  height: 100dvh;
+  background: var(--app-sidebar);
+  border-right: 1px solid var(--app-border);
+  z-index: 100;
+  transition: width var(--app-navigation-duration) var(--apple-ease);
+}
+.sidebar-heading {
+  display: grid;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 4px;
+  overflow: hidden;
+}
+.sidebar-navigation {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.sidebar-footer {
+  display: grid;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 8px 4px;
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--app-border-soft);
+}
+.drawer-footer-actions {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+}
+.sidebar-back {
+  display: grid;
+  grid-template-columns: var(--app-navigation-icon-column) minmax(0, 1fr);
   align-items: center;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 0;
+  border: 0;
+  border-radius: var(--app-radius-inner);
+  background: transparent;
+  color: var(--app-text-muted);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
 }
-
-.mobile-nav-button {
-  display: none;
-  margin-left: auto;
+.sidebar-back > svg {
+  justify-self: center;
 }
-
-.user-dropdown {
+.sidebar-back:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+.sidebar-back:focus-visible {
+  outline: 2px solid var(--app-primary-strong);
+  outline-offset: -2px;
+}
+.brand-link {
   display: flex;
   align-items: center;
   gap: 8px;
-  cursor: pointer;
-  padding: 4px 10px 4px 4px;
-  border-radius: var(--app-radius-inner);
-  transition: background-color var(--app-duration) var(--apple-ease);
-}
-
-.user-dropdown:hover {
-  background-color: var(--app-hover);
-}
-
-.user-avatar {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: var(--app-primary);
-  color: var(--app-on-primary);
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1;
-  user-select: none;
-}
-
-.user-avatar-lg {
-  width: 40px;
-  height: 40px;
-  font-size: 17px;
-  flex-shrink: 0;
-}
-
-.username {
-  font-size: 14px;
+  text-decoration: none;
   color: var(--app-text);
-  font-weight: 500;
+  min-width: 0;
 }
-
+.sidebar-brand {
+  display: grid;
+  grid-template-columns: var(--app-navigation-icon-column) minmax(0, 1fr);
+  gap: 0;
+  min-height: 44px;
+  overflow: hidden;
+}
+.sidebar-brand .brand-mark {
+  justify-self: center;
+}
+.sidebar-label {
+  white-space: nowrap;
+  transition: opacity var(--app-navigation-label-duration) var(--apple-ease);
+}
+.is-collapsed .sidebar-label {
+  opacity: 0;
+  pointer-events: none;
+}
+.brand-title {
+  font-family: var(--app-font-serif);
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.brand-mark {
+  display: block;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  background-color: var(--app-primary);
+  -webkit-mask: url('./assets/brand-mark.png') center / contain no-repeat;
+  mask: url('./assets/brand-mark.png') center / contain no-repeat;
+}
+.navigation-toggle {
+  display: grid;
+  grid-template-columns: var(--app-navigation-icon-column) minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--app-radius-inner);
+  background: transparent;
+  color: var(--app-text-muted);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+}
+.navigation-toggle > .n-icon {
+  justify-self: center;
+}
+.navigation-toggle:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+.navigation-toggle:focus-visible {
+  outline: 2px solid var(--app-primary-strong);
+  outline-offset: -2px;
+}
 .app-main {
   width: 100%;
   max-width: 1440px;
   margin: 0 auto;
   padding: 20px 24px;
 }
-
 .app-boot-loading {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   min-height: 40vh;
-  color: var(--el-text-color-secondary);
+  color: var(--app-text-muted);
   font-size: 14px;
 }
-
 .status-overlay {
   position: sticky;
-  top: calc(var(--app-header-height) + 12px);
+  top: 0;
   z-index: 19;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  width: min(100%, 1440px);
+  max-width: 1440px;
   margin: 0 auto;
-  padding: 12px 32px;
+  padding: 12px 24px;
   color: var(--app-danger-text);
   background: var(--app-danger-surface);
   border-bottom: 1px solid var(--app-danger-border);
 }
-
 .status-content {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
-
 .status-content strong,
 .status-content span {
   display: block;
 }
-
 .status-content strong {
   font-size: 14px;
 }
-
 .status-content span {
-  color: var(--app-danger-text);
   font-size: 13px;
 }
-
 .status-banner-enter-active,
 .status-banner-leave-active {
-  transition:
-    opacity 0.18s ease,
-    transform 0.18s ease;
+  transition: opacity 0.15s ease;
 }
-
 .status-banner-enter-from,
 .status-banner-leave-to {
   opacity: 0;
-  transform: translateY(-6px);
 }
-
+.drawer-heading {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+}
 .mobile-nav-panel {
-  display: flex;
-  flex-direction: column;
-  min-height: 100%;
-}
-
-.mobile-nav-user {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 20px 20px 16px;
-  border-bottom: 1px solid var(--app-separator);
-  background: var(--app-surface-muted);
-}
-
-.mobile-nav-identity {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.mobile-nav-name {
-  max-width: 180px;
-  margin-bottom: 4px;
-  color: var(--app-text);
-  font-size: 17px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mobile-nav-menu {
   flex: 1;
-  border-right: 0;
-  padding: 8px;
 }
-
-.mobile-nav-menu :deep(.el-menu-item) {
-  height: 44px;
-  margin: 2px 0;
-  border-radius: var(--app-radius-inner);
-  font-weight: 500;
-}
-
-.mobile-nav-menu :deep(.el-menu-item.is-active) {
-  background: var(--app-primary-soft);
-  color: var(--app-primary);
-  font-weight: 600;
-}
-
-.mobile-nav-menu :deep(.el-menu-item:hover) {
-  background: var(--app-hover);
-}
-
-.mobile-logout-button {
-  margin: 12px 16px 20px;
-  border-radius: var(--app-radius-inner);
-}
-
 @media (max-width: 1100px) {
-  .header-content {
-    align-items: stretch;
-    flex-wrap: wrap;
-    gap: 0 12px;
-    padding: 10px 16px 0;
-  }
-
-  .brand-link {
-    min-height: 36px;
-  }
-
-  .header-menu {
-    order: 3;
-    flex-basis: 100%;
-    margin-inline: -4px;
-  }
-
-  .user-info {
-    min-height: 36px;
-  }
-
   .app-main {
     padding: 20px 16px;
   }
-
   .status-overlay {
-    top: calc(var(--app-header-height) + 52px);
-    padding-inline: 20px;
+    padding-inline: 16px;
   }
 }
-
-@media (max-width: 640px) {
-  .header-content {
-    gap: 0 8px;
-    min-height: 48px;
-    padding: 0 16px;
-  }
-
-  .brand-link {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .brand-mark {
-    flex: 0 0 auto;
-  }
-
-  .brand-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 16px;
-  }
-
-  .user-info {
-    display: none;
-  }
-
-  .mobile-nav-button {
-    display: inline-flex;
-    flex: 0 0 auto;
-  }
-
-  .header-menu {
-    display: none;
-  }
-
-  :deep(.mobile-nav-drawer .el-drawer__body) {
-    padding: 0;
-  }
-
+@media (min-width: 1025px) {
   .app-main {
-    padding: 16px;
-  }
-
-  .status-overlay {
-    position: static;
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
-    padding: 10px 12px;
+    padding: var(--app-space-sm) var(--app-space-lg);
   }
 }
-</style>
-
-<!--
-  #219 导航/账号操作新增的样式，单独成块放在末尾：上面的主样式块由扁平主题改造负责，
-  分开写减少合并冲突。「更多」与 EP 自动溢出的「…」都是 .el-sub-menu，它们的标题
-  要与顶层菜单项同一套外观；当前页在「更多」里时 EP 给 sub-menu 加 .is-active，
-  此前没有覆盖这个状态，高亮样式与其他项不一致。
--->
-<style scoped>
-:deep(.header-menu.el-menu--horizontal > .el-sub-menu .el-sub-menu__title) {
-  height: 36px;
-  line-height: 36px;
-  margin: 8px 3px;
-  padding: 0 14px;
-  border: none !important;
-  border-radius: var(--app-radius-inner);
-  color: var(--app-text-muted) !important;
-  font-weight: 500;
-  font-size: 14px;
-  background: transparent !important;
-}
-
-:deep(.header-menu.el-menu--horizontal > .el-sub-menu .el-sub-menu__title:hover) {
-  color: var(--app-text) !important;
-  background: var(--app-hover, rgba(15, 23, 42, 0.05)) !important;
-}
-
-:deep(.header-menu.el-menu--horizontal > .el-sub-menu.is-active .el-sub-menu__title) {
-  color: var(--app-primary) !important;
-  background: var(--app-primary-soft) !important;
-  font-weight: 600;
-}
-
-.mobile-account-actions {
-  display: flex;
-  gap: 8px;
-  margin: 12px 16px 20px;
-}
-
-.mobile-account-actions .el-button {
-  flex: 1;
-  margin: 0;
-  border-radius: var(--app-radius-inner);
+@media (max-width: 640px) {
+  .app-main {
+    padding: 12px 10px;
+  }
 }
 </style>

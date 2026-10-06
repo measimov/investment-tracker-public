@@ -1,13 +1,14 @@
 <script setup lang="ts">
+import { NTag } from 'naive-ui'
 /**
  * AI 分析标签：风险等级 +（可选）观点标签 + 「可能过期」（#284：桌面 AI 列与移动卡片共用）。
- * 风险用 success/warning/danger，观点标签用中性 info：两者不再同为橙色。
+ * 风险与分析标签复用详情页的文案和语义配色，未知风险为中性。
  */
 import type { HoldingRow } from './useHoldingsTable'
 import type { SecurityBadgesFeature } from './useSecurityBadges'
 import { displayAnalysisTag } from './display'
 
-const props = defineProps<{
+defineProps<{
   badges: SecurityBadgesFeature
   row: HoldingRow
   /** 同时显示观点标签（移动卡片空间小，只显示风险与过期） */
@@ -16,37 +17,43 @@ const props = defineProps<{
   riskTestId?: string
 }>()
 
-function riskText(level: string) {
-  return `${props.badges.riskLabels[level] || level}风险`
+function naiveTagType(type: string) {
+  return type === 'danger'
+    ? 'error'
+    : type === 'info' || !type
+      ? 'default'
+      : (type as 'success' | 'warning')
 }
 </script>
 
 <template>
   <template v-if="badges.analysisFor(row)">
-    <el-tag
-      :type="badges.riskTagType(badges.analysisFor(row)!.risk_level)"
+    <NTag
+      :type="naiveTagType(badges.riskTagType(badges.analysisFor(row)!.risk_level))"
       size="small"
-      effect="light"
+      :bordered="false"
       :data-testid="riskTestId"
     >
-      {{ riskText(badges.analysisFor(row)!.risk_level) }}
-    </el-tag>
-    <el-tag
+      风险 {{ badges.riskLabel(badges.analysisFor(row)!.risk_level) }}
+    </NTag>
+    <NTag
       v-if="withTag && displayAnalysisTag(badges.analysisFor(row)!.tags)"
       size="small"
-      effect="plain"
-      type="info"
+      :bordered="true"
+      :type="
+        naiveTagType(badges.analysisTagType(displayAnalysisTag(badges.analysisFor(row)!.tags)!))
+      "
     >
       {{ displayAnalysisTag(badges.analysisFor(row)!.tags) }}
-    </el-tag>
-    <el-tag
+    </NTag>
+    <NTag
       v-if="badges.analysisOutdated(row)"
       size="small"
-      effect="plain"
+      :bordered="true"
       type="warning"
       data-testid="ai-outdated"
     >
       可能过期
-    </el-tag>
+    </NTag>
   </template>
 </template>

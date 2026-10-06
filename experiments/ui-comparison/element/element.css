@@ -1,0 +1,63 @@
+:root {
+  --el-color-primary: #a6533c;
+  --el-color-primary-light-3: #be7a66;
+  --el-color-primary-light-5: #d2a494;
+  --el-color-primary-light-7: #e8cec4;
+  --el-color-primary-light-8: #f2e8e1;
+  --el-color-primary-light-9: #faf5f1;
+  --el-color-primary-dark-2: #86412d;
+  --el-text-color-primary: #242321;
+  --el-text-color-regular: #5f5b53;
+  --el-border-color: #d5cfc4;
+  --el-border-color-light: #e5e1d8;
+  --el-fill-color-light: #faf9f5;
+  --el-color-danger: #b4233e;
+  --el-border-radius-base: 4px;
+}
+.comparison-page .el-table {
+  font-size: 13px;
+  --el-table-header-bg-color: #faf9f5;
+  --el-table-row-hover-bg-color: #faf9f5;
+}
+.comparison-page .el-table td.el-table__cell {
+  padding: 10px 0;
+}
+.comparison-page .el-table th.el-table__cell {
+  font-weight: 500;
+}
+.filter-field .el-select,
+.filter-field .el-date-editor,
+.dialog-fields .el-select,
+.dialog-fields .el-date-editor,
+.dialog-fields .el-input-number {
+  width: 100%;
+}
+.profit-sort {
+  border: 0;
+  background: transparent;
+  color: #5f5b53;
+  padding: 4px;
+  font: inherit;
+}
+.profit-sort:focus-visible {
+  outline: 2px solid #a6533c;
+  outline-offset: 2px;
+}
+.comparison-dialog {
+  max-width: calc(100vw - 32px);
+  border-radius: 6px;
+}
+.comparison-dialog .el-form-item {
+  margin-bottom: 4px;
+}
+.comparison-dialog .el-form-item__label {
+  font-size: 13px;
+}
+.comparison-dialog .el-dialog__body {
+  padding-top: 10px;
+}
+@media (max-width: 640px) {
+  .comparison-page .el-button {
+    min-height: 40px;
+  }
+}

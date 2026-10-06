@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { EMPTY } from '@/utils/helpers'
 import {
+  formatAmountTick,
   formatNullableNumber,
   formatNullablePercent,
   formatPlainPercent,
@@ -27,6 +28,8 @@ describe('百分比正号规则', () => {
     expect(signedNumber(-3.2)).toBe('-3.20')
     expect(signedNumber(1234.5)).toBe('+1,234.50')
     expect(signedNumber(null)).toBe(EMPTY)
+    expect(signedNumber(0)).toBe('0.00')
+    expect(signedNumber(-0.004)).toBe('0.00')
   })
 
   it('formatNullableNumber 缺值占位', () => {
@@ -67,5 +70,15 @@ describe('riskFreeText（#200 无风险利率口径说明）', () => {
     expect(riskFreeText({ basis: 'constant', average: 2 })).toBe(
       '无风险利率按请求指定的年化 2.00% 计算'
     )
+  })
+})
+
+describe('交易图表金额刻度', () => {
+  it('保留正负号与量级，金额明细不受刻度缩写影响', () => {
+    expect(formatAmountTick(0)).toBe('0')
+    expect(formatAmountTick(1500)).toBe('1,500')
+    expect(formatAmountTick(500000)).toBe('50万')
+    expect(formatAmountTick(-125000)).toBe('-12.5万')
+    expect(formatAmountTick(100000000)).toBe('1亿')
   })
 })

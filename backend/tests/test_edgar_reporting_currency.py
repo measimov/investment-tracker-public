@@ -58,14 +58,63 @@ def _by(result, key):
 # ---------------------------------------------------------------------------- 透视
 
 
+# 只有时点（资产负债）科目的字段：v4 起季度行只剩这些字段即是 10-Q 比较资产负债表的占位行
+_INSTANT_FIELDS = {
+    "total_assets",
+    "total_liab",
+    "total_hldr_eqy_exc_min_int",
+    "money_cap",
+    "accounts_receiv",
+    "inventories",
+    "total_cur_assets",
+    "total_cur_liab",
+    "lt_debt",
+    "fix_assets",
+}
+_ROW_META = {"end_date", "fp", "form", "currency", "edgar_chain_version", "edgar_missing_reasons"}
+
+
+def _is_quarter_placeholder(row):
+    return row["fp"] != "FY" and set(row) - _ROW_META <= _INSTANT_FIELDS
+
+
 def test_usd_issuer_pivot_unchanged_against_pre_change_golden(monkeypatch):
-    """[回归锁] 美国本土 10-K 发行人只有 USD 单位：除版本标记外与改动前逐字节一致。"""
+    """[回归锁] 美国本土 10-K 发行人只有 USD 单位：与 v3 改动前的金样相比，唯一差别是
+    季度占位行（只有时点事实，#351-2）不再生成——其余行除版本标记外逐字节一致。
+
+    金样是 v3 生产输出，保持原样不重生成：差异由这里显式剔除，读测试就知道改了什么。"""
     rows = _pivot(monkeypatch, _facts("aapl"), "AAPL")
     golden = json.loads((FIXTURES / "aapl_pivot_golden.json").read_text(encoding="utf-8"))
     assert {row.pop("edgar_chain_version") for row in rows} == {EDGAR_PIVOT_VERSION}
     for row in golden:
         row.pop("edgar_chain_version")
-    assert json.dumps(rows, sort_keys=False) == json.dumps(golden, sort_keys=False)
+    placeholders = [(r["end_date"], r["fp"]) for r in golden if _is_quarter_placeholder(r)]
+    # 金样里的五行占位：Q3 10-Q 的上季末权益、Q2 10-Q 的上季末权益、三份 10-Q 的上年末资产负债表
+    assert placeholders == [
+        ("20260328", "Q3"),
+        ("20251227", "Q2"),
+        ("20250927", "Q1"),
+        ("20250927", "Q2"),
+        ("20250927", "Q3"),
+    ]
+    assert not any(_is_quarter_placeholder(row) for row in rows)
+    kept = {(r["end_date"], r["fp"]): r for r in golden if not _is_quarter_placeholder(r)}
+    new = {(r["end_date"], r["fp"]): r for r in rows}
+    # 金样里的真实行一行不少、逐字节一致
+    for key, row in kept.items():
+        assert json.dumps(new[key], sort_keys=False) == json.dumps(row, sort_keys=False), key
+    # 腾出的季度额度由更早的**真实**季度补上（有营收与净利）——上年同期季度回到窗口，TTM 可滚动
+    added = sorted(set(new) - set(kept))
+    assert added == [
+        ("20240330", "Q2"),
+        ("20240629", "Q3"),
+        ("20241228", "Q1"),
+        ("20250329", "Q2"),
+        ("20250628", "Q3"),
+    ]
+    assert all(new[key]["total_revenue"] and new[key]["n_income_attr_p"] for key in added)
+    quarterly = [row for row in rows if row["fp"] != "FY"]
+    assert len(quarterly) == 8
 
 
 def test_pdd_pivot_uses_cny_reporting_currency(monkeypatch):
@@ -492,3 +541,204 @@ def test_pdd_real_facts_have_no_other_currency_gaps_on_graham_fields(monkeypatch
     for row in _pdd_rows(monkeypatch):
         reasons = row.get("edgar_missing_reasons") or {}
         assert "div_paid_owners" not in reasons and "lt_debt" not in reasons
+
+
+# ---------------------------------------------------------------------------- v4（#351）
+
+
+def _fy(end, val, *, filed, form="20-F"):
+    return {
+        "end": end,
+        "start": f"{end[:4]}-01-01",
+        "fp": "FY",
+        "form": form,
+        "filed": filed,
+        "val": val,
+    }
+
+
+def _instant(end, val, *, filed, fp="FY", form="20-F"):
+    return {"end": end, "fp": fp, "form": form, "filed": filed, "val": val}
+
+
+def _q1(end, start, val, *, filed):
+    return {"end": end, "start": start, "fp": "Q1", "form": "10-Q", "filed": filed, "val": val}
+
+
+def _switching_issuer():
+    """2014–2022 报 CNY、FY2023 起改报 USD 的 20-F 发行人（#351 复现）。
+
+    每份年报带两年比较数：改币后第一份（FY2023，2024 年申报）把 2021–2022 重述成 USD。
+    CNY 期数（9 年）多于 USD（5 年），v3 全史取 CNY，FY2023–2025 整行消失。"""
+    revenue_cny = [_fy(f"{y}-12-31", 1000.0 * y, filed=f"{y + 1}-04-20") for y in range(2014, 2023)]
+    eps_cny = [_fy(f"{y}-12-31", 7.0, filed=f"{y + 1}-04-20") for y in range(2014, 2023)]
+    ni_cny = [_fy(f"{y}-12-31", 100.0 * y, filed=f"{y + 1}-04-20") for y in range(2014, 2023)]
+    revenue_usd, eps_usd = [], []
+    for filing_year in range(2024, 2027):  # FY2023–FY2025 三份 USD 年报
+        filed = f"{filing_year}-04-20"
+        for y in range(filing_year - 3, filing_year):
+            revenue_usd.append(_fy(f"{y}-12-31", 150.0 * y, filed=filed))
+            eps_usd.append(_fy(f"{y}-12-31", 0.5 * (y - 2021), filed=filed))
+    return {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"CNY": revenue_cny, "USD": revenue_usd}},
+                "NetIncomeLoss": {"units": {"CNY": ni_cny}},
+                "EarningsPerShareBasic": {"units": {"CNY/shares": eps_cny, "USD/shares": eps_usd}},
+            }
+        }
+    }
+
+
+def test_currency_switch_keeps_latest_years_in_new_currency(monkeypatch):
+    facts = _switching_issuer()
+    # 全史口径仍是 CNY（9 年 vs 5 年）——这正是 v3 丢掉最新年度的原因
+    assert edgar_reporting_currency(facts["facts"]["us-gaap"]) == "CNY"
+    rows = _pivot(monkeypatch, facts, "SWCH")
+    annual = {row["end_date"][:4]: row for row in rows if row["fp"] == "FY"}
+    assert max(annual) == "2025"
+    latest = annual["2025"]
+    assert latest["currency"] == "USD"
+    assert latest["basic_eps"] == 2.0 and latest["total_revenue"] == 150.0 * 2025
+    # 改币后的比较数随新币种（最新申报胜）；更早年份仍是 CNY 原值
+    assert [annual[y]["currency"] for y in ("2021", "2022", "2023", "2024")] == ["USD"] * 4
+    assert annual["2020"]["currency"] == "CNY"
+    assert annual["2020"]["total_revenue"] == 1000.0 * 2020 and annual["2020"]["basic_eps"] == 7.0
+    # 行内不混币：USD 行没有 CNY 才有的净利，且如实标「别币种才有」
+    assert annual["2022"].get("n_income_attr_p") is None
+    assert annual["2022"]["edgar_missing_reasons"]["n_income_attr_p"] == "other_currency_only"
+
+
+def test_convenience_translation_does_not_flip_latest_year(monkeypatch):
+    """同一份申报里的美元便利折算只折本年：报告币种覆盖更多期间，最新年度仍取报告币种。"""
+    filed = "2026-04-29"
+    cny = [_fy(f"{y}-12-31", 7000.0, filed=filed) for y in (2023, 2024, 2025)]
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {"units": {"CNY": cny, "USD": [_fy("2025-12-31", 1000.0, filed=filed)]}}
+            }
+        }
+    }
+    rows = _pivot(monkeypatch, facts)
+    assert {row["currency"] for row in rows} == {"CNY"}
+    assert rows[0]["total_revenue"] == 7000.0
+
+
+def _quarter_facts():
+    return {
+        "facts": {
+            "us-gaap": {
+                "Revenues": {
+                    "units": {
+                        "USD": [
+                            _fy("2025-12-31", 400.0, filed="2026-02-20", form="10-K"),
+                            _q1("2026-03-31", "2026-01-01", 110.0, filed="2026-05-01"),
+                        ]
+                    }
+                },
+                "Assets": {
+                    "units": {
+                        "USD": [
+                            _instant("2025-12-31", 900.0, filed="2026-02-20", form="10-K"),
+                            _instant("2026-03-31", 950.0, filed="2026-05-01", fp="Q1", form="10-Q"),
+                            # 同一份 10-Q 的上年末比较列：fp 是 Q1，期末却是上年末
+                            _instant("2025-12-31", 900.0, filed="2026-05-01", fp="Q1", form="10-Q"),
+                        ]
+                    }
+                },
+            }
+        }
+    }
+
+
+def test_quarter_rows_with_only_instant_facts_are_not_generated(monkeypatch):
+    """10-Q 比较资产负债表的占位行（#351-2）不再生成，不再占季度额度。"""
+    rows = _pivot(monkeypatch, _quarter_facts(), "QTR")
+    assert [(row["end_date"], row["fp"]) for row in rows] == [
+        ("20260331", "Q1"),
+        ("20251231", "FY"),
+    ]
+    assert rows[0]["total_assets"] == 950.0 and rows[0]["total_revenue"] == 110.0
+    assert rows[1]["total_assets"] == 900.0
+
+
+def test_eps_falls_back_to_combined_basic_and_diluted_tag(monkeypatch):
+    filed = "2026-02-20"
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "NetIncomeLoss": {
+                    "units": {
+                        "USD": [
+                            _fy("2025-12-31", -50.0, filed=filed, form="10-K"),
+                            _fy("2024-12-31", -40.0, filed=filed, form="10-K"),
+                        ]
+                    }
+                },
+                "EarningsPerShareBasicAndDiluted": {
+                    "units": {
+                        "USD/shares": [
+                            _fy("2025-12-31", -0.5, filed=filed, form="10-K"),
+                            _fy("2024-12-31", -0.4, filed=filed, form="10-K"),
+                        ]
+                    }
+                },
+                # 某年单独打了基本 EPS：专用概念优先
+                "EarningsPerShareBasic": {
+                    "units": {"USD/shares": [_fy("2024-12-31", -0.41, filed=filed, form="10-K")]}
+                },
+            }
+        }
+    }
+    rows = {row["end_date"]: row for row in _pivot(monkeypatch, facts, "LOSS")}
+    assert rows["20251231"]["basic_eps"] == -0.5 and rows["20251231"]["diluted_eps"] == -0.5
+    assert rows["20241231"]["basic_eps"] == -0.41 and rows["20241231"]["diluted_eps"] == -0.4
+
+
+def _dividend_facts(**concepts):
+    filed = "2026-02-20"
+    base = {
+        "NetCashProvidedByUsedInOperatingActivities": {
+            "units": {"USD": [_fy("2025-12-31", 500.0, filed=filed, form="10-K")]}
+        }
+    }
+    for name, value in concepts.items():
+        base[name] = {"units": {"USD": [_fy("2025-12-31", value, filed=filed, form="10-K")]}}
+    return {"facts": {"us-gaap": base}}
+
+
+def test_common_stock_dividends_preferred_over_total_payments(monkeypatch):
+    """PaymentsOfDividends 含优先股与非控股股息（us-gaap 定义）：两个都打时取普通股概念。"""
+    both = _dividend_facts(PaymentsOfDividends=120.0, PaymentsOfDividendsCommonStock=80.0)
+    assert _pivot(monkeypatch, both, "DIV")[0]["div_paid_owners"] == 80.0
+    total_only = _dividend_facts(PaymentsOfDividends=120.0)
+    assert _pivot(monkeypatch, total_only, "DIV")[0]["div_paid_owners"] == 120.0
+
+
+def test_sync_prunes_stored_quarter_placeholders_but_keeps_older_history(db, monkeypatch):
+    for period_key, payload in (
+        # v3 留下的占位行：在本次季度窗口内、却不再产出 → 删
+        ("20251231|Q1", {"end_date": "20251231", "fp": "Q1", "currency": "USD"}),
+        # 本次窗口之前的深历史季度行：保留（upsert 从不删）
+        (
+            "20180331|Q1",
+            {"end_date": "20180331", "fp": "Q1", "currency": "USD", "total_revenue": 90.0},
+        ),
+    ):
+        profile_store.upsert_profile_row(
+            db, "PDD", "美股", "edgar_companyfacts", period_key, payload
+        )
+    db.commit()
+    facts = _quarter_facts()
+    monkeypatch.setattr(report_fetchers, "edgar_lookup", lambda s: {"cik": 1, "title": "x"})
+    monkeypatch.setattr(report_fetchers, "edgar_companyfacts", lambda cik: facts)
+    assert svc.sync_symbol_profile(db, "PDD", "美股")["failed"] == []
+    keys = {
+        row.period_key
+        for row in db.query(SecurityProfileData).filter(
+            SecurityProfileData.symbol == "PDD",
+            SecurityProfileData.dataset == "edgar_companyfacts",
+        )
+    }
+    assert keys == {"20260331|Q1", "20251231|FY", "20180331|Q1"}

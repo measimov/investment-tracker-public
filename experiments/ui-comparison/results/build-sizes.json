@@ -1,0 +1,61 @@
+{
+  "at": "2026-10-02T15:54:43.266Z",
+  "unit": "bytes",
+  "method": "Independent Vite production entry assets; local gzip, not HTTP transfer or whole application size.",
+  "variants": [
+    {
+      "variant": "element",
+      "assets": [
+        {
+          "name": "assets/index-Bs3EzPU8.js",
+          "raw": 491472,
+          "gzip": 166745,
+          "sha256": "546bf13fbe1e9d7a4272348b2f0cde8b5e296aa1dccd3eccce9aaafe683178e7"
+        },
+        {
+          "name": "assets/index-C-JedIzk.css",
+          "raw": 353545,
+          "gzip": 48403,
+          "sha256": "5bc47e1005a22caaa5ee78d966fc02cd7d1a0b58bd3c552b8d69d175fec841d7"
+        }
+      ],
+      "totalGzip": 215148
+    },
+    {
+      "variant": "naive",
+      "assets": [
+        {
+          "name": "assets/index-CsAOGF2M.js",
+          "raw": 763176,
+          "gzip": 218814,
+          "sha256": "301b885f9ff93a61e896b61b9817e5d9303a32fb06b3aebff09e0bc817c7aa06"
+        },
+        {
+          "name": "assets/index-BaCGBNmN.css",
+          "raw": 3392,
+          "gzip": 1174,
+          "sha256": "44695045a2fc7748f7062f16c8278bec035c27c302a8d8669bd9d5743f32b675"
+        }
+      ],
+      "totalGzip": 219988
+    },
+    {
+      "variant": "nuxt",
+      "assets": [
+        {
+          "name": "assets/index-BS0tvLoY.js",
+          "raw": 742968,
+          "gzip": 211196,
+          "sha256": "30a46b917386559a3dc57cad984983bcff5ce7d212f7f45b468bedfe5dede0fd"
+        },
+        {
+          "name": "assets/index-3zL48A41.css",
+          "raw": 195370,
+          "gzip": 26309,
+          "sha256": "576ff4da9f2e5a7f7bc666a282ccf8969531dcb4f3270630ca523ff879ce998c"
+        }
+      ],
+      "totalGzip": 237505
+    }
+  ]
+}

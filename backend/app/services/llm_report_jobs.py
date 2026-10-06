@@ -92,6 +92,8 @@ def execute_llm_report_job(claimed: Dict[str, Any]) -> None:
             return
 
         usage = completion.get("usage") or {}
+        if "generation_meta" in completion:
+            input_payload["generation_meta"] = completion["generation_meta"]
         report = LlmReport(
             user_id=claimed["user_id"],
             title=f"投资复盘 {local_today().isoformat()}",

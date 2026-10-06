@@ -44,6 +44,49 @@ describe('holdings store price updates', () => {
     vi.mocked(api.updateHoldingPrice).mockReset()
   })
 
+  it('an older forced fetch cannot overwrite newer cached holdings or loading', async () => {
+    const store = useHoldingsStore()
+    const old = deferred<{ data: Holding[] }>()
+    const current = deferred<{ data: Holding[] }>()
+    vi.mocked(api.getHoldings)
+      .mockReturnValueOnce(old.promise as never)
+      .mockReturnValueOnce(current.promise as never)
+    const oldFetch = store.fetchHoldings({}, { force: true })
+    const currentFetch = store.fetchHoldings({}, { force: true })
+    old.resolve({ data: [holding(1, 11, '20')] })
+    await oldFetch
+    expect(store.isLoading()).toBe(true)
+    current.resolve({ data: [holding(1, 11, '40')] })
+    await currentFetch
+    expect((await store.fetchHoldings())[0].current_price).toBe('40')
+    expect(store.isLoading()).toBe(false)
+
+    const late = deferred<{ data: Holding[] }>()
+    vi.mocked(api.getHoldings)
+      .mockReturnValueOnce(late.promise as never)
+      .mockResolvedValue({ data: [holding(1, 11, '40')] } as never)
+    const lateFetch = store.fetchHoldings({}, { force: true })
+    const newest = store.fetchHoldings({}, { force: true })
+    await newest
+    late.resolve({ data: [holding(1, 11, '10')] })
+    await lateFetch
+    expect((await store.fetchHoldings())[0].current_price).toBe('40')
+  })
+
+  it('a normal read joins a pending refresh instead of authorizing stale cached rows', async () => {
+    const store = useHoldingsStore()
+    vi.mocked(api.getHoldings).mockResolvedValueOnce({ data: [holding(1, 11, '20')] } as never)
+    await store.fetchHoldings()
+    const pending = deferred<{ data: Holding[] }>()
+    vi.mocked(api.getHoldings).mockReturnValueOnce(pending.promise as never)
+    const forced = store.fetchHoldings({}, { force: true })
+    const normal = store.fetchHoldings()
+    pending.resolve({ data: [holding(1, 11, '40')] })
+    expect((await normal)[0].current_price).toBe('40')
+    await forced
+    expect(api.getHoldings).toHaveBeenCalledTimes(2)
+  })
+
   it('a slower older save cannot overwrite a newer price (PR #216 review P2)', async () => {
     const store = useHoldingsStore()
     vi.mocked(api.getHoldings).mockResolvedValue({

@@ -1,3 +1,4 @@
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -80,9 +81,18 @@ def _build_transaction_query(
     transaction_type: Optional[str] = None,
     broker_account_id: Optional[int] = None,
     unassigned_account: bool = False,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
 ):
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=422, detail="开始日期不能晚于结束日期")
+
     query = db.query(Transaction).filter(Transaction.user_id == user_id)
 
+    if start_date is not None:
+        query = query.filter(Transaction.transaction_date >= start_date)
+    if end_date is not None:
+        query = query.filter(Transaction.transaction_date <= end_date)
     if symbol:
         query = query.filter(Transaction.symbol == symbol)
     if market:
@@ -182,6 +192,8 @@ def get_transactions(
     transaction_type: Optional[str] = None,
     broker_account_id: Optional[int] = None,
     unassigned_account: bool = False,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -194,6 +206,8 @@ def get_transactions(
         transaction_type=transaction_type,
         broker_account_id=broker_account_id,
         unassigned_account=unassigned_account,
+        start_date=start_date,
+        end_date=end_date,
     )
 
     transactions = (
@@ -212,6 +226,8 @@ def get_transactions_count(
     transaction_type: Optional[str] = None,
     broker_account_id: Optional[int] = None,
     unassigned_account: bool = False,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -224,6 +240,8 @@ def get_transactions_count(
         transaction_type=transaction_type,
         broker_account_id=broker_account_id,
         unassigned_account=unassigned_account,
+        start_date=start_date,
+        end_date=end_date,
     ).count()
     return {"total": total}
 

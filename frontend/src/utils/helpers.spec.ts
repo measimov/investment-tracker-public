@@ -1,16 +1,17 @@
 // 展示格式化纯函数（#142：此前完全无测试）。formatDate/formatDateTime 依赖
 // Node 自带 ICU 的 zh-CN locale——CI 与本地均为 full-icu，输出确定。
 import { describe, expect, test } from 'vitest'
-import { COLOR } from '@/styles/tokens'
 import {
   EMPTY,
   formatCurrency,
   formatDate,
   formatNumber,
   formatPercent,
+  formatPlainPercent,
   formatPrice,
   formatQuantity,
   profitColor,
+  pnlClass,
   toNumber
 } from './helpers'
 
@@ -44,7 +45,8 @@ describe('toNumber', () => {
 describe('formatPercent', () => {
   test('positive values carry an explicit plus sign', () => {
     expect(formatPercent(3.456)).toBe('+3.46%')
-    expect(formatPercent(0)).toBe('+0.00%')
+    expect(formatPercent(0)).toBe('0.00%')
+    expect(formatPercent(-0.004)).toBe('0.00%')
   })
 
   test('negative values keep the minus sign', () => {
@@ -56,6 +58,23 @@ describe('formatPercent', () => {
     expect(formatPercent(undefined)).toBe(EMPTY)
     expect(formatPercent('not-a-number')).toBe(EMPTY)
   })
+})
+
+describe('formatPlainPercent', () => {
+  test.each([
+    [0.02549 * 100, '2.5%'],
+    [0.0255 * 100, '2.6%'],
+    [0.02551 * 100, '2.6%'],
+    [-0.0255 * 100, '-2.6%'],
+    [0, '0.0%']
+  ])('rounds percentage %s to one decimal without a plus sign', (value, expected) => {
+    expect(formatPlainPercent(value, 1)).toBe(expected)
+  })
+
+  test.each([null, undefined, '', 'not-a-number', NaN])(
+    'keeps unknown %s as a placeholder without a percent suffix',
+    (value) => expect(formatPlainPercent(value, 1)).toBe(EMPTY)
+  )
 })
 
 describe('formatCurrency', () => {
@@ -129,10 +148,15 @@ describe('formatDate', () => {
 })
 
 describe('profitColor', () => {
-  test('zero and gains are success-colored, losses danger-colored', () => {
-    expect(profitColor(0)).toBe(COLOR.success)
-    expect(profitColor(12.3)).toBe(COLOR.success)
-    expect(profitColor(-0.01)).toBe(COLOR.danger)
+  test('zero is neutral, gains success-colored, losses danger-colored', () => {
+    expect(profitColor(0)).toBe('')
+    expect(profitColor(-0)).toBe('')
+    expect(pnlClass(null)).toBe('pnl-flat')
+    expect(pnlClass('0')).toBe('pnl-flat')
+    expect(pnlClass('1')).toBe('pnl-pos')
+    expect(pnlClass(-1)).toBe('pnl-neg')
+    expect(profitColor(12.3)).toBe('var(--app-success)')
+    expect(profitColor(-0.01)).toBe('var(--app-danger)')
   })
 
   test('missing values are not colored as gains', () => {

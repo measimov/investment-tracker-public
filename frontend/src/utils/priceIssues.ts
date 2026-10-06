@@ -4,13 +4,10 @@
  * 输入是后端 GET 业绩端点 / 组合快照带回的 price_freshness（键 `symbol:market`）。
  */
 
-export interface PriceFreshnessEntry {
-  source?: string
-  price_as_of?: string | null
-  price_date?: string | null
-  stale?: boolean
-  name?: string | null
-}
+import { formatDate } from './helpers'
+
+import type { PriceFreshnessEntry } from '@/types'
+export type { PriceFreshnessEntry } from '@/types'
 
 export interface PriceIssueItem {
   key: string
@@ -61,7 +58,7 @@ export function staleSummary(issues: PriceIssues): string | null {
   const earliest = issues.stale.find((item) => item.priceDate)?.priceDate
   return (
     `${issues.stale.length} 只持仓价格超过 ${PRICE_STALE_DAYS} 天未更新` +
-    (earliest ? `，最早 ${earliest}` : '')
+    (earliest ? `，最早 ${formatDate(earliest)}` : '')
   )
 }
 
@@ -75,7 +72,7 @@ export function describeIssueItem(item: PriceIssueItem): string {
   const label = item.name
     ? `${item.name}（${item.symbol} · ${item.market}）`
     : `${item.symbol} · ${item.market}`
-  return item.priceDate ? `${label} ${item.priceDate}` : label
+  return item.priceDate ? `${label} ${formatDate(item.priceDate)}` : label
 }
 
 // 后端 data_quality.warnings 里同一件事的原文（组合快照的清单式提示）：页面改用摘要组件展示，

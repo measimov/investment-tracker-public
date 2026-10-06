@@ -11,6 +11,7 @@ from app.api import import_export as import_export_api
 from app.database import SessionLocal
 from app.models.broker_account import BrokerAccount
 from app.models.broker_fund_flow import BrokerFundFlow
+from app.models.cash_event import CashEvent
 from app.models.corporate_action import CorporateAction
 from app.models.holding import Holding
 from app.models.ibkr_activity_flow import IbkrActivityFlow
@@ -28,6 +29,7 @@ from tests.helpers import ibkr_csv, reset_tables, seed_security_rule, PCT_RELIST
 
 
 RESET_MODELS = (
+    CashEvent,
     BrokerFundFlow,
     IbkrActivityFlow,
     Holding,
@@ -694,17 +696,17 @@ def test_ibkr_tax_is_preserved_unbooked_when_same_account_candidate_is_ambiguous
         )
         batch = db.get(ImportBatch, result["import_batch_id"])
         source = db.query(IbkrActivityFlow).one()
-        assert result["imported_tax_adjustments"] == 0
-        assert result["eligible_unbooked_source_rows"] == 1
-        assert any("found 2" in error for error in result["errors"])
+        assert result["imported_tax_adjustments"] == 1
+        assert result["eligible_unbooked_source_rows"] == 0
+        assert result["errors"] == []
         assert source.broker_account_id == account.id
         assert source.corporate_action_id is None
-        assert source.skip_reason == "unattributed_tax"
-        assert batch.status == "PARTIAL"
-        assert batch.imported_count == 0
+        assert source.skip_reason is None
+        assert batch.status == "COMPLETED"
+        assert batch.imported_count == 1
         assert batch.duplicate_count == 0
         assert batch.archived_count == 1
-        assert batch.skipped_count == 1
+        assert batch.skipped_count == 0
         assert [action.tax_withheld for action in actions] == [
             Decimal("0"),
             Decimal("0"),
@@ -1674,11 +1676,11 @@ def test_ibkr_unattributed_tax_is_recovered_on_reimport(monkeypatch):
         stub_parsed_rows(monkeypatch, tax_flow)
         first = import_ibkr_activity(db, 1, b"file-1", "ibkr.csv", broker_account_id=account.id)
 
-        assert first["batch_status"] == "PARTIAL"
-        assert any("found 0" in e for e in first["errors"])
+        assert first["batch_status"] == "COMPLETED"
+        assert first["errors"] == []
         orphan = db.query(IbkrActivityFlow).filter_by(row_hash=tax_flow.row_hash).one()
         orphan_id = orphan.id
-        assert orphan.skip_reason == "unattributed_tax"
+        assert orphan.skip_reason is None
         assert orphan.corporate_action_id is None
         assert db.query(CorporateAction).count() == 0
 
@@ -1688,19 +1690,20 @@ def test_ibkr_unattributed_tax_is_recovered_on_reimport(monkeypatch):
         second = import_ibkr_activity(db, 1, b"file-2", "ibkr.csv", broker_account_id=account.id)
 
         assert second["errors"] == []
-        assert second["imported_tax_adjustments"] == 1
+        assert second["imported_tax_adjustments"] == 0
 
         action = db.query(CorporateAction).one()
         assert action.action_type == "CASH_DIVIDEND"
-        assert action.tax_withheld == Decimal("1.5")
-        assert action.net_dividend == Decimal("8.5")
+        assert action.tax_withheld == Decimal("0")
+        assert action.net_dividend == Decimal("10")
 
         # 就地转正：同一行（id 不变），不是插新行
         recovered = db.query(IbkrActivityFlow).filter_by(row_hash=tax_flow.row_hash).one()
         assert recovered.id == orphan_id
         assert recovered.skip_reason is None
-        assert recovered.corporate_action_id == action.id
-        assert "attributed during account-scoped re-import" in (recovered.notes or "")
+        assert recovered.corporate_action_id is None
+        assert recovered.cash_event_id is not None
+        assert db.query(CashEvent).filter_by(tax_kind="DIVIDEND").count() == 1
     finally:
         db.close()
 
@@ -1720,13 +1723,13 @@ def test_ibkr_recovered_tax_is_not_applied_twice(monkeypatch):
         import_ibkr_activity(db, 1, b"f2", "ibkr.csv", broker_account_id=account.id)
 
         action = db.query(CorporateAction).one()
-        assert action.tax_withheld == Decimal("1.5")
+        assert action.tax_withheld == Decimal("0")
 
         # 第三次：完全相同的文件重导
         third = import_ibkr_activity(db, 1, b"f3", "ibkr.csv", broker_account_id=account.id)
 
         db.refresh(action)
-        assert action.tax_withheld == Decimal("1.5"), "重导不得把税额再叠加一次"
+        assert action.tax_withheld == Decimal("0"), "重导不得把税额再叠加一次"
         assert third["imported_tax_adjustments"] == 0
         assert third["errors"] == []
         # 该 hash 仍只有一行归档
@@ -1752,10 +1755,10 @@ def test_ibkr_tax_stays_unattributed_while_candidates_remain_ambiguous(monkeypat
         stub_parsed_rows(monkeypatch, div_a, div_b, tax_flow)
         second = import_ibkr_activity(db, 1, b"f2", "ibkr.csv", broker_account_id=account.id)
 
-        assert any("found 2" in e for e in second["errors"])
+        assert second["errors"] == []
         rows = db.query(IbkrActivityFlow).filter_by(row_hash=tax_flow.row_hash).all()
         assert len(rows) == 1, "歧义时不得重复建归档行"
-        assert rows[0].skip_reason == "unattributed_tax"
+        assert rows[0].skip_reason is None
         assert rows[0].corporate_action_id is None
         # 两条股息本身都正常入账且未被记税
         for action in db.query(CorporateAction).all():

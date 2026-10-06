@@ -17,10 +17,17 @@ import api from '@/api'
 import { getApiErrorMessage } from '@/utils/apiErrors'
 import { pollJobUntilDone } from '@/utils/polling'
 import { showApiError } from '@/utils/showApiError'
+import { backfillHasIssues } from '@/utils/reportBackfill'
 import type { ProfileRow, SecurityProfileState } from './types'
 
 function emptyState(): SecurityProfileState {
   return {
+    analysisLoading: true,
+    profileLoading: true,
+    analysisError: '',
+    profileError: '',
+    analysisHasLoaded: false,
+    profileHasLoaded: false,
     analysis: null,
     datasets: {},
     latestPeriods: {},
@@ -71,9 +78,20 @@ export function useSecurityProfile({
       const response = await api.getSecurityAnalysis(market(), symbol())
       if (isStale(generation)) return
       state.analysis = response.data
-    } catch {
+      state.analysisHasLoaded = true
+      state.analysisError = ''
+    } catch (error) {
       if (isStale(generation)) return
-      state.analysis = null // 404 = 尚未生成，空态引导
+      if ((error as { response?: { status?: number } })?.response?.status === 404) {
+        state.analysis = null
+        state.analysisHasLoaded = true // 404 = 已知尚未生成，空态引导
+        state.analysisError = ''
+      } else {
+        state.analysisError = getApiErrorMessage(error, '加载 AI 分析失败')
+        showApiError(error, '加载 AI 分析失败')
+      }
+    } finally {
+      if (!isStale(generation)) state.analysisLoading = false
     }
   }
 
@@ -94,17 +112,40 @@ export function useSecurityProfile({
       state.earningsQuality = data.earnings_quality || {}
       state.grahamScreen = data.graham_screen || {}
       state.latestDataAt = data.latest_data_at || null
+      state.profileHasLoaded = true
+      state.profileError = ''
     } catch (error) {
       if (isStale(generation)) return
+      state.profileError = getApiErrorMessage(error, '加载标的档案失败')
       showApiError(error, '加载标的档案失败')
+    } finally {
+      if (!isStale(generation)) state.profileLoading = false
     }
   }
 
   /** 一次导航 = 一个代次，analysis 与 profile 共用，互不作废 */
   function reloadAll() {
     const generation = nextGeneration()
+    state.analysisLoading = true
+    state.profileLoading = true
+    state.analysisError = ''
+    state.profileError = ''
     loadAnalysis(generation)
     loadProfile(generation)
+  }
+
+  function retryAnalysis() {
+    if (state.analysisLoading || state.generating) return
+    state.analysisLoading = true
+    state.analysisError = ''
+    return loadAnalysis(requestGeneration)
+  }
+
+  function retryProfile() {
+    if (state.profileLoading || state.generating || state.backfilling) return
+    state.profileLoading = true
+    state.profileError = ''
+    return loadProfile(requestGeneration)
   }
 
   // 观察状态请求纳入路由代次守卫（评审 P2）：快照当前 (market, symbol, generation)，
@@ -171,13 +212,17 @@ export function useSecurityProfile({
       const startResponse = await api.startReportBackfillJob(market(), symbol())
       const job = await pollJobUntilDone(() => api.getReportBackfillJob(startResponse.data.id), {
         intervalMs: 3000,
-        maxAttempts: 200,
+        maxAttempts: 1200,
         isCancelled: () => isStale(generation),
-        failureMessage: '财报摘要回填失败'
+        failureMessage: '财报摘要回填失败',
+        timeoutMessage: '财报摘要回填仍在后台运行，请稍后刷新标的页查看'
       })
       if (!job || isStale(generation)) return
       state.backfillResult = (job.result as ProfileRow) || null
-      ElMessage.success('财报摘要回填完成')
+      const result = job.result as ProfileRow | null
+      if (backfillHasIssues(result))
+        ElMessage.warning('财报摘要回填完成，存在失败或待核对项，请查看结果')
+      else ElMessage.success('财报摘要回填完成')
       await loadProfile(generation)
     } catch (error) {
       if (isStale(generation)) return
@@ -240,5 +285,14 @@ export function useSecurityProfile({
     loadWatchState()
   }
 
-  return { state, init, resetAndReload, addToWatchlist, backfillDigests, generateAnalysis }
+  return {
+    state,
+    init,
+    resetAndReload,
+    retryAnalysis,
+    retryProfile,
+    addToWatchlist,
+    backfillDigests,
+    generateAnalysis
+  }
 }

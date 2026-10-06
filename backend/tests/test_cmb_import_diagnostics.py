@@ -618,11 +618,11 @@ def test_preview_survives_diagnostics_failure(monkeypatch):
 
 
 def test_diagnostics_do_not_change_parser_version(monkeypatch):
-    """诊断纯只读：入账语义零变化，PARSER_VERSION 必须停在 11。
+    """诊断纯只读：版本变化只来自显式登记的入账语义更新。
 
-    这条变红 = 动了不该动的东西（多半是顺手改了 HK_CONNECT 判据）。
+    现金判重 v16 不改变诊断或 HK_CONNECT 的解析判据。
     """
-    assert importer.PARSER_VERSION == "14"
+    assert importer.PARSER_VERSION == "16"
     assert importer.HK_CONNECT_MARKET_NAMES == {"沪港通", "深港通"}
 
 

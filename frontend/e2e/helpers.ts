@@ -18,6 +18,27 @@ export const csrfCookieName = 'investment_csrf'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ApiRow = Record<string, any>
 
+/** 每个虚构来源场景显式说明本地配置/历史；不全局默认可见。 */
+export async function mockXueqiuCapabilities(
+  page: Page,
+  facts: { configured?: boolean; opinionHistory?: boolean; postHistory?: boolean }
+) {
+  const entry = (history: boolean | undefined) =>
+    facts.configured
+      ? { available: true, reason: 'configured' }
+      : history
+        ? { available: true, reason: 'history' }
+        : { available: false, reason: 'unconfigured' }
+  await page.route('**/api/capabilities', (route) =>
+    route.fulfill({
+      json: {
+        opinions: entry(facts.opinionHistory),
+        xueqiu_symbol_feed: entry(facts.postHistory)
+      }
+    })
+  )
+}
+
 export async function loginThroughApi(
   request: APIRequestContext,
   credentials: { username: string; password: string } = user

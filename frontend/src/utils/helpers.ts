@@ -1,4 +1,3 @@
-import { COLOR } from '@/styles/tokens'
 import { formatLocalDate, parseLocalDate } from './dateRange'
 import { CURRENCIES } from './currency'
 
@@ -88,7 +87,17 @@ export function formatDateTime(date: string | number | Date | null | undefined):
 export function formatPercent(value: number | string | null | undefined, precision = 2): string {
   // 缺数据显示占位符而不是 0.00%——后者看起来像「真的是 0」（#218/#219）
   if (isMissing(value)) return EMPTY
-  return `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(precision)}%`
+  const rounded = Number(Number(value).toFixed(precision))
+  return `${rounded > 0 ? '+' : ''}${rounded.toFixed(precision)}%`
+}
+
+/** 无正号的百分比（胜率、占比、回撤、研究比率）：12.34% / — */
+export function formatPlainPercent(
+  value: number | string | null | undefined,
+  precision = 2
+): string {
+  const text = formatNumber(value, precision)
+  return text === EMPTY ? EMPTY : `${text}%`
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = Object.fromEntries(
@@ -121,9 +130,24 @@ export function downloadFile(blob: Blob, filename: string): void {
   window.URL.revokeObjectURL(url)
 }
 
-// 盈亏着色：>=0 绿、<0 红（Statistics 口径）
+export function pnlDirection(value: number | string | null | undefined): -1 | 0 | 1 {
+  if (isMissing(value)) return 0
+  return Number(value) > 0 ? 1 : Number(value) < 0 ? -1 : 0
+}
+
+export function pnlClass(value: number | string | null | undefined): string {
+  return { '1': 'pnl-pos', '-1': 'pnl-neg', '0': 'pnl-flat' }[pnlDirection(value)]
+}
+
+export function cardTone(value: number | string | null | undefined) {
+  return {
+    '1': 'summary-card-success',
+    '-1': 'summary-card-danger',
+    '0': 'summary-card-neutral'
+  }[pnlDirection(value)]
+}
+
+// 盈亏着色：正绿、负红，零值与缺值中性。
 export function profitColor(value: number | string | null | undefined): string {
-  // 缺值不着色（此前 Number(null) = 0 被染成盈利绿）
-  if (isMissing(value)) return ''
-  return Number(value) >= 0 ? COLOR.success : COLOR.danger
+  return { '1': 'var(--app-success)', '-1': 'var(--app-danger)', '0': '' }[pnlDirection(value)]
 }

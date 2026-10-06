@@ -7,6 +7,7 @@
  * 一眼可见有哪些作者。
  */
 import { ref, watch } from 'vue'
+import { NEmpty, NSpin, NTag } from 'naive-ui'
 import type { OpinionFeedAuthor } from '@/types'
 import { EMPTY, formatDate, formatDateTime } from '@/utils/helpers'
 
@@ -34,11 +35,11 @@ function latestDate(group: OpinionFeedAuthor): string {
 </script>
 
 <template>
-  <div v-loading="loading" class="feed" data-testid="opinion-author-feed">
-    <el-empty
+  <NSpin :show="loading" class="feed" data-testid="opinion-author-feed">
+    <NEmpty
       v-if="!loading && !authors.length"
       :description="emptyText || '窗口内没有发言'"
-      :image-size="60"
+      :theme-overrides="{ textColor: 'var(--app-text-muted)' }"
     />
     <el-collapse v-else v-model="openPanels">
       <el-collapse-item v-for="group in authors" :key="group.author" :name="group.author">
@@ -54,33 +55,37 @@ function latestDate(group: OpinionFeedAuthor): string {
         <div v-for="(item, index) in group.items" :key="index" class="feed-item">
           <div class="feed-meta">
             <span>{{ formatDateTime(item.date) }}</span>
-            <el-tag size="small" effect="plain">{{ item.kind }}</el-tag>
-            <el-tag
+            <NTag size="small">{{ item.kind }}</NTag>
+            <NTag
               v-for="ref in item.symbols"
               :key="`${ref.market}|${ref.symbol}`"
               size="small"
-              type="info"
-              effect="plain"
+              type="default"
             >
               {{ ref.symbol }}
-            </el-tag>
+            </NTag>
           </div>
           <div class="feed-text">{{ item.text }}</div>
-          <div v-if="item.context" class="feed-context">↳ {{ item.context }}</div>
+          <div v-if="item.context" class="feed-context">{{ item.context }}</div>
         </div>
       </el-collapse-item>
     </el-collapse>
-  </div>
+  </NSpin>
 </template>
 
 <style scoped>
 .author-name {
+  font-family: var(--app-font-sans);
+  font-size: 15px;
   font-weight: 600;
   margin-right: 8px;
+  overflow-wrap: anywhere;
 }
 .author-meta {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--app-text-muted);
+  font-family: var(--app-font-sans);
+  font-size: 13px;
+  font-weight: 400;
 }
 .feed-item {
   padding: 8px 0;
@@ -90,18 +95,54 @@ function latestDate(group: OpinionFeedAuthor): string {
   display: flex;
   gap: 6px;
   align-items: center;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  flex-wrap: wrap;
+  color: var(--app-text-muted);
+  font-family: var(--app-font-sans);
+  font-size: 13px;
+  font-weight: 400;
   margin-bottom: 4px;
 }
+.feed-meta :deep(.n-tag) {
+  font-size: 13px;
+}
+.feed {
+  width: 100%;
+  min-width: 0;
+}
+.feed :deep(.el-collapse-item__header) {
+  height: auto;
+  min-height: 48px;
+  padding: 12px 0;
+  line-height: 1.7;
+  flex-wrap: wrap;
+}
+.feed :deep(.el-collapse-item__title) {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.feed :deep(.el-collapse-item__arrow) {
+  flex-shrink: 0;
+}
 .feed-text {
+  max-width: 38em;
+  font-family: var(--app-font-serif);
+  font-size: 17px;
+  line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
 }
 .feed-context {
-  margin-top: 4px;
-  color: var(--el-text-color-secondary);
-  font-size: 13px;
+  max-width: 38em;
+  font-family: var(--app-font-serif);
+  margin-top: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--app-border-soft);
+  color: var(--app-text-muted);
+  font-size: 15px;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }

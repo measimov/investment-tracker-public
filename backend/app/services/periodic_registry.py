@@ -38,6 +38,8 @@ def _tasks() -> List[Tuple[str, Callable, float, str]]:
     from .price_tail_sync import PERIODIC_INTERVAL_SECONDS as TAIL_SECONDS
     from .price_tail_sync import periodic_refresh_daily_basic, periodic_sync_price_tails
     from .reference_rate_service import PERIODIC_INTERVAL_SECONDS as REFERENCE_SECONDS
+    from .report_cache import PERIODIC_INTERVAL_SECONDS as REPORT_CACHE_SECONDS
+    from .report_cache import periodic_prune_report_cache
     from .reference_rate_service import periodic_refresh_reference_rates
     from .security_catalog_service import PERIODIC_INTERVAL_SECONDS as CATALOG_SECONDS
     from .security_catalog_service import periodic_refresh_security_catalog
@@ -96,7 +98,7 @@ def _tasks() -> List[Tuple[str, Callable, float, str]]:
         # 跟踪标的的日线尾部 + A 股估值快照：每小时 tick，同一交易日不重复外呼
         ("sync_price_tails", periodic_sync_price_tails, TAIL_SECONDS, DEFAULT_GROUP),
         ("refresh_daily_basic", periodic_refresh_daily_basic, TAIL_SECONDS, DEFAULT_GROUP),
-        # 分红公告同步入队（默认关闭）：按 scheduled_task_state 7 天一次
+        # 分红公告同步入队（默认关闭）：按 scheduled_task_state 24 小时一次
         (
             "enqueue_periodic_dividend_sync",
             periodic_enqueue_dividend_sync,
@@ -108,6 +110,8 @@ def _tasks() -> List[Tuple[str, Callable, float, str]]:
         # 官方公告（巨潮/披露易/EDGAR）：跟踪标的每 30 分钟增量，水位按标的记在
         # scheduled_task_state；单 tick 首次回溯最多 5 只
         ("sync_announcements", periodic_sync_announcements, ANNOUNCEMENT_SECONDS, DEFAULT_GROUP),
+        # 原始报告文件缓存的生命周期清理：每日一次（无人引用超期 + 总量上限）
+        ("prune_report_cache", periodic_prune_report_cache, REPORT_CACHE_SECONDS, DEFAULT_GROUP),
     ]
 
 

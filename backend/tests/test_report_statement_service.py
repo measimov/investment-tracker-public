@@ -16,10 +16,12 @@ from app.services import hk_report_catalog, report_fetchers
 from app.services import report_pdf_text
 from app.services import report_statement_build as statement_build
 from app.services import report_statement_service as svc
+from app.services import llm_client
 from app.services import security_profile_service as profile_svc
 from app.services.earnings_quality import market_statements, merge_hk_statement_rows
 from app.services.report_statements import STATEMENT_EXTRACTOR_VERSION
 from app.services.llm_client import LLMClientError, LLMNotConfiguredError
+from app.services.background_job_store import JobOwnershipLostError
 from app.services.report_statements import locate_statements
 
 from .helpers import reset_tables
@@ -131,7 +133,7 @@ def _mapping_for(pages, report_type):
     )
 
 
-def _patch_pipeline(monkeypatch, *, reports, pages_by_url, llm=None):
+def _patch_pipeline(monkeypatch, *, reports, pages_by_url, llm=None, generation_meta=None):
     """reports: {"annual": [...], "interim": [...]}；pages_by_url: url → 逐页文本。"""
     calls = {"llm": 0, "download": 0}
 
@@ -148,6 +150,7 @@ def _patch_pipeline(monkeypatch, *, reports, pages_by_url, llm=None):
 
     def fake_llm(messages, **kwargs):
         calls["llm"] += 1
+        assert all("generation_meta" not in message["content"] for message in messages)
         if llm is not None:
             return llm(messages)
         payload = json.loads(messages[1]["content"].split("```json\n")[1].rsplit("\n```", 1)[0])
@@ -162,6 +165,7 @@ def _patch_pipeline(monkeypatch, *, reports, pages_by_url, llm=None):
             "content": _mapping_for(pages, report_type),
             "model": "fake",
             "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            **({"generation_meta": generation_meta} if generation_meta is not None else {}),
         }
 
     monkeypatch.setattr(report_fetchers, "hkex_reports", fake_reports)
@@ -339,14 +343,19 @@ def test_prompt_bump_remaps_without_downloading(db, monkeypatch):
     assert extract["prompt_version"] == svc.STATEMENT_PROMPT_VERSION and extract["status"] == "ok"
 
 
-def test_extractor_bump_or_new_fingerprint_re_downloads(db, monkeypatch):
+def test_extractor_bump_or_new_fingerprint_re_downloads(db, monkeypatch, generation_meta):
     pages_by_url = {ANNUAL_TARGET["url"]: ANNUAL_PAGES}
     calls = _patch_pipeline(
-        monkeypatch, reports={"annual": [ANNUAL_TARGET]}, pages_by_url=pages_by_url
+        monkeypatch,
+        reports={"annual": [ANNUAL_TARGET]},
+        pages_by_url=pages_by_url,
+        generation_meta=generation_meta,
     )
     svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
     original = svc.STATEMENT_EXTRACTOR_VERSION
     before = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+    assert before.get("generation_meta") == generation_meta
+    assert ("generation_meta" in before) == (generation_meta is not None)
     # 抽取器升版：重下载重定位；解析结果与存量逐字节相同 → 沿用旧映射，不调 LLM
     _set_version(monkeypatch, "STATEMENT_EXTRACTOR_VERSION", original + 1)
     result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
@@ -355,6 +364,8 @@ def test_extractor_bump_or_new_fingerprint_re_downloads(db, monkeypatch):
     extract = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
     assert extract["extractor_version"] == original + 1 and extract["status"] == "ok"
     assert extract["mapping"] == before["mapping"] and extract["mapping_from_extractor"] == original
+    assert extract.get("generation_meta") == generation_meta
+    assert ("generation_meta" in extract) == (generation_meta is not None)
     assert _rows(db, svc.STATEMENT_DATASET)["20251231|FY"]["extractor_version"] == original + 1
     # 再升版且这份报告的解析结果变了（任一数值不同）→ 重新映射
     pages_by_url[ANNUAL_TARGET["url"]] = [
@@ -417,6 +428,76 @@ def test_transient_download_error_does_not_burn_attempts(db, monkeypatch):
     result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
     assert result["failed"] == 1
     assert _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]["attempts"] == 0
+
+
+def test_raw_llm_resource_exhaustion_does_not_cap_statement_retry(
+    db, monkeypatch, raw_llm_completions
+):
+    calls = _patch_pipeline(
+        monkeypatch,
+        reports={"annual": [ANNUAL_TARGET]},
+        pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES},
+    )
+    monkeypatch.setattr(svc, "chat_completion", llm_client.chat_completion)
+    raw_llm_completions["responses"].extend([("", "insufficient_system_resource")] * 2)
+    for _ in range(2):
+        result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+        assert result["attempted"] == result["failed"] == 1
+        assert result["permanently_failed"] == 0 and result["fatal"] is None
+        extract = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+        assert extract["status"] == "failed" and extract["attempts"] == 0
+        assert extract["statements"]  # 已定位的科目保留，下次无需重下载
+        assert _rows(db, svc.STATEMENT_DATASET) == {}
+
+    raw_llm_completions["responses"].append((_mapping_for(ANNUAL_PAGES, "annual"), "stop"))
+    recovered = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert recovered["generated"] == 1 and recovered["permanently_failed"] == 0
+    extract = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+    assert extract["status"] == "ok"
+    assert "20251231|FY" in _rows(db, svc.STATEMENT_DATASET)
+    assert calls["download"] == 1
+    assert raw_llm_completions["calls"] == ["https://deepseek.test.invalid/v1/chat/completions"] * 3
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "untrusted-private-reason"])
+def test_raw_llm_permanent_output_failures_still_cap_statement_attempts(
+    db, monkeypatch, raw_llm_completions, finish_reason
+):
+    _patch_pipeline(
+        monkeypatch,
+        reports={"annual": [ANNUAL_TARGET]},
+        pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES},
+    )
+    monkeypatch.setattr(svc, "chat_completion", llm_client.chat_completion)
+    raw_llm_completions["responses"].extend([("", finish_reason)] * 2)
+    for attempt in (1, 2):
+        result = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+        assert result["failed"] == 1
+        extract = _rows(db, svc.EXTRACT_DATASET)["20251231|annual"]
+        assert extract["status"] == "failed" and extract["attempts"] == attempt
+        if finish_reason == "untrusted-private-reason":
+            assert finish_reason not in extract["error"]
+
+    capped = svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert capped["permanently_failed"] == 1 and capped["attempted"] == 0
+    assert len(raw_llm_completions["calls"]) == 2
+
+
+def test_llm_lost_job_ownership_stops_without_failed_mapping_or_financial_rows(db, monkeypatch):
+    def lost_ownership(messages):
+        raise JobOwnershipLostError("job lease lost")
+
+    calls = _patch_pipeline(
+        monkeypatch,
+        reports={"annual": [ANNUAL_TARGET], "interim": [INTERIM_TARGET]},
+        pages_by_url={ANNUAL_TARGET["url"]: ANNUAL_PAGES, INTERIM_TARGET["url"]: INTERIM_PAGES},
+        llm=lost_ownership,
+    )
+    with pytest.raises(JobOwnershipLostError, match="job lease lost"):
+        svc.ensure_report_statements(db, SYMBOL, MARKET, max_new=4)
+    assert calls == {"llm": 1, "download": 1}
+    assert _rows(db, svc.EXTRACT_DATASET) == {}
+    assert _rows(db, svc.STATEMENT_DATASET) == {}
 
 
 def test_llm_failures_map_to_fatal_kinds_and_keep_statements_for_retry(db, monkeypatch):
@@ -1275,6 +1356,7 @@ def test_progress_lists_failed_reports_with_reason_and_cap(db):
             "status": "failed",
             "error": "报表校验失败: 总资产 9000 不足归母权益一半",
             "attempts": svc.MAX_ATTEMPTS,
+            "prompt_version": svc.STATEMENT_PROMPT_VERSION,
             "end_date": "20201231",
             "report_type": "annual",
         },

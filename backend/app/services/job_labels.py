@@ -34,6 +34,7 @@ PERIODIC_TASK_LABELS = {
     "enqueue_periodic_dividend_sync": "分红公告定期同步",
     "enqueue_due_scheduled_reports": "定期 AI 复盘",
     "sync_announcements": "官方公告同步",
+    "prune_report_cache": "原始报告缓存清理",
 }
 
 SCHEDULER_GROUP_LABELS = {

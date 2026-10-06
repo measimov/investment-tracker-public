@@ -1,0 +1,106 @@
+{
+  "capturedAt": "2026-10-02T15:55:31.202Z",
+  "variant": "nuxt",
+  "libraryVersion": "4.11.3",
+  "url": "http://127.0.0.1:4318/nuxt/",
+  "scope": [
+    "initial page",
+    "account select keyboard End/Up/Enter",
+    "sample count prefix typeahead 2/Enter",
+    "filter calendar",
+    "trade modal",
+    "trade account select",
+    "trade calendar",
+    "mobile page and modal"
+  ],
+  "allRequests": [
+    "http://127.0.0.1:4318/nuxt/",
+    "http://127.0.0.1:4318/nuxt/assets/index-BS0tvLoY.js",
+    "http://127.0.0.1:4318/nuxt/assets/index-3zL48A41.css"
+  ],
+  "externalRequests": [],
+  "pageErrors": [],
+  "keyboard": {
+    "accountB": "demo-b",
+    "accountA": "demo-a",
+    "samplePrefixSearch": "200 条样本\n▾",
+    "accountTest": "Subsequent keyboard check: focus trigger, Space, wait listbox focus, End, Enter confirmed demo-b. Immediate reopen and ArrowUp did not reach expected demo-a before timeout; A is not verified by this keyboard check. Click selection passed separately. Controlled retest after waiting for close animation and actual option focus succeeded; see retest steps. Initial timing-limited check remains recorded above.",
+    "retest": {
+      "checkedAt": "2026-10-02T16:01:33.368Z",
+      "method": "Actual keyboard only: Space opens account list; wait visible options and focus inside listbox; End/Enter selects B; wait listbox hidden plus 300ms; Space opens again; wait visible options and focus inside listbox; ArrowUp/Enter attempts A.",
+      "externalRequests": [],
+      "pageErrors": [],
+      "steps": [
+        {
+          "stage": "first open",
+          "focusedRole": "option",
+          "focusedText": "全部账户",
+          "focusInsideListbox": true,
+          "account": "all"
+        },
+        {
+          "stage": "End focused B",
+          "focusedRole": "option",
+          "focusedText": "演示账户 B",
+          "focusInsideListbox": true,
+          "account": "all"
+        },
+        {
+          "stage": "B selected",
+          "focusedRole": "option",
+          "focusedText": "演示账户 B",
+          "focusInsideListbox": true,
+          "account": "demo-b"
+        },
+        {
+          "stage": "reopened after close settled",
+          "focusedRole": "option",
+          "focusedText": "演示账户 B",
+          "focusInsideListbox": true,
+          "account": "demo-b"
+        },
+        {
+          "stage": "ArrowUp focus",
+          "focusedRole": "option",
+          "focusedText": "演示账户 A",
+          "focusInsideListbox": true,
+          "account": "demo-b"
+        },
+        {
+          "stage": "second selection",
+          "focusedRole": "combobox",
+          "focusedText": "演示账户 A▾",
+          "focusInsideListbox": false,
+          "account": "demo-a"
+        }
+      ],
+      "success": true
+    }
+  },
+  "mobile": {
+    "width": 393,
+    "scrollWidth": 393
+  },
+  "layers": [
+    {
+      "tag": "THEAD",
+      "slot": "thead",
+      "zIndex": "1"
+    },
+    {
+      "tag": "DIV",
+      "slot": "overlay",
+      "zIndex": "40"
+    },
+    {
+      "tag": "DIV",
+      "slot": "content",
+      "zIndex": "50"
+    },
+    {
+      "tag": "DIV",
+      "slot": "content",
+      "zIndex": "60"
+    }
+  ]
+}

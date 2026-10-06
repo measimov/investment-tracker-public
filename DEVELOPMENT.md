@@ -27,7 +27,7 @@ CORS_ORIGINS=http://localhost:5173
 SECRET_KEY=<openssl-rand-hex-32>
 ADMIN_INITIAL_PASSWORD=<strong-admin-initial-password>
 DEMO_INITIAL_PASSWORD=<strong-user-initial-password>
-TUSHARE_TOKEN=<tushare-api-token>
+TUSHARE_TOKEN=
 ENABLE_DOCS=true
 REQUIRE_HTTPS=false
 PRICE_REFRESH_MAX_WORKERS=4
@@ -41,8 +41,10 @@ PRICE_REFRESH_MAX_WORKERS=4
 backup 变量只给 compose 和宿主脚本用，本地开发可忽略）。新增配置要同步 `config.py`、
 `docker-compose.yml`、`.env.example` 三处，`tests/test_deploy_config_sync.py` 守着。
 
-私有部署使用的雪球客户端库 `xueqiu-market` 不在公开仓库中，`requirements.txt` 也不包含它；
-未安装时雪球行情/档案相关功能显式降级，其余不受影响。
+`requirements.txt` 只含核心依赖，无需私有仓权限。需要雪球行情/A股雪球档案时，
+有私有仓读权限可运行 `pip install -r requirements-xueqiu.txt`，或用
+`pip install -e ../../xueqiu-market` 安装本地检出。未安装客户端时相关入口显式降级。
+CI 用不安装客户端的环境跑后端全套及前端 E2E，缺库行为沿用已有回归。
 
 初始化或升级数据库：
 
@@ -201,8 +203,7 @@ npx prettier --write src e2e
 
 ## 认证与后台任务
 
-认证/CSRF 流程与后台任务机制的权威描述见 [CLAUDE.md](CLAUDE.md)（Auth flow、
-Background jobs 两节）；要点：浏览器走 HttpOnly Cookie + `X-CSRF-Token`，
+认证与后台任务配置见 [DEPLOYMENT.md](DEPLOYMENT.md)；浏览器走 HttpOnly Cookie + `X-CSRF-Token`，
 脚本走 `POST /api/auth/token` 的 Bearer Token；价格刷新与历史行情同步共用
 PostgreSQL `background_jobs` 表，由数据库原子领取，相关 `BACKGROUND_JOB_*`
 参数见 `.env.example`。

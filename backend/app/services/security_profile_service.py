@@ -294,15 +294,46 @@ def prune_daily_basic(db: Session, symbol: str, market: str) -> None:
         ).delete(synchronize_session=False)
 
 
-def _prune_other_currency_rows(
+def _prune_stale_edgar_rows(
     db: Session, symbol: str, market: str, dataset: str, rows: List[Dict[str, Any]]
 ) -> None:
-    """删掉与本次透视币种不同的旧行。upsert 只覆盖本次产出的期间键：报告币种改按 CNY 取数后，
-    只在旧 USD 透视里出现过的期间会以 USD 行残留，与新的 CNY 行混在同一数据集里——跨行的
-    增速/趋势会把两种币种当成同一序列。本次无产出（空 fetch）时不动。"""
+    """删掉本次透视已不再产出的旧行。upsert 只覆盖本次产出的期间键，两类旧行会残留：
+
+    - **别币种的行**：报告币种改按 CNY 取数后，只在旧 USD 透视里出现过的期间以 USD 行残留，
+      与新的 CNY 行混在同一数据集里——跨行的增速/趋势会把两种币种当成同一序列；
+    - **本次窗口内不再产出的行**（EDGAR v4，#351）：季度占位行（10-Q 比较资产负债表，只有时点
+      事实）不再生成，但库里的旧占位行仍会占着季度额度。按年度/季度分类，期末不早于本次该类
+      最早一行、却不在本次产出里的旧行一律删除；比本次窗口更早的历史行保留（upsert 从不删，
+      那是更早同步留下的深历史）。窗口外的旧占位行（`edgar_facts.is_quarter_placeholder`：
+      季度行却没有任何期间科目）同样删除——季度真实行少的发行人窗口很窄，占位行可能落在窗口前。
+
+    本次无产出（空 fetch）时不动。"""
+    from .edgar_facts import is_quarter_placeholder
+
     currencies = {row.get("currency") for row in rows}
     if not currencies:
         return
+
+    def _class(fp: Any) -> str:
+        return "FY" if fp == "FY" else "interim"
+
+    produced = {(str(row.get("end_date")), str(row.get("fp"))) for row in rows}
+    window_start: Dict[str, str] = {}
+    for end_date, fp in produced:
+        klass = _class(fp)
+        window_start[klass] = min(window_start.get(klass, end_date), end_date)
+
+    def _stale(payload: Dict[str, Any]) -> bool:
+        if payload.get("currency") not in currencies:
+            return True
+        key = (str(payload.get("end_date")), str(payload.get("fp")))
+        if key in produced:
+            return False
+        if is_quarter_placeholder(payload):
+            return True
+        start = window_start.get(_class(payload.get("fp")))
+        return start is not None and key[0] >= start
+
     stale_ids = [
         row_id
         for row_id, payload in db.query(SecurityProfileData.id, SecurityProfileData.payload)
@@ -312,13 +343,13 @@ def _prune_other_currency_rows(
             SecurityProfileData.dataset == dataset,
         )
         .all()
-        if (payload or {}).get("currency") not in currencies
+        if _stale(payload or {})
     ]
     if stale_ids:
         db.query(SecurityProfileData).filter(SecurityProfileData.id.in_(stale_ids)).delete(
             synchronize_session=False
         )
-        logger.info("%s/%s %s 删除 %d 行旧币种透视行", symbol, market, dataset, len(stale_ids))
+        logger.info("%s/%s %s 删除 %d 行过期透视行", symbol, market, dataset, len(stale_ids))
 
 
 # 接口冷却的分档阈值：不超过这个时长就地等一下，超过则跳过该数据集。
@@ -376,7 +407,7 @@ def sync_symbol_profile(db: Session, symbol: str, market: str) -> Dict[str, Any]
             if dataset == "daily_basic":
                 prune_daily_basic(db, symbol, market)
             if dataset == "edgar_companyfacts":
-                _prune_other_currency_rows(db, symbol, market, dataset, rows)
+                _prune_stale_edgar_rows(db, symbol, market, dataset, rows)
             db.commit()
             result["datasets"][dataset] = {"rows": len(rows), "inserted": inserted}
         except Exception as exc:  # 单数据集失败不中断
@@ -443,8 +474,9 @@ def _dataset_rows(
     dataset: str,
     *,
     like: Optional[str] = None,
-    limit: int = GRAHAM_ANNUAL_ROWS,
+    limit: Optional[int] = GRAHAM_ANNUAL_ROWS,
 ) -> List[Dict[str, Any]]:
+    """limit=None 取全部。"""
     query = db.query(SecurityProfileData).filter(
         SecurityProfileData.symbol == symbol,
         SecurityProfileData.market == market,
@@ -489,6 +521,62 @@ def _graham_statement_datasets(
     return None
 
 
+def load_annual_statement_datasets(
+    db: Session, symbol: str, market: str
+) -> Optional[Dict[str, List[Dict[str, Any]]]]:
+    """利润质量指标与预计算信号的年度报表取数（与格雷厄姆同一口径：只取年度行）。
+
+    此前两处调用方把档案的 caps 窗口（A股 8 个报告期）直接交给 market_statements，而那 8 期
+    混着季报——只认 1231 年度行的利润质量指标实际只剩约 2 年。A股 另补现金流量表与财务
+    指标的年度行（格雷厄姆不需要，利润质量需要）。无对应口径的市场返回 None，调用方退回
+    档案数据集。"""
+    pick = _single_symbol_picker(db, symbol, market)
+    rows = _graham_statement_datasets(market, pick)
+    if rows is None:
+        return None
+    if market == "A股":
+        rows = {
+            **rows,
+            "cashflow": pick("cashflow", suffix="1231"),
+            "fina_indicator": pick("fina_indicator", suffix="1231"),
+        }
+    return rows
+
+
+SIGNAL_INTERIM_ROWS = 8  # A股 约两年的季度累计行；港股 4 份中报；美股 8 个单季
+
+
+def load_signal_inputs(db: Session, symbol: str, market: str) -> Optional[Dict[str, Any]]:
+    """预计算信号（analysis_signals）的取数：年度行（与利润质量同口径）+ 非年度行（中报/季报，
+    用于同期对比与下半年推算）+ A股 分红实施记录与最新估值快照。无对应口径的市场返回 None。"""
+    annual = load_annual_statement_datasets(db, symbol, market)
+    if annual is None:
+        return None
+    pick = _single_symbol_picker(db, symbol, market)
+    if market == "A股":
+        interim = {
+            kind: pick(kind, exclude_suffix="1231", limit=SIGNAL_INTERIM_ROWS)
+            for kind in ("income", "balancesheet", "cashflow", "fina_indicator")
+        }
+    elif market == "港股":
+        interim = {"report_statements": pick("report_statements", suffix="|H1", limit=4)}
+    else:
+        interim = {
+            "edgar_companyfacts": pick(
+                "edgar_companyfacts", exclude_suffix="|FY", limit=SIGNAL_INTERIM_ROWS
+            )
+        }
+    return {
+        "annual": annual,
+        "interim": interim,
+        # 取**全部**分红记录（只用于计算、不送模型）：判「从未派息」要以上市以来的完整历史为据，
+        # 按 GRAHAM_DIVIDEND_ROWS 截断时，预案/股东大会/实施等过程行会把老公司最早的现金分派
+        # 挤出窗口（PR #333 复审 P2）
+        "dividend_rows": pick("dividend_history", limit=None) if market == "A股" else [],
+        "daily_basic": pick("daily_basic", limit=1) if market == "A股" else [],
+    }
+
+
 def _graham_interim_rows(market: str, pick: _Pick) -> List[Dict[str, Any]]:
     """TTM 与 MRQ 用的非年度行：港股 = PDF 中报行（存疑科目先清洗）；美股 = EDGAR 单季行。"""
     if market == "港股":
@@ -528,7 +616,7 @@ def _single_symbol_picker(db: Session, symbol: str, market: str) -> _Pick:
         *,
         suffix: Optional[str] = None,
         exclude_suffix: Optional[str] = None,
-        limit: int = GRAHAM_ANNUAL_ROWS,
+        limit: Optional[int] = GRAHAM_ANNUAL_ROWS,
     ) -> List[Dict[str, Any]]:
         if exclude_suffix is None:
             return _dataset_rows(
@@ -618,12 +706,16 @@ def _graham_valuation(
     if market == "美股":
         form = next((row.get("form") for row in annual_rows if row.get("form")), None)
         valuation["annual_form"] = form
-        if ads_ratio:
+        if ads_ratio and ads_ratio.get("ratio") is not None:
             valuation["share_ratio"] = float(ads_ratio["ratio"])
             valuation["share_ratio_note"] = ads_ratio["note"]
             valuation["share_ratio_source"] = ads_ratio["source"]
-        elif str(form or "").startswith("20-F"):
+        elif str(form or "").startswith("20-F") or (ads_ratio or {}).get("missing"):
+            # 20-F 发行人没有比例，或 10-K 封面登记了 ADS 却解析不出比例 / 封面无法识别
+            # （#352，PR #358 评审 P2）：不按 1:1 猜
             valuation["share_ratio_missing"] = True
+            if (ads_ratio or {}).get("unknown"):
+                valuation["share_ratio_unknown"] = True
     return valuation
 
 

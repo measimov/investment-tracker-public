@@ -39,6 +39,51 @@ test('redirects anonymous users to login and supports login', async ({ page }) =
   expect(cookies.find((cookie) => cookie.name === csrfCookieName)?.httpOnly).toBeFalsy()
 })
 
+for (const width of [1440, 641, 393]) {
+  test(`login success feedback follows dashboard navigation without browser errors at ${width}px`, async ({
+    page,
+    request
+  }) => {
+    await page.setViewportSize({ width, height: 1000 })
+    const token = await loginThroughApi(request)
+    const response = await request.get('http://127.0.0.1:18000/api/statistics/portfolio-snapshot', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    expect(response.ok()).toBeTruthy()
+    const snapshot = await response.json()
+    await page.route('**/api/statistics/portfolio-snapshot', (route) =>
+      route.fulfill({ json: snapshot })
+    )
+    const browserErrors: string[] = []
+    page.on('pageerror', (error) => browserErrors.push(error.message))
+    await page.addInitScript(() => {
+      const successPaths: string[] = []
+      Object.assign(window, { loginSuccessPaths: successPaths })
+      // Observe the real success message's first appearance, rather than mock its implementation.
+      new MutationObserver(() => {
+        if (document.querySelector('.el-message--success') && !successPaths.length) {
+          successPaths.push(location.pathname)
+        }
+      }).observe(document, { childList: true, subtree: true })
+    })
+    await page.goto('/login')
+    await page.getByPlaceholder('请输入用户名').fill(user.username)
+    await page.getByPlaceholder('请输入密码').fill(user.password)
+    await page.getByRole('button', { name: '登录', exact: true }).click()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole('heading', { name: '仪表盘', exact: true })).toBeVisible()
+    const success = page.locator('.el-message--success').filter({ hasText: '登录成功' })
+    await expect(success).toBeVisible()
+    expect(
+      await page.evaluate(
+        () => (window as unknown as { loginSuccessPaths: string[] }).loginSuccessPaths
+      )
+    ).toEqual(['/'])
+    await expect(success).toBeHidden()
+    expect(browserErrors).toEqual([])
+  })
+}
+
 test('opens the account data foundation', async ({ page, request }) => {
   const token = await loginThroughApi(request)
   await setAuthenticatedSession(page, token)
@@ -110,22 +155,27 @@ test('shows created transactions, holdings, and total realized return', async ({
   await setAuthenticatedSession(page, token)
 
   await page.goto('/transactions')
-  await expect(page.getByText('交易记录管理')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '交易记录', exact: true })).toBeVisible()
   await expect(page.getByText('E2E001')).toBeVisible()
   await expect(page.getByText('端到端测试资产')).toBeVisible()
-  await expect(page.locator('.el-table').getByText('买入').first()).toBeVisible()
+  await expect(page.getByTestId('transactions-table').getByText('买入').first()).toBeVisible()
 
   // 编辑保存回归：后端 schema 是 extra="forbid"，若 payload 混入 id 等
   // 多余字段会 422（曾导致所有编辑保存静默失败，备注永远存不上）
   await page
-    .locator('.el-table__row', { hasText: 'E2E001' })
-    .getByRole('button', { name: '编辑' })
+    .locator('.n-data-table-tbody tr', { hasText: 'E2E001' })
+    .getByRole('button', { name: /^编辑/ })
     .click()
   await expect(page.getByText('编辑交易')).toBeVisible()
   await page.getByPlaceholder('备注信息').fill('playwright e2e edited')
   await page.getByRole('dialog').getByRole('button', { name: '确定' }).click()
-  await expect(page.getByText('更新成功')).toBeVisible()
-  await expect(page.locator('.el-table').getByText('playwright e2e edited')).toBeVisible()
+  await expect(page.getByText('交易记录已更新')).toBeVisible()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.locator('.transactions-page')).toHaveAttribute('aria-busy', 'false')
+  await page.getByRole('button', { name: '查看 E2E001 2026/05/13 的交易备注', exact: true }).click()
+  await expect(
+    page.getByTestId('transactions-table').getByText('playwright e2e edited')
+  ).toBeVisible()
 
   await page.goto('/holdings')
   await expect(page.getByRole('main').getByText('当前持仓')).toBeVisible()
@@ -150,7 +200,7 @@ test('shows created transactions, holdings, and total realized return', async ({
   await page.goBack()
 
   await page.goto('/statistics')
-  await expect(page.getByRole('main').getByText('含股息已实现收益：')).toBeVisible()
+  await expect(page.getByRole('main').getByText('已实现收益（含股息）：')).toBeVisible()
   // 基准对比选择器（E2E 库无指数数据，空态即向后兼容路径）
   await expect(page.getByTestId('benchmark-select')).toBeVisible()
   await expect(page.locator('body')).not.toContainText('NaN')
@@ -230,7 +280,9 @@ test('creates a temporary user, verifies analytics curve, and deletes the user',
 
     await setAuthenticatedSession(page, token, createdUser)
     await page.goto('/statistics')
-    await expect(page.getByRole('main').getByText('证券组合 TTWR 与风险指标')).toBeVisible()
+    await expect(
+      page.getByRole('main').getByRole('heading', { name: '区间收益', exact: true })
+    ).toBeVisible()
     await expect(page.getByText('实验指标', { exact: true })).toBeVisible()
     await expect(page.getByText('夏普率', { exact: true })).toBeVisible()
     await expect(page.getByText('卡玛率', { exact: true })).toBeVisible()
@@ -289,7 +341,7 @@ test('foreign-currency holding converts with loaded rates in the ranking table',
 
     // 持仓排行：总成本原币 S$1,000，≈ 行必须是已折算的 ¥5,500（而不是把
     // 原币数值当 CNY 的 ¥1,000）
-    const rankingCard = page.locator('.el-card', { hasText: '持仓排行' })
+    const rankingCard = page.getByRole('region', { name: '持仓排行 按人民币成本', exact: true })
     const row = rankingCard.locator('tr', { hasText: 'FX001' })
     await expect(row).toContainText('S$1,000')
     await expect(row).toContainText('≈ ¥5,500', { timeout: 10000 })
@@ -324,8 +376,8 @@ test('mobile layout uses drawer navigation and card lists', async ({ page, reque
   await setAuthenticatedSession(page, token)
 
   await page.goto('/holdings')
-  await expect(page.getByRole('button', { name: '打开导航' })).toBeVisible()
-  await expect(page.locator('.header-menu')).toBeHidden()
+  await expect(page.getByRole('button', { name: '展开导航' })).toBeVisible()
+  await expect(page.locator('.desktop-sidebar')).toHaveCSS('width', '56px')
   await expect(page.locator('.desktop-data-table')).toBeHidden()
   // 定位用 data-testid 而非 .mobile-card：后者是全站共用的外观 class，
   // 改样式就会连带改断言对象（PR #99 重命名时正是这里断的）
@@ -337,7 +389,7 @@ test('mobile layout uses drawer navigation and card lists', async ({ page, reque
   )
   expect(holdingsOverflow).toBeFalsy()
 
-  await page.getByRole('button', { name: '打开导航' }).click()
+  await page.getByRole('button', { name: '展开导航' }).click()
   await expect(page.locator('.mobile-nav-drawer').getByText('交易记录')).toBeVisible()
   await page.locator('.mobile-nav-drawer').getByText('交易记录').click()
   await expect(page).toHaveURL(/\/transactions/)
@@ -482,11 +534,11 @@ test('imports IBKR relisting activity without corrupting holdings', async ({ pag
   await setAuthenticatedSession(page, token)
   await page.goto('/holdings')
   await expect(page.getByRole('main').getByText('当前持仓')).toBeVisible()
-  const pctRow = page.locator('.el-table__body tr', { hasText: 'PCT' })
+  const pctRow = page.locator('[data-testid=holding-row]', { hasText: 'PCT' })
   await expect(pctRow).toBeVisible()
   await expect(pctRow.getByText('柏能集团')).toBeVisible()
   await expect(pctRow.getByText('新加坡股')).toBeVisible()
-  await expect(pctRow.getByText('SGD')).toBeVisible()
+  await expect(pctRow.locator('.price-line .price-currency')).toHaveText('SGD')
   await expect(page.locator('body')).not.toContainText('01263')
   await expect(page.locator('body')).not.toContainText('NaN')
 })
@@ -572,17 +624,17 @@ test('transfers a holding between broker accounts through the UI', async ({ page
 
     // 先访问交易页预热 Pinia 缓存：转仓后返回必须看到新交易（缓存失效路径）
     await page.goto('/transactions')
-    await expect(page.locator('.el-table__row', { hasText: 'TRF001' })).toHaveCount(1)
+    await expect(page.locator('.n-data-table-tbody tr', { hasText: 'TRF001' })).toHaveCount(1)
 
     await page.goto('/holdings')
     // 持仓默认按标的合并；账户与转仓在「按账户」视图（或合并行的展开行）里
     await page.getByTestId('holdings-view-mode').getByText('按账户').click()
-    const row = page.locator('.el-table__row', { hasText: 'TRF001' })
+    const row = page.locator('[data-testid=holding-row]', { hasText: 'TRF001' })
     await expect(row).toContainText('转仓测试-CMB')
 
     // 打开转仓对话框
     await row.getByRole('button', { name: '转仓', exact: true }).click()
-    const dialog = page.locator('.el-dialog', { hasText: '账户间转仓' })
+    const dialog = page.locator('[data-testid=transfer-dialog]', { hasText: '账户间转仓' })
     await expect(dialog).toBeVisible()
 
     // 未选择转入账户时不能提交（null 不再兼作默认值）
@@ -591,21 +643,24 @@ test('transfers a holding between broker accounts through the UI', async ({ page
     await expect(dialog).toBeVisible()
 
     // 选择目标账户：转 40 股到第二个账户
-    await dialog.locator('.el-select').click()
-    await page
-      .locator('.el-select-dropdown:visible .el-select-dropdown__item', {
-        hasText: '转仓测试-IBKR'
-      })
-      .click()
-    const quantityInput = dialog.locator('.el-input-number input')
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await expect(row.getByRole('button', { name: '转仓', exact: true })).toBeFocused()
+    await row.getByRole('button', { name: '转仓', exact: true }).press('Enter')
+    await expect(dialog).toBeVisible()
+    await dialog.getByTestId('transfer-target').click()
+    await page.locator('.n-base-select-option', { hasText: '转仓测试-IBKR' }).click()
+    const quantityInput = dialog.getByRole('textbox', { name: '转仓数量' })
     await quantityInput.fill('40')
     await dialog.getByRole('button', { name: '确认转仓' }).click()
     await expect(page.locator('.el-message--success')).toContainText('转仓成功')
 
     // 两行持仓：CMB 60 / IBKR 40
-    const rows = page.locator('.el-table__row', { hasText: 'TRF001' })
+    const rows = page.locator('[data-testid=holding-row]', { hasText: 'TRF001' })
     await expect(rows).toHaveCount(2)
-    await expect(page.locator('.el-table__row', { hasText: '转仓测试-IBKR' })).toContainText('40')
+    await expect(
+      page.locator('[data-testid=holding-row]', { hasText: '转仓测试-IBKR' })
+    ).toContainText('40')
 
     // 后端校验：两条账户级持仓，成本跟随迁移
     const holdingsResponse = await request.get('http://127.0.0.1:18000/api/holdings', { headers })
@@ -628,8 +683,8 @@ test('transfers a holding between broker accounts through the UI', async ({ page
 
     // 返回交易页：Pinia 缓存已失效，UI 能看到新的转仓腿
     await page.goto('/transactions')
-    await expect(page.locator('.el-table__row', { hasText: '转出' })).toHaveCount(1)
-    await expect(page.locator('.el-table__row', { hasText: '转入' })).toHaveCount(1)
+    await expect(page.locator('.n-data-table-tbody tr', { hasText: '转出' })).toHaveCount(1)
+    await expect(page.locator('.n-data-table-tbody tr', { hasText: '转入' })).toHaveCount(1)
   } finally {
     await deleteTemporaryUser(request, adminToken, createdUser.id)
   }
@@ -675,17 +730,17 @@ test('transaction symbol links deep-link into holdings with the row highlighted 
     // 落到持仓页：关键词填入代码、目标行高亮、其他标的被筛掉
     await expect(page).toHaveURL(/\/holdings\?.*symbol=DLK001/)
     await expect(page.getByTestId('holdings-search')).toHaveValue('DLK001')
-    const focused = page.locator('.el-table__row.holding-focus-row')
+    const focused = page.locator('[data-testid=holding-row].holding-focus-row')
     await expect(focused).toHaveCount(1)
     await expect(focused).toContainText('DLK001')
-    await expect(page.locator('.el-table__row', { hasText: 'DLK003' })).toHaveCount(0)
+    await expect(page.locator('[data-testid=holding-row]', { hasText: 'DLK003' })).toHaveCount(0)
     await expect(page.getByTestId('holdings-filter-count')).toContainText('1 / 2')
 
     // 清空关键词 = 放弃定位：去高亮、query 从地址栏拿掉、全部持仓回来
     await page.getByTestId('holdings-search').fill('')
     await expect(page).not.toHaveURL(/symbol=/)
-    await expect(page.locator('.el-table__row.holding-focus-row')).toHaveCount(0)
-    await expect(page.locator('.el-table__row', { hasText: 'DLK003' })).toHaveCount(1)
+    await expect(page.locator('[data-testid=holding-row].holding-focus-row')).toHaveCount(0)
+    await expect(page.locator('[data-testid=holding-row]', { hasText: 'DLK003' })).toHaveCount(1)
 
     // 已清仓的标的：提示未持有并给出标的档案入口
     await page.goto('/transactions')
@@ -745,7 +800,7 @@ test('account view: editing one account row of a multi-account holding mounts a 
     await setAuthenticatedSession(page, token, createdUser)
     await page.goto('/holdings')
     await page.getByTestId('holdings-view-mode').getByText('按账户').click()
-    const rows = page.locator('.el-table__row', { hasText: 'EDT001' })
+    const rows = page.locator('[data-testid=holding-row]', { hasText: 'EDT001' })
     await expect(rows).toHaveCount(2)
 
     const firstRow = rows.filter({ hasText: '改价测试-A' })
@@ -762,11 +817,27 @@ test('account view: editing one account row of a multi-account holding mounts a 
     await expect(editors).toHaveCount(1)
     await expect(input).toBeFocused()
 
-    await input.fill('12.34')
+    await input.fill('12.3456')
+    const priceSaved = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PUT' && /\/api\/holdings\/\d+\/price$/.test(response.url())
+    )
     await input.press('Enter')
+    expect((await priceSaved).ok()).toBeTruthy()
     await expect(editors).toHaveCount(0)
     // 价格按标的共享：两个账户行都显示新价
-    await expect(rows.filter({ hasText: '12.34' })).toHaveCount(2)
+    await expect(rows.filter({ hasText: '12.3456' })).toHaveCount(2)
+    await expect(firstRow.getByTestId('price-display')).toBeFocused()
+    const saved = await request.get('http://127.0.0.1:18000/api/holdings', { headers })
+    const edited = (await saved.json()).filter((row: ApiRow) => row.symbol === 'EDT001')
+    expect(edited.map((row: ApiRow) => Number(row.current_price))).toEqual([12.3456, 12.3456])
+    expect(edited.every((row: ApiRow) => row.price_source === 'manual')).toBeTruthy()
+    // Esc 取消仍回原按钮，且不能改变共享价格。
+    await firstRow.getByTestId('price-display').press('Enter')
+    await input.fill('99')
+    await input.press('Escape')
+    await expect(firstRow.getByTestId('price-display')).toBeFocused()
+    await expect(rows.filter({ hasText: '12.3456' })).toHaveCount(2)
   } finally {
     await deleteTemporaryUser(request, adminToken, createdUser.id)
   }
@@ -816,11 +887,11 @@ test.describe('positive-UTC timezone', () => {
       await page.clock.setFixedTime(new Date('2026-03-09T23:30:00Z'))
       await page.goto('/holdings')
       await page.getByTestId('holdings-view-mode').getByText('按账户').click()
-      const row = page.locator('.el-table__row', { hasText: 'TZ0001' })
+      const row = page.locator('[data-testid=holding-row]', { hasText: 'TZ0001' })
       await row.getByRole('button', { name: '转仓', exact: true }).click()
-      const dialog = page.locator('.el-dialog', { hasText: '账户间转仓' })
+      const dialog = page.locator('[data-testid=transfer-dialog]', { hasText: '账户间转仓' })
       await expect(dialog).toBeVisible()
-      await expect(dialog.locator('.el-date-editor input')).toHaveValue('2026-03-10')
+      await expect(dialog.getByRole('textbox', { name: '转仓日期' })).toHaveValue('2026/03/10')
     } finally {
       await deleteTemporaryUser(request, adminToken, createdUser.id)
     }

@@ -406,6 +406,7 @@ def seed_ledger(api: Api, closes: dict) -> dict:
                 "name": name,
                 "market": market,
                 "action_type": "CASH_DIVIDEND",
+                "receipt_confirmed": True,
                 "ex_date": day.isoformat(),
                 "payment_date": (day + timedelta(days=7)).isoformat(),
                 "dividend_per_share": str(dps),

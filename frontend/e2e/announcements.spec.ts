@@ -73,7 +73,7 @@ test('holdings show a badge for recent major announcements', async ({ page, requ
   await expect(badges.first()).toContainText('公告·融资')
 
   // 布局：名称单行，两个徽标完整落在单元格内
-  const row = page.locator('.el-table__body tr', { hasText: 'BAT001' }).first()
+  const row = page.locator('[data-testid=holding-row]', { hasText: 'BAT001' }).first()
   const name = row.locator('.holding-name')
   const cell = row.locator('td', { has: page.locator('.holding-name') })
   const nameBox = (await name.boundingBox())!
@@ -135,7 +135,7 @@ test('security detail announcements tab lists grouped filings', async ({ page, r
   await page.getByRole('tab', { name: '公告' }).click()
   const section = page.getByTestId('announcements-section')
   await expect(section.getByTestId('announcement-group')).toHaveCount(1)
-  await expect(section).toContainText('已同步至 2026-09-29')
+  await expect(section).toContainText('已同步至 2026/09/29')
   const title = section.getByRole('link', { name: '向不特定对象发行可转换公司债券预案' })
   await expect(title).toHaveAttribute('href', ANNOUNCEMENT_GROUP.url)
 
@@ -144,6 +144,9 @@ test('security detail announcements tab lists grouped filings', async ({ page, r
   // 非 http(s) 链接只显示文字、不渲染成链接
   await expect(section.getByRole('link', { name: '可转换公司债券持有人会议规则' })).toHaveCount(0)
 
-  await section.getByRole('radio', { name: '全部' }).click({ force: true })
+  await section
+    .getByRole('group', { name: '公告重要程度' })
+    .getByRole('button', { name: '全部', exact: true })
+    .click()
   await expect.poll(() => requested.some((url) => url.includes('importance=all'))).toBe(true)
 })

@@ -4,6 +4,7 @@
  */
 
 import type { AnnouncementGroup, SecurityAnnouncements } from '@/types'
+import { formatDate } from './helpers'
 
 export const ANNOUNCEMENT_CATEGORIES: { value: string; label: string }[] = [
   { value: 'financing', label: '融资' },
@@ -72,7 +73,7 @@ export function syncStatusText(
       text: '尚未同步官方公告：只同步持仓与观察清单里的标的，新加入的标的要等下一轮同步（约 30 分钟）'
     }
   }
-  return { type: 'info', text: `已同步至 ${body.last_synced}，每 30 分钟增量更新` }
+  return { type: 'info', text: `已同步至 ${formatDate(body.last_synced)}，每 30 分钟增量更新` }
 }
 
 /** 按公告日分段（组已按公告日倒序）：时间线的日期小标题。 */

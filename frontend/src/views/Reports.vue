@@ -1,142 +1,216 @@
 <template>
   <div class="reports-page">
-    <el-card class="page-card" shadow="never">
-      <template #header>
-        <div class="page-header">
-          <div>
-            <h2>AI 复盘报告</h2>
-            <p class="page-subtitle">
-              基于账本全量内部数据生成复盘，并可就报告内容追问讨论（口径标注原样呈现）。
-            </p>
-          </div>
-          <div class="header-actions">
-            <el-select
-              v-model="scheduleCadence"
-              class="schedule-select"
-              size="default"
-              @change="saveSchedule"
-            >
-              <el-option label="定期生成：关闭" value="off" />
-              <el-option label="定期生成：每周" value="weekly" />
-              <el-option label="定期生成：每月" value="monthly" />
-            </el-select>
-            <el-button
-              type="primary"
-              :icon="MagicStick"
-              :loading="generating"
-              @click="generateReport"
-            >
-              {{ generating ? '生成中…' : '生成新报告' }}
-            </el-button>
-          </div>
+    <header class="page-header">
+      <div>
+        <h1 class="page-title">AI 复盘</h1>
+        <p class="page-subtitle page-description">
+          基于账本全量内部数据生成复盘，并可就报告内容追问讨论（口径标注原样呈现）。
+        </p>
+      </div>
+      <div class="header-actions">
+        <select
+          class="schedule-select"
+          aria-label="定期生成频率"
+          :value="scheduleCadence ?? ''"
+          :disabled="scheduleLoading || scheduleSaving || scheduleCadence === null"
+          @change="saveSchedule"
+        >
+          <option v-if="scheduleCadence === null" value="">
+            {{ scheduleLoading ? '定期配置加载中…' : '定期配置尚未确认' }}
+          </option>
+          <option value="off">定期生成：关闭</option>
+          <option value="weekly">定期生成：每周</option>
+          <option value="monthly">定期生成：每月</option>
+        </select>
+        <NButton
+          type="primary"
+          :loading="generating"
+          :disabled="generating"
+          @click="generateReport"
+          >{{ generating ? '生成中…' : '生成新报告' }}</NButton
+        >
+      </div>
+    </header>
+    <NAlert v-if="scheduleError" type="warning" class="status-note" :show-icon="false">
+      定期配置未能确认：{{ scheduleError }}
+      <NButton text :loading="scheduleLoading" @click="loadSchedule">重新加载定期配置</NButton>
+    </NAlert>
+    <div class="report-layout">
+      <aside class="report-sidebar" aria-label="复盘报告列表">
+        <div class="list-heading">
+          <h2>报告档案</h2>
+          <span>{{ listHasLoaded ? reports.length + ' 份' : '—' }}</span>
         </div>
-      </template>
-
-      <el-row :gutter="16">
-        <el-col :xs="24" :md="7">
-          <div class="report-list" v-loading="loadingList">
-            <el-empty
-              v-if="!loadingList && reports.length === 0"
-              description="暂无报告，点击右上角生成第一份复盘"
-              :image-size="88"
+        <button
+          v-if="isCompact"
+          ref="reportPicker"
+          type="button"
+          class="report-picker"
+          :aria-expanded="reportListExpanded"
+          aria-controls="report-archive-list"
+          @click="reportListExpanded = !reportListExpanded"
+        >
+          <span class="picker-current">
+            <span>{{ selectedReport?.title ?? '尚未选择报告' }}</span>
+            <span v-if="selectedReport" class="picker-time">{{
+              formatDateTime(selectedReport.created_at)
+            }}</span>
+          </span>
+          <span class="picker-action">{{ reportListExpanded ? '收起报告列表' : '展开选择' }}</span>
+        </button>
+        <p v-if="isCompact && loadingList" class="mobile-list-status" role="status">
+          正在加载报告列表…{{ listHasLoaded ? '保留已加载档案，当前列表尚未确认。' : '' }}
+        </p>
+        <NAlert v-if="listError" type="warning" :show-icon="false" class="status-note">
+          {{
+            listHasLoaded
+              ? isCompact
+                ? '列表更新失败，保留旧列表，当前列表尚未确认。'
+                : '列表更新失败，以下为上次成功加载的报告。'
+              : '报告列表尚未加载成功。'
+          }}{{ listError }}
+          <NButton text :loading="loadingList" @click="loadReports({ selectFirst: true })"
+            >重新加载报告列表</NButton
+          >
+        </NAlert>
+        <NEmpty
+          v-if="
+            isCompact && !reportListExpanded && listHasLoaded && !listError && reports.length === 0
+          "
+          description="暂无报告，可生成第一份复盘"
+        />
+        <NSpin v-show="!isCompact || reportListExpanded" :show="loadingList">
+          <div id="report-archive-list" class="report-list" @keydown.esc="closeReportList">
+            <div v-if="loadingList && !listHasLoaded" role="status" aria-label="正在加载报告列表">
+              <NSkeleton text :repeat="3" />
+            </div>
+            <NEmpty
+              v-else-if="
+                listHasLoaded &&
+                !listError &&
+                reports.length === 0 &&
+                (!isCompact || reportListExpanded)
+              "
+              description="暂无报告，可生成第一份复盘"
             />
-            <div
+            <button
               v-for="report in reports"
               :key="report.id"
+              type="button"
               class="report-item"
               :class="{ active: report.id === selectedId }"
-              role="button"
-              tabindex="0"
               :aria-current="report.id === selectedId ? 'true' : undefined"
-              @click="selectReport(report.id)"
-              @keydown.enter.prevent="selectReport(report.id)"
-              @keydown.space.prevent="selectReport(report.id)"
+              @click="selectFromList(report.id)"
             >
-              <div class="report-item-title">{{ report.title }}</div>
-              <div class="report-item-meta">
-                <el-tag size="small" effect="plain">
-                  {{ report.trigger_source === 'scheduled' ? '定期' : '手动' }}
-                </el-tag>
-                <span>{{ formatDateTime(report.created_at) }}</span>
-              </div>
-            </div>
+              <span class="report-item-title">{{ report.title }}</span>
+              <span class="report-item-meta"
+                ><NTag size="small" :bordered="false">{{
+                  report.trigger_source === 'scheduled' ? '定期' : '手动'
+                }}</NTag
+                ><span>{{ formatDateTime(report.created_at) }}</span></span
+              >
+            </button>
           </div>
-        </el-col>
-
-        <el-col :xs="24" :md="17">
-          <div v-if="!detail && !loadingDetail" class="detail-placeholder">
-            <el-empty description="选择左侧报告查看详情" :image-size="88" />
-          </div>
-          <div v-else v-loading="loadingDetail" class="report-detail">
-            <template v-if="detail">
-              <div class="detail-toolbar">
-                <span class="detail-meta">
-                  生成于 {{ formatDateTime(detail.created_at) }} · {{ detail.model }}
-                  <template v-if="detail.total_tokens">
-                    · {{ detail.total_tokens }} tokens
-                  </template>
-                </span>
-                <el-button type="danger" text size="small" @click="removeReport(detail.id)">
-                  删除报告
-                </el-button>
-              </div>
-              <div class="markdown-body" v-html="renderMarkdown(detail.content)" />
-
-              <el-divider content-position="left">追问讨论</el-divider>
-              <div class="chat-messages">
-                <div
-                  v-for="message in detail.messages"
-                  :key="message.id"
-                  class="chat-message"
-                  :class="message.role"
+        </NSpin>
+      </aside>
+      <section class="report-content" aria-label="复盘报告正文">
+        <NAlert v-if="detailError" type="warning" :show-icon="false" class="status-note">
+          所选报告尚未加载成功：{{ detailError }}
+          <NButton
+            v-if="selectedId !== null"
+            text
+            :loading="loadingDetail"
+            @click="selectReport(selectedId)"
+            >重新加载所选报告</NButton
+          >
+        </NAlert>
+        <div
+          v-if="loadingDetail"
+          role="status"
+          aria-label="正在加载所选报告"
+          class="detail-placeholder"
+        >
+          <NSkeleton text :repeat="5" />
+        </div>
+        <NEmpty
+          v-else-if="!currentDetail && !detailError"
+          class="detail-placeholder"
+          :description="
+            listError && !listHasLoaded ? '报告列表未加载，暂不能选择报告' : '选择报告查看详情'
+          "
+        />
+        <article v-else-if="currentDetail" class="report-detail">
+          <div class="detail-toolbar">
+            <div>
+              <h2>{{ currentDetail.title }}</h2>
+              <p class="detail-meta">
+                生成于 {{ formatDateTime(currentDetail.created_at) }} · {{ currentDetail.model
+                }}<template v-if="currentDetail.total_tokens">
+                  · {{ currentDetail.total_tokens }} tokens</template
                 >
-                  <div class="chat-role">{{ message.role === 'user' ? '我' : 'AI' }}</div>
-                  <div class="chat-body">
-                    <div
-                      v-if="message.role === 'assistant'"
-                      class="chat-bubble markdown-body"
-                      v-html="renderMarkdown(message.content)"
-                    />
-                    <div v-else class="chat-bubble">{{ message.content }}</div>
-                    <div class="chat-time">{{ formatDateTime(message.created_at) }}</div>
-                  </div>
+              </p>
+            </div>
+            <NButton type="error" text @click="removeReport(currentDetail.id)">删除报告</NButton>
+          </div>
+          <div class="markdown-body" v-html="renderMarkdown(currentDetail.content)" />
+          <section class="discussion" aria-label="追问讨论">
+            <h3>追问讨论</h3>
+            <div class="chat-messages">
+              <div
+                v-for="message in currentDetail.messages"
+                :key="message.id"
+                class="chat-message"
+                :class="message.role"
+              >
+                <div class="chat-role">{{ message.role === 'user' ? '我' : 'AI' }}</div>
+                <div class="chat-body">
+                  <div
+                    v-if="message.role === 'assistant'"
+                    class="chat-bubble markdown-body"
+                    v-html="renderMarkdown(message.content)"
+                  />
+                  <div v-else class="chat-bubble">{{ message.content }}</div>
+                  <div class="chat-time">{{ formatDateTime(message.created_at) }}</div>
                 </div>
               </div>
-              <div class="chat-input">
-                <el-input
-                  v-model="question"
-                  type="textarea"
-                  :rows="2"
-                  maxlength="2000"
-                  show-word-limit
-                  placeholder="就本报告内容提问，例如：为什么胜率是实验口径？"
-                  :disabled="asking"
-                />
-                <el-button
-                  type="primary"
-                  :loading="asking"
-                  :disabled="!question.trim()"
-                  @click="ask"
-                >
-                  {{ asking ? '思考中…' : '追问' }}
-                </el-button>
-              </div>
-              <p class="disclaimer">
-                报告与回答由 AI 基于家庭账本数据自动生成，仅供复盘讨论参考，不构成投资建议。
-              </p>
-            </template>
-          </div>
-        </el-col>
-      </el-row>
-    </el-card>
+            </div>
+            <div class="chat-input">
+              <NInput
+                v-model:value="question"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 8 }"
+                :maxlength="2000"
+                show-count
+                :input-props="{ 'aria-label': '就所选报告追问' }"
+                placeholder="就本报告内容提问，例如：为什么胜率是实验口径？"
+                :disabled="asking"
+              /><NButton
+                type="primary"
+                :loading="asking"
+                :disabled="asking || !question.trim()"
+                @click="ask"
+                >{{ asking ? '思考中…' : '追问' }}</NButton
+              >
+            </div>
+            <p class="disclaimer">
+              报告与回答由 AI 基于家庭账本数据自动生成，仅供复盘讨论参考，不构成投资建议。
+            </p>
+          </section>
+        </article>
+      </section>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { showApiError } from '@/utils/showApiError'
-import { onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { MagicStick } from '@element-plus/icons-vue'
+import { computed, onMounted, ref } from 'vue'
+import { NAlert, NButton, NEmpty, NInput, NSkeleton, NSpin, NTag } from 'naive-ui'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import { getApiErrorMessage } from '@/utils/apiErrors'
+import { ElMessage } from 'element-plus'
+import { confirmAction } from '@/composables/useConfirmAction'
 import api from '@/api'
 import { formatDateTime } from '@/utils/helpers'
 import { renderMarkdown } from '@/utils/markdown'
@@ -158,45 +232,77 @@ const { isUnmounted } = useAliveGuard()
 const generating = ref(false)
 const asking = ref(false)
 const question = ref('')
-const scheduleCadence = ref('off')
+const scheduleCadence = ref<string | null>(null)
+const listHasLoaded = ref(false)
+const listError = ref('')
+const detailError = ref('')
+const scheduleLoading = ref(false)
+const scheduleError = ref('')
+const scheduleSaving = ref(false)
+const listRequest = useLatestRequest()
+const detailRequest = useLatestRequest()
+const scheduleRequest = useLatestRequest()
+const currentDetail = computed(() => (detail.value?.id === selectedId.value ? detail.value : null))
+const isCompact = useMediaQuery('(max-width: 900px)')
+const reportListExpanded = ref(false)
+const reportPicker = ref<HTMLButtonElement | null>(null)
+const selectedReport = computed(
+  () => reports.value.find((report) => report.id === selectedId.value) ?? currentDetail.value
+)
+
+function closeReportList(event?: KeyboardEvent) {
+  if (!isCompact.value) return
+  event?.preventDefault()
+  reportListExpanded.value = false
+  reportPicker.value?.focus()
+}
+function selectFromList(id: number) {
+  closeReportList()
+  return selectReport(id)
+}
 
 async function loadReports({ selectFirst = false } = {}) {
+  const request = listRequest.begin()
   loadingList.value = true
+  listError.value = ''
   // 仅在本次列表请求成功时才允许自动选首项：失败回退旧列表再自动选中，
   // 会在删除后刷新失败的场景里重新请求刚删掉的 id
   let firstId: number | null = null
   try {
     const response = await api.getLlmReports()
+    if (!listRequest.isCurrent(request)) return
     reports.value = response.data
+    listHasLoaded.value = true
     firstId = reports.value[0]?.id ?? null
   } catch (error) {
+    if (!listRequest.isCurrent(request)) return
+    listError.value = getApiErrorMessage(error, '报告列表加载失败')
     showApiError(error, '报告列表加载失败')
   } finally {
     // 列表到手即解除蒙层：详情加载（可能较慢）不应挡住列表点击
-    loadingList.value = false
+    if (listRequest.isCurrent(request)) loadingList.value = false
   }
-  if (selectFirst && firstId !== null && !selectedId.value) {
+  if (listRequest.isCurrent(request) && selectFirst && firstId !== null && !selectedId.value) {
     await selectReport(firstId)
   }
 }
 
 async function selectReport(id: number) {
+  const request = detailRequest.begin()
   selectedId.value = id
+  detail.value = null
+  detailError.value = ''
   loadingDetail.value = true
   try {
     const response = await api.getLlmReport(id)
-    // 竞态防护：快速 A→B 切换时，慢返回的 A 不得覆盖当前选中的 B
-    if (selectedId.value === id) {
-      detail.value = response.data
-    }
+    if (detailRequest.isCurrent(request)) detail.value = response.data
   } catch (error) {
-    if (selectedId.value === id) {
+    if (detailRequest.isCurrent(request)) {
+      detailError.value = getApiErrorMessage(error, '报告加载失败')
       showApiError(error, '报告加载失败')
     }
   } finally {
-    if (selectedId.value === id) {
-      loadingDetail.value = false
-    }
+    if (detailRequest.isCurrent(request)) loadingDetail.value = false
   }
 }
 
@@ -227,10 +333,10 @@ async function generateReport() {
 
 async function ask() {
   const content = question.value.trim()
-  if (!content || !detail.value) return
+  if (!content || !currentDetail.value || loadingDetail.value) return
   // 竞态防护：等待期间用户可能切换报告——只有仍选中同一报告时才追加，
   // 否则丢弃（服务器已落库，切回该报告重新加载即可见）
-  const reportId = detail.value.id
+  const reportId = currentDetail.value.id
   asking.value = true
   try {
     const response = await api.askLlmReport(reportId, content)
@@ -253,18 +359,23 @@ async function ask() {
 }
 
 async function removeReport(id: number) {
-  try {
-    await ElMessageBox.confirm('删除后报告与全部追问记录不可恢复，确认删除？', '删除报告', {
-      type: 'warning'
-    })
-  } catch {
+  if (currentDetail.value?.id !== id || loadingDetail.value) return
+  if (
+    !(await confirmAction({
+      title: '删除报告',
+      message: '删除后报告与全部追问记录不可恢复，确认删除？',
+      confirmText: '删除'
+    }))
+  )
     return
-  }
   try {
     await api.deleteLlmReport(id)
-    ElMessage.success('已删除')
+    ElMessage.success('报告已删除')
+    detailRequest.invalidate()
     detail.value = null
     selectedId.value = null
+    loadingDetail.value = false
+    detailError.value = ''
     await loadReports({ selectFirst: true })
   } catch (error) {
     showApiError(error, '删除失败')
@@ -272,25 +383,41 @@ async function removeReport(id: number) {
 }
 
 async function loadSchedule() {
+  const request = scheduleRequest.begin()
+  scheduleLoading.value = true
+  scheduleError.value = ''
   try {
     const response = await api.getLlmReportSchedule()
-    scheduleCadence.value = response.data.cadence
-  } catch {
-    // 静默：调度配置读取失败不阻塞页面
+    if (scheduleRequest.isCurrent(request)) scheduleCadence.value = response.data.cadence
+  } catch (error) {
+    if (scheduleRequest.isCurrent(request))
+      scheduleError.value = getApiErrorMessage(error, '定期配置加载失败')
+  } finally {
+    if (scheduleRequest.isCurrent(request)) scheduleLoading.value = false
   }
 }
 
-async function saveSchedule(cadence: string) {
+async function saveSchedule(event: Event) {
+  const cadence = (event.target as HTMLSelectElement).value
+  scheduleCadence.value = cadence
+  scheduleSaving.value = true
   try {
     await api.updateLlmReportSchedule(cadence)
+    if (isUnmounted()) return
+    scheduleCadence.value = cadence
     ElMessage.success(
       cadence === 'off'
         ? '已关闭定期生成'
         : `已设置${cadence === 'weekly' ? '每周' : '每月'}自动生成`
     )
   } catch (error) {
-    showApiError(error, '调度设置失败')
-    await loadSchedule()
+    if (!isUnmounted()) {
+      showApiError(error, '调度设置失败')
+      scheduleCadence.value = null
+      await loadSchedule()
+    }
+  } finally {
+    if (!isUnmounted()) scheduleSaving.value = false
   }
 }
 
@@ -301,94 +428,231 @@ onMounted(async () => {
 
 <style scoped>
 .reports-page {
-  max-width: 1280px;
+  max-width: 1440px;
   margin: 0 auto;
 }
-
-.page-header h2 {
-  margin: 0 0 4px;
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  padding: 14px 0 28px;
+  border-bottom: 1px solid var(--app-border-soft);
 }
-
 .page-subtitle {
-  margin: 0;
-  color: var(--app-text-soft);
+  max-width: 600px;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.schedule-select {
+  width: 180px;
+  min-height: 36px;
+  padding: 0 10px;
+  color: var(--app-text);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm);
+  font: inherit;
   font-size: 13px;
 }
-
-.schedule-select {
-  width: 160px;
+.schedule-select:disabled {
+  color: var(--app-text-muted);
 }
-
+.status-note {
+  margin: 16px 0;
+}
+.status-note :deep(.n-alert-body__content) {
+  overflow-wrap: anywhere;
+}
+.status-note .n-button {
+  margin-left: 8px;
+}
+.report-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 32px;
+  margin-top: 26px;
+}
+.report-sidebar {
+  min-width: 0;
+}
+.list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.list-heading h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+}
+.list-heading span {
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
 .report-list {
-  min-height: 200px;
+  min-height: 120px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
-
 .report-item {
-  padding: 10px 12px;
-  border: 1px solid var(--app-border-soft);
+  width: 100%;
+  text-align: left;
+  padding: 14px 12px;
+  color: var(--app-text);
+  border: 1px solid transparent;
+  border-bottom-color: var(--app-border-soft);
+  border-radius: var(--app-radius-sm);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.report-item:hover {
+  background: var(--app-surface-secondary);
+}
+.report-item.active {
+  border-color: var(--app-border-soft);
+  background: var(--app-surface-secondary);
+}
+.report-item.active .report-item-title {
+  color: var(--app-primary-strong);
+}
+.report-item:focus-visible,
+.report-picker:focus-visible,
+.schedule-select:focus-visible {
+  outline: 2px solid var(--app-primary-strong);
+  outline-offset: 2px;
+}
+.report-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px;
+  text-align: left;
+  font: inherit;
+  font-size: 14px;
+  color: var(--app-text);
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
   border-radius: var(--app-radius-sm);
   cursor: pointer;
-  transition: border-color 0.2s;
 }
-
-.report-item:hover {
-  border-color: var(--el-color-primary-light-5);
+.picker-current {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
-
-.report-item.active {
-  border-color: var(--el-color-primary);
-  background: var(--el-color-primary-light-9);
+.picker-time,
+.picker-action,
+.mobile-list-status {
+  font-size: 13px;
+  line-height: 1.7;
 }
-
+.picker-action {
+  color: var(--app-primary-strong);
+  flex-shrink: 0;
+}
+.mobile-list-status {
+  margin: 12px 0;
+  color: var(--app-text);
+}
 .report-item-title {
+  display: block;
   font-weight: 600;
-  margin-bottom: 4px;
+  font-size: 14px;
+  margin-bottom: 9px;
+  overflow-wrap: anywhere;
 }
-
 .report-item-meta {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
   align-items: center;
-  color: var(--app-text-soft);
+  color: var(--app-text-muted);
   font-size: 12px;
 }
-
-.detail-placeholder {
-  padding: 40px 0;
+.report-content {
+  min-width: 0;
+  padding: 24px 28px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border-soft);
+  border-radius: var(--app-radius);
 }
-
+.report-detail {
+  min-width: 0;
+}
+.detail-placeholder {
+  padding: 32px 0;
+}
 .detail-toolbar {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 24px;
 }
-
+.detail-toolbar h2 {
+  font-family: var(--app-font-serif);
+  font-weight: 500;
+  font-size: 24px;
+  line-height: 1.5;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.detail-toolbar .n-button {
+  flex-shrink: 0;
+}
 .detail-meta {
-  color: var(--app-text-soft);
+  color: var(--app-text-muted);
   font-size: 12px;
+  line-height: 1.7;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
-
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  min-width: 96px;
+}
+.markdown-body :deep(table):focus-visible,
+.markdown-body :deep(pre):focus-visible {
+  outline: 2px solid var(--app-primary-strong);
+  outline-offset: 2px;
+}
+.discussion {
+  margin-top: 32px;
+  padding-top: 22px;
+  border-top: 1px solid var(--app-border-soft);
+}
+.discussion h3 {
+  font-size: 16px;
+  margin: 0 0 18px;
+}
 .chat-messages {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 12px;
+  gap: 14px;
+  margin-bottom: 18px;
 }
-
 .chat-message {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: flex-start;
 }
-
 .chat-message.user {
   flex-direction: row-reverse;
 }
-
 .chat-role {
   flex-shrink: 0;
   width: 32px;
@@ -398,74 +662,114 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  background: var(--el-color-info-light-8);
+  background: var(--app-surface-secondary);
+  color: var(--app-text-muted);
 }
-
-.chat-message.user .chat-role {
-  background: var(--el-color-primary-light-8);
-}
-
 .chat-body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  max-width: 85%;
+  max-width: calc(100% - 42px);
   min-width: 0;
 }
-
 .chat-message.user .chat-body {
   align-items: flex-end;
 }
-
 .chat-time {
-  margin-top: 2px;
-  font-size: 11px;
-  color: var(--app-text-soft);
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--app-text-muted);
   font-variant-numeric: tabular-nums;
 }
-
 .chat-bubble {
   max-width: 100%;
-  padding: 8px 12px;
-  border-radius: var(--app-radius);
+  padding: 10px 14px;
+  border-radius: var(--app-radius-sm);
   background: var(--app-surface-secondary);
-  font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.8;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
-
 .chat-message.user .chat-bubble {
-  background: var(--el-color-primary-light-9);
-  white-space: pre-wrap;
+  font-size: 16px;
 }
-
 .chat-bubble.markdown-body {
+  max-width: 38em;
   white-space: normal;
 }
-
 .chat-input {
   display: flex;
   gap: 10px;
   align-items: flex-end;
 }
-
-.chat-input .el-button {
+.chat-input .n-button {
   flex-shrink: 0;
 }
-
 .disclaimer {
-  margin-top: 14px;
-  color: var(--app-text-soft);
+  margin: 14px 0 0;
+  color: var(--app-text-muted);
   font-size: 12px;
+  line-height: 1.7;
+}
+@media (max-width: 1100px) {
+  .header-actions {
+    flex-shrink: 1;
+  }
+  .report-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 20px;
+  }
+  .report-content {
+    padding: 22px;
+  }
+}
+@media (max-width: 900px) {
+  .page-header {
+    flex-direction: column;
+    gap: 18px;
+  }
+  .report-layout {
+    grid-template-columns: minmax(0, 1fr);
+    margin-top: 22px;
+  }
+  .report-list {
+    min-height: 0;
+  }
+  .report-content {
+    padding: 20px 16px;
+  }
+  .detail-toolbar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+@media (max-width: 767px) {
+  .schedule-select,
+  .reports-page :deep(.n-button) {
+    min-height: 44px;
+  }
+  .chat-input {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .chat-input .n-button {
+    align-self: flex-end;
+  }
 }
 
-@media (max-width: 900px) {
-  /* 手机端列表在详情之上：限高内部滚动，报告多了也不会把详情推到几屏之外 */
-  .report-list {
-    margin-bottom: 16px;
-    max-height: 240px;
-    overflow-y: auto;
+@media (min-width: 1025px) {
+  .page-header {
+    padding: 4px 0 16px;
+  }
+  .report-layout {
+    gap: 20px;
+    margin-top: 16px;
+  }
+  .report-item {
+    padding: 10px 12px;
+  }
+  .report-content {
+    padding: 16px 20px;
   }
 }
 </style>

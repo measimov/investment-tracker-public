@@ -29,6 +29,7 @@ from ..config import settings
 from ..core.logging import get_app_logger
 from ..models.security_profile import SecurityProfileData
 from .background_job_store import (
+    JobOwnershipLostError,
     create_or_get_active_job,
     get_job,
 )
@@ -45,6 +46,7 @@ from .llm_client import is_llm_configured
 from .opinion_summary_batch_jobs import candidate_opinion_targets
 from .report_digest_service import (
     REPORT_MARKETS,
+    all_attempts_failed,
     digest_versions_current,
     ensure_report_digests,
 )
@@ -153,7 +155,7 @@ def preview_digest_backfill(db: Session, user_id: int) -> Dict[str, Any]:
         .all()
     ):
         payload = row.payload or {}
-        if payload.get("status") != "ok" or not digest_versions_current(payload):
+        if payload.get("status") != "ok" or not digest_versions_current(payload, row.market):
             continue
         counts[(row.symbol, row.market)] = counts.get((row.symbol, row.market), 0) + 1
     existing = 0
@@ -211,6 +213,8 @@ def _initial_job_data(
     return initial_batch_data(
         targets,
         digests_generated=0,
+        # 抽取器升版后节选未变、沿用旧摘要的份数（零 LLM，不进 digests_generated 成本计数）
+        digests_reused=0,
         # 已永久失败（封顶）的报告份数：混着缓存成功时标的仍算成功，
         # 但这个数必须在最终结果里可见——完成提示据此发警告而非绿色
         digests_blocked=0,
@@ -313,9 +317,9 @@ def _weekly_profile_step(db: Session, target: Dict[str, str]) -> Dict[str, Any]:
     return extras
 
 
-# ADS 换算比这几种结果是本轮真实失败（capped = 同一份 20-F 已连续失败到上限，属于已知
-# 的永久缺口，不再每周重复计失败）
-_ADS_FAILED_STATUSES = ("failed", "error")
+# ADS 换算比这几种结果是本轮真实失败（cover_unknown = 10-K 封面无法识别、本轮没得到结论；
+# capped = 同一份年报已连续失败到上限，属于已知的永久缺口，不再每周重复计失败）
+_ADS_FAILED_STATUSES = ("failed", "error", "cover_unknown")
 
 
 def weekly_step_error(extras: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -396,6 +400,7 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
             "success_count": int(data.get("success_count") or 0),
             "failed_count": int(data.get("failed_count") or 0),
             "digests_generated": int(data.get("digests_generated") or 0),
+            "digests_reused": int(data.get("digests_reused") or 0),
             "digests_blocked": int(data.get("digests_blocked") or 0),
             "symbols_with_remaining": int(data.get("symbols_with_remaining") or 0),
             "statements_generated": int(data.get("statements_generated") or 0),
@@ -450,6 +455,10 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                     )
                     if target["market"] in STATEMENT_MARKETS and not outcome.get("fatal"):
                         _attach_statement_outcome(db, target, outcome)
+            except JobOwnershipLostError:
+                # LLM checkpoint 的失权哨兵必须交给 batch_execution 安静退出，
+                # 不能记成本标的失败后继续下载/生成其余标的。
+                raise
             except Exception as exc:
                 # ensure_report_digests 把下载/抽取/LLM 失败都消化成 gaps，
                 # 走到这里的是意外错误——记本标的失败，继续下一只
@@ -553,7 +562,9 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                             "elapsed_seconds": elapsed,
                         }
                     )
-                elif generated == 0 and failed_count > 0:
+                elif all_attempts_failed(outcome):
+                    # 判据与单标的回填同一函数：升版后沿用（digest_reused）算本轮成功的工作，
+                    # 「1 份沿用 + 1 份失败」是部分成功，不得记失败、不得计入连败早停
                     counters["failed_count"] += 1
                     # blocked 在**每个**分支都要累计：ensure 先跳过封顶报告
                     # 再处理后续，failed>0 与 permanently_failed>0 完全可能
@@ -597,6 +608,7 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                 else:
                     counters["success_count"] += 1
                     counters["digests_generated"] += generated
+                    counters["digests_reused"] += int(outcome.get("digest_reused") or 0)
                     counters["digests_blocked"] += blocked
                     _bump_statement_counters(counters, outcome)
                     if int(outcome.get("remaining") or 0) > 0:
@@ -609,6 +621,7 @@ def execute_digest_batch_job(claimed: Dict[str, Any]) -> None:
                             "total": outcome.get("total"),
                             "completed": completed_count,
                             "generated": generated,
+                            "reused": int(outcome.get("digest_reused") or 0),
                             "failed": failed_count,
                             "blocked": blocked,
                             "remaining": outcome.get("remaining"),

@@ -128,11 +128,18 @@ function numeric(value: unknown): number | null {
 /**
  * 后端 rederive_fields 的复刻（就地）：清洗时随输入一起失效的派生科目，在雅虎补回输入后
  * 重新推导——FCF = CFO − |capex|，分项合计按 derived_fields / SUM_DERIVED_FIELDS。只填为空的
- * 派生科目，不覆盖已有值；任一输入来自雅虎则该派生值也标为雅虎来源（上标可见）。
+ * 派生科目，不覆盖已有值、不推导本身存疑的科目；任一输入来自雅虎则该派生值也标为雅虎来源（上标可见）。
  */
 export function rederiveFields(row: HkPivotRow): void {
+  // 本身被判存疑的派生科目不重推导（#343-3）：否则它是否复活取决于碰巧有没有雅虎行
+  const validation = (row.validation || {}) as Record<string, unknown>
+  const suspect = new Set(
+    validation.status === 'suspect' && Array.isArray(validation.suspect_fields)
+      ? (validation.suspect_fields as string[])
+      : []
+  )
   for (const [field, inputs] of Object.entries(derivedInputs(row))) {
-    if (row[field] != null) continue
+    if (row[field] != null || suspect.has(field)) continue
     const values = inputs.map((input) => numeric(row[input]))
     if (values.some((v) => v === null)) continue
     const nums = values as number[]

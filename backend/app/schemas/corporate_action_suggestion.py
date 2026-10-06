@@ -28,6 +28,15 @@ class SuggestionResponse(BaseModel):
     quantity_basis: Optional[str]
     estimated_total_dividend: Optional[Decimal]
     status: SuggestionStatus
+    receipt_state: Optional[str] = None
+    receipt_complete: bool = False
+    completion_source: Optional[Literal["manual", "statement"]] = None
+    completion_date: Optional[date] = None
+    review_reason: Optional[str] = None
+    received_by_currency: dict[str, Decimal] = Field(default_factory=dict)
+    receipt_ids: list[int] = Field(default_factory=list)
+    remaining_estimated_gross: Optional[Decimal] = None
+    overdue: bool = False
     matched_corporate_action_id: Optional[int]
     created_corporate_action_id: Optional[int]
     match_detail: Optional[dict]
@@ -57,3 +66,12 @@ class SecurityEventResponse(BaseModel):
     event_date: date
     source: str
     payload: Optional[dict]
+
+
+class SuggestionReceiptsUpdate(BaseModel):
+    """Explicit relationship/completion review; never edits cash amounts."""
+
+    model_config = ConfigDict(extra="forbid")
+    receipt_ids: list[int] = Field(default_factory=list, max_length=200)
+    receipt_complete: bool = False
+    expected_updated_at: datetime

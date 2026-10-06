@@ -42,26 +42,41 @@ export const useHoldingsStore = defineStore('holdings', () => {
   // 同一标的连续改价：只让**最后一次**请求的响应回填缓存。先发的请求可能后返回，
   // 按到达顺序回填会把缓存改回旧价，下次读缓存时输入框就退回旧值（PR #216 评审 P2）
   const priceRequestSeq = new Map<string, number>()
+  let fetchSequence = 0
+  const fetchRequests = new Map<string, number>()
+  const pendingFetches = new Map<string, Promise<Holding[]>>()
 
   async function fetchHoldings(
     params: Record<string, unknown> = {},
     options: FetchOptions = {}
   ): Promise<Holding[]> {
     const key = paramsKey(params)
+    if (!options.force && pendingFetches.has(key)) return pendingFetches.get(key)!
     if (!options.force && cache.value[key]) {
       return cache.value[key]
     }
 
+    const request = ++fetchSequence
+    fetchRequests.set(key, request)
     loadingKeys.value[key] = true
     const epoch = dataEpoch()
-    try {
-      const response = await api.getHoldings(params)
-      // 请求在途期间发生过账本写入或换了用户：响应可能是旧数据/上一个用户的，不写回缓存
-      if (isDataEpochCurrent(epoch)) cache.value[key] = response.data
-      return response.data
-    } finally {
-      loadingKeys.value[key] = false
-    }
+    const snapshot = { ...params }
+    const promise = api
+      .getHoldings(snapshot)
+      .then((response) => {
+        // 请求在途期间发生过账本写入或换了用户：响应可能是旧数据/上一个用户的，不写回缓存
+        if (isDataEpochCurrent(epoch) && fetchRequests.get(key) === request)
+          cache.value[key] = response.data
+        return response.data
+      })
+      .finally(() => {
+        if (fetchRequests.get(key) === request) {
+          loadingKeys.value[key] = false
+          pendingFetches.delete(key)
+        }
+      })
+    pendingFetches.set(key, promise)
+    return promise
   }
 
   function isLoading(params: Record<string, unknown> = {}): boolean {
@@ -71,6 +86,8 @@ export const useHoldingsStore = defineStore('holdings', () => {
   function invalidate() {
     cache.value = {}
     loadingKeys.value = {}
+    fetchRequests.clear()
+    pendingFetches.clear()
   }
 
   // 账本写入与登出/换用户由 api 拦截器、auth store 统一发信号（#268），不再靠各页面零散失效

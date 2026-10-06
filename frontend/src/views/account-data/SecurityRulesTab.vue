@@ -2,12 +2,14 @@
 import { LEDGER_CURRENCIES } from '@/utils/currency'
 import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { showApiError } from '@/utils/showApiError'
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { NAlert, NButton, NDataTable, NEmpty, NSpin, NTag, type DataTableColumns } from 'naive-ui'
+import { useMediaQuery } from '@/composables/useMediaQuery'
 import api from '@/api'
+import { isLongNote, renderNote } from './shared'
 import SecuritySelect from '@/components/SecuritySelect.vue'
-import { formatDateTime } from '@/utils/helpers'
+import { formatDate, formatDateTime } from '@/utils/helpers'
 import { CASH_EVENT_TYPE_LABELS, cashEventTypeLabel, optionsOf } from '@/utils/labels'
 import { inferCurrency } from '@/utils/securities'
 import type { SecuritySearchItem } from '@/types'
@@ -17,6 +19,10 @@ import { type SecurityRuleRow, marketOptions } from './shared'
 // 规则数据，父组件只经 defineExpose 的 reload 参与整页刷新。
 const securityRules = ref<SecurityRuleRow[]>([])
 const loading = ref(false)
+const hasLoaded = ref(false)
+const loadError = ref(false)
+const successfulType = ref('')
+const isMobileView = useMediaQuery('(max-width: 640px)')
 
 // 八类特例规则：一个表单承载全部字段，按 rule_type 动态显示与校验
 const RULE_TYPE_LABELS: Record<string, string> = {
@@ -44,7 +50,7 @@ const RULE_TYPE_HINTS: Record<string, string> = {
 }
 const ruleTypeHint = (type: string) => RULE_TYPE_HINTS[type] || ''
 const ruleTypeLabel = (type: string) => RULE_TYPE_LABELS[type] || type
-const ruleTypeTag = (type: string) =>
+const ruleTypeTag = (type: string): 'danger' | 'warning' | 'primary' | 'success' | 'info' =>
   (
     ({
       EXCLUDE: 'danger',
@@ -104,7 +110,7 @@ const ruleRules = computed<FormRules>(() => {
   const rules: FormRules = {
     rule_type: [{ required: true, message: '请选择规则类型', trigger: 'change' }],
     symbol: [
-      { required: true, message: isCmb ? '请输入业务名' : '请输入证券代码', trigger: 'blur' }
+      { required: true, message: isCmb ? '请输入业务名' : '请输入标的代码', trigger: 'blur' }
     ]
   }
   if (!isCmb) rules.market = [{ required: true, message: '请选择市场', trigger: 'change' }]
@@ -154,8 +160,12 @@ async function loadSecurityRules() {
     )
     if (token !== rulesRequestToken) return
     securityRules.value = response.data
+    hasLoaded.value = true
+    loadError.value = false
+    successfulType.value = requestedType
   } catch (error) {
     if (token !== rulesRequestToken) return
+    loadError.value = true
     showApiError(error, '特例规则加载失败')
   } finally {
     if (token === rulesRequestToken) loading.value = false
@@ -171,7 +181,7 @@ function ruleSummary(row: SecurityRuleRow): string {
     case 'NAME_OVERRIDE':
       return String(payload.name ?? '—')
     case 'PRICE_GAP_EXEMPTION':
-      return `${payload.start_date} ~ ${payload.end_date || '至今'}`
+      return `${formatDate(payload.start_date as string)} 至 ${payload.end_date ? formatDate(payload.end_date as string) : '今'}`
     case 'CMB_CASH_BUSINESS':
       return `→ ${cashEventTypeLabel(payload.event_type as string)}`
     case 'ADS_RATIO':
@@ -202,6 +212,7 @@ function openRuleDialog() {
   })
   if (ruleForm.rule_type === 'ADS_RATIO') ruleForm.market = ADS_MARKET
   ruleDialog.visible = true
+  nextTick(() => ruleFormRef.value?.clearValidate())
 }
 
 function buildRulePayload(): Record<string, unknown> | null {
@@ -268,6 +279,66 @@ const removeRule = makeConfirmedAction<SecurityRuleRow>({
 })
 
 defineExpose({ reload: loadSecurityRules })
+
+const emptyDescription = computed(() =>
+  loadError.value
+    ? '尚未确认当前规则，请重试'
+    : !hasLoaded.value
+      ? '特例规则正在加载'
+      : ruleFilters.ruleType
+        ? '没有匹配当前筛选的特例规则'
+        : '暂无特例规则'
+)
+const naiveRuleType = (type: string) => {
+  const value = ruleTypeTag(type)
+  return value === 'danger' ? 'error' : value === 'info' ? 'default' : value
+}
+const columns: DataTableColumns<SecurityRuleRow> = [
+  {
+    title: '类型',
+    key: 'rule_type',
+    width: 155,
+    render: (row) =>
+      h(NTag, { size: 'small', bordered: false, type: naiveRuleType(row.rule_type) }, () =>
+        ruleTypeLabel(row.rule_type)
+      )
+  },
+  { title: '标的 / 业务名', key: 'symbol', width: 150 },
+  { title: '市场', key: 'market', width: 100, render: (row) => row.market || '—' },
+  { title: '摘要', key: 'summary', width: 240, render: ruleSummary },
+  {
+    title: '备注',
+    key: 'note',
+    width: 230,
+    cellProps: () => ({ style: { verticalAlign: 'top' } }),
+    render: (row) => renderNote(row.note)
+  },
+  {
+    title: '创建时间',
+    key: 'created_at',
+    width: 170,
+    render: (row) => formatDateTime(row.created_at)
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 95,
+    fixed: 'right',
+    render: (row) =>
+      h('div', { class: 'row-actions' }, [
+        h(
+          NButton,
+          {
+            text: true,
+            type: 'error',
+            'aria-label': `删除 ${row.symbol} ${ruleTypeLabel(row.rule_type)} 规则`,
+            onClick: () => removeRule(row)
+          },
+          () => '删除'
+        )
+      ])
+  }
+]
 </script>
 
 <template>
@@ -280,62 +351,111 @@ defineExpose({ reload: loadSecurityRules })
           换算比用于美股 20-F 发行人的估值口径；行业分类覆盖持仓页的自动行业（官方 / 东方财富）。
         </p>
       </div>
-      <el-button type="primary" :icon="Plus" @click="openRuleDialog">新增规则</el-button>
+      <div class="toolbar-actions">
+        <NButton :loading="loading" aria-label="重新加载特例规则" @click="loadSecurityRules"
+          >重新加载</NButton
+        ><NButton type="primary" @click="openRuleDialog">新增规则</NButton>
+      </div>
     </div>
 
-    <el-form :inline="true" class="compact-filter">
-      <el-form-item label="规则类型">
-        <el-select
+    <div class="native-filters">
+      <label
+        >规则类型<select
           v-model="ruleFilters.ruleType"
-          clearable
-          placeholder="全部类型"
+          aria-label="筛选规则类型"
           @change="loadSecurityRules"
         >
-          <el-option
-            v-for="item in ruleTypeOptions"
-            :key="item.value"
-            :label="item.label"
-            :value="item.value"
-          />
-        </el-select>
-      </el-form-item>
-    </el-form>
-
-    <div class="responsive-table">
-      <el-table :data="securityRules" v-loading="loading" stripe row-key="id">
-        <template #empty>
-          <el-empty description="暂无特例规则" :image-size="88" />
-        </template>
-        <el-table-column label="类型" width="130">
-          <template #default="{ row }">
-            <el-tag :type="ruleTypeTag(row.rule_type)" size="small">
-              {{ ruleTypeLabel(row.rule_type) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="symbol" label="标的/业务名" min-width="140" />
-        <el-table-column label="市场" width="110">
-          <template #default="{ row }">{{ row.market || '—' }}</template>
-        </el-table-column>
-        <el-table-column label="摘要" min-width="190" show-overflow-tooltip>
-          <template #default="{ row }">{{ ruleSummary(row) }}</template>
-        </el-table-column>
-        <el-table-column prop="note" label="备注" min-width="180" show-overflow-tooltip />
-        <el-table-column label="创建时间" min-width="170">
-          <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
-          <template #default="{ row }">
-            <el-button type="danger" text @click="removeRule(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+          <option value="">全部类型</option>
+          <option v-for="item in ruleTypeOptions" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
+        </select></label
+      >
     </div>
+    <NAlert
+      v-if="loadError"
+      type="warning"
+      :show-icon="false"
+      title="特例规则加载失败"
+      class="read-alert"
+      >{{
+        hasLoaded
+          ? `显示上次成功的${successfulType ? ruleTypeLabel(successfulType) : '全部类型'}规则，尚未确认当前筛选结果。`
+          : '尚未确认特例规则，请重试。'
+      }}
+      <NButton text type="primary" @click="loadSecurityRules">重试特例规则</NButton></NAlert
+    >
+    <p v-else-if="loading && hasLoaded" class="read-note" role="status">
+      正在加载当前筛选，以下为上次成功的{{
+        successfulType ? ruleTypeLabel(successfulType) : '全部类型'
+      }}规则。
+    </p>
+    <NSpin :show="loading">
+      <NDataTable
+        v-if="!isMobileView"
+        :data="securityRules"
+        :columns="columns"
+        :row-key="(row: SecurityRuleRow) => row.id"
+        :scroll-x="1140"
+        :bordered="false"
+        ><template #empty
+          ><NEmpty
+            :description="emptyDescription"
+            :theme-overrides="{ textColor: 'var(--app-text-muted)' }" /></template
+      ></NDataTable>
+      <div v-else class="mobile-card-list">
+        <NEmpty
+          v-if="!securityRules.length"
+          :description="emptyDescription"
+          :theme-overrides="{ textColor: 'var(--app-text-muted)' }"
+        />
+        <article
+          v-for="row in securityRules"
+          :key="row.id"
+          class="mobile-card"
+          data-testid="security-rule-card"
+        >
+          <div class="mobile-card-head">
+            <div class="mobile-card-title">
+              <strong class="mobile-card-symbol">{{ row.symbol }}</strong
+              ><span class="mobile-card-name">{{ row.market || '—' }}</span>
+            </div>
+            <NTag size="small" :bordered="false" :type="naiveRuleType(row.rule_type)">{{
+              ruleTypeLabel(row.rule_type)
+            }}</NTag>
+          </div>
+          <div class="mobile-card-meta">
+            <span>{{ ruleSummary(row) }}</span>
+            <details v-if="isLongNote(row.note)" class="read-details">
+              <summary>查看完整备注</summary>
+              <p>{{ row.note }}</p>
+            </details>
+            <span v-else-if="row.note">{{ row.note }}</span
+            ><span>{{ formatDateTime(row.created_at) }}</span>
+          </div>
+          <div class="mobile-card-actions">
+            <NButton
+              text
+              type="error"
+              :aria-label="`删除 ${row.symbol} ${ruleTypeLabel(row.rule_type)} 规则`"
+              @click="removeRule(row)"
+              >删除</NButton
+            >
+          </div>
+        </article>
+      </div>
+    </NSpin>
 
-    <el-dialog v-model="ruleDialog.visible" title="新增特例规则" width="min(560px, 96vw)">
+    <el-dialog
+      v-model="ruleDialog.visible"
+      title="新增特例规则"
+      width="min(560px, 96vw)"
+      :close-on-click-modal="false"
+      class="account-form-dialog"
+    >
       <el-form ref="ruleFormRef" :model="ruleForm" :rules="ruleRules" label-width="100px">
         <el-form-item label="规则类型" prop="rule_type">
-          <el-select v-model="ruleForm.rule_type">
+          <el-select v-model="ruleForm.rule_type" aria-label="特例规则类型">
             <el-option
               v-for="item in ruleTypeOptions"
               :key="item.value"
@@ -354,11 +474,13 @@ defineExpose({ reload: loadSecurityRules })
           <el-input
             v-if="ruleForm.rule_type === 'CMB_CASH_BUSINESS'"
             v-model="ruleForm.symbol"
+            aria-label="标的代码或业务名"
             placeholder="如 招现宝收益"
           />
           <SecuritySelect
             v-else
             v-model="ruleForm.symbol"
+            aria-label="标的代码或业务名"
             :resolve="false"
             placeholder="如 511880"
             @select="
@@ -367,7 +489,11 @@ defineExpose({ reload: loadSecurityRules })
           />
         </el-form-item>
         <el-form-item v-if="ruleForm.rule_type !== 'CMB_CASH_BUSINESS'" label="市场" prop="market">
-          <el-select v-model="ruleForm.market" :disabled="ruleForm.rule_type === 'ADS_RATIO'">
+          <el-select
+            v-model="ruleForm.market"
+            aria-label="规则市场"
+            :disabled="ruleForm.rule_type === 'ADS_RATIO'"
+          >
             <el-option v-for="m in marketOptions" :key="m" :label="m" :value="m" />
           </el-select>
         </el-form-item>
@@ -375,6 +501,7 @@ defineExpose({ reload: loadSecurityRules })
         <el-form-item v-if="ruleForm.rule_type === 'ADS_RATIO'" label="换算比" prop="ratio">
           <el-input
             v-model="ruleForm.ratio"
+            aria-label="ADS 换算比"
             placeholder="1 ADS 对应的普通股数，如 4；十份 ADS 合一股填 0.1"
           >
             <template #prepend>1 ADS =</template>
@@ -383,12 +510,17 @@ defineExpose({ reload: loadSecurityRules })
         </el-form-item>
 
         <el-form-item v-if="ruleForm.rule_type === 'INDUSTRY'" label="行业" prop="industry">
-          <el-input v-model="ruleForm.industry" maxlength="50" placeholder="如 银行、软件服务" />
+          <el-input
+            v-model="ruleForm.industry"
+            aria-label="行业"
+            maxlength="50"
+            placeholder="如 银行、软件服务"
+          />
         </el-form-item>
 
         <template v-if="ruleForm.rule_type === 'RELISTING'">
           <el-form-item label="旧币种" prop="old_currency">
-            <el-select v-model="ruleForm.old_currency">
+            <el-select v-model="ruleForm.old_currency" aria-label="旧币种">
               <el-option v-for="c in LEDGER_CURRENCIES" :key="c" :label="c" :value="c" />
             </el-select>
           </el-form-item>
@@ -401,29 +533,39 @@ defineExpose({ reload: loadSecurityRules })
             />
           </el-form-item>
           <el-form-item label="新市场" prop="new_market">
-            <el-select v-model="ruleForm.new_market">
+            <el-select v-model="ruleForm.new_market" aria-label="新市场">
               <el-option v-for="m in marketOptions" :key="m" :label="m" :value="m" />
             </el-select>
           </el-form-item>
           <el-form-item label="新币种" prop="new_currency">
-            <el-select v-model="ruleForm.new_currency">
+            <el-select v-model="ruleForm.new_currency" aria-label="新币种">
               <el-option v-for="c in LEDGER_CURRENCIES" :key="c" :label="c" :value="c" />
             </el-select>
           </el-form-item>
           <el-form-item label="名称">
-            <el-input v-model="ruleForm.name" placeholder="转板后标的名称，如 柏能集团" />
+            <el-input
+              v-model="ruleForm.name"
+              aria-label="标的名称"
+              placeholder="转板后标的名称，如 柏能集团"
+            />
           </el-form-item>
         </template>
 
         <el-form-item v-if="ruleForm.rule_type === 'NAME_OVERRIDE'" label="名称" prop="name">
-          <el-input v-model="ruleForm.name" placeholder="覆盖显示的标的名称" />
+          <el-input
+            v-model="ruleForm.name"
+            aria-label="标的名称"
+            placeholder="覆盖显示的标的名称"
+          />
         </el-form-item>
 
         <template v-if="ruleForm.rule_type === 'PRICE_GAP_EXEMPTION'">
           <el-form-item label="开始日期" prop="start_date">
             <el-date-picker
               v-model="ruleForm.start_date"
+              aria-label="缺口开始日期"
               type="date"
+              format="YYYY/MM/DD"
               value-format="YYYY-MM-DD"
               placeholder="缺口开始日"
             />
@@ -431,7 +573,9 @@ defineExpose({ reload: loadSecurityRules })
           <el-form-item label="结束日期">
             <el-date-picker
               v-model="ruleForm.end_date"
+              aria-label="缺口结束日期"
               type="date"
+              format="YYYY/MM/DD"
               value-format="YYYY-MM-DD"
               placeholder="留空表示至今"
             />
@@ -443,7 +587,7 @@ defineExpose({ reload: loadSecurityRules })
           label="事件类型"
           prop="event_type"
         >
-          <el-select v-model="ruleForm.event_type">
+          <el-select v-model="ruleForm.event_type" aria-label="招商现金事件类型">
             <el-option
               v-for="item in cmbEventTypeOptions"
               :key="item.value"
@@ -454,7 +598,11 @@ defineExpose({ reload: loadSecurityRules })
         </el-form-item>
 
         <el-form-item label="备注">
-          <el-input v-model="ruleForm.note" placeholder="如 货币基金，专注股票投资回报" />
+          <el-input
+            v-model="ruleForm.note"
+            aria-label="规则备注"
+            placeholder="如 货币基金，专注股票投资回报"
+          />
         </el-form-item>
       </el-form>
       <template #footer>

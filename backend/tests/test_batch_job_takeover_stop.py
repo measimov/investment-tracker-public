@@ -23,6 +23,7 @@ from app.models.background_job import BackgroundJob
 from app.services import (
     performance_history_jobs,
     report_digest_batch_jobs,
+    report_statement_service,
     security_analysis_batch_jobs,
     security_analysis_jobs,
 )
@@ -138,6 +139,67 @@ def test_digest_batch_stops_after_takeover(db, monkeypatch):
     report_digest_batch_jobs.execute_digest_batch_job(stale)
 
     assert calls == [], f"失权后仍回填了 {calls} —— 僵尸线程会重复下载年报并烧 LLM token"
+
+
+@pytest.mark.parametrize("weekly", [False, True])
+def test_digest_checkpoint_ownership_loss_is_not_counted_as_a_symbol_failure(
+    db, monkeypatch, weekly
+):
+    """失权可从 LLM 侧抛出，不能被摘要批量的逐标的兜底吞掉。"""
+    payload = {"targets": TARGETS, "completed_keys": [], "total": len(TARGETS)}
+    if weekly:
+        payload["mode"] = report_digest_batch_jobs.WEEKLY_MODE
+    job = create_or_get_active_job(DIGEST_JOB_TYPE, 1, payload)
+    claimed = claim_job(job["id"], DIGEST_JOB_TYPE)
+    assert claimed is not None
+    calls = []
+
+    def lose_ownership(db_, symbol, market, **kwargs):
+        calls.append((symbol, market))
+        raise JobOwnershipLostError(job["id"])
+
+    monkeypatch.setattr(report_digest_batch_jobs, "ensure_report_digests", lose_ownership)
+    monkeypatch.setattr(report_digest_batch_jobs, "_weekly_profile_step", lambda *a, **kw: {})
+    monkeypatch.setattr(report_digest_batch_jobs, "is_llm_configured", lambda: True)
+    monkeypatch.setattr(
+        report_digest_batch_jobs.settings, "security_analysis_batch_pause_seconds", 0
+    )
+
+    report_digest_batch_jobs.execute_digest_batch_job(claimed)
+
+    assert calls == [(TARGETS[0]["symbol"], TARGETS[0]["market"])]
+    row = db.get(BackgroundJob, job["id"])
+    db.refresh(row)
+    assert row.status == "running"
+    assert not row.data.get("failed_count")
+    assert not row.data.get("completed_keys")
+    assert not row.data.get("results")
+
+
+def test_statement_attachment_does_not_swallow_a_lost_llm_checkpoint():
+    outcome = {"gaps": ["原摘要缺口"], "generated": 1}
+
+    def lose_ownership(*args, **kwargs):
+        raise JobOwnershipLostError("job-1")
+
+    with pytest.raises(JobOwnershipLostError):
+        report_statement_service.attach_statement_outcome(
+            None, "00700", "港股", outcome, max_new=1, ensure=lose_ownership
+        )
+    assert outcome == {"gaps": ["原摘要缺口"], "generated": 1}
+
+
+def test_statement_attachment_still_records_ordinary_pipeline_failures():
+    outcome = {"gaps": ["原摘要缺口"], "generated": 1}
+
+    def ordinary_error(*args, **kwargs):
+        raise RuntimeError("上游报表不可用")
+
+    report_statement_service.attach_statement_outcome(
+        None, "00700", "港股", outcome, max_new=1, ensure=ordinary_error
+    )
+    assert outcome["generated"] == 1
+    assert outcome["gaps"] == ["原摘要缺口", "[报表抽取] 管线异常，本轮未抽取报表"]
 
 
 def test_takeover_mid_run_stops_before_next_symbol(db, monkeypatch):

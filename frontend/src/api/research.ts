@@ -2,6 +2,14 @@
 import { apiClient, type QueryParams } from './client'
 import type {
   ActiveAnalysisJob,
+  AnalysisDetail,
+  SecurityProfileResponse,
+  OpinionFeedResponse,
+  AnalysisBatchTargetsResponse,
+  OpinionBatchTargetsResponse,
+  DigestBackfillPreview,
+  ReportBackfillJob,
+  LlmReportJob,
   AnalysisBatchJob,
   AnalysisJob,
   AnalysisSummaryRow,
@@ -39,8 +47,8 @@ import type {
 
 export const researchApi = {
   // 观察清单（未持仓标的的观察区域；正式论点见 security_theses）
-  getWatchlist() {
-    return apiClient.get<WatchlistItem[]>('/watchlist')
+  getWatchlist(options: { skipGlobalErrorNotification?: boolean } = {}) {
+    return apiClient.get<WatchlistItem[]>('/watchlist', options)
   },
   // 详情页轻量 membership 查询（不拉整份 enriched 列表）
   watchlistContains(symbol: string, market: string) {
@@ -63,12 +71,12 @@ export const researchApi = {
     return apiClient.get<AnalysisSummaryRow[]>('/securities/analyses')
   },
   getSecurityAnalysis(market: string, symbol: string) {
-    return apiClient.get(
+    return apiClient.get<AnalysisDetail>(
       `/securities/${encodeURIComponent(market)}/${encodeURIComponent(symbol)}/analysis`
     )
   },
   getSecurityProfile(market: string, symbol: string) {
-    return apiClient.get(
+    return apiClient.get<SecurityProfileResponse>(
       `/securities/${encodeURIComponent(market)}/${encodeURIComponent(symbol)}/profile`
     )
   },
@@ -81,7 +89,7 @@ export const researchApi = {
     return apiClient.get<AnalysisJob>(`/securities/analysis-jobs/${id}`)
   },
   startReportBackfillJob(market: string, symbol: string) {
-    return apiClient.post(
+    return apiClient.post<ReportBackfillJob>(
       `/securities/${encodeURIComponent(market)}/${encodeURIComponent(symbol)}/report-backfill-jobs`
     )
   },
@@ -93,7 +101,7 @@ export const researchApi = {
   },
   // 目标预览：确认框的数量/耗时估算必须与后端真实目标一致
   getSecurityAnalysisBatchTargets() {
-    return apiClient.get('/securities/analysis-batch-targets')
+    return apiClient.get<AnalysisBatchTargetsResponse>('/securities/analysis-batch-targets')
   },
   getSecurityAnalysisBatchJob(jobId: string) {
     return apiClient.get<AnalysisBatchJob>(`/securities/analysis-batch-jobs/${jobId}`)
@@ -200,7 +208,7 @@ export const researchApi = {
     return apiClient.get<OpinionSummariesResponse>('/securities/opinion-summaries')
   },
   getOpinionFeed(params?: QueryParams) {
-    return apiClient.get('/securities/opinion-feed', { params })
+    return apiClient.get<OpinionFeedResponse>('/securities/opinion-feed', { params })
   },
   getOpinionSummary(market: string, symbol: string) {
     return apiClient.get<OpinionSummaryDetail>(
@@ -221,7 +229,7 @@ export const researchApi = {
     })
   },
   getOpinionBatchTargets() {
-    return apiClient.get('/securities/opinion-batch-targets')
+    return apiClient.get<OpinionBatchTargetsResponse>('/securities/opinion-batch-targets')
   },
   getOpinionBatchJob(jobId: string) {
     return apiClient.get<OpinionBatchJob>(`/securities/opinion-batch-jobs/${jobId}`)
@@ -230,11 +238,11 @@ export const researchApi = {
     return apiClient.post<OpinionBatchJob>(`/securities/opinion-batch-jobs/${jobId}/cancel`)
   },
   getReportBackfillJob(id: string) {
-    return apiClient.get(`/securities/report-backfill-jobs/${id}`)
+    return apiClient.get<ReportBackfillJob>(`/securities/report-backfill-jobs/${id}`)
   },
   // 批量财报摘要回填（持仓页：一次给全部持仓补摘要，可重复触发续跑加深）
   getDigestBackfillPreview() {
-    return apiClient.get('/securities/digest-backfill-preview')
+    return apiClient.get<DigestBackfillPreview>('/securities/digest-backfill-preview')
   },
   startDigestBackfillJob() {
     return apiClient.post<DigestBatchJob>('/securities/digest-backfill-jobs')
@@ -257,10 +265,10 @@ export const researchApi = {
     return apiClient.delete<void>(`/llm-reports/${id}`)
   },
   generateLlmReport() {
-    return apiClient.post('/llm-reports/generate')
+    return apiClient.post<LlmReportJob>('/llm-reports/generate')
   },
   getLlmReportJob(jobId: number | string) {
-    return apiClient.get(`/llm-reports/jobs/${jobId}`)
+    return apiClient.get<LlmReportJob>(`/llm-reports/jobs/${jobId}`)
   },
   // 追问为同步 LLM 调用，单独放宽超时
   askLlmReport(id: number | string, content: string) {

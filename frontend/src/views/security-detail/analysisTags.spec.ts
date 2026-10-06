@@ -106,6 +106,24 @@ describe('outputAdjustmentText', () => {
         '标签归一：「依赖非经常性损益」→「依赖非经常损益」；补上免责声明'
     )
   })
+  it('与预计算数据矛盾的标签（#265）', () => {
+    expect(
+      outputAdjustmentText([
+        {
+          type: 'tag_dropped_by_signal',
+          tag: '业绩增长',
+          reason: '最新财年营收同比 5.0%、归母净利同比 -20.0%，不满足两者均增长'
+        }
+      ])
+    ).toBe(
+      '解析时已按规则调整：与数据不符，去掉：业绩增长（最新财年营收同比 5.0%、归母净利同比 -20.0%，不满足两者均增长）'
+    )
+    expect(
+      outputAdjustmentText([
+        { type: 'tag_signal_conflict', tags: ['业绩增长'], reasons: ['归母净利下降'] }
+      ])
+    ).toContain('已保留原标签')
+  })
   it('仅空白差异的归一不提示', () => {
     expect(
       outputAdjustmentText([{ type: 'tag_normalized', from: ' 高股息 ', to: '高股息' }])

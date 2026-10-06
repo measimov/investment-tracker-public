@@ -47,6 +47,8 @@ def api_user():
         original = user.hashed_password
         user.hashed_password = get_password_hash("known-api-password")
         session.commit()
+        account = make_account(session, user_id=user.id, commit=True)
+        BASE["broker_account_id"] = account.id
         yield user.id
         user.hashed_password = original
         session.commit()
@@ -69,6 +71,8 @@ BASE = {
     "action_type": "CASH_DIVIDEND",
     "ex_date": "2026-07-01",
     "currency": "CNY",
+    "payment_date": "2026-07-01",
+    "receipt_confirmed": True,
 }
 
 
@@ -96,7 +100,7 @@ async def test_create_derives_tax_from_rate_and_keeps_net_derived(db, api_user):
         )
         assert only_rate.status_code == 201, only_rate.text
         action, (gross, tax, net) = _amounts(db, only_rate.json()["id"])
-        assert action.net_dividend is None
+        assert action.net_dividend == Decimal("900")
         assert (gross, tax, net) == (Decimal("1000"), Decimal("100"), Decimal("900"))
 
         # 只给税额：原样入库，不被任何默认税率覆盖
@@ -111,7 +115,7 @@ async def test_create_derives_tax_from_rate_and_keeps_net_derived(db, api_user):
         )
         assert only_tax.status_code == 201, only_tax.text
         action, (gross, tax, net) = _amounts(db, only_tax.json()["id"])
-        assert action.tax_rate is None and action.net_dividend is None
+        assert action.tax_rate is None and action.net_dividend == Decimal("475")
         assert (gross, tax, net) == (Decimal("500"), Decimal("25"), Decimal("475"))
 
         # 显式税额优先于税率（两者不一致时以用户录入的税额为准）
@@ -138,9 +142,7 @@ async def test_create_derives_tax_from_rate_and_keeps_net_derived(db, api_user):
                 "total_dividend": "300",
             },
         )
-        assert neither.status_code == 201, neither.text
-        _, (_, tax, net) = _amounts(db, neither.json()["id"])
-        assert (tax, net) == (Decimal("0"), Decimal("300"))
+        assert neither.status_code == 422  # 未知税额不再默认为零
 
 
 @pytest.mark.anyio
@@ -173,6 +175,7 @@ async def test_cash_dividend_requires_total(db, api_user):
             json={
                 **BASE,
                 "total_dividend": "100",
+                "tax_withheld": "0",
             },
         )
         assert created.status_code == 201
@@ -200,6 +203,7 @@ async def test_shortcut_and_generic_use_same_tax_formula(db, api_user):
             headers=auth,
             json={
                 **BASE,
+                "payment_date": "2026-07-02",
                 "dividend_per_share": "1",
                 "total_dividend": "1234.56",
                 "tax_rate": "0.2",

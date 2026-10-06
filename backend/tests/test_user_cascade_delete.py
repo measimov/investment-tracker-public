@@ -17,6 +17,7 @@ from app.models.background_job import BackgroundJob
 from app.models.broker_account import BrokerAccount
 from app.models.broker_fund_flow import BrokerFundFlow
 from app.models.cash_event import CashEvent
+from app.models.dividend_tax_allocation import DividendTaxAllocation
 from app.models.corporate_action import CorporateAction
 from app.models.corporate_action_suggestion import CorporateActionSuggestion
 from app.models.security_rule import SecurityRule
@@ -39,6 +40,7 @@ USER_SCOPED_TABLES = [
     "broker_accounts",
     "broker_fund_flows",
     "cash_events",
+    "dividend_tax_allocations",
     "corporate_action_suggestions",
     "corporate_actions",
     "security_rules",
@@ -210,6 +212,24 @@ def doomed_user():
                 expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
             ),
         ]
+    )
+    db.commit()
+    action = db.query(CorporateAction).filter_by(user_id=uid).one()
+    event = CashEvent(
+        user_id=uid,
+        broker_account_id=account.id,
+        event_type="TAX",
+        tax_kind="DIVIDEND",
+        amount=Decimal(1),
+        currency="USD",
+        event_date=date(2026, 2, 1),
+    )
+    db.add(event)
+    db.flush()
+    db.add(
+        DividendTaxAllocation(
+            user_id=uid, cash_event_id=event.id, corporate_action_id=action.id, amount=Decimal(1)
+        )
     )
     db.commit()
     db.close()

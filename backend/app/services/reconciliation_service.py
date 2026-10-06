@@ -10,7 +10,7 @@
   WITHDRAWAL/TRANSFER_OUT/FX_OUT/FEE/TAX 为流出（金额恒正）。
 - 交易：BUY 流出 数量×价格+费用，SELL 流入 数量×价格−费用，币种取交易币种。
 - 现金股息：归属该账户的 CASH_DIVIDEND 按税后净额流入（支付日，缺省除权日）。
-- 未归属账户（NULL）的股息与现金事件不计入任何账户的推导现金。
+- 未归属账户的股息仅可归入除权日前唯一持有该证券的账户；现金事件仍须指定账户。
 
 整体状态 = 持仓差 + 重放一致性 + 现金差三者共同决定（防"现金未闭合却整体
 绿灯"的假绿）。分范围对账单（statement_scope）只比对范围内市场的持仓、不比
@@ -22,6 +22,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..core.logging import get_app_logger
@@ -33,7 +34,12 @@ from .cmb_fund_flow_importer import BROKER_NAME as CMB_BROKER_NAME
 from .eastmoney_statement_importer import BROKER_NAME as EASTMONEY_BROKER_NAME
 from .security_rule_service import get_excluded_keys
 from .holding_service import AccountReplayError, replay_transactions_per_account
-from .portfolio.semantics import cash_dividend_amounts, rights_issue_lot
+from .portfolio.semantics import (
+    cash_dividend_amounts,
+    dividend_cash_date,
+    rights_issue_lot,
+    is_received_dividend,
+)
 
 logger = get_app_logger(__name__)
 
@@ -54,7 +60,7 @@ METHODOLOGY_NOTES = [
     "现金 = 现金事件（按类型定向）+ 交易现金流 + 归属该账户的税后股息"
     " − 归属该账户的配股认购款（按认购金额，缺省为数量×认购价）；"
     "推导正确性依赖现金事件录入完整。",
-    "未归属账户的股息与现金事件不计入推导现金；未归属账户的配股按持仓重放的同一规则，"
+    "未归属账户的现金事件不计入推导现金；未归属账户的股息与配股按持仓重放的同一规则，"
     "归到除权日前唯一持有该证券的账户（多个账户同时持有则不计入）。",
     "差异只报告不修复：数量差通常指向漏录交易/公司行动或账户归属错误，现金差通常指向漏录现金事件。",
     "排除清单内的现金管理标的（summary.excluded_symbols）双侧忽略，不参与比对。",
@@ -252,14 +258,24 @@ def derive_account_cash_asof(
         db.query(CorporateAction)
         .filter(
             CorporateAction.user_id == user_id,
-            CorporateAction.broker_account_id == account_id,
+            or_(
+                CorporateAction.broker_account_id == account_id,
+                CorporateAction.broker_account_id.is_(None),
+            ),
             CorporateAction.action_type == "CASH_DIVIDEND",
         )
         .all()
     )
     for dividend in dividends:
-        pay_date = dividend.payment_date or dividend.ex_date
+        if not is_received_dividend(dividend, as_of):
+            continue
+        pay_date = dividend_cash_date(dividend)
         if pay_date is None or pay_date > as_of:
+            continue
+        if (
+            dividend.broker_account_id is None
+            and _sole_holder_before(db, user_id, dividend) != account_id
+        ):
             continue
         _, _, net = cash_dividend_amounts(dividend)
         balances[dividend.currency or "CNY"] += net

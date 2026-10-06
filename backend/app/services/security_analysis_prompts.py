@@ -94,9 +94,10 @@ _MARKET_RISK_SOURCES = {
     ),
     "港股": (
         "港股无审计意见/质押/增减持数据源——风险判断只能来自 report_digests "
-        "与 earnings_quality 指标；**港股年报未必设有「主要風險」章节**"
-        "（实测多数没有），摘要里没有风险内容时如实写'年报未披露专门风险章节'，"
-        "不得推测。以下标签**禁止使用**：高质押、大股东减持、大股东增持、"
+        "与 earnings_quality 指标；逐期引用输入中实际提供的风险要点，注明报告期。"
+        "风险字段缺失或写'原文未提及'时，只能说'所提供节选未包含具体风险内容'；"
+        "不得推断年报没有风险章节，也不得把某一期的缺口推广到所有年份。"
+        "以下标签**禁止使用**：高质押、大股东减持、大股东增持、"
         "解禁临近、审计非标。「安全边际充足」只在格雷厄姆四项全部达标且估值数据充足"
         "（价格不陈旧、每股盈利为最近一年内的 TTM/年报、无估算告警）时可用，服务端强制校验。"
         "结构化科目来自披露易年报/中报原文抽取（report_statements，可达十年，"
@@ -115,7 +116,7 @@ _MARKET_RISK_SECTION = {
     ),
     "港股": (
         "## 风险信号盘点（基于年报摘要与利润质量指标；明示本市场无审计意见/"
-        "质押/增减持数据源、结构化科目以年报/中报原文抽取为准，且年报若未设风险章节须写明）"
+        "质押/增减持数据源、结构化科目以年报/中报原文抽取为准；风险摘要的缺口按报告期说明）"
     ),
 }
 
@@ -146,7 +147,7 @@ def supplementary_rules(market: str) -> List[str]:
     """补充约束（#288）：两轮离线评测（第二轮 10 只标的、第三轮 8 只留出标的，双评审）
     针对各模型共性失分点整理的通用条款；DeepSeek Flash 在留出集上 19.5 → 21.6 分，
     规则分 3.0 → 3.9。原文与评测记录见 #288。涉及计算的条目（股息对照、下半年推算、
-    ROE）待 #265 服务端预计算落地后改为引用预计算结果。"""
+    ROE、科目变动方向、低基数）改为引用服务端预计算的 signals（#265）。"""
     # 可选值由服务端下限派生（单一来源）：prompt 写了「不得为 low」而解析层没有下限时，
     # 模型不遵守就原样入库、遵守了口径又没记录（PR #308 评审 P3-2）
     floor = MARKET_MIN_RISK_LEVEL.get(market)
@@ -162,37 +163,49 @@ def supplementary_rules(market: str) -> List[str]:
         "不得写进「未来事件提醒」；该章节只列 status=upcoming 的事件，没有就写「无」。",
         "- 章节标题：只写上文 10 个章节的名称本身（如「## 商业模式与产业链」），"
         "不得把括号里的写作说明、字段名或指令抄进标题或正文。",
-        "- 数字与方向：比较两期时先写出两期原值再写方向（上升/下降/持平），方向必须与原值一致；"
-        "能引用输入里预计算的比率就引用，不要心算新比率，确需计算时写出算式与结果。",
+        "- 取舍：输入数据较多，只使用与判断相关的数据，其余字段可以忽略，不必逐项复述；"
+        "同一数字有多个来源时按 data_semantics 写明的优先级取一个，不要混用。",
+        "- 预计算优先：signals 里已给出的量（同比、下半年推算、单季、股息总额与每股分红、股息支付率、"
+        "自由现金流、股息占自由现金流比例、股息率、科目变动方向与幅度、占总资产比例、净现金、ROE）"
+        "一律直接引用，不得自行重算或改写方向；signals 没有给出的才可计算，并写出算式与结果。",
+        "- 自由现金流：只引用 signals 中 free_cashflow / fcf_yi 及对应 basis 的金额与期间；"
+        "默认经营现金流减资本开支绝对值。数据缺失时注明无法计算，不得换用其他来源的定义。",
+        "- 摘要数字核对：被隔离的字段不是公司未披露；用同期结构化报表，缺失时注明待核对。"
+        "未能核对不等于通过；不得把调整后利润、分部收入等其他口径替代归母净利或合并营收。",
+        "- 数字与方向：比较两期时先写出两期原值再写方向（上升/下降/持平），方向必须与原值一致。",
         "- 数字格式：金额换算为亿元（或百万元、亿港元、亿美元）保留 2 位小数，比率保留 1–2 位小数；"
         "不得照抄 4 位以上小数或以「元」为单位的长整数。",
+        "- 预计算比率是舍入后的展示值；阈值结论沿用已有判定与方向，不得用展示值重新判定。",
         "- 口径与单位：每股金额与股息按每股口径写（输入为「每 10 股」时折算为每股），不得改写为「每 10 股」；"
         "注意币种与数量级，同一句内不要混用；港股/美股报表币种以行内 currency 为准。",
         "- 口径与时期：每个数字写明所属期间（如 2025 年度、2026 上半年）；格雷厄姆准则与脆弱性信号是年度口径"
         "（以其依据中的年份为准），不得写成中报期间。同一指标有多个口径时写明口径且不直接比较："
         "加权/摊薄 ROE、归母/扣非净利润（两者的同比增速是不同字段，不得互换）、营业收入/营业总收入；"
         "业绩快报与正式报告并存时以正式报告为准。",
-        "- ROE：输入给出 ROE 时直接引用并注明口径；未给出但有归母净利润与归母权益时写出算式估算，"
-        "不得写「数据不足」。",
-        "- 标签须与数据一致：「业绩增长」仅当最新财年营收与归母净利均同比增长；「业绩下滑」仅当最新财年"
-        "归母净利同比下降；「高股息」须有输入中的股息率，不得自行推算股息率；「净现金充裕」须净现金为正且"
+        "- ROE：引用 signals.roe 并注明口径（字段名或 formula）；signals.roe 为空时才写「数据不足」。",
+        "- 标签须与数据一致：「业绩增长」须最新财年或最新中报（季报）营收与归母净利均同比增长；「业绩下滑」"
+        "须最新财年或最新中报（季报）归母净利同比下降，依据的是哪一期要在正文写明（见 signals.period_signals）；"
+        "「高股息」须有输入中的股息率（signals.shareholder_returns.dividend_yield），不得自行推算股息率；「净现金充裕」须净现金为正且"
         "占总资产不低于 5%；「高杠杆脆弱」「尾部风险暴露」须有对应脆弱性信号触发。标签与正文结论冲突时，"
         "按正文依据修正标签。",
-        "- 「利润质量存疑」须最新财年至少一项预计算指标触发且不是低基数失真（相关科目占总资产不足 1% 的"
-        "增速差不算），或 M-score 触发；只有历史年份触发时只在正文提示，不贴该标签。「现金流背离」只在"
-        "净利润为正且经营现金流/净利润低于阈值时成立；净利润为负时该比率是负除负，不作红旗解读。"
+        "- 「利润质量存疑」须最新财年至少一项预计算指标触发且不是低基数失真（signals.balance_changes 里"
+        "low_base=true 的科目，其增速差不算），或 M-score 触发；只有历史年份触发时只在正文提示，不贴该标签。「现金流背离」只在"
+        "净利润为正且经营现金流/净利润低于阈值时成立；净利润 ≤ 0 的年份该比率与扣非占比不计（为空，ratio_unavailable 标注 ni_non_positive），不得自行相除后作红旗解读。"
         "两者都不得仅凭单个中报期推断。",
-        "- 分红标签：从未派息的公司不得用「分红中断」（也不用「分红连续」）；「分红中断」只用于曾经派息后停止。",
+        "- 分红标签：signals.shareholder_returns.ever_paid=false（从未派息）时不得用「分红中断」"
+        "（也不用「分红连续」）；「分红中断」只用于曾经派息后停止。",
         "- 安全边际：市盈率、市净率、流动比率、长期债务四项全部达标时不得使用「安全边际不足」"
         "（满足估值数据充足条件时可用「安全边际充足」，否则两者都不用），其余准则不达标只在正文说明。",
         "- 风险等级 high 只在出现硬信号时使用（审计非标、业绩预警、密集减持、质押比例高企）；"
         "「高质押」须质押比例处于高位（如 30% 以上）或快速上升。",
-        "- 股东回报：输入里同时有股息与自由现金流时须对照两者；只有每股股息时用「每股股息 × 总股本」"
-        "写出算式估算股息总额（全年须含中期股息），不得以口径不同为由跳过。",
-        "- 有数据就要写到的信号：① 最新中报与上年同期对比，并由全年与上半年推算下半年变化；"
-        "② 最近季度的变化（有季度数据时）；③ 股息占自由现金流的比例；④ 净利润明显高于或低于营业利润时"
-        "指出非经营项目的影响（不推测具体原因）；⑤ 资本开支与自由现金流的变化；⑥ 货币资金与短期借款"
-        "同时偏高（存贷双高）。",
+        "- 股东回报：引用 signals.shareholder_returns 的逐年股息总额（已含中期）、股息支付率与股息占自由"
+        "现金流比例，并写明自由现金流口径（fcf_basis）；有 flags 时必须在正文指出；股息率引用 "
+        "dividend_yield，estimated=true 时写明是估算，value_pct 为空时不得自行推算股息率。",
+        "- 有数据就要写到的信号：① 最新中报与上年同期对比、下半年推算（signals.period_signals）；"
+        "② 最近单季的变化（latest_single_quarter，有时）；③ 股息占自由现金流的比例；④ 净利润明显高于或"
+        "低于营业利润时指出非经营项目的影响（不推测具体原因）；⑤ 资本开支与自由现金流的变化；"
+        "⑥ 货币资金与有息负债各自占总资产的比例（signals.balance_changes，两者同时处于高位即存贷双高，"
+        "写出比例，不要只下结论）。",
         "- 先验知识：公司对自身行业地位的描述（龙头、领先等）只能以「公司自述」引用；输入没有提供的业务名称、"
         "竞争格局、监管事件、市场观点一律不写；待关注问题只能基于输入中的数据提出，不得引入输入没有的业务"
         "假设（如备货、监管、客户名称）。",
@@ -307,8 +320,76 @@ def graham_for_llm(graham: Dict[str, Any] | None) -> Dict[str, Any] | None:
     return annotated
 
 
+_RATIO_FIELDS = frozenset(
+    {
+        # 只舍入已知的预计算展示指标，不按后缀猜测（share_ratio 是 ADS 换算事实）。
+        "display_ratio",
+        "cfo_ni_ratio",
+        "cfo_ni_ratio_5y",
+        "accruals_ratio",
+        "receivable_vs_revenue_gap_pp",
+        "inventory_vs_revenue_gap_pp",
+        "recurring_profit_share",
+        "gross_margin",
+        "net_margin",
+        "value_pct",
+        "yoy_pct",
+        "revenue_h2_yoy_pct",
+        "net_income_h2_yoy_pct",
+        "revenue_yoy_pct",
+        "net_income_yoy_pct",
+        "payout_ratio_pct",
+        "dividends_to_fcf_pct",
+        "share_of_assets_pct",
+        "change_pct",
+        "roe_pct",
+        "debt_to_assets",
+        "net_debt_to_assets",
+        "interest_coverage",
+        "net_cash_to_market_cap",
+        "score",
+        "DSRI",
+        "GMI",
+        "AQI",
+        "SGI",
+        "DEPI",
+        "SGAI",
+        "LVGI",
+        "TATA",
+    }
+)
+_RATIO_CRITERIA = frozenset({"pe", "pb_or_product", "current_ratio", "earnings_growth"})
+
+
+def _ratios_for_llm(value: Any, field: str = "") -> Any:
+    """仅复制预计算区的比率展示值；判定、数据库和金额/每股值仍保留原精度。"""
+    if isinstance(value, dict):
+        return {
+            key: _ratios_for_llm(
+                item,
+                "display_ratio"
+                if key == "value" and value.get("criterion") in _RATIO_CRITERIA
+                else key,
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_ratios_for_llm(item) for item in value]
+    if isinstance(value, float) and field in _RATIO_FIELDS:
+        rounded = round(value, 2)
+        # 极小的非零值不能伪装成零；用明确区间保留符号，不输出冗长小数。
+        if rounded == 0 and value != 0:
+            return "大于 0 且小于 0.01" if value > 0 else "大于 -0.01 且小于 0"
+        return rounded + 0.0
+    return value
+
+
 def build_analysis_messages(input_payload: Dict[str, Any]) -> List[Dict[str, str]]:
-    serialized = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    display_payload = dict(input_payload)
+    for section in ("earnings_quality", "signals", "graham_screen"):
+        if section in display_payload:
+            display_payload[section] = _ratios_for_llm(display_payload[section])
+    serialized = json.dumps(display_payload, ensure_ascii=False, separators=(",", ":"), default=str)
     market = str((input_payload.get("meta") or {}).get("market") or "A股")
     user_content = (
         "请基于下方 JSON 数据生成该标的的档案分析（严格按 system 约定输出 JSON）：\n\n"

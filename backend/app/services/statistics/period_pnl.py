@@ -24,9 +24,11 @@ from ...models.corporate_action import CorporateAction
 from ...models.holding import Holding
 from ...models.transaction import Transaction
 from ..market_data_service import infer_price_currency
+from ..dividend_tax_service import load_dividend_tax_events
 from ..portfolio.curve import build_return_curve
 from .analytics import build_price_maps
 from .fx import DbExchangeRateLookup
+from .period_receivables import add_period_receivables
 
 PERIODS: Tuple[Tuple[str, str], ...] = (("daily", "当日"), ("mtd", "本月"), ("ytd", "本年"))
 # 期初基准的新鲜度：估值价日期早于区间起点这么多天，就说明区间损益里混进了此前累积的涨跌
@@ -182,10 +184,11 @@ def calculate_period_pnl(
         .order_by(CorporateAction.ex_date, CorporateAction.id)
         .all()
     )
+    tax_events = load_dividend_tax_events(db, user_id)
     holdings = db.query(Holding).filter(Holding.user_id == user_id).all()
     # 没有交易不等于没有持仓：期初建仓/转托管转入（OPENING_POSITION，#174）只建公司行动与持仓、
     # 不建 BUY 交易。只有交易、公司行动、持仓都没有时才是真正的空账户
-    if not transactions and not corporate_actions and not holdings:
+    if not transactions and not corporate_actions and not holdings and not tax_events:
         for key, label in PERIODS:
             response["periods"][key] = {
                 "label": label,
@@ -195,6 +198,7 @@ def calculate_period_pnl(
                 "stale_closing_prices": [],
                 **summarize_curve([], {}),
             }
+        add_period_receivables(db, user_id, response["periods"], corporate_actions, today)
         return response
     symbols_by_key: Dict[Tuple[str, str], str] = {}
     for txn in transactions:
@@ -231,6 +235,7 @@ def calculate_period_pnl(
             today=today,
             # 期初 = 起点前一日收盘时点的本币价值：起点当天的汇率变动属于本区间的汇兑损益
             opening_fx_date=start - timedelta(days=1),
+            dividend_tax_events=tax_events,
         )
         summary = summarize_curve(curve, quality)
         if quality.get("estimated_inflow_events"):
@@ -277,6 +282,18 @@ def calculate_period_pnl(
             "end_date": today.isoformat(),
             **summary,
         }
+        missing_tax_rates = quality.get("missing_tax_rate_currencies", [])
+        if missing_tax_rates:
+            response["periods"][key].update(
+                status="unavailable",
+                pnl_cny=None,
+                return_rate=None,
+                missing_tax_rate_currencies=missing_tax_rates,
+            )
+            warnings.append(
+                f"{label}损益无法完整计算：股息税扣款日缺少汇率（{'、'.join(missing_tax_rates)}），"
+                "未将原币税款混入人民币收益。"
+            )
         if summary["unpriced_positions"] and key == "daily":
             names = "、".join(p["symbol"] for p in summary["unpriced_positions"][:5])
             warnings.append(
@@ -287,5 +304,8 @@ def calculate_period_pnl(
             warnings.append(
                 f"{len(summary['stale_price_positions'])} 只持仓今日无最新价，按最近收盘估值：{names}"
             )
+    add_period_receivables(
+        db, user_id, response["periods"], corporate_actions, today, rate_lookup=rate_lookup
+    )
     response["data_quality"]["warnings"] = warnings
     return response

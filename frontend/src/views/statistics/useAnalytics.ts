@@ -1,3 +1,4 @@
+import { useChartColors } from '@/styles/chartTheme'
 /**
  * TTWR 分析 feature（issue #140：Statistics 的五件事之"analytics 曲线 +
  * 基准对比 + 历史同步"）。状态、区间/基准选择、竞态防护、同步 job 轮询与
@@ -11,17 +12,18 @@ import { computed, reactive, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 import { presetRangeParams } from '@/utils/dateRange'
-import { EMPTY, formatNumber } from '@/utils/helpers'
+import { EMPTY, formatDate, formatNumber } from '@/utils/helpers'
 import { pollJobUntilDone, type BackgroundJob } from '@/utils/polling'
-import { CHART_FONT_FAMILY, CHART_PALETTE, COLOR } from '@/styles/tokens'
+import { CHART_FONT_FAMILY } from '@/styles/tokens'
 import type { HistorySyncJob, PerformanceAnalytics } from './types'
-import { isShortRange, rangeSpanDays, riskFreeText } from './format'
+import { isShortRange, nullableFiniteNumber, rangeSpanDays, riskFreeText } from './format'
+import { useMediaQuery } from '@/composables/useMediaQuery'
+import { getApiErrorMessage } from '@/utils/apiErrors'
 import { showApiError } from '@/utils/showApiError'
 
 // 基准对比：选择持久化 localStorage；无数据基准降级为标签提示
 const BENCHMARK_STORAGE_KEY = 'statistics.benchmarks'
-// 基准虚线用调色板后段，避开组合主线（primary）与回撤（danger）用色
-const BENCHMARK_COLORS = [CHART_PALETTE[3], CHART_PALETTE[5], CHART_PALETTE[6]]
+const CHART_AXIS_FONT_SIZE = 12
 
 // 区间选择：预设即业界主交互，自定义次之。切换只做便宜的重算（不触发行情同步）。
 export const RANGE_PRESETS = [
@@ -37,7 +39,8 @@ export const RANGE_PRESETS = [
 function storedBenchmarks(): string[] {
   try {
     const stored = JSON.parse(window.localStorage.getItem(BENCHMARK_STORAGE_KEY) || 'null')
-    if (Array.isArray(stored)) return stored.filter((code) => typeof code === 'string')
+    if (Array.isArray(stored))
+      return [...new Set(stored.filter((code) => typeof code === 'string'))].slice(0, 3)
   } catch {
     // 损坏的本地存储按默认值处理
   }
@@ -45,6 +48,8 @@ function storedBenchmarks(): string[] {
 }
 
 export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
+  const chartColors = useChartColors()
+  const reducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
   const state = reactive({
     data: {
       calculation_level: 'empty',
@@ -54,8 +59,12 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
       data_quality: { warnings: [] }
     } as PerformanceAnalytics,
     loading: false,
+    loaded: false,
+    error: '',
     rangePreset: 'all',
     customRange: null as [string, string] | null,
+    benchmarkCatalogError: '',
+    benchmarkCatalogLoading: false,
     benchmarkOptions: [] as { code: string; name: string; currency: string }[],
     selectedBenchmarks: storedBenchmarks(),
     historyRefreshing: false,
@@ -83,30 +92,42 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
   async function load(options: { refresh_history?: boolean } = {}) {
     const seq = ++requestSeq
     state.loading = options.refresh_history !== true
+    state.error = ''
     try {
       const response = await api.getPerformanceAnalytics(state.whatIfPrices, {
         refresh_history: options.refresh_history === true,
         benchmarks: state.selectedBenchmarks.join(','),
         ...rangeParams()
       })
-      if (seq !== requestSeq) return
+      if (seq !== requestSeq || isUnmounted()) return false
       state.data = response.data
+      state.loaded = true
+      state.error = ''
+      return true
     } catch (error) {
-      if (seq !== requestSeq) return
+      if (seq !== requestSeq || isUnmounted()) return false
+      state.error = getApiErrorMessage(error, '加载收益率曲线失败')
       showApiError(error, { prefix: '加载收益率曲线失败' })
+      return false
     } finally {
-      if (seq === requestSeq) {
+      if (seq === requestSeq && !isUnmounted()) {
         state.loading = false
       }
     }
   }
 
   async function loadBenchmarkCatalog() {
+    state.benchmarkCatalogLoading = true
+    state.benchmarkCatalogError = ''
     try {
       const response = await api.getBenchmarkCatalog()
+      if (isUnmounted()) return
       state.benchmarkOptions = response.data
     } catch (error) {
-      console.warn('加载基准目录失败', error) // 选择器降级为空，不阻断主流程
+      if (!isUnmounted())
+        state.benchmarkCatalogError = getApiErrorMessage(error, '基准目录暂不可用')
+    } finally {
+      if (!isUnmounted()) state.benchmarkCatalogLoading = false
     }
   }
 
@@ -124,7 +145,12 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
             state.syncJob = job as HistorySyncJob
           },
           timeoutMessage: '历史行情同步仍在后台运行，请稍后刷新统计页查看',
-          failureMessage: '历史行情同步失败'
+          failureMessage: '历史行情同步失败',
+          acceptFailedResult: (job) =>
+            Number(job.success_count) > 0 &&
+            Number(job.failed_count) > 0 &&
+            !job.error &&
+            !job.result?.error
         }
       )
       if (!completedJob) return
@@ -209,7 +235,7 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
   const effectiveRangeLabel = computed(() => {
     const range = state.data.date_range
     if (!range) return ''
-    let label = `区间 ${range.start_date} ~ ${range.end_date}`
+    let label = `区间 ${formatDate(range.start_date)} 至 ${formatDate(range.end_date)}`
     if (range.clamped) label += '（已按有效数据区间调整）'
     return label
   })
@@ -218,6 +244,8 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
     Math.max(0, Math.min(100, Math.round(Number(state.syncJob?.progress_percent || 0))))
   )
   const syncProgressStatus = computed(() => {
+    if (state.syncJob?.status === 'failed' && Number(state.syncJob.success_count) > 0)
+      return 'warning'
     if (state.syncJob?.status === 'failed' || state.syncJob?.status === 'interrupted')
       return 'exception'
     if (state.syncJob?.status === 'succeeded') return 'success'
@@ -228,109 +256,205 @@ export function useAnalytics({ isUnmounted }: { isUnmounted: () => boolean }) {
     if (status === 'queued') return '历史行情同步排队中'
     if (status === 'running') return '历史行情同步中'
     if (status === 'succeeded') return '历史行情同步完成'
-    if (status === 'failed') return '历史行情同步失败'
+    if (status === 'failed')
+      return Number(state.syncJob?.success_count) > 0 ? '历史行情同步部分完成' : '历史行情同步失败'
     if (status === 'interrupted') return '历史行情同步已中断'
     return '历史行情同步'
   })
 
   const chartOption = computed(() => {
+    // 基准虚线沿用分类色板后段，避开组合主线与回撤。
+    const benchmarkColors = chartColors.value.benchmarkPalette
     const dates = curve.value.map((item) => item.date)
-    const returns = curve.value.map((item) => Number(item.cumulative_return_rate || 0))
-    const drawdowns = curve.value.map((item) => Number(item.drawdown_rate || 0))
+    const returns = curve.value.map((item) => nullableFiniteNumber(item.cumulative_return_rate))
+    const drawdowns = curve.value.map((item) => nullableFiniteNumber(item.drawdown_rate))
 
     // 基准虚线：与组合曲线同栅格生成，按日期对齐（first_available 时头部为空洞）
     const benchmarkSeries = okBenchmarks.value.map((block, index) => {
       const rateByDate = new Map(
-        (block.points || []).map((point) => [point.date, Number(point.cumulative_return_rate || 0)])
+        (block.points || []).map((point) => [
+          point.date,
+          nullableFiniteNumber(point.cumulative_return_rate)
+        ])
       )
       return {
         name: block.name,
         type: 'line',
-        smooth: true,
+        smooth: false,
         symbol: 'none',
+        xAxisIndex: 0,
+        yAxisIndex: 0,
+        connectNulls: false,
         data: dates.map((day) => rateByDate.get(day) ?? null),
         lineStyle: {
           width: 2,
           type: 'dashed',
-          color: BENCHMARK_COLORS[index % BENCHMARK_COLORS.length]
+          color: benchmarkColors[index % benchmarkColors.length]
         },
         itemStyle: {
-          color: BENCHMARK_COLORS[index % BENCHMARK_COLORS.length]
-        }
+          color: benchmarkColors[index % benchmarkColors.length]
+        },
+        emphasis: { focus: 'series' },
+        z: 2
       }
     })
 
     return {
-      textStyle: { fontFamily: CHART_FONT_FAMILY },
+      animation: !reducedMotion.value,
+      animationDuration: 0,
+      animationDurationUpdate: 180,
+      textStyle: { fontFamily: CHART_FONT_FAMILY, color: chartColors.value.text },
       tooltip: {
+        backgroundColor: chartColors.value.surface,
+        borderColor: chartColors.value.border,
+        textStyle: { color: chartColors.value.text },
         trigger: 'axis',
+        confine: true,
         // 基准线头部空洞（null）显示占位符，不拼成「—%」
         valueFormatter: (value: number | string | null | undefined) => {
-          const text = formatNumber(value, 2)
+          const text = formatNumber(nullableFiniteNumber(value), 2)
           return text === EMPTY ? EMPTY : `${text}%`
         }
       },
       legend: {
-        data: ['累计TTWR收益率', '回撤', ...benchmarkSeries.map((series) => series.name)]
+        type: 'scroll',
+        top: 0,
+        left: 52,
+        right: 16,
+        icon: 'roundRect',
+        itemWidth: 18,
+        itemHeight: 3,
+        itemGap: 20,
+        textStyle: { color: chartColors.value.muted, fontSize: 13, lineHeight: 18 },
+        pageTextStyle: { color: chartColors.value.text },
+        pageIconColor: chartColors.value.text,
+        formatter: (name: string) => (name === '累计 TTWR 收益率' ? '组合 TTWR' : name),
+        data: ['累计 TTWR 收益率', ...benchmarkSeries.map((series) => series.name)]
       },
-      grid: {
-        left: '3%',
-        right: '4%',
-        bottom: '12%',
-        containLabel: true
-      },
+      grid: [
+        {
+          left: 52,
+          right: 16,
+          // 图例独占顶部一行，与收益率轴名留出明确间距。
+          top: 64,
+          bottom: 128,
+          containLabel: false
+        },
+        { left: 52, right: 16, height: 64, bottom: 40, containLabel: false }
+      ],
+      axisPointer: { link: [{ xAxisIndex: 'all' }] },
       dataZoom: [
         {
-          type: 'inside'
+          type: 'inside',
+          xAxisIndex: [0, 1],
+          zoomOnMouseWheel: false,
+          moveOnMouseWheel: false,
+          preventDefaultMouseMove: false
         },
         {
           type: 'slider',
-          height: 22,
-          bottom: 8
+          xAxisIndex: [0, 1],
+          borderColor: chartColors.value.border,
+          backgroundColor: chartColors.value.surface,
+          fillerColor: chartColors.value.secondary,
+          textStyle: { color: chartColors.value.muted },
+          dataBackground: {
+            lineStyle: { color: chartColors.value.muted },
+            areaStyle: { color: chartColors.value.secondary }
+          },
+          height: 18,
+          bottom: 0,
+          showDetail: false,
+          brushSelect: false
         }
       ],
-      xAxis: {
-        type: 'category',
-        boundaryGap: false,
-        data: dates
-      },
-      yAxis: {
+      xAxis: [
+        {
+          gridIndex: 0,
+          axisLine: { onZero: true, lineStyle: { color: chartColors.value.border } },
+          axisTick: { show: false },
+          axisLabel: { show: false },
+          type: 'category',
+          boundaryGap: false,
+          data: dates
+        },
+        {
+          gridIndex: 1,
+          axisLine: { lineStyle: { color: chartColors.value.border } },
+          axisLabel: {
+            color: chartColors.value.muted,
+            fontSize: CHART_AXIS_FONT_SIZE,
+            hideOverlap: true,
+            showMinLabel: true,
+            showMaxLabel: true,
+            alignMinLabel: 'left',
+            alignMaxLabel: 'right'
+          },
+          type: 'category',
+          boundaryGap: false,
+          data: dates
+        }
+      ],
+      yAxis: ['收益率（%）', '回撤（%）'].map((name, gridIndex) => ({
+        gridIndex,
+        name,
+        nameGap: 12,
+        nameTextStyle: {
+          color: chartColors.value.muted,
+          fontSize: CHART_AXIS_FONT_SIZE,
+          align: 'left'
+        },
+        splitNumber: gridIndex === 0 ? 4 : 2,
+        splitLine: { lineStyle: { color: chartColors.value.separator } },
+        axisLine: { show: false },
+        axisTick: { show: false },
         type: 'value',
         axisLabel: {
+          color: chartColors.value.muted,
+          fontSize: CHART_AXIS_FONT_SIZE,
           formatter: '{value}%'
         }
-      },
+      })),
       series: [
         {
-          name: '累计TTWR收益率',
+          name: '累计 TTWR 收益率',
           type: 'line',
-          smooth: true,
+          smooth: false,
           symbol: 'circle',
-          symbolSize: 5,
+          symbolSize: 6,
+          showSymbol: false,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          connectNulls: false,
           data: returns,
           lineStyle: {
             width: 3,
-            color: COLOR.primary
+            color: chartColors.value.primary
           },
           itemStyle: {
-            color: COLOR.primary
-          }
+            color: chartColors.value.primary
+          },
+          emphasis: { focus: 'series' },
+          z: 3
         },
         {
           name: '回撤',
           type: 'line',
-          smooth: true,
+          smooth: false,
           symbol: 'none',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          connectNulls: false,
           data: drawdowns,
           areaStyle: {
-            color: 'rgba(225, 29, 72, 0.12)'
+            color: chartColors.value.dangerSoft
           },
           lineStyle: {
             width: 2,
-            color: COLOR.danger
+            color: chartColors.value.danger
           },
           itemStyle: {
-            color: COLOR.danger
+            color: chartColors.value.danger
           }
         },
         ...benchmarkSeries

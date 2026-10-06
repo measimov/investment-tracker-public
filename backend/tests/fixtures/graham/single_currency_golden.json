@@ -6,14 +6,14 @@
     "cfo_ni_ratio_5y": null,
     "metric_semantics": {
      "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
-     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
-     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量",
+     "cfo_ni_ratio_5y": "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计",
      "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
      "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
      "net_margin_series": "净利率逐年序列",
      "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
-     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
     },
     "per_year": {
      "2018": {
@@ -211,14 +211,14 @@
     "cfo_ni_ratio_5y": null,
     "metric_semantics": {
      "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
-     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
-     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量",
+     "cfo_ni_ratio_5y": "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计",
      "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
      "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
      "net_margin_series": "净利率逐年序列",
      "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
-     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
     },
     "per_year": {
      "2018": {
@@ -416,14 +416,14 @@
     "cfo_ni_ratio_5y": null,
     "metric_semantics": {
      "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
-     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
-     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量",
+     "cfo_ni_ratio_5y": "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计",
      "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
      "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
      "net_margin_series": "净利率逐年序列",
      "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
-     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
     },
     "per_year": {
      "2018": {
@@ -621,14 +621,14 @@
     "cfo_ni_ratio_5y": null,
     "metric_semantics": {
      "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
-     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
-     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量",
+     "cfo_ni_ratio_5y": "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计",
      "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
      "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
      "net_margin_series": "净利率逐年序列",
      "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
-     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
     },
     "per_year": {
      "2018": {
@@ -826,14 +826,14 @@
     "cfo_ni_ratio_5y": null,
     "metric_semantics": {
      "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
-     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
-     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量",
+     "cfo_ni_ratio_5y": "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计",
      "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
      "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
      "net_margin_series": "净利率逐年序列",
      "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
-     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
     },
     "per_year": {
      "2018": {
@@ -1031,14 +1031,14 @@
     "cfo_ni_ratio_5y": 1.1664,
     "metric_semantics": {
      "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
-     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
-     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量",
+     "cfo_ni_ratio_5y": "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计",
      "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
      "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
      "net_margin_series": "净利率逐年序列",
      "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
-     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
     },
     "per_year": {
      "2021": {
@@ -1242,14 +1242,14 @@
     "cfo_ni_ratio_5y": 4.5384,
     "metric_semantics": {
      "accruals_ratio": "(净利润−经营现金流)/总资产，逐年；>0.1 偏高",
-     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计。仅供参考非结论。",
-     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗",
-     "cfo_ni_ratio_5y": "近5年累计经营现金流/累计净利润；<0.8 红旗",
+     "beneish_m_score": "Beneish 八因子盈余操纵参考模型；M > -1.78 提示操纵可能。LVGI 以总负债/总资产近似；缺科目年份不计（SGA 分项两年不一致也不计）。仅供参考非结论。",
+     "cfo_ni_ratio": "经营现金流/归母净利润，逐年；长期低于 0.8 为利润质量红旗。净利润 ≤ 0 的年份不计（per_year[年].ratio_unavailable 标 ni_non_positive）：负除负或正除负都不表示利润质量",
+     "cfo_ni_ratio_5y": "从最新年度往前**连续**财年（最多 5 年）累计经营现金流/累计净利润；<0.8 红旗；缺年、换币即停（cfo_ni_ratio_5y_note 说明）；累计净利润 ≤ 0 时不计",
      "gross_margin_series": "毛利率逐年序列；异常跳变需关注",
      "inventory_vs_revenue_gap_pp": "存货增速−营收增速（百分点）；>20 为压货信号",
      "net_margin_series": "净利率逐年序列",
      "receivable_vs_revenue_gap_pp": "应收增速−营收增速（百分点）；>20 为塞货信号",
-     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益"
+     "recurring_profit_share": "扣非净利润/净利润；<0.7 = 依赖非经常性损益。净利润 ≤ 0 的年份不计（ratio_unavailable）"
     },
     "per_year": {
      "2021": {
@@ -1435,5 +1435,5 @@
    }
   }
  },
- "note": "改动前（main 837b905）对单币种序列的完整输出：A股 5 只 + 港股 00700/00728。跨币种修复不得改变其中任何一个字节（tests/test_cross_currency_series.py）"
+ "note": "改动前（main 837b905）对单币种序列的完整输出：A股 5 只 + 港股 00700/00728。跨币种修复不得改变其中任何一个字节（tests/test_cross_currency_series.py）。2026-09-30 PR-2（#349/#350）重生成：只改了 earnings_quality.metric_semantics 的四条说明文本，数值逐字节不变"
 }

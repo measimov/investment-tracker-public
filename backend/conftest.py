@@ -1,18 +1,62 @@
 import os
 from pathlib import Path
 import sys
-from urllib.parse import urlparse
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 
 
 os.environ.setdefault(
     "DATABASE_URL",
     "postgresql://postgres:postgres@127.0.0.1:5432/investment_test",
+)
+
+
+def _assert_safe_test_database(database_url: str) -> None:
+    parsed = make_url(database_url)
+    database_name = parsed.database or ""
+
+    if parsed.drivername not in {"postgresql", "postgresql+psycopg2"}:
+        raise RuntimeError("Tests must run against PostgreSQL, not SQLite or another database.")
+
+    if "test" not in database_name and "e2e" not in database_name:
+        raise RuntimeError(
+            f"Refusing to run tests against non-test database '{database_name}'. "
+            "Use a disposable PostgreSQL database whose name contains 'test' or 'e2e'."
+        )
+    if len(database_name.encode("utf-8")) > 63:
+        raise RuntimeError("PostgreSQL test database names must not exceed 63 bytes.")
+
+
+def _database_url_with_suffix(database_url: str, suffix: str) -> str:
+    """保留凭证与连接参数；拒绝 PostgreSQL 静默截断后可能撞库的名称。"""
+    _assert_safe_test_database(database_url)
+    parsed = make_url(database_url)
+    derived_url = parsed.set(database=parsed.database + suffix).render_as_string(
+        hide_password=False
+    )
+    _assert_safe_test_database(derived_url)
+    return derived_url
+
+
+def _worker_database_url(database_url: str, worker_id: str | None) -> str:
+    _assert_safe_test_database(database_url)
+    if worker_id is None:
+        return database_url
+    if worker_id not in {"gw0", "gw1"}:
+        raise RuntimeError("Only pytest-xdist workers gw0 and gw1 are supported.")
+    return _database_url_with_suffix(database_url, f"_{worker_id}")
+
+
+# xdist 在载入 conftest 前设置 worker id；必须先选库，再导入任何应用模块，
+# 否则 Settings 单例和 SQLAlchemy engine 会继续指向 controller 的原库。
+# 原库与两个 worker 库由运行方预建，本文件只迁移/播种，不创建或删除数据库。
+os.environ["DATABASE_URL"] = _worker_database_url(
+    os.environ["DATABASE_URL"], os.getenv("PYTEST_XDIST_WORKER")
 )
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("ADMIN_INITIAL_PASSWORD", "test-admin-password")
@@ -38,6 +82,9 @@ ALLOW_TEST_NETWORK = (
 # Settings 实例化之前。
 CREDENTIAL_ENV_VARS = (
     "LLM_REPORT_API_KEY",
+    "LLM_ARK_API_KEY",
+    "LLM_BAILIAN_API_KEY",
+    "LLM_OPENROUTER_API_KEY",
     "TUSHARE_TOKEN",
     "TIINGO_API_TOKEN",
     "XUEQIU_COOKIES",
@@ -141,23 +188,15 @@ def _configure_logging_in_temp_dir(log_dir: str = "logs", **kwargs):
 _app_logging.configure_logging = _configure_logging_in_temp_dir
 
 
-def _assert_safe_test_database(database_url: str) -> None:
-    parsed = urlparse(database_url)
-    database_name = parsed.path.lstrip("/")
-
-    if parsed.scheme not in {"postgresql", "postgresql+psycopg2"}:
-        raise RuntimeError("Tests must run against PostgreSQL, not SQLite or another database.")
-
-    if "test" not in database_name and "e2e" not in database_name:
-        raise RuntimeError(
-            f"Refusing to run tests against non-test database '{database_name}'. "
-            "Use a disposable PostgreSQL database whose name contains 'test' or 'e2e'."
-        )
-
-
-def pytest_configure(config):
+# pytest-cov 的 xdist worker 在 sessionstart 启动覆盖率；迁移会首次导入 models/config，
+# 因此须等其他 sessionstart 钩子完成，避免这些模块的导入行漏计覆盖率。
+@pytest.hookimpl(trylast=True)
+def pytest_sessionstart(session):
+    config = session.config
     database_url = os.environ["DATABASE_URL"]
     _assert_safe_test_database(database_url)
+    if getattr(config.option, "numprocesses", 0) and not hasattr(config, "workerinput"):
+        return  # controller 不运行用例，也不迁移/播种原库；仍执行上面的安全检查。
     alembic_cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     alembic_cfg.set_main_option("script_location", str(BACKEND_DIR / "alembic"))
     alembic_cfg.set_main_option("prepend_sys_path", str(BACKEND_DIR))

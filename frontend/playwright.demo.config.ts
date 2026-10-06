@@ -34,7 +34,7 @@ export default defineConfig({
         'export REQUIRE_HTTPS=false;',
         // 演示库是静态快照：不跑任何周期任务/报价刷新/提醒，也不带外部凭证
         'export PERIODIC_TASKS_ENABLED=false QUOTE_AUTO_REFRESH_ENABLED=false EVENT_NOTIFICATIONS_ENABLED=false;',
-        'export LLM_REPORT_API_KEY= TUSHARE_TOKEN= TIINGO_API_TOKEN= XUEQIU_COOKIES= XUEQIU_COOKIE_FILE= NOTIFY_URLS=;',
+        'export LLM_REPORT_API_KEY= LLM_ARK_API_KEY= LLM_BAILIAN_API_KEY= LLM_OPENROUTER_API_KEY= TUSHARE_TOKEN= TIINGO_API_TOKEN= XUEQIU_COOKIES= XUEQIU_COOKIE_FILE= NOTIFY_URLS=;',
         'cd backend && alembic upgrade head && cd .. &&',
         `PYTHONPATH=backend uvicorn app.main:app --host 127.0.0.1 --port ${backendPort} --no-proxy-headers`
       ].join(' '),

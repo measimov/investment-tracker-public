@@ -1,0 +1,32 @@
+{
+  "notice": "全部合法虚构用户；管理员标志仅UI场景，非权限证明；不改变真实用户、密码或会话",
+  "users": [
+    {
+      "id": 95301,
+      "username": "ui_fiction_very_long_user_name_for_admin_qa_0001",
+      "email": "ui.fiction.long.address.for.admin.qa+01@example.com",
+      "is_active": true,
+      "is_admin": false,
+      "created_at": "2026-10-02T23:30:00+00:00",
+      "updated_at": "2026-10-02T23:30:00+00:00"
+    },
+    {
+      "id": 95302,
+      "username": "ui_fiction_admin",
+      "email": "ui.fake.admin@example.com",
+      "is_active": true,
+      "is_admin": true,
+      "created_at": "2026-09-01T23:30:00+00:00",
+      "updated_at": "2026-09-01T23:30:00+00:00"
+    },
+    {
+      "id": 95303,
+      "username": "ui_fiction_inactive",
+      "email": null,
+      "is_active": false,
+      "is_admin": false,
+      "created_at": "2026-01-31T23:30:00+00:00",
+      "updated_at": "2026-01-31T23:30:00+00:00"
+    }
+  ]
+}

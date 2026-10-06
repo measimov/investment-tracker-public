@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from ..core.logging import get_app_logger
 from .hk_report_catalog import hkex_sort_key
+from .payload_versions import versions_current
 from .report_statement_checks import (
     CROSS_CHECK_FIELDS,
     EPS_CENTS_RATIO_RANGE,
@@ -454,6 +455,107 @@ def repair_balance_subtotals(
     return repaired
 
 
+# ---------------------------------------------------------------------------- 构建：所得税符号（#342-1）
+
+# 中国准则利潤表把费用写成正数、以「減：」起头（「減：所得稅費用 1,234」），开支为正；
+# 国际准则港股报表把开支写成括号负数、抵免为正（「所得稅（開支）╱抵免 (10,576) 7,112」）
+_EXPENSE_POSITIVE_LABEL_RE = re.compile(r"^\s*(?:[減减][:：]|less[:\s])", re.I)
+# 同表其他费用科目：用它们的原文符号判断本表的列示惯例（费用写负数还是正数）
+_EXPENSE_CONVENTION_FIELDS = ("cost_of_revenue", "sga_exp", "int_exp")
+# 「税前利润 ± 所得税 = 税后利润」的相对容差（原文数字相加，只有四舍五入误差）
+TAX_IDENTITY_REL_TOL = 0.005
+# 合并税后利润行：行名是利润/亏损，且**不是**归属行、税前行、全面收益行（PR #371 复审 P2：合并净利
+# 行没抽到时，所得税的下一行可能直接是「本公司權益持有人應佔溢利」，拿归母净利做恒等式会判反）
+_PROFIT_WORD_RE = re.compile(r"溢利|利潤|利润|盈利|虧損|亏损|profit|loss|net income", re.I)
+_NOT_CONSOLIDATED_PROFIT_RE = re.compile(
+    r"應佔|应占|歸屬|归属|歸於|归于|attributable|owners|holders|非控股|非控制|少數|少数|權益持有人"
+    r"|权益持有人|股東|股东|除稅前|除税前|稅前|税前|beforetax|每股|pershare",
+    re.I,
+)
+_COMPREHENSIVE_RE = re.compile(r"其他全面|綜合收益|综合收益|全面收益|comprehensive", re.I)
+# 「年內溢利及全面收益總額」：没有其他全面收益的公司把两行合成一行，仍是合并税后利润
+_PROFIT_AND_COMPREHENSIVE_RE = re.compile(r"(?:溢利|利潤|利润|profit)(?:及|和|and)", re.I)
+
+
+def is_consolidated_profit_label(label: str) -> bool:
+    """行名是否是合并税后利润（「年內溢利」「期內溢利╱（虧損）」「四、淨利潤」「Profit for the year」
+    「年內溢利及全面收益總額」）。先去空白（字间空格的「本期利 潤」）。"""
+    text = re.sub(r"\s+", "", label or "")
+    if not _PROFIT_WORD_RE.search(text) or _NOT_CONSOLIDATED_PROFIT_RE.search(text):
+        return False
+    return not _COMPREHENSIVE_RE.search(text) or bool(_PROFIT_AND_COMPREHENSIVE_RE.search(text))
+
+
+def _column_value(parsed: ParsedStatement, row_id: str, column: int) -> Optional[Decimal]:
+    for row in parsed.rows:
+        if row.row_id == row_id:
+            return row.values[column] if column < len(row.values) else None
+    return None
+
+
+def _close(lhs: Decimal, rhs: Decimal) -> bool:
+    scale = max(abs(lhs), abs(rhs))
+    return abs(lhs - rhs) <= scale * Decimal(str(TAX_IDENTITY_REL_TOL)) if scale else True
+
+
+def tax_sign_convention(
+    income: Optional[ParsedStatement], mapping: Dict[str, List[str]], column: int
+) -> int:
+    """损益表某一列里所得税原文的符号惯例：+1 = 开支为正（按原样），-1 = 开支为负（取反）。
+
+    依据按可信度依次（#371 评审 P2：不能拿「税前 − 所得税 ≈ 归母净利」裁决——少数股东损益
+    不保证小于税额，正负都可能把符号判反）：
+    1. **报表自己的合并税后利润**：所得税行紧接着的下一行（「年內溢利」「淨利潤」）等于税前利润
+       加上还是减去原文税额——这是原文里的恒等式，与少数股东无关。只有行名确认是合并税后利润、
+       且没有被映射成归母净利的行才用（下一行可能直接是归母或非控股损益，PR #371 复审 P2）；
+    2. 行名以「減：」起头（中国准则）→ 开支为正；
+    3. 同表其他费用科目（成本、销售及行政开支、财务成本）原文多为负 → 开支为负；多为正 → 为正；
+    4. 都判不出按国际准则惯例（开支为负）。"""
+    tax_ids = mapping.get("income_tax") or []
+    if income is None or not tax_ids:
+        return -1
+    ids = [row.row_id for row in income.rows]
+    tax_raw = sum(
+        (v for v in (_column_value(income, rid, column) for rid in tax_ids) if v is not None),
+        Decimal(0),
+    )
+    profit_ids = mapping.get("total_profit") or []
+    profit = None
+    if profit_ids:
+        values = [_column_value(income, rid, column) for rid in profit_ids]
+        if any(v is not None for v in values):
+            profit = sum((v for v in values if v is not None), Decimal(0))
+    last_tax = max((ids.index(rid) for rid in tax_ids if rid in ids), default=None)
+    if profit is not None and tax_raw and last_tax is not None and last_tax + 1 < len(ids):
+        after = income.rows[last_tax + 1]
+        net = after.values[column] if column < len(after.values) else None
+        mapped_elsewhere = set(profit_ids) | set(mapping.get("n_income_attr_p") or [])
+        if (
+            net is not None
+            and after.row_id not in mapped_elsewhere
+            and is_consolidated_profit_label(after.label)
+        ):
+            added, subtracted = _close(net, profit + tax_raw), _close(net, profit - tax_raw)
+            if added and not subtracted:
+                return -1
+            if subtracted and not added:
+                return 1
+    labels = {row.row_id: row.label for row in income.rows}
+    if any(_EXPENSE_POSITIVE_LABEL_RE.match(labels.get(rid) or "") for rid in tax_ids):
+        return 1
+    negatives = positives = 0
+    for field in _EXPENSE_CONVENTION_FIELDS:
+        for rid in mapping.get(field) or []:
+            value = _column_value(income, rid, column)
+            if value is not None and value < 0:
+                negatives += 1
+            elif value is not None and value > 0:
+                positives += 1
+    if positives > negatives:
+        return 1
+    return -1
+
+
 def build_period_rows(
     located: Dict[str, ParsedStatement],
     mapping: Dict[str, Dict[str, List[str]]],
@@ -475,6 +577,7 @@ def build_period_rows(
         eps_unit = {"divisor": divisor, "basis": "label" if divisor != 1 else None}
     eps_divisor = int(eps_unit.get("divisor") or 1)
     rows_by_period: Dict[str, Dict[str, Any]] = {}
+    income_column: Dict[str, int] = {}
     balance_column: Dict[str, int] = {}
     for kind, parsed in located.items():
         if not mapping.get(kind):
@@ -545,6 +648,8 @@ def build_period_rows(
                         for field, repair in income_repairs.items()
                     }
                 )
+            if kind == "income":
+                income_column[key] = col.column
             if kind == "balance":
                 balance_column[key] = col.column
                 mezz = resolve_value(parsed, mezzanine_row_ids(parsed), col.column, scale=True)
@@ -554,6 +659,11 @@ def build_period_rows(
     for key, row in rows_by_period.items():
         known = sorted({c for c in row["currency_by_kind"].values() if c})
         row["currency"] = known[0] if len(known) == 1 else None
+        if row.get("income_tax") is not None and key in income_column:
+            # 所得税落库为「开支为正、抵免为负」（与雅虎 TaxProvision 同号），按本表本列的原文惯例换号
+            row["income_tax"] = row["income_tax"] * tax_sign_convention(
+                located.get("income"), mapping.get("income") or {}, income_column[key]
+            )
         # 记下**实际**由代码推导的科目及其输入：清洗输入时派生值一并失效（评审 P1）
         row["derived_fields"] = {}
         for derived, addends in DERIVED_SUM_FIELDS.items():
@@ -625,6 +735,25 @@ def _source_rank(source: Optional[Dict[str, Any]]) -> tuple:
     )
 
 
+def _merge_derived_fields(
+    existing: Dict[str, Any],
+    incoming: Dict[str, Any],
+    incoming_kinds: set,
+    filled_from_incoming: set,
+) -> Dict[str, List[str]]:
+    """合并后「哪些科目是推导出来的」必须与值的来源一致（#343-2）：表由来料胜出时取来料的
+    推导记录，否则保留已有的；已有行缺、由来料补上的派生科目也随来料。整行合并曾原样保留旧的
+    derived_fields——CFO 被判存疑置空后，由旧 CFO 推导的 FCF 不会随之失效。"""
+    merged: Dict[str, List[str]] = {}
+    for field, inputs in (existing.get("derived_fields") or {}).items():
+        if FIELD_KIND.get(field) not in incoming_kinds and field not in filled_from_incoming:
+            merged[field] = list(inputs)
+    for field, inputs in (incoming.get("derived_fields") or {}).items():
+        if FIELD_KIND.get(field) in incoming_kinds or field in filled_from_incoming:
+            merged[field] = list(inputs)
+    return merged
+
+
 def merge_comparative_row(
     existing: Optional[Dict[str, Any]], incoming: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -662,14 +791,27 @@ def merge_comparative_row(
     merged_pages = dict(existing.get("source_pages") or {})
     merged_restated = dict(existing.get("restated_by_kind") or {})
     incoming_sources = incoming.get("source_by_kind") or {}
+    # 每张表由哪一侧胜出、哪些科目由来料补缺：派生科目记录（derived_fields）随值的来源走
+    incoming_kinds: set = set()
+    filled_from_incoming: set = set()
     for kind, source in incoming_sources.items():
         newer = _source_rank(source) >= _source_rank(merged_sources.get(kind))
+        same_source = (merged_sources.get(kind) or {}).get("period_key") == source.get("period_key")
+        if same_source:
+            # 同一份报告重抽（修订版或重映射）：该表按来料整体替换——新映射不再映射的科目
+            # 不能残留旧值（#343-5）
+            for field in list(merged):
+                if FIELD_KIND.get(field) == kind and incoming.get(field) is None:
+                    merged[field] = None
         for field, value in incoming.items():
             if FIELD_KIND.get(field) != kind or value is None:
                 continue
             if newer or merged.get(field) is None:
+                if not newer:
+                    filled_from_incoming.add(field)
                 merged[field] = value
         if newer:
+            incoming_kinds.add(kind)
             merged_sources[kind] = source
             merged_pages[kind] = (incoming.get("source_pages") or {}).get(kind)
             # 按表的构建元数据随该表的来源走：重列标记、EPS 单位（损益表）、小计修复（资产负债表）
@@ -687,6 +829,9 @@ def merge_comparative_row(
             _merge_repaired_fields(merged, incoming, kind)
     merged["source_by_kind"] = merged_sources
     merged["source_pages"] = merged_pages
+    merged["derived_fields"] = _merge_derived_fields(
+        existing, incoming, incoming_kinds, filled_from_incoming
+    )
     if merged_restated:
         merged["restated_by_kind"] = merged_restated
     else:
@@ -717,6 +862,10 @@ def comparative_evidence(comparative: Dict[str, Any]) -> Dict[str, Any]:
         "source_report_type": comparative.get("source_report_type"),
         "source_end_date": comparative.get("source_end_date"),
         "currency": comparative.get("currency"),
+        # 证据由哪一版代码产出（#343-4）：旧版本的比较列可能正是被修掉的那个错，重放时只认当前版本
+        "extractor_version": comparative.get("extractor_version"),
+        "prompt_version": comparative.get("prompt_version"),
+        "build_version": comparative.get("build_version"),
     }
     # 每股盈利也存下（v5）：雅虎 EPS 大差异要靠更晚报告的比较列判断是口径不同还是映射错误
     for field in (*CROSS_CHECK_FIELDS, *EPS_CHECK_FIELDS):
@@ -729,6 +878,16 @@ def comparative_evidence(comparative: Dict[str, Any]) -> Dict[str, Any]:
         # 该报告表头标注了重列：v4 据此把差异判为 info（revalidate 重放时同样可用）
         evidence["restated_by_kind"] = restated
     return evidence
+
+
+def evidence_current(evidence: Optional[Dict[str, Any]]) -> bool:
+    """比较列证据是否由当前版本的抽取器/prompt/构建逻辑产出（缺版本字段 = 旧证据）。"""
+    return bool(evidence) and versions_current(
+        evidence,
+        extractor_version=STATEMENT_EXTRACTOR_VERSION,
+        prompt_version=STATEMENT_PROMPT_VERSION,
+        build_version=STATEMENT_BUILD_VERSION,
+    )
 
 
 def _evidence_rank(evidence: Optional[Dict[str, Any]]) -> tuple:
@@ -744,7 +903,9 @@ def _evidence_rank(evidence: Optional[Dict[str, Any]]) -> tuple:
 
 def attach_comparative_evidence(row: Dict[str, Any], comparative: Optional[Dict[str, Any]]) -> None:
     """把比较列证据挂到主行上；已有证据时只被来源更新（或同源）的替换。"""
-    if not comparative:
+    if row.get("comparative_evidence") and not evidence_current(row["comparative_evidence"]):
+        row.pop("comparative_evidence")
+    if not comparative or not statement_row_current(comparative):
         return
     incoming = comparative_evidence(comparative)
     if _evidence_rank(incoming) >= _evidence_rank(row.get("comparative_evidence")):

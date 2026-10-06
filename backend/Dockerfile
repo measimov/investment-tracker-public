@@ -9,8 +9,31 @@ ENV PIP_DEFAULT_TIMEOUT=120 \
     PIP_REQUIRE_HASHES=0
 
 # Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+#
+# 核心镜像默认不装可选雪球客户端；私有 compose 显式设 WITH_XUEQIU=1。
+# requirements-xueqiu.txt 含一条私有仓依赖（xueqiu-market，URL 不带凭证）。凭证经
+# BuildKit secret 注入：启用时传 `--build-arg WITH_XUEQIU=1 --secret id=gh,env=GH_TOKEN`，compose 见
+# build.secrets；再经 GIT_CONFIG_* 临时环境变量做 git URL 重写——它们只存在于
+# 本条 RUN 的进程环境，不像 `git config --global` 会把 token 写进 ~/.gitconfig
+# 留在镜像层。写成 ARG/ENV 同理会泄漏，都不可用。
+# slim 镜像不带 git，而 pip 装 git+https 依赖要它：同一层装完即卸，
+# 不给镜像留 ~50MB 的构建期工具。
+ARG WITH_XUEQIU=0
+COPY requirements.txt requirements-xueqiu.txt ./
+RUN --mount=type=secret,id=gh \
+    case "$WITH_XUEQIU" in \
+      0) pip install --no-cache-dir -r requirements.txt ;; \
+      1) apt-get update \
+         && apt-get install -y --no-install-recommends git \
+         && GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="url.https://$(cat /run/secrets/gh 2>/dev/null || true)@github.com/.insteadOf" \
+            GIT_CONFIG_VALUE_0="https://github.com/" \
+            pip install --no-cache-dir -r requirements-xueqiu.txt \
+         && apt-get purge -y git \
+         && apt-get autoremove -y \
+         && rm -rf /var/lib/apt/lists/* ;; \
+      *) echo 'WITH_XUEQIU must be 0 or 1' >&2; exit 1 ;; \
+    esac
 
 # Copy application
 COPY app ./app

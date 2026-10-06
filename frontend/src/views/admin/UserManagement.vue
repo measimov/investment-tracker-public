@@ -1,89 +1,127 @@
 <template>
   <div class="user-management-page">
-    <el-card>
-      <template #header>
-        <div class="page-header">
-          <span>用户管理</span>
-          <div class="header-actions">
-            <el-button type="primary" :icon="Plus" @click="handleAdd">添加用户</el-button>
-          </div>
-        </div>
-      </template>
-
-      <!-- Users Table -->
-      <div class="responsive-table">
-        <el-table :data="users" v-loading="loading" stripe>
-          <el-table-column prop="id" label="ID" width="80" />
-          <el-table-column prop="username" label="用户名" min-width="130" show-overflow-tooltip />
-          <el-table-column prop="email" label="邮箱" min-width="170" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.email || EMPTY }}</template>
-          </el-table-column>
-          <el-table-column prop="is_active" label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag :type="row.is_active ? 'success' : 'danger'" size="small">
-                {{ row.is_active ? '激活' : '禁用' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="is_admin" label="管理员" width="100">
-            <template #default="{ row }">
-              <el-tag :type="row.is_admin ? 'warning' : 'info'" size="small">
-                {{ row.is_admin ? '是' : '否' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="created_at" label="创建时间" min-width="150" sortable>
-            <template #default="{ row }">
-              {{ formatDateTime(row.created_at) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="280" fixed="right">
-            <template #default="{ row }">
-              <el-button type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
-              <el-button type="warning" size="small" text @click="handleResetPassword(row)"
-                >重置密码</el-button
-              >
-              <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
-            </template>
-          </el-table-column>
-        </el-table>
+    <header class="page-heading">
+      <div>
+        <h1 class="page-title">用户管理</h1>
+        <p class="page-intro page-description">维护用户资料、激活状态与管理员权限。</p>
       </div>
-    </el-card>
+      <NButton type="primary" @click="handleAdd">添加用户</NButton>
+    </header>
+    <section class="users-section" aria-label="用户列表" :aria-busy="loading">
+      <div class="section-heading">
+        <h2>
+          当前列表 <span>{{ hasLoaded ? `${users.length} 位用户` : '—' }}</span>
+        </h2>
+        <NButton :loading="loading" aria-label="重新加载用户列表" @click="loadUsers"
+          >重新加载</NButton
+        >
+      </div>
+      <NAlert v-if="loadError" type="warning" :show-icon="false" title="用户列表加载失败">
+        {{
+          hasLoaded ? '保留上次成功的用户列表，尚未确认最新结果。' : '尚未确认用户列表，请重试。'
+        }}
+        <NButton text type="primary" aria-label="重试加载用户列表" @click="loadUsers"
+          >重试加载</NButton
+        >
+      </NAlert>
+      <p v-else-if="loading && hasLoaded" class="read-note" role="status">
+        正在重新加载，以下为上次成功的用户列表。
+      </p>
+      <p v-if="users.length >= 100" class="read-note">
+        当前最多显示 100 位用户，不代表全部用户数量。
+      </p>
+      <UsersTable
+        :users="users"
+        :loading="loading"
+        :empty-description="emptyDescription"
+        @edit="handleEdit"
+        @reset-password="handleResetPassword"
+        @delete="handleDelete"
+      />
+    </section>
 
     <!-- Create/Edit User Dialog -->
-    <el-dialog v-model="dialogVisible" :title="isEdit ? '编辑用户' : '添加用户'" width="560px">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="isEdit ? '编辑用户' : '添加用户'"
+      width="560px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="!submitting"
+      :show-close="!submitting"
+      @closed="resetForm"
+    >
       <el-form :model="form" :rules="rules" ref="formRef" label-width="100px">
         <el-form-item label="用户名" prop="username">
-          <el-input v-model="form.username" placeholder="请输入用户名" :disabled="isEdit" />
+          <el-input
+            v-model="form.username"
+            aria-label="用户名"
+            placeholder="请输入用户名"
+            :disabled="isEdit"
+          />
         </el-form-item>
         <el-form-item label="邮箱" prop="email">
-          <el-input v-model="form.email" placeholder="选填" type="email" clearable />
+          <el-input
+            v-model="form.email"
+            aria-label="邮箱"
+            placeholder="选填"
+            type="email"
+            clearable
+          />
         </el-form-item>
         <el-form-item label="密码" prop="password" v-if="!isEdit">
           <el-input
             v-model="form.password"
+            aria-label="密码"
             placeholder="请输入密码"
             type="password"
             show-password
           />
         </el-form-item>
-        <el-form-item label="激活状态">
-          <el-switch v-model="form.is_active" />
+        <el-form-item>
+          <NCheckbox
+            v-model:checked="form.is_active"
+            aria-label="激活状态"
+            :disabled="submitting"
+            :aria-disabled="submitting"
+            >激活状态</NCheckbox
+          >
         </el-form-item>
-        <el-form-item label="管理员权限">
-          <el-switch v-model="form.is_admin" />
+        <el-form-item>
+          <NCheckbox
+            v-model:checked="form.is_admin"
+            aria-label="管理员权限"
+            :disabled="submitting"
+            :aria-disabled="submitting"
+            >管理员权限</NCheckbox
+          >
         </el-form-item>
       </el-form>
       <template #footer>
         <div class="mobile-dialog-footer">
-          <el-button @click="dialogVisible = false">取消</el-button>
-          <el-button type="primary" @click="handleSubmit" :loading="submitting">确定</el-button>
+          <el-button :disabled="submitting" @click="dialogVisible = false">取消</el-button>
+          <NButton
+            type="primary"
+            @click="handleSubmit"
+            aria-label="保存"
+            :loading="submitting"
+            :aria-busy="submitting"
+            :aria-disabled="submitting"
+            >保存</NButton
+          >
         </div>
       </template>
     </el-dialog>
 
     <!-- Reset Password Dialog -->
-    <el-dialog v-model="resetPasswordVisible" title="重置密码" width="420px">
+    <el-dialog
+      v-model="resetPasswordVisible"
+      title="重置密码"
+      width="420px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="!resettingPassword"
+      :show-close="!resettingPassword"
+      @closed="clearResetPassword"
+    >
       <el-form
         :model="resetPasswordForm"
         :rules="resetPasswordRules"
@@ -93,6 +131,7 @@
         <el-form-item label="新密码" prop="new_password">
           <el-input
             v-model="resetPasswordForm.new_password"
+            aria-label="新密码"
             placeholder="请输入新密码"
             type="password"
             show-password
@@ -101,6 +140,7 @@
         <el-form-item label="确认密码" prop="confirm_password">
           <el-input
             v-model="resetPasswordForm.confirm_password"
+            aria-label="确认密码"
             placeholder="请再次输入新密码"
             type="password"
             show-password
@@ -109,9 +149,17 @@
       </el-form>
       <template #footer>
         <div class="mobile-dialog-footer">
-          <el-button @click="resetPasswordVisible = false">取消</el-button>
-          <el-button type="primary" @click="handleResetPasswordSubmit" :loading="resettingPassword"
-            >确定</el-button
+          <el-button :disabled="resettingPassword" @click="resetPasswordVisible = false"
+            >取消</el-button
+          >
+          <NButton
+            type="primary"
+            @click="handleResetPasswordSubmit"
+            aria-label="重置密码"
+            :loading="resettingPassword"
+            :aria-busy="resettingPassword"
+            :aria-disabled="resettingPassword"
+            >重置密码</NButton
           >
         </div>
       </template>
@@ -121,12 +169,13 @@
 
 <script setup lang="ts">
 import { makeConfirmedAction } from '@/composables/useConfirmAction'
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
+import { NAlert, NButton, NCheckbox } from 'naive-ui'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import UsersTable from './users/UsersTable.vue'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
 import api from '../../api'
 import type { User } from '../../types'
-import { EMPTY, formatDateTime } from '../../utils/helpers'
 import { showApiError } from '../../utils/showApiError'
 
 // 后端 User schema 为准（此前手写副本把 email 写成必填非空，已漂移）
@@ -135,6 +184,12 @@ type UserRow = User
 type ValidatorCallback = (error?: Error) => void
 
 const loading = ref(false)
+const hasLoaded = ref(false)
+const loadError = ref(false)
+const usersRequest = useLatestRequest()
+const emptyDescription = computed(() =>
+  loading.value ? '正在加载用户列表' : !hasLoaded.value ? '用户列表尚未加载成功' : '暂无用户'
+)
 const users = ref<UserRow[]>([])
 const dialogVisible = ref(false)
 const isEdit = ref(false)
@@ -206,14 +261,20 @@ const resetPasswordRules: FormRules = {
 }
 
 async function loadUsers() {
+  const request = usersRequest.begin()
   loading.value = true
+  loadError.value = false
   try {
     const response = await api.getUsers()
+    if (!usersRequest.isCurrent(request)) return
     users.value = response.data
+    hasLoaded.value = true
   } catch (error) {
+    if (!usersRequest.isCurrent(request)) return
+    loadError.value = true
     showApiError(error, '加载用户列表失败')
   } finally {
-    loading.value = false
+    if (usersRequest.isCurrent(request)) loading.value = false
   }
 }
 
@@ -238,12 +299,15 @@ function handleEdit(row: UserRow) {
 }
 
 async function handleSubmit() {
+  if (submitting.value) return
   // validate() 校验不通过时是 reject 而不是返回 false：不接住会变成未处理的 Promise 拒绝
   try {
     await formRef.value?.validate()
   } catch {
     return
   }
+
+  if (submitting.value) return
 
   // 空邮箱发 null：空串过不了后端 EmailStr（422）；编辑时显式 null = 清空邮箱
   const email = form.email.trim() || null
@@ -256,7 +320,7 @@ async function handleSubmit() {
         is_admin: form.is_admin
       }
       await api.updateUser(form.id as number, updateData)
-      ElMessage.success('更新用户成功')
+      ElMessage.success('用户已更新')
     } else {
       await api.createUser({
         username: form.username,
@@ -265,7 +329,7 @@ async function handleSubmit() {
         is_active: form.is_active,
         is_admin: form.is_admin
       })
-      ElMessage.success('创建用户成功')
+      ElMessage.success('用户已新增')
     }
     dialogVisible.value = false
     loadUsers()
@@ -277,25 +341,32 @@ async function handleSubmit() {
   }
 }
 
-function handleResetPassword(row: UserRow) {
-  currentUserId.value = row.id
+function clearResetPassword() {
+  currentUserId.value = null
   resetPasswordForm.new_password = ''
   resetPasswordForm.confirm_password = ''
   resetPasswordFormRef.value?.clearValidate()
+}
+
+function handleResetPassword(row: UserRow) {
+  clearResetPassword()
+  currentUserId.value = row.id
   resetPasswordVisible.value = true
 }
 
 async function handleResetPasswordSubmit() {
+  if (resettingPassword.value) return
   try {
     await resetPasswordFormRef.value?.validate()
   } catch {
     return
   }
 
+  if (resettingPassword.value) return
   resettingPassword.value = true
   try {
     await api.resetUserPassword(currentUserId.value as number, resetPasswordForm.new_password)
-    ElMessage.success('重置密码成功')
+    ElMessage.success('密码已重置')
     resetPasswordVisible.value = false
   } catch (error) {
     showApiError(error, '重置密码失败')
@@ -306,10 +377,11 @@ async function handleResetPasswordSubmit() {
 
 const handleDelete = makeConfirmedAction<UserRow>({
   title: '删除用户',
-  message: (row) => `确定要删除用户 "${row.username}" 吗？`,
+  message: (row) =>
+    `删除用户「${row.username}」将一并删除其券商账户、交易、持仓、现金事件、公司行动、导入和月末核对记录等账本数据。此操作无法撤销，确定删除吗？`,
   confirmText: '删除',
   request: (row) => api.deleteUser(row.id),
-  successMessage: '删除用户成功',
+  successMessage: '用户已删除',
   failureMessage: '删除用户失败',
   reload: () => loadUsers()
 })
@@ -335,11 +407,78 @@ onMounted(() => {
 <style scoped>
 .user-management-page {
   width: 100%;
+  min-width: 0;
+}
+.page-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 28px;
+}
+.users-section {
+  min-width: 0;
+}
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+h2 span {
+  margin-left: 12px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  font-weight: 400;
+}
+.read-note {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.users-section :deep(.n-alert) {
+  margin-bottom: 16px;
+}
+.user-management-page :deep(.el-input) {
+  --el-input-placeholder-color: var(--app-text-soft);
+}
+.user-management-page :deep(.n-checkbox) {
+  min-height: 24px;
+}
+@media (max-width: 640px) {
+  .page-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .page-heading :deep(.n-button),
+  .section-heading :deep(.n-button),
+  .users-section :deep(.n-alert .n-button) {
+    min-height: 44px;
+  }
+  .user-management-page :deep(.el-input__wrapper),
+  .mobile-dialog-footer :deep(.el-button),
+  .mobile-dialog-footer :deep(.n-button) {
+    min-height: 44px;
+  }
+  .user-management-page :deep(.n-checkbox) {
+    min-height: 44px;
+  }
 }
 
-@media (max-width: 900px) {
-  .header-actions {
-    width: 100%;
+@media (min-width: 1025px) {
+  .page-heading {
+    margin-bottom: 16px;
+  }
+  h2 {
+    font-size: 18px;
   }
 }
 </style>

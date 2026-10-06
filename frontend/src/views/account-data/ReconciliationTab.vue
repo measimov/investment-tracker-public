@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import type { ReconciliationSnapshotCreate } from '@/types'
 import { LEDGER_CURRENCIES } from '@/utils/currency'
-import { accountLabel, accountOptionLabel } from '@/utils/labels'
+import { type AccountListStatus, accountLabel, accountOptionLabel } from '@/utils/labels'
 import { makeConfirmedAction } from '@/composables/useConfirmAction'
 import { showApiError } from '@/utils/showApiError'
-import { reactive, ref } from 'vue'
+import { computed, h, nextTick, reactive, ref } from 'vue'
+import { NAlert, NButton, NDataTable, NEmpty, NSpin, NTag, type DataTableColumns } from 'naive-ui'
 import { ElMessage, type FormInstance } from 'element-plus'
-import { Plus } from '@element-plus/icons-vue'
+import { Plus } from '@lucide/vue'
 import api from '@/api'
+import { isLongNote, renderNote } from './shared'
 import SecuritySelect from '@/components/SecuritySelect.vue'
 import { useMediaQuery } from '@/composables/useMediaQuery'
-import { EMPTY, formatDate, formatDateTime, formatNumber, formatQuantity } from '@/utils/helpers'
+import { EMPTY, formatCurrency, formatDate, formatDateTime, formatQuantity } from '@/utils/helpers'
 import {
   type AccountRow,
   type DialogState,
@@ -26,12 +28,16 @@ import {
 const props = defineProps<{
   snapshots: SnapshotRow[]
   accounts: AccountRow[]
+  accountsStatus: AccountListStatus
   loading: boolean
+  hasLoaded: boolean
+  loadError: boolean
   reload: () => Promise<unknown>
 }>()
 
 const isMobileView = useMediaQuery('(max-width: 640px)')
-const accountLabelOf = (id: unknown) => accountLabel(props.accounts, id)
+const accountLabelOf = (id: unknown) =>
+  accountLabel(props.accounts, id, { status: props.accountsStatus })
 
 interface SnapshotCashRowInput {
   currency: string
@@ -93,11 +99,10 @@ async function compareSnapshot(row: SnapshotRow) {
   comparingSnapshotId.value = row.id
   try {
     const response = await api.compareReconciliationSnapshot(row.id)
-    ElMessage.success(
-      response.data.status === 'MATCHED'
-        ? snapshotStatusLabel(response.data)
-        : '比对发现差异，点击状态查看明细'
-    )
+    if (response.data.status === 'MISMATCHED') ElMessage.warning('比对发现差异，点击状态查看明细')
+    else if (response.data.status === 'MATCHED')
+      ElMessage.success(snapshotStatusLabel(response.data))
+    else ElMessage.info(snapshotStatusLabel(response.data))
     await props.reload()
   } catch (error) {
     showApiError(error, '比对失败')
@@ -146,6 +151,7 @@ function openSnapshotDialog(row?: SnapshotRow) {
   snapshotDialog.id = row?.id || null
   resetSnapshotForm(row)
   snapshotDialog.visible = true
+  nextTick(() => snapshotFormRef.value?.clearValidate())
 }
 
 async function saveSnapshot() {
@@ -159,7 +165,7 @@ async function saveSnapshot() {
     (item) => (item.symbol || item.market) && !(item.symbol && item.market)
   )
   if (incompletePosition) {
-    ElMessage.warning('请补全持仓的证券代码和市场，或移除该行')
+    ElMessage.warning('请补全持仓的标的代码和市场，或移除该行')
     return
   }
   snapshotDialog.saving = true
@@ -231,10 +237,128 @@ const snapshotStatusTag = (status: string | undefined) => {
 const jsonSummary = (value: Record<string, string> | null | undefined) => {
   const entries = Object.entries(value ?? {})
   if (!entries.length) return EMPTY
-  return entries.map(([currency, amount]) => `${currency} ${formatNumber(amount)}`).join(' · ')
+  return entries.map(([currency, amount]) => formatCurrency(amount, currency)).join(' · ')
 }
 const positionSummary = (value: readonly unknown[] | null | undefined) =>
-  value?.length ? `${value.length} 个标的` : EMPTY
+  value?.length ? `${value.length} 只标的` : EMPTY
+
+const emptyDescription = computed(() =>
+  props.loadError
+    ? '尚未确认月末核对记录，请重试'
+    : !props.hasLoaded
+      ? '月末核对记录正在加载'
+      : '暂无月末核对记录'
+)
+const statusType = (status: string | undefined) => {
+  const type = snapshotStatusTag(status)
+  return type === 'danger' ? 'error' : type
+}
+const statusContent = (row: SnapshotRow) =>
+  h(NTag, { size: 'small', bordered: false, type: statusType(row.status) }, () =>
+    snapshotStatusLabel(row)
+  )
+const statusCell = (row: SnapshotRow) =>
+  row.diff_detail
+    ? h(
+        'button',
+        {
+          type: 'button',
+          class: 'diff-status-button',
+          'aria-label': `${snapshotStatusLabel(row)}，查看差异明细`,
+          onClick: () => openDiffDialog(row)
+        },
+        [statusContent(row)]
+      )
+    : statusContent(row)
+const columns: DataTableColumns<SnapshotRow> = [
+  {
+    title: '核对日期',
+    key: 'snapshot_date',
+    width: 130,
+    render: (row) => formatDate(row.snapshot_date)
+  },
+  {
+    title: '账户',
+    key: 'broker_account_id',
+    width: 190,
+    render: (row) => accountLabelOf(row.broker_account_id)
+  },
+  {
+    title: '范围',
+    key: 'statement_scope',
+    width: 105,
+    render: (row) => statementScopeLabel(row.statement_scope)
+  },
+  { title: '状态', key: 'status', width: 145, render: statusCell },
+  {
+    title: '现金摘要',
+    key: 'cash_balances',
+    width: 190,
+    render: (row) => jsonSummary(row.cash_balances)
+  },
+  {
+    title: '持仓摘要',
+    key: 'positions',
+    width: 120,
+    render: (row) => positionSummary(row.positions)
+  },
+  {
+    title: '来源文件',
+    key: 'source_filename',
+    width: 210,
+    render: (row) => row.source_filename || EMPTY
+  },
+  {
+    title: '备注',
+    key: 'notes',
+    width: 210,
+    cellProps: () => ({ style: { verticalAlign: 'top' } }),
+    render: (row) => renderNote(row.notes)
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 240,
+    fixed: 'right',
+    render: (row) =>
+      h('div', { class: 'row-actions' }, [
+        h(
+          NButton,
+          {
+            text: true,
+            loading: comparingSnapshotId.value === row.id,
+            'aria-label': `重新比对 ${formatDate(row.snapshot_date)} ${accountLabelOf(row.broker_account_id)} 核对记录`,
+            onClick: () => compareSnapshot(row)
+          },
+          () => '重新比对'
+        ),
+        ...(!row.import_batch_id
+          ? [
+              h(
+                NButton,
+                {
+                  text: true,
+                  type: 'primary',
+                  'aria-label': `编辑 ${formatDate(row.snapshot_date)} 核对记录`,
+                  onClick: () => openSnapshotDialog(row)
+                },
+                () => '编辑'
+              ),
+              h(
+                NButton,
+                {
+                  text: true,
+                  type: 'error',
+                  'aria-label': `删除 ${formatDate(row.snapshot_date)} 核对记录`,
+                  onClick: () => removeSnapshot(row)
+                },
+                () => '删除'
+              )
+            ]
+          : [h(NTag, { size: 'small', bordered: false }, () => '导入生成 · 只读')])
+      ])
+  }
+]
 </script>
 
 <template>
@@ -244,154 +368,117 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
         <h2>月末核对</h2>
         <p>录入券商月结单上的期末现金与持仓，与系统按流水推导的结果自动比对。</p>
       </div>
-      <el-button
-        type="primary"
-        :icon="Plus"
-        :disabled="!accounts.length"
-        @click="openSnapshotDialog()"
-      >
-        新增核对
-      </el-button>
+      <div class="toolbar-actions">
+        <NButton :loading="loading" aria-label="重新加载月末核对" @click="reload">重新加载</NButton
+        ><NButton type="primary" :disabled="!accounts.length" @click="openSnapshotDialog()"
+          >新增核对</NButton
+        >
+      </div>
     </div>
 
-    <el-alert
-      v-if="isAtListLimit(snapshots)"
-      type="info"
-      :closable="false"
-      show-icon
-      class="list-limit-alert"
-      :title="`仅显示最近 ${LIST_LIMIT} 条核对记录`"
-    />
-
-    <div v-if="!isMobileView" class="responsive-table desktop-data-table">
-      <el-table :data="snapshots" v-loading="loading" stripe row-key="id">
-        <template #empty>
-          <el-empty description="暂无月末核对记录" :image-size="88" />
-        </template>
-        <el-table-column prop="snapshot_date" label="核对日期" width="125">
-          <template #default="{ row }">{{ formatDate(row.snapshot_date) }}</template>
-        </el-table-column>
-        <el-table-column label="账户" min-width="180">
-          <template #default="{ row }">{{ accountLabelOf(row.broker_account_id) }}</template>
-        </el-table-column>
-        <el-table-column label="范围" width="100">
-          <template #default="{ row }">{{ statementScopeLabel(row.statement_scope) }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="130">
-          <template #default="{ row }">
-            <el-tag
-              :type="snapshotStatusTag(row.status)"
-              size="small"
-              :class="{ 'diff-tag-clickable': row.diff_detail }"
-              :role="row.diff_detail ? 'button' : undefined"
-              :tabindex="row.diff_detail ? 0 : undefined"
-              :aria-label="
-                row.diff_detail ? `${snapshotStatusLabel(row)}，查看差异明细` : undefined
-              "
-              @click="row.diff_detail && openDiffDialog(row)"
-              @keydown.enter.prevent="row.diff_detail && openDiffDialog(row)"
-              @keydown.space.prevent="row.diff_detail && openDiffDialog(row)"
-            >
-              {{ snapshotStatusLabel(row) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="现金摘要" min-width="180">
-          <template #default="{ row }">{{ jsonSummary(row.cash_balances) }}</template>
-        </el-table-column>
-        <el-table-column label="持仓摘要" min-width="150">
-          <template #default="{ row }">{{ positionSummary(row.positions) }}</template>
-        </el-table-column>
-        <el-table-column
-          prop="source_filename"
-          label="来源文件"
-          min-width="180"
-          show-overflow-tooltip
+    <NAlert
+      v-if="loadError"
+      type="warning"
+      :show-icon="false"
+      title="月末核对加载失败"
+      class="read-alert"
+      >{{
+        hasLoaded ? '显示上次成功加载的记录，尚未确认最新结果。' : '尚未确认月末核对记录，请重试。'
+      }}
+      <NButton text type="primary" @click="reload">重试月末核对</NButton></NAlert
+    >
+    <p v-else-if="loading && hasLoaded" class="read-note" role="status">
+      正在重新加载，以下为上次成功记录。
+    </p>
+    <p v-if="isAtListLimit(snapshots)" class="read-note">仅显示最近 {{ LIST_LIMIT }} 条核对记录</p>
+    <NSpin :show="loading">
+      <NDataTable
+        v-if="!isMobileView"
+        :data="snapshots"
+        :columns="columns"
+        :row-key="(row: SnapshotRow) => row.id"
+        :scroll-x="1540"
+        :bordered="false"
+        ><template #empty
+          ><NEmpty
+            :description="emptyDescription"
+            :theme-overrides="{ textColor: 'var(--app-text-muted)' }" /></template
+      ></NDataTable>
+      <div v-else class="mobile-card-list">
+        <NEmpty
+          v-if="!snapshots.length"
+          :description="emptyDescription"
+          :theme-overrides="{ textColor: 'var(--app-text-muted)' }"
         />
-        <el-table-column prop="notes" label="备注" min-width="200" show-overflow-tooltip />
-        <el-table-column label="操作" width="230" fixed="right">
-          <template #default="{ row }">
-            <el-button text :loading="comparingSnapshotId === row.id" @click="compareSnapshot(row)"
-              >重新比对</el-button
+        <article
+          v-for="row in snapshots"
+          :key="row.id"
+          class="mobile-card"
+          data-testid="snapshot-card"
+        >
+          <div class="mobile-card-head">
+            <div class="mobile-card-title">
+              <strong class="mobile-card-symbol">{{ formatDate(row.snapshot_date) }}</strong
+              ><span class="mobile-card-name">{{ accountLabelOf(row.broker_account_id) }}</span>
+            </div>
+            <button
+              v-if="row.diff_detail"
+              type="button"
+              class="diff-status-button"
+              :aria-label="`${snapshotStatusLabel(row)}，查看差异明细`"
+              @click="openDiffDialog(row)"
             >
-            <template v-if="!row.import_batch_id">
-              <el-button type="primary" text @click="openSnapshotDialog(row)">编辑</el-button>
-              <el-button type="danger" text @click="removeSnapshot(row)">删除</el-button>
-            </template>
-            <el-tag v-else type="info" size="small">导入生成 · 只读</el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
-    </div>
-
-    <div v-else v-loading="loading" class="mobile-card-list">
-      <el-empty v-if="!snapshots.length" description="暂无月末核对记录" :image-size="88" />
-      <article
-        v-for="row in snapshots"
-        :key="row.id"
-        class="mobile-card"
-        data-testid="snapshot-card"
-      >
-        <div class="mobile-card-head">
-          <div class="mobile-card-title">
-            <span class="mobile-card-symbol">{{ formatDate(row.snapshot_date) }}</span>
-            <span class="mobile-card-name">
-              {{ accountLabelOf(row.broker_account_id) }}
-            </span>
+              <NTag size="small" :bordered="false" :type="statusType(row.status)">{{
+                snapshotStatusLabel(row)
+              }}</NTag></button
+            ><NTag v-else size="small" :bordered="false" :type="statusType(row.status)">{{
+              snapshotStatusLabel(row)
+            }}</NTag>
           </div>
-          <div class="mobile-card-tags">
-            <el-tag
-              :type="snapshotStatusTag(row.status)"
-              size="small"
-              :class="{ 'diff-tag-clickable': row.diff_detail }"
-              :role="row.diff_detail ? 'button' : undefined"
-              :tabindex="row.diff_detail ? 0 : undefined"
-              :aria-label="
-                row.diff_detail ? `${snapshotStatusLabel(row)}，查看差异明细` : undefined
-              "
-              @click="row.diff_detail && openDiffDialog(row)"
-              @keydown.enter.prevent="row.diff_detail && openDiffDialog(row)"
-              @keydown.space.prevent="row.diff_detail && openDiffDialog(row)"
-            >
-              {{ snapshotStatusLabel(row) }}
-            </el-tag>
+          <div class="mobile-card-meta">
+            <span>范围 {{ statementScopeLabel(row.statement_scope) }}</span
+            ><span>现金 {{ jsonSummary(row.cash_balances) }}</span
+            ><span>持仓 {{ positionSummary(row.positions) }}</span
+            ><span v-if="row.source_filename">{{ row.source_filename }}</span>
+            <details v-if="isLongNote(row.notes)" class="read-details">
+              <summary>查看完整备注</summary>
+              <p>{{ row.notes }}</p>
+            </details>
+            <span v-else-if="row.notes">{{ row.notes }}</span>
           </div>
-        </div>
-
-        <div class="mobile-card-meta">
-          <span>范围 {{ statementScopeLabel(row.statement_scope) }}</span>
-          <span>现金 {{ jsonSummary(row.cash_balances) }}</span>
-          <span>持仓 {{ positionSummary(row.positions) }}</span>
-          <span v-if="row.source_filename">{{ row.source_filename }}</span>
-          <span v-if="row.notes">{{ row.notes }}</span>
-        </div>
-
-        <div class="mobile-card-actions">
-          <el-button
-            size="small"
-            text
-            :loading="comparingSnapshotId === row.id"
-            @click="compareSnapshot(row)"
-          >
-            重新比对
-          </el-button>
-          <template v-if="!row.import_batch_id">
-            <el-button type="primary" size="small" text @click="openSnapshotDialog(row)">
-              编辑
-            </el-button>
-            <el-button type="danger" size="small" text @click="removeSnapshot(row)">
-              删除
-            </el-button>
-          </template>
-          <el-tag v-else type="info" size="small">导入生成 · 只读</el-tag>
-        </div>
-      </article>
-    </div>
+          <div class="mobile-card-actions">
+            <NButton
+              text
+              :loading="comparingSnapshotId === row.id"
+              :aria-label="`重新比对 ${formatDate(row.snapshot_date)} 核对记录`"
+              @click="compareSnapshot(row)"
+              >重新比对</NButton
+            ><template v-if="!row.import_batch_id"
+              ><NButton
+                text
+                type="primary"
+                :aria-label="`编辑 ${formatDate(row.snapshot_date)} 核对记录`"
+                @click="openSnapshotDialog(row)"
+                >编辑</NButton
+              ><NButton
+                text
+                type="error"
+                :aria-label="`删除 ${formatDate(row.snapshot_date)} 核对记录`"
+                @click="removeSnapshot(row)"
+                >删除</NButton
+              ></template
+            ><NTag v-else size="small" :bordered="false">导入生成 · 只读</NTag>
+          </div>
+        </article>
+      </div>
+    </NSpin>
 
     <el-dialog
       v-model="snapshotDialog.visible"
       :title="snapshotDialog.id ? '编辑月末核对' : '新增月末核对'"
-      width="720px"
+      width="min(720px, 96vw)"
+      :close-on-click-modal="false"
+      class="account-form-dialog"
     >
       <el-alert
         title="根据券商月结单核对后，记录报表余额、核对状态和差异说明。"
@@ -407,7 +494,11 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
         label-width="100px"
       >
         <el-form-item label="账户" prop="broker_account_id">
-          <el-select v-model="snapshotForm.broker_account_id" placeholder="选择账户">
+          <el-select
+            v-model="snapshotForm.broker_account_id"
+            aria-label="核对账户"
+            placeholder="选择账户"
+          >
             <el-option
               v-for="account in accounts"
               :key="account.id"
@@ -419,12 +510,18 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
         <el-form-item label="核对日期" prop="snapshot_date">
           <el-date-picker
             v-model="snapshotForm.snapshot_date"
+            aria-label="核对日期"
             type="date"
+            format="YYYY/MM/DD"
             value-format="YYYY-MM-DD"
           />
         </el-form-item>
         <el-form-item label="来源文件">
-          <el-input v-model="snapshotForm.source_filename" placeholder="例如：2026-06 月结单.pdf" />
+          <el-input
+            v-model="snapshotForm.source_filename"
+            aria-label="核对来源文件"
+            placeholder="例如：2026-06 月结单.pdf"
+          />
         </el-form-item>
         <el-form-item label="现金余额">
           <div class="repeatable-fields">
@@ -433,7 +530,11 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
               :key="`cash-${index}`"
               class="repeatable-row cash-row"
             >
-              <el-select v-model="item.currency" placeholder="币种">
+              <el-select
+                :aria-label="`第 ${index + 1} 行币种`"
+                v-model="item.currency"
+                placeholder="币种"
+              >
                 <el-option
                   v-for="currency in LEDGER_CURRENCIES"
                   :key="currency"
@@ -443,6 +544,7 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
               </el-select>
               <!-- 不设下限：融资账户期末现金可以是负数（后端允许） -->
               <el-input-number
+                :aria-label="`第 ${index + 1} 行现金余额`"
                 v-model="item.amount"
                 :precision="2"
                 controls-position="right"
@@ -470,10 +572,14 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
               <SecuritySelect
                 v-model="item.symbol"
                 :resolve="false"
-                placeholder="证券代码"
+                placeholder="标的代码"
                 @select="item.market = $event.market"
               />
-              <el-select v-model="item.market" placeholder="市场">
+              <el-select
+                :aria-label="`第 ${index + 1} 行市场`"
+                v-model="item.market"
+                placeholder="市场"
+              >
                 <el-option
                   v-for="market in marketOptions"
                   :key="market"
@@ -482,12 +588,18 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
                 />
               </el-select>
               <el-input-number
+                :aria-label="`第 ${index + 1} 行持仓数量`"
                 v-model="item.quantity"
                 :min="0"
                 controls-position="right"
                 placeholder="数量"
               />
-              <el-select v-model="item.currency" clearable placeholder="币种">
+              <el-select
+                :aria-label="`第 ${index + 1} 行币种`"
+                v-model="item.currency"
+                clearable
+                placeholder="币种"
+              >
                 <el-option
                   v-for="currency in LEDGER_CURRENCIES"
                   :key="currency"
@@ -505,6 +617,7 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
         <el-form-item label="备注">
           <el-input
             v-model="snapshotForm.notes"
+            aria-label="核对备注"
             type="textarea"
             :rows="3"
             placeholder="记录差异原因或凭证位置"
@@ -576,10 +689,14 @@ const positionSummary = (value: readonly unknown[] | null | undefined) =>
           <template #empty><el-empty description="无现金数据" :image-size="88" /></template>
           <el-table-column prop="currency" label="币种" width="90" />
           <el-table-column label="快照余额" width="130" align="right">
-            <template #default="{ row }">{{ formatNumber(row.snapshot_balance, 2) }}</template>
+            <template #default="{ row }">{{
+              formatCurrency(row.snapshot_balance, row.currency)
+            }}</template>
           </el-table-column>
           <el-table-column label="推导余额" width="130" align="right">
-            <template #default="{ row }">{{ formatNumber(row.derived_balance, 2) }}</template>
+            <template #default="{ row }">{{
+              formatCurrency(row.derived_balance, row.currency)
+            }}</template>
           </el-table-column>
           <el-table-column label="差额（推导−快照）" width="140" align="right">
             <template #default="{ row }">{{ signedDelta(row.delta, 2) }}</template>

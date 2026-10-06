@@ -5,8 +5,8 @@ EDGAR 的每股盈利/隐含股数按**普通股**口径，行情价是 **ADS** 
 
 1. **用户规则**（security_rules 的 `ADS_RATIO`，payload `{ratio}`）：用户域，只在请求带着
    用户时生效（详情页 profile / 观察清单 / 分析 job 的发起人）；用于解析失败或解析值有误的兜底。
-2. **20-F 封面自动解析**：最新一份 20-F 主文档封面 Section 12(b) 登记表里的
-   「American depositary shares, each representing four Class A ordinary shares」。
+2. **年报封面自动解析**：最新一份 20-F（v3 起也含 10-K，#352）主文档封面 Section 12(b)
+   登记表里的「American depositary shares, each representing four Class A ordinary shares」。
    结果落 `security_profile_data`（dataset=`ads_ratio`，period_key=`current`，全局）。
 
 解析层（`parse_ads_ratio`）是纯函数、金样测试对象（`tests/fixtures/ads/` 真实封面节选）：
@@ -14,7 +14,8 @@ EDGAR 的每股盈利/隐含股数按**普通股**口径，行情价是 **ADS** 
 （「"ADSs" are to the American depositary shares, each of which represents …」），须全部一致。动词只认现在时（represents / representing / represent），
 「prior to …, each ADS represented …」这类历史比例天然不匹配。
 
-10-K 发行人（美国本土）不需要换算，估值按 1:1；未解析出比例的 20-F 发行人估值判 indeterminate。
+10-K 发行人封面没有登记 ADS（美国本土普通股）估值按 1:1；未解析出比例的 20-F 发行人，以及封面
+登记了 ADS 却解析不出比例的 10-K 发行人，估值判 indeterminate。
 """
 
 from __future__ import annotations
@@ -34,8 +35,9 @@ MARKET = "美股"
 DATASET = "ads_ratio"
 PERIOD_KEY = "current"
 # 改动解析规则（词表/正则/封面边界）就 bump：缓存按 (accession, 版本) 命中，
-# 不 bump 的话修好的解析器被旧的 not_found 行挡住
-ADS_PARSER_VERSION = 2
+# 不 bump 的话修好的解析器被旧的 not_found 行挡住。v3（#352）：「each representing」前的
+# 数量不参与换算（封面脚注上标）；10-K 申报人也解析封面
+ADS_PARSER_VERSION = 3
 # 同一份 20-F 下载失败的重试上限（每次都是整份主文档，BABA 近 12MB）
 MAX_FETCH_ATTEMPTS = 3
 
@@ -117,7 +119,7 @@ _VERB = (
     r"|each representing|each represents|representative of)"
 )
 _RATIO_RE = re.compile(
-    rf"(?:\b{_LEAD} )?{_ADS}\b"
+    rf"(?:\b{_LEAD} )?(?P<ads>{_ADS})\b"
     # 可选插入语：（"ADSs"）、逗号/括号、each (of which | ADS | American depositary share)
     r"(?: ?\(\s*[\"“”']?adss?[\"“”']?\s*\))?"
     r"\s?[,(]?\s?"
@@ -163,6 +165,21 @@ def _cardinal_value(token: str) -> Optional[Decimal]:
     return Decimal(total)
 
 
+# 「ADSs, each representing …」「ADSs, each of which represents …」：「每一份」ADS 的表述，
+# 比例与 ADS 前面的数量无关
+_PER_EACH_RE = re.compile(r"\b(?:each|every one)\b")
+
+
+def _per_each(match: re.Match) -> bool:
+    """ADS 之后是「每一份」的表述：前导数量不参与换算（v3，#352）。
+
+    封面登记表里前一格的脚注上标会被 html_to_text 转成孤立数字，与下一格的 ADS 连成
+    「…hong kong limited 2 american depositary shares, each representing eight…」，
+    按前导数量算就成了 2 ADS = 8 股、比例 4（应为 8）。「N ADSs, each representing M
+    shares」在语法上本就是每份 M 股，不论 N 是多少。"""
+    return bool(_PER_EACH_RE.search(match.string[match.end("ads") : match.end()]))
+
+
 def _match_ratio(match: re.Match) -> Optional[Decimal]:
     """匹配 → 每 1 ADS 对应的普通股数。"""
     groups = match.groupdict()
@@ -175,7 +192,7 @@ def _match_ratio(match: re.Match) -> Optional[Decimal]:
         shares = Decimal(groups["sn"]) / denominator if denominator else None
     else:
         shares = _cardinal_value(groups.get("n") or "")
-    lead = groups.get("every") or groups.get("a")
+    lead = None if _per_each(match) else (groups.get("every") or groups.get("a"))
     ads = _cardinal_value(lead) if lead else Decimal(1)
     if shares is None or ads is None or shares <= 0 or ads <= 0:
         return None
@@ -228,7 +245,7 @@ def _candidates(text: str, *, definitions_only: bool = False) -> List[Tuple[Deci
             text[max(0, match.start() - DEFINITION_LOOKBACK) : match.start() + 1]
         ):
             continue
-        if _truncated_lead(text, match.start()):
+        if not _per_each(match) and _truncated_lead(text, match.start()):
             raise _AmbiguousQuantity(text[max(0, match.start() - 40) : match.end()])
         ratio = _match_ratio(match)
         if ratio is None:
@@ -308,6 +325,21 @@ def parse_ads_ratio_html(
     return parse_ads_ratio(html_to_text(html or ""), form=form, filing_date=filing_date)
 
 
+_ADS_MENTION_RE = re.compile(r"american deposit[ao]ry|\badss?\b")
+
+
+def ads_listed_on_cover(text: str) -> Optional[bool]:
+    """年报封面 Section 12(b) 登记表里是否登记了 ADS；找不到封面返回 None（不可知）。
+
+    10-K 申报人多数是美国本土公司（普通股直接上市，1:1），但也有以 ADS 交易的（BeOne
+    1 ADS = 13 股、再鼎医药 1 ADS = 10 股，2026-02 两份 10-K 封面实查）：登记了 ADS 却解析
+    不出比例时估值不能按 1:1。"""
+    cover = _cover_region(_normalize(text or ""))
+    if cover is None:
+        return None
+    return bool(_ADS_MENTION_RE.search(cover))
+
+
 def format_ratio(value: Any) -> str:
     """Decimal/字符串 → 展示用（4 → "4"，0.5 → "0.5"）。"""
     try:
@@ -344,17 +376,36 @@ def _save(db: Session, symbol: str, payload: Dict[str, Any]) -> None:
     db.commit()
 
 
+def _annual_kind(form: Any) -> Optional[str]:
+    """最新年报的表单类别：20-F / 10-K；其余（40-F、没有年报）为 None。"""
+    text = str(form or "")
+    for kind in ("20-F", "10-K"):
+        if text.startswith(kind):
+            return kind
+    return None
+
+
 def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[str, Any]:
-    """确保库内有最新一份 20-F 的封面换算比；返回 {status, ...}。
+    """确保库内有最新一份年报（20-F / 10-K）的封面换算比；返回 {status, ...}。
 
     status：
     - `not_registered`：SEC 注册表里没有这个代码
-    - `not_20f`：最新年报是 10-K（美国本土发行人，估值按 1:1），不落库
-    - `cached`：最新 20-F 已按当前解析器版本处理过（ok 或 not_found），零下载
-    - `ok` / `not_found`：本次下载并解析了最新 20-F
-    - `failed`：下载失败（保留库内旧结果；同一份 20-F 最多重试 MAX_FETCH_ATTEMPTS 次）
-    - `capped`：同一份 20-F 下载已失败到上限，不再重试
+    - `not_20f`：最新年报既不是 20-F 也不是 10-K（或没有年报），不落库
+    - `cached`：最新年报已按当前解析器版本处理过（ok / not_found / no_ads），零下载
+    - `ok`：本次下载并解析出换算比
+    - `not_found`：20-F 发行人，或封面登记了 ADS 的 10-K 发行人，却解析不出比例（估值 indeterminate）
+    - `no_ads`：10-K 封面**明确**没有登记 ADS（美国本土普通股，估值按 1:1）
+    - `cover_unknown`：10-K 找不到封面 Section 12(b) 登记表，无法判断是否以 ADS 交易——**不是**
+      no_ads：不缓存、计入重试次数；上一份年报有明确结论（ok/no_ads）时沿用它，否则落
+      cover_unknown 行，估值两项 indeterminate（见 ads_ratio_missing）
+    - `failed`：下载失败（保留库内旧结果；同一份年报最多重试 MAX_FETCH_ATTEMPTS 次）
+    - `capped`：同一份年报下载失败或封面无法识别已到上限，不再重试（新一份年报或解析器
+      升版后重新计数；`force=True` 无视上限）
     网络异常（清单拉取）上抛，调用方按需吞掉。
+
+    v3（#352）起 10-K 也下载封面：部分 10-K 申报人以 ADS 交易（BeOne 13 股、再鼎医药 10 股），
+    此前一律按 1:1 估值，PE/PB 偏高 10 倍以上且没有任何提示。每份 10-K 只下载一次（按
+    accession 缓存）。10-K 只认封面登记表：正文术语定义句不足以证明本土公司以 ADS 交易。
     """
     from .report_fetchers import edgar_download_filing, edgar_lookup, edgar_recent_annual_filings
 
@@ -364,7 +415,8 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
         return {"symbol": symbol, "status": "not_registered"}
     filings = edgar_recent_annual_filings(lookup["cik"], limit=1)
     latest = filings[0] if filings else None
-    if latest is None or not str(latest.get("form") or "").startswith("20-F"):
+    kind = _annual_kind((latest or {}).get("form"))
+    if latest is None or kind is None:
         return {"symbol": symbol, "status": "not_20f", "form": (latest or {}).get("form")}
 
     row = _load_row(db, symbol)
@@ -374,12 +426,14 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
         not force
         and same_filing
         and versions_current(previous, parser_version=ADS_PARSER_VERSION)
-        and previous.get("status") in ("ok", "not_found")
+        and previous.get("status") in ("ok", "not_found", "no_ads")
     ):
         return {"symbol": symbol, "status": "cached", **_summary(previous)}
+    # 重试计数按 (年报, 解析器版本) 记：同一份年报换了解析器理应重新尝试
     pending_attempts = (
         int(previous.get("fetch_attempts") or 0)
         if previous.get("pending_accession") == latest["accession"]
+        and previous.get("pending_parser_version") == ADS_PARSER_VERSION
         else 0
     )
     if not force and pending_attempts >= MAX_FETCH_ATTEMPTS:
@@ -389,22 +443,48 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
         html = edgar_download_filing(lookup["cik"], latest["accession"], latest["primary_document"])
     except Exception as exc:  # 下载失败：保留旧结果，只记重试计数
         error = f"{type(exc).__name__}: {str(exc)[:160]}"
-        logger.warning("20-F 下载失败 %s %s: %s", symbol, latest["accession"], error)
+        logger.warning("%s 下载失败 %s %s: %s", kind, symbol, latest["accession"], error)
         _save(
             db,
             symbol,
-            {
-                **previous,
-                "pending_accession": latest["accession"],
-                "fetch_attempts": pending_attempts + 1,
-                "last_error": error,
-            },
+            _pending(previous, latest["accession"], pending_attempts, error),
         )
         return {"symbol": symbol, "status": "failed", "error": error}
 
-    parsed = parse_ads_ratio_html(
-        html, form=str(latest["form"]), filing_date=str(latest["filing_date"])
-    )
+    from .report_sections import html_to_text
+
+    text = html_to_text(html or "")
+    parsed = parse_ads_ratio(text, form=str(latest["form"]), filing_date=str(latest["filing_date"]))
+    ads_listed = ads_listed_on_cover(text)
+    if kind == "10-K":
+        if ads_listed is None:
+            # 找不到 12(b) 登记表：不知道是不是 ADS，绝不当成普通股按 1:1（PR #358 评审 P2）。
+            # 不缓存：计入重试次数（下载截断、SEC 返回错误页都会这样），到上限后 capped。
+            error = "10-K 封面未识别出 Section 12(b) 证券登记表，无法判断是否以 ADS 交易"
+            logger.warning("%s %s %s", error, symbol, latest["accession"])
+            base = previous if previous.get("status") in ("ok", "no_ads") else {}
+            if not base:
+                base = {
+                    "cik": lookup["cik"],
+                    "accession": latest["accession"],
+                    "primary_document": latest["primary_document"],
+                    "form": str(latest["form"]),
+                    "filing_date": str(latest["filing_date"]),
+                    "report_date": latest.get("report_date"),
+                    "parser_version": ADS_PARSER_VERSION,
+                    "status": "cover_unknown",
+                    "ads_listed": None,
+                    "ratio": None,
+                    "source_text": None,
+                    "section": None,
+                }
+            _save(db, symbol, _pending(base, latest["accession"], pending_attempts, error))
+            return {"symbol": symbol, "status": "cover_unknown", "error": error}
+        if ads_listed is False:
+            parsed = None  # 10-K 只认封面登记表（见 docstring）
+        status = "ok" if parsed else ("not_found" if ads_listed else "no_ads")
+    else:
+        status = "ok" if parsed else "not_found"
     payload: Dict[str, Any] = {
         "cik": lookup["cik"],
         "accession": latest["accession"],
@@ -413,7 +493,8 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
         "filing_date": str(latest["filing_date"]),
         "report_date": latest.get("report_date"),
         "parser_version": ADS_PARSER_VERSION,
-        "status": "ok" if parsed else "not_found",
+        "status": status,
+        "ads_listed": ads_listed,
         "ratio": format_ratio(parsed["ratio"]) if parsed else None,
         "source_text": parsed["source_text"] if parsed else None,
         "section": parsed["section"] if parsed else None,
@@ -429,9 +510,20 @@ def ensure_ads_ratio(db: Session, symbol: str, *, force: bool = False) -> Dict[s
             latest["filing_date"],
         )
     _save(db, symbol, payload)
-    if parsed is None:
-        logger.warning("20-F 封面未解析出 ADS 换算比 %s %s", symbol, latest["accession"])
+    if status == "not_found":
+        logger.warning("%s 封面未解析出 ADS 换算比 %s %s", kind, symbol, latest["accession"])
     return {"symbol": symbol, "status": payload["status"], **_summary(payload)}
+
+
+def _pending(base: Dict[str, Any], accession: str, attempts: int, error: str) -> Dict[str, Any]:
+    """本次没得到结论：在 base（上一份的明确结论，或 cover_unknown 行）上记重试计数。"""
+    return {
+        **base,
+        "pending_accession": accession,
+        "pending_parser_version": ADS_PARSER_VERSION,
+        "fetch_attempts": attempts + 1,
+        "last_error": error,
+    }
 
 
 def _summary(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -477,7 +569,7 @@ def _parsed_ratios(db: Session, symbols: Iterable[str]) -> Dict[str, Dict[str, A
 def resolved_from(
     rule_ratio: Optional[Decimal], parsed: Optional[Dict[str, Any]]
 ) -> Optional[Dict[str, Any]]:
-    """纯函数：用户规则优先，其次 20-F 封面解析值。"""
+    """纯函数：用户规则优先，其次年报（20-F / 10-K）封面解析值。"""
     if rule_ratio is not None:
         text = format_ratio(rule_ratio)
         return {
@@ -494,10 +586,11 @@ def resolved_from(
         if ratio <= 0:
             return None
         filing_date = parsed.get("filing_date")
-        where = "20-F 封面" if parsed.get("section") != "body" else "20-F 正文"
+        form = _annual_kind(parsed.get("form")) or "20-F"
+        where = f"{form} 封面" if parsed.get("section") != "body" else f"{form} 正文"
         return {
             "ratio": ratio,
-            "source": "20-F",
+            "source": form,
             "filing_date": filing_date,
             "note": f"1 ADS = {format_ratio(ratio)} 股（{where} {filing_date or ''}）".replace(
                 " ）", "）"
@@ -518,13 +611,36 @@ def resolve_ads_ratios(
         resolved = resolved_from(rules.get(symbol), parsed.get(symbol))
         if resolved is not None:
             result[symbol] = resolved
+        elif ads_ratio_missing(parsed.get(symbol)):
+            entry = {
+                "ratio": None,
+                "missing": True,
+                "form": _annual_kind(parsed[symbol].get("form")),
+            }
+            if parsed[symbol].get("ads_listed") is None:
+                entry["unknown"] = True  # 封面无法识别：是否以 ADS 交易都不知道
+            result[symbol] = entry
     return result
+
+
+def ads_ratio_missing(parsed: Optional[Dict[str, Any]]) -> bool:
+    """纯函数：10-K 发行人没有可用比例、又不能确认是普通股——估值不能按 1:1。
+
+    两种情形（v3，#352）：封面登记了 ADS 却解析不出比例（ads_listed=True），或封面无法识别、
+    不知道是否以 ADS 交易（ads_listed=None，PR #358 评审 P2）。**只有明确 ads_listed=False
+    才按普通股 1:1**。20-F 发行人没有比例时估值由表单本身判 indeterminate
+    （security_profile_service），这里只补 10-K。"""
+    if not parsed or parsed.get("ratio"):
+        return False
+    return _annual_kind(parsed.get("form")) == "10-K" and parsed.get("ads_listed") is not False
 
 
 def resolve_ads_ratio(
     db: Session, symbol: str, user_id: Optional[int] = None
 ) -> Optional[Dict[str, Any]]:
-    """{ratio: Decimal, source: 'rule'|'20-F', note, filing_date} 或 None。
+    """{ratio: Decimal, source: 'rule'|'20-F'|'10-K', note, filing_date} 或 None；
+    10-K 封面登记了 ADS 却无比例、或封面无法识别（且无用户规则）时为
+    {ratio: None, missing: True, form[, unknown: True]}。
 
     user_id 为 None（无用户上下文）时只用解析值——用户规则是用户域数据。"""
     return resolve_ads_ratios(db, [symbol], user_id).get(symbol)

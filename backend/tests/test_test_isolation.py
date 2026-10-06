@@ -19,6 +19,9 @@ pytestmark = pytest.mark.skipif(
 
 def test_credentials_from_dotenv_are_blanked():
     assert settings.llm_report_api_key == ""
+    assert settings.llm_ark_api_key == ""
+    assert settings.llm_bailian_api_key == ""
+    assert settings.llm_openrouter_api_key == ""
     assert settings.tushare_token == ""
     assert settings.tiingo_api_token == ""
     assert settings.xueqiu_cookies == ""

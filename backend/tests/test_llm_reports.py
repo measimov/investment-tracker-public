@@ -49,10 +49,10 @@ def llm_user():
 def test_client_without_key_raises_before_network(monkeypatch):
     monkeypatch.setattr(llm_client.settings, "llm_report_api_key", "")
 
-    def explode(*args, **kwargs):
+    async def explode(*args, **kwargs):
         raise AssertionError("不得发起网络请求")
 
-    monkeypatch.setattr(llm_client.httpx, "post", explode)
+    monkeypatch.setattr(llm_client, "_post_completion", explode)
     with pytest.raises(llm_client.LLMNotConfiguredError):
         llm_client.chat_completion([{"role": "user", "content": "hi"}])
 
@@ -60,7 +60,7 @@ def test_client_without_key_raises_before_network(monkeypatch):
 def test_client_parses_success_and_errors(monkeypatch):
     monkeypatch.setattr(llm_client.settings, "llm_report_api_key", "sk-test")
 
-    def ok_post(url, **kwargs):
+    async def ok_post(url, **kwargs):
         return httpx.Response(
             200,
             json={
@@ -71,23 +71,23 @@ def test_client_parses_success_and_errors(monkeypatch):
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(llm_client.httpx, "post", ok_post)
+    monkeypatch.setattr(llm_client, "_post_completion", ok_post)
     result = llm_client.chat_completion([{"role": "user", "content": "hi"}])
     assert result["content"] == "报告内容"
     assert result["usage"]["total_tokens"] == 15
 
-    def unauthorized_post(url, **kwargs):
+    async def unauthorized_post(url, **kwargs):
         return httpx.Response(401, text="bad key", request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(llm_client.httpx, "post", unauthorized_post)
+    monkeypatch.setattr(llm_client, "_post_completion", unauthorized_post)
     with pytest.raises(llm_client.LLMClientError) as exc_info:
         llm_client.chat_completion([{"role": "user", "content": "hi"}])
     assert exc_info.value.status_code == 401
 
-    def timeout_post(url, **kwargs):
+    async def timeout_post(url, **kwargs):
         raise httpx.ReadTimeout("timed out", request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(llm_client.httpx, "post", timeout_post)
+    monkeypatch.setattr(llm_client, "_post_completion", timeout_post)
     with pytest.raises(llm_client.LLMClientError) as exc_info:
         llm_client.chat_completion([{"role": "user", "content": "hi"}])
     assert exc_info.value.status_code is None  # 非 4xx：可重试
@@ -99,7 +99,7 @@ def test_client_rejects_truncated_partial_content(monkeypatch):
     monkeypatch.setattr(llm_client.settings, "llm_report_api_key", "sk-test")
     seen = {}
 
-    def truncated_post(url, **kwargs):
+    async def truncated_post(url, **kwargs):
         seen.update(kwargs["json"])
         return httpx.Response(
             200,
@@ -115,7 +115,7 @@ def test_client_rejects_truncated_partial_content(monkeypatch):
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(llm_client.httpx, "post", truncated_post)
+    monkeypatch.setattr(llm_client, "_post_completion", truncated_post)
     with pytest.raises(llm_client.LLMClientError) as exc_info:
         llm_client.chat_completion([{"role": "user", "content": "hi"}], max_tokens=1234)
     exc = exc_info.value
@@ -126,26 +126,26 @@ def test_client_rejects_truncated_partial_content(monkeypatch):
     assert seen["max_tokens"] == 1234
 
     # 空内容 + length 同样判定为额度耗尽；正常结束（stop）的内容照常返回
-    def empty_post(url, **kwargs):
+    async def empty_post(url, **kwargs):
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": ""}, "finish_reason": "length"}]},
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(llm_client.httpx, "post", empty_post)
+    monkeypatch.setattr(llm_client, "_post_completion", empty_post)
     with pytest.raises(llm_client.LLMClientError) as exc_info:
         llm_client.chat_completion([{"role": "user", "content": "hi"}])
     assert llm_client.is_output_truncated(exc_info.value)
 
-    def stop_post(url, **kwargs):
+    async def stop_post(url, **kwargs):
         return httpx.Response(
             200,
             json={"choices": [{"message": {"content": "完整"}, "finish_reason": "stop"}]},
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(llm_client.httpx, "post", stop_post)
+    monkeypatch.setattr(llm_client, "_post_completion", stop_post)
     assert llm_client.chat_completion([{"role": "user", "content": "hi"}])["content"] == "完整"
     # 其他错误不算截断
     assert not llm_client.is_output_truncated(llm_client.LLMClientError("x", status_code=500))
@@ -166,6 +166,7 @@ def _run_job(monkeypatch, user_id, completion=None, error=None):
     else:
 
         def fake_chat(messages, **kwargs):
+            assert all("generation_meta" not in message["content"] for message in messages)
             return completion
 
     monkeypatch.setattr(llm_report_jobs, "chat_completion", fake_chat)
@@ -174,7 +175,7 @@ def _run_job(monkeypatch, user_id, completion=None, error=None):
     return llm_report_jobs.get_llm_report_job(job["id"], user_id)
 
 
-def test_job_success_creates_report_row(monkeypatch, llm_user):
+def test_job_success_creates_report_row(monkeypatch, llm_user, generation_meta):
     job = _run_job(
         monkeypatch,
         llm_user,
@@ -182,6 +183,7 @@ def test_job_success_creates_report_row(monkeypatch, llm_user):
             "content": "# 报告",
             "model": "deepseek-chat",
             "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            **({"generation_meta": generation_meta} if generation_meta is not None else {}),
         },
     )
     assert job["status"] == "succeeded"
@@ -193,7 +195,10 @@ def test_job_success_creates_report_row(monkeypatch, llm_user):
         assert report.content == "# 报告"
         assert report.trigger_source == "manual"
         assert report.total_tokens == 150
-        assert report.input_payload == {"meta": {}}
+        assert report.input_payload == {
+            "meta": {},
+            **({"generation_meta": generation_meta} if generation_meta is not None else {}),
+        }
     finally:
         db.close()
 

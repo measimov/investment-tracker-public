@@ -17,7 +17,9 @@ from .prompt_guardrails import no_prior_knowledge_guardrail
 
 # digest prompt / 分档逻辑的版本号。bump 会使所有 report_digest 缓存失效并重跑，
 # 但**不**触发重新下载与抽取（那是 SECTION_EXTRACTOR_VERSION 的职责）。
-DIGEST_PROMPT_VERSION = 2
+# v3（#289）：数字与口径规则（单位换算、同比/占比/毛利率分写、持续与终止经营分开）+ 「核心财务」
+# 结构化字段（营业收入、归母净利润，供落库时与同期报表核对，见 report_digest_qa）
+DIGEST_PROMPT_VERSION = 3
 
 DIGEST_FIELDS = (
     "经营回顾",
@@ -68,7 +70,7 @@ def assign_digest_tiers(targets: List[Dict[str, Any]]) -> Dict[str, str]:
     tiers: Dict[str, str] = {}
     annual_seen = 0
     for target in targets:
-        if target.get("report_type") == "semi":
+        if target.get("report_type") in ("semi", "interim"):
             tiers[target["period_key"]] = "A"  # 最新中报：最贴近当下的经营信息
             continue
         tiers[target["period_key"]] = "A" if annual_seen == 0 else "B" if annual_seen <= 4 else "C"
@@ -81,6 +83,19 @@ def assign_digest_tiers(targets: List[Dict[str, Any]]) -> Dict[str, str]:
 # 不 bump DIGEST_PROMPT_VERSION；真改措辞时必须 bump（全部摘要缓存失效重烧）。
 _DIGEST_GUARDRAIL = no_prior_knowledge_guardrail(
     "报告原文节选做摘要", '原文未提及的内容一律写"原文未提及"'
+)
+
+# 数字与口径规则（#289：评测里摘要把「249,859.53 万元」写成 249.9 亿元、把收入同比写成毛利率变化、
+# 「终止经营收入」前后两年差十几倍）。两档 prompt 共用
+DIGEST_NUMBER_RULES = """数字与口径规则：
+1. 金额先确认原文单位（元/千元/万元/百万元/亿元，以及币种），再换算成「亿元」（外币写「亿美元」「亿港元」）保留两位小数；单位拿不准时照抄原文数值与单位，不要换算。
+2. 同比增速、占比、毛利率是三种不同的数，分开写并写明是哪一种；不得把收入同比写成毛利率变化，也不得把毛利额写成毛利率。
+3. 持续经营与终止经营、合并与分部、本期与上年同期分开写，不要混用。
+4. 「核心财务」只填报告期（本期）合并报表口径的数，原文没有就写「原文未提及」。"""
+
+_CORE_FINANCE_SPEC = (
+    '"核心财务": {"营业收入": "本期合并营业收入，写成「数值 单位」如「X.XX 亿元」", '
+    '"归母净利润": "本期归属母公司股东的净利润，写法同上"}'
 )
 
 DIGEST_SYSTEM_PROMPT = f"""你是财报章节摘要助手。{_DIGEST_GUARDRAIL}
@@ -97,9 +112,12 @@ DIGEST_SYSTEM_PROMPT = f"""你是财报章节摘要助手。{_DIGEST_GUARDRAIL}
  "会计信号": "会计政策/会计估计变更、收入确认方式变化、大额关联交易、利润质量线索；无则写'原文未见明显信号'",
  "风险要点": "报告披露的主要风险",
  "展望": "管理层对未来的展望与计划",
- "关键数字": ["3-8 条关键数字，每条须带原文数值与所属期间"]}}
+ "关键数字": ["3-8 条关键数字，每条须带原文数值与所属期间"],
+ {_CORE_FINANCE_SPEC}}}
 
-每个文本字段 ≤400 字。"""
+每个文本字段 ≤400 字。
+
+{DIGEST_NUMBER_RULES}"""
 
 COMPACT_DIGEST_SYSTEM_PROMPT = f"""你是财报章节摘要助手。{_DIGEST_GUARDRAIL}
 
@@ -109,9 +127,12 @@ COMPACT_DIGEST_SYSTEM_PROMPT = f"""你是财报章节摘要助手。{_DIGEST_GUA
 {{"主营收入结构": "收入构成变化及其驱动因素",
  "一次性项目": "非经常性损益、资产处置、减值、政府补助等一次性影响",
  "会计信号": "会计政策/会计估计变更、收入确认方式变化、大额关联交易、利润质量线索；无则写'原文未见明显信号'",
- "关键数字": ["3-8 条关键数字，每条须带原文数值与所属期间"]}}
+ "关键数字": ["3-8 条关键数字，每条须带原文数值与所属期间"],
+ {_CORE_FINANCE_SPEC}}}
 
-每个文本字段 ≤400 字。"""
+每个文本字段 ≤400 字。
+
+{DIGEST_NUMBER_RULES}"""
 
 _SECTION_LABELS: Tuple[Tuple[str, str], ...] = (
     ("business", "公司业务概要"),
@@ -133,6 +154,7 @@ def build_digest_messages(
     type_label = {
         "annual": "年度报告",
         "semi": "半年度报告",
+        "interim": "中期报告",
         "10-K": "10-K 年度报告",
         "20-F": "20-F 年度报告（外国私人发行人）",
     }.get(report_type, report_type)
@@ -178,4 +200,14 @@ def parse_digest_output(content: str, *, tier: str = DEFAULT_TIER) -> Dict[str, 
     if not isinstance(key_numbers, list) or not all(isinstance(item, str) for item in key_numbers):
         raise ValueError("关键数字必须是字符串数组")
     digest["关键数字"] = [item.strip() for item in key_numbers[:8] if item.strip()]
+    # 核心财务（v3）：供落库时与报表核对，缺失或形状不对不判失败——它不是摘要正文
+    core = data.get("核心财务")
+    if isinstance(core, dict):
+        kept = {
+            key: str(core[key]).strip()[:80]
+            for key in ("营业收入", "归母净利润")
+            if isinstance(core.get(key), (str, int, float)) and str(core[key]).strip()
+        }
+        if kept:
+            digest["核心财务"] = kept
     return digest

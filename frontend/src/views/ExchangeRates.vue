@@ -1,206 +1,200 @@
 <template>
   <div class="exchange-rates-page">
-    <el-card shadow="never">
-      <template #header>
-        <div class="card-header">
-          <span>汇率管理</span>
-          <div v-if="canEdit" class="header-actions">
-            <el-button :icon="Refresh" @click="refreshFromAPI" :loading="refreshing">
-              从API更新汇率
-            </el-button>
-            <el-button type="primary" :icon="Plus" @click="showAddDialog">手动添加汇率</el-button>
-          </div>
-          <el-text v-else type="info" size="small">汇率为全局数据，由管理员维护</el-text>
-        </div>
-      </template>
+    <header class="page-heading">
+      <div>
+        <h1 class="page-title">汇率管理</h1>
+        <p class="page-intro page-description">
+          汇率为全局数据，由管理员维护，应用于所有用户的金额折算与持仓估值。
+        </p>
+      </div>
+      <div v-if="canEdit" class="header-actions">
+        <NButton :loading="refreshing" aria-label="刷新汇率" @click="refreshFromAPI"
+          >刷新汇率</NButton
+        >
+        <NButton type="primary" @click="showAddDialog">手动添加汇率</NButton>
+      </div>
+    </header>
 
-      <!-- 当前汇率展示 -->
-      <div class="current-rates" v-loading="loadingLatest && hasLoaded">
-        <h3>当前汇率（基准货币：{{ latestBaseCurrency }}）</h3>
-        <el-row v-if="initialLoading" :gutter="20">
-          <el-col v-for="index in 4" :key="index" :xs="24" :sm="12" :md="6">
-            <el-card shadow="never" class="rate-skeleton-card">
-              <el-skeleton animated>
-                <template #template>
-                  <el-skeleton-item variant="text" class="rate-title-skeleton" />
-                  <el-skeleton-item variant="h3" class="rate-value-skeleton" />
-                  <div class="rate-info">
-                    <el-skeleton-item variant="text" />
-                    <el-skeleton-item variant="button" class="rate-tag-skeleton" />
-                  </div>
-                </template>
-              </el-skeleton>
-            </el-card>
-          </el-col>
-        </el-row>
-        <el-empty
-          v-else-if="displayRates.length === 0"
-          description="暂无可用汇率"
-          :image-size="88"
+    <section class="current-rates rate-section" aria-label="当前汇率">
+      <div class="section-heading">
+        <h2>
+          当前汇率
+          <span class="section-caption"
+            >基准货币 {{ latestLoaded ? latestBaseCurrency : '—' }}</span
+          >
+        </h2>
+        <NButton
+          text
+          type="primary"
+          :loading="loadingLatest"
+          aria-label="重新加载当前汇率"
+          @click="loadLatestRates"
+          >重新加载</NButton
+        >
+      </div>
+      <NAlert
+        v-if="latestError"
+        type="warning"
+        :show-icon="false"
+        class="read-alert"
+        title="当前汇率加载失败"
+      >
+        {{
+          latestLoaded ? '显示上次成功加载的汇率，尚未确认最新结果。' : '尚未确认当前汇率，请重试。'
+        }}
+        <NButton text type="primary" aria-label="重试当前汇率" @click="loadLatestRates"
+          >重试加载</NButton
+        >
+      </NAlert>
+      <p v-else-if="loadingLatest && latestLoaded" class="read-note" role="status">
+        正在重新加载，以下为上次成功数据。
+      </p>
+      <NSpin :show="loadingLatest">
+        <NEmpty
+          v-if="!displayRates.length"
+          :description="latestEmpty"
+          :theme-overrides="{ textColor: 'var(--app-text-muted)' }"
         />
-        <el-row v-else :gutter="20">
-          <el-col v-for="card in displayRates" :key="card.currency" :xs="24" :sm="12" :md="6">
-            <el-card
-              shadow="hover"
-              class="rate-card"
-              :class="{ 'rate-card--stale': card.stale }"
-              :data-testid="`rate-card-${card.currency}`"
-            >
-              <div class="rate-card-head">
-                <span class="currency-code">{{ card.currency }}</span>
-                <span class="rate-caption">1 {{ card.currency }} 兑 {{ latestBaseCurrency }}</span>
-              </div>
-              <div class="rate-value">
-                {{ formatNumber(card.rate, 4) }}
-                <span class="rate-unit">{{ latestBaseCurrency }}</span>
-              </div>
-              <div class="rate-info">
-                <el-text size="small" :type="card.stale ? 'warning' : 'info'">
-                  生效: {{ formatDate(card.effectiveDate) }}
-                  <template v-if="card.ageDays !== null && card.ageDays > 0">
-                    （{{ card.ageDays }} 天前）
-                  </template>
-                </el-text>
-                <span class="rate-tags">
-                  <el-tooltip
-                    v-if="card.stale"
-                    :content="`超过 ${RATE_STALE_DAYS} 天未更新，折算与估值仍按这条汇率计算`"
-                  >
-                    <el-tag size="small" type="warning" effect="dark">过期</el-tag>
-                  </el-tooltip>
-                  <el-tag v-if="card.source" size="small" :type="sourceTagType(card.source)">
-                    {{ sourceLabel(card.source) }}
-                  </el-tag>
-                </span>
-              </div>
-            </el-card>
-          </el-col>
-        </el-row>
+        <div v-else class="rates-grid">
+          <article
+            v-for="card in displayRates"
+            :key="card.currency"
+            class="rate-card"
+            :class="{ 'rate-card--stale': card.stale }"
+            :data-testid="`rate-card-${card.currency}`"
+          >
+            <div class="rate-card-head">
+              <span class="currency-code">{{ card.currency }}</span
+              ><span class="rate-caption">1 {{ card.currency }} 兑 {{ latestBaseCurrency }}</span>
+            </div>
+            <div class="rate-value">
+              {{ formatNumber(card.rate, 4) }}
+              <span class="rate-unit">{{ latestBaseCurrency }}</span>
+            </div>
+            <p class="effective-date">
+              生效 {{ formatDate(card.effectiveDate)
+              }}<span v-if="card.ageDays !== null && card.ageDays > 0">
+                · {{ card.ageDays }} 天前</span
+              >
+            </p>
+            <div class="rate-tags">
+              <NTag
+                v-if="card.source"
+                size="small"
+                :bordered="false"
+                :type="rateSourceType(card.source)"
+                >{{ sourceLabel(card.source) }}</NTag
+              ><NTag v-if="card.stale" type="warning" size="small" :bordered="false">过期</NTag>
+            </div>
+            <p v-if="card.stale" class="stale-note">
+              超过 {{ RATE_STALE_DAYS }} 天未更新，折算与估值仍按这条汇率计算。
+            </p>
+          </article>
+        </div>
+      </NSpin>
+    </section>
+
+    <section class="rate-checks rate-section" aria-label="官方中间价与第三方比对">
+      <div class="section-heading">
+        <h2>官方中间价与第三方比对 <span class="section-caption">近 30 天</span></h2>
+        <NButton
+          text
+          type="primary"
+          :loading="loadingChecks"
+          aria-label="重新加载汇率比对"
+          @click="loadSourceChecks"
+          >重新加载</NButton
+        >
       </div>
+      <p class="section-description">
+        折算以中国外汇交易中心人民币汇率中间价为准（工作日 9:15
+        发布）；第三方报价只用于逐日比对，官方中间价持续不可用时才会顶上并在仪表盘告警。
+      </p>
+      <NAlert
+        v-if="checksError"
+        type="warning"
+        :show-icon="false"
+        class="read-alert"
+        title="汇率比对加载失败"
+        >{{
+          checksLoaded
+            ? '显示上次成功加载的比对记录，尚未确认最新结果。'
+            : '尚未确认比对记录，请重试。'
+        }}
+        <NButton text type="primary" aria-label="重试汇率比对" @click="loadSourceChecks"
+          >重试加载</NButton
+        ></NAlert
+      >
+      <p v-else-if="loadingChecks && checksLoaded" class="read-note" role="status">
+        正在重新加载，以下为上次成功比对。
+      </p>
+      <SourceChecksTable
+        :rows="sourceChecks"
+        :loading="loadingChecks"
+        :empty-description="checksEmpty"
+      />
+    </section>
 
-      <el-divider />
-
-      <!-- 官方中间价与第三方报价比对（#200） -->
-      <div class="rate-checks">
-        <h3>官方中间价与第三方比对（近 30 天）</h3>
-        <el-text size="small" type="info" class="rate-checks-tip">
-          折算以中国外汇交易中心人民币汇率中间价为准（工作日 9:15 发布）；第三方报价只用于逐日比对，
-          官方中间价持续不可用时才会顶上并在仪表盘告警。
-        </el-text>
-        <el-empty v-if="sourceChecks.length === 0" description="暂无比对记录" :image-size="64" />
-        <div v-else class="responsive-table">
-          <el-table :data="sourceChecks" size="small" stripe max-height="320">
-            <el-table-column label="比对日" min-width="100">
-              <template #default="{ row }">{{ formatDate(row.check_date) }}</template>
-            </el-table-column>
-            <el-table-column prop="from_currency" label="币种" min-width="70" />
-            <el-table-column label="官方中间价" min-width="150" align="right">
-              <template #default="{ row }">
-                {{ formatNumber(row.official_rate, 4) }}
-                <el-text size="small" type="info">（{{ formatDate(row.official_date) }}）</el-text>
-              </template>
-            </el-table-column>
-            <el-table-column label="第三方报价" min-width="160" align="right">
-              <template #default="{ row }">
-                {{ formatNumber(row.reference_rate, 4) }}
-                <el-text size="small" type="info"
-                  >（{{ sourceLabel(row.reference_source) }}）</el-text
-                >
-              </template>
-            </el-table-column>
-            <el-table-column label="差异" min-width="90" align="right">
-              <template #default="{ row }">
-                <el-text :type="isDiffAbnormal(row.diff_pct) ? 'danger' : undefined">
-                  {{ Number(row.diff_pct) > 0 ? '+' : '' }}{{ formatNumber(row.diff_pct, 2) }}%
-                </el-text>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </div>
-
-      <el-divider />
-
-      <!-- 汇率历史记录 -->
-      <div class="rate-history">
-        <div class="history-header">
-          <h3>汇率历史记录</h3>
-          <!-- 停用行保留作审计，默认不列出；管理员可切换查看 -->
-          <el-switch
-            v-if="canEdit"
-            v-model="showInactive"
-            active-text="显示已停用"
-            @change="loadRateHistory"
-          />
-        </div>
-        <el-alert
-          v-if="rateHistory.length >= HISTORY_LIMIT"
-          type="info"
-          :closable="false"
-          show-icon
-          class="list-limit-alert"
-          :title="`仅显示最近 ${HISTORY_LIMIT} 条汇率记录`"
-        />
-        <div v-if="initialLoading" class="history-skeleton">
-          <el-skeleton animated :rows="7" />
-        </div>
-        <div v-else class="responsive-table">
-          <el-table :data="rateHistory" stripe v-loading="loadingHistory">
-            <template #empty>
-              <el-empty description="暂无汇率历史记录" :image-size="88" />
-            </template>
-            <el-table-column prop="from_currency" label="源币种" min-width="90" />
-            <el-table-column prop="to_currency" label="目标币种" min-width="90" />
-            <el-table-column prop="rate" label="汇率" min-width="110" align="right">
-              <template #default="{ row }">
-                {{ formatNumber(row.rate, 4) }}
-              </template>
-            </el-table-column>
-            <el-table-column label="生效日期" min-width="110">
-              <template #default="{ row }">{{ formatDate(row.effective_date) }}</template>
-            </el-table-column>
-            <el-table-column prop="source" label="来源" min-width="90">
-              <template #default="{ row }">
-                <el-tag size="small" :type="sourceTagType(row.source)">
-                  {{ sourceLabel(row.source) }}
-                </el-tag>
-                <el-tag
-                  v-if="row.is_active === false"
-                  size="small"
-                  type="info"
-                  class="inactive-tag"
-                >
-                  已停用
-                </el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="created_at" label="创建时间" min-width="150">
-              <template #default="{ row }">
-                {{ formatDateTime(row.created_at) }}
-              </template>
-            </el-table-column>
-            <el-table-column v-if="canEdit" label="操作" width="150" fixed="right">
-              <template #default="{ row }">
-                <el-button size="small" type="primary" @click="editRate(row)"> 编辑 </el-button>
-                <!-- 只有手工行能停用：官方/第三方行会被下一次刷新重建，改值请编辑 -->
-                <el-button
-                  v-if="isManualSource(row.source) && row.is_active !== false"
-                  size="small"
-                  type="danger"
-                  plain
-                  @click="deactivateRate(row.id)"
-                >
-                  停用
-                </el-button>
-              </template>
-            </el-table-column>
-          </el-table>
+    <section class="rate-history rate-section" aria-label="汇率历史记录">
+      <div class="section-heading">
+        <h2>汇率历史记录</h2>
+        <div class="history-actions">
+          <label v-if="canEdit" class="inactive-filter"
+            ><input
+              v-model="showInactive"
+              type="checkbox"
+              @change="loadRateHistory"
+            />显示已停用</label
+          ><NButton
+            text
+            type="primary"
+            :loading="loadingHistory"
+            aria-label="重新加载汇率历史"
+            @click="loadRateHistory"
+            >重新加载</NButton
+          >
         </div>
       </div>
-    </el-card>
-
+      <NAlert
+        v-if="historyError"
+        type="warning"
+        :show-icon="false"
+        class="read-alert"
+        title="汇率历史加载失败"
+        >{{
+          historyLoaded
+            ? '显示上次成功加载的历史记录，尚未确认当前筛选结果。'
+            : '尚未确认汇率历史，请重试。'
+        }}
+        <NButton text type="primary" aria-label="重试汇率历史" @click="loadRateHistory"
+          >重试加载</NButton
+        ></NAlert
+      >
+      <p v-if="historyOutdated" class="read-note" role="status">
+        上次成功范围：{{ historyIncludesInactive ? '包含已停用' : '仅生效记录' }}。{{
+          loadingHistory ? '正在加载当前筛选。' : '当前筛选尚未成功加载。'
+        }}
+      </p>
+      <p v-if="rateHistory.length >= HISTORY_LIMIT" class="read-note">
+        仅显示最近 {{ HISTORY_LIMIT }} 条汇率记录
+      </p>
+      <RateHistoryTable
+        :rows="rateHistory"
+        :loading="loadingHistory"
+        :empty-description="historyEmpty"
+        :can-edit="canEdit"
+        @edit="editRate"
+        @deactivate="deactivateRate"
+      />
+    </section>
     <!-- 添加/编辑汇率对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editingRate ? '编辑汇率' : '添加汇率'" width="560px">
+    <el-dialog
+      v-model="dialogVisible"
+      :title="editingRate ? '编辑汇率' : '添加汇率'"
+      width="560px"
+      :close-on-click-modal="false"
+      class="rate-dialog"
+    >
       <el-alert
         type="warning"
         :closable="false"
@@ -213,6 +207,7 @@
           <el-select
             v-model="rateForm.from_currency"
             placeholder="请选择源币种"
+            aria-label="源币种"
             :disabled="!!editingRate"
           >
             <el-option
@@ -228,6 +223,7 @@
           <el-select
             v-model="rateForm.to_currency"
             placeholder="请选择目标币种"
+            aria-label="目标币种"
             :disabled="!!editingRate"
           >
             <el-option
@@ -246,6 +242,7 @@
             :step="0.0001"
             :min="0"
             placeholder="请输入汇率"
+            aria-label="汇率"
           />
           <div v-if="rateForm.from_currency && rateForm.to_currency" class="form-tip">
             即 1 {{ rateForm.from_currency }} 可兑换多少 {{ rateForm.to_currency }}
@@ -257,7 +254,8 @@
             v-model="rateForm.effective_date"
             type="date"
             placeholder="选择生效日期"
-            format="YYYY-MM-DD"
+            aria-label="生效日期"
+            format="YYYY/MM/DD"
             value-format="YYYY-MM-DD"
             :disabled="!!editingRate"
           />
@@ -286,9 +284,13 @@
 
 <script setup lang="ts">
 import { showApiError } from '@/utils/showApiError'
-import { Refresh, Plus } from '@element-plus/icons-vue'
-import { computed, ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox, type FormInstance, type FormItemRule } from 'element-plus'
+import { NAlert, NButton, NEmpty, NSpin, NTag } from 'naive-ui'
+import RateHistoryTable from './exchange-rates/RateHistoryTable.vue'
+import SourceChecksTable from './exchange-rates/SourceChecksTable.vue'
+import { computed, ref, onMounted, nextTick } from 'vue'
+import { useLatestRequest } from '@/composables/useLatestRequest'
+import { ElMessage, type FormInstance, type FormItemRule } from 'element-plus'
+import { confirmAction } from '@/composables/useConfirmAction'
 import api from '@/api'
 import { useAuthStore } from '@/stores/auth'
 import type {
@@ -323,7 +325,14 @@ const rateHistory = ref<RateRow[]>([])
 const sourceChecks = ref<ExchangeRateCheck[]>([])
 const loadingLatest = ref(false)
 const loadingHistory = ref(false)
-const hasLoaded = ref(false)
+const latestLoaded = ref(false)
+const latestError = ref(false)
+const checksLoaded = ref(false)
+const checksError = ref(false)
+const loadingChecks = ref(false)
+const historyLoaded = ref(false)
+const historyError = ref(false)
+const historyIncludesInactive = ref(false)
 const dialogVisible = ref(false)
 const refreshing = ref(false)
 const submitting = ref(false)
@@ -349,9 +358,40 @@ const displayRates = computed(() =>
 )
 
 const latestBaseCurrency = computed(() => latestRates.value?.base_currency || 'CNY')
-const initialLoading = computed(
-  () => !hasLoaded.value && (loadingLatest.value || loadingHistory.value)
+const latestEmpty = computed(() =>
+  latestError.value
+    ? '尚未确认当前汇率，请重试'
+    : !latestLoaded.value
+      ? '当前汇率正在加载'
+      : '暂无可用汇率'
 )
+const checksEmpty = computed(() =>
+  checksError.value
+    ? '尚未确认比对记录，请重试'
+    : !checksLoaded.value
+      ? '比对记录正在加载'
+      : '暂无比对记录'
+)
+const historyOutdated = computed(
+  () =>
+    historyLoaded.value &&
+    (loadingHistory.value ||
+      historyError.value ||
+      historyIncludesInactive.value !== showInactive.value)
+)
+const historyEmpty = computed(() =>
+  historyError.value
+    ? '尚未确认当前筛选结果，请重试'
+    : !historyLoaded.value
+      ? '汇率历史正在加载'
+      : historyOutdated.value
+        ? '上次成功范围无汇率记录，当前筛选尚未确认'
+        : '暂无汇率历史记录'
+)
+const rateSourceType = (source: string | null) => {
+  const type = sourceTagType(source)
+  return type === 'danger' ? 'error' : type === 'info' ? 'default' : type
+}
 
 const validateCurrencyPair: FormItemRule['validator'] = (_rule, _value, callback) => {
   const { from_currency: from, to_currency: to } = rateForm.value
@@ -378,66 +418,86 @@ const rules: Record<string, FormItemRule[]> = {
   effective_date: [{ required: true, message: '请选择生效日期', trigger: 'change' }]
 }
 
-// 加载最新汇率
+// 只允许最新读取更新数据、错误及loading；失败不等于已确认没有记录。
+const latestRequest = useLatestRequest()
 const loadLatestRates = async () => {
+  const token = latestRequest.begin()
   loadingLatest.value = true
   try {
     const response = await api.getLatestRates()
+    if (!latestRequest.isCurrent(token)) return
     latestRates.value = response.data
+    latestLoaded.value = true
+    latestError.value = false
   } catch (error) {
+    if (!latestRequest.isCurrent(token)) return
+    latestError.value = true
     showApiError(error, '加载最新汇率失败')
     console.error(error)
   } finally {
-    loadingLatest.value = false
+    if (latestRequest.isCurrent(token)) loadingLatest.value = false
   }
 }
 
-// 加载历史汇率
+const historyRequest = useLatestRequest()
 const loadRateHistory = async () => {
+  const token = historyRequest.begin()
+  const includeInactive = showInactive.value
   loadingHistory.value = true
   try {
     const response = await api.getExchangeRates({
       limit: HISTORY_LIMIT,
-      ...(showInactive.value ? { include_inactive: true } : {})
+      ...(includeInactive ? { include_inactive: true } : {})
     })
+    if (!historyRequest.isCurrent(token)) return
     rateHistory.value = response.data
+    historyIncludesInactive.value = includeInactive
+    historyLoaded.value = true
+    historyError.value = false
   } catch (error) {
+    if (!historyRequest.isCurrent(token)) return
+    historyError.value = true
     showApiError(error, '加载汇率历史失败')
     console.error(error)
   } finally {
-    loadingHistory.value = false
+    if (historyRequest.isCurrent(token)) loadingHistory.value = false
   }
 }
 
-// 官方中间价 vs 第三方比对（近 30 天）：辅助信息，失败不打扰页面主流程
+// 比对仍是辅助读取；局部提示及只读重试，不阻断当前汇率/历史。
+const checksRequest = useLatestRequest()
 const loadSourceChecks = async () => {
+  const token = checksRequest.begin()
+  loadingChecks.value = true
   try {
     const response = await api.getExchangeRateSourceChecks(30)
+    if (!checksRequest.isCurrent(token)) return
     sourceChecks.value = response.data
+    checksLoaded.value = true
+    checksError.value = false
   } catch (error) {
+    if (!checksRequest.isCurrent(token)) return
+    checksError.value = true
     console.error(error)
+  } finally {
+    if (checksRequest.isCurrent(token)) loadingChecks.value = false
   }
 }
 
-const loadInitialData = async () => {
-  try {
-    await Promise.all([loadLatestRates(), loadRateHistory(), loadSourceChecks()])
-  } finally {
-    hasLoaded.value = true
-  }
-}
+const loadInitialData = () =>
+  Promise.all([loadLatestRates(), loadRateHistory(), loadSourceChecks()])
 
 // 从API刷新汇率
 const refreshFromAPI = async () => {
   try {
     refreshing.value = true
     const response = await api.refreshRatesFromAPI()
-    ElMessage.success(`成功更新 ${response.data.count} 个汇率`)
+    ElMessage.success(`${response.data.count} 条汇率已更新`)
     void loadSourceChecks()
     await loadLatestRates()
     await loadRateHistory()
   } catch (error) {
-    showApiError(error, { prefix: '从 API 更新汇率失败' })
+    showApiError(error, { prefix: '刷新汇率失败' })
     console.error(error)
   } finally {
     refreshing.value = false
@@ -454,6 +514,7 @@ const showAddDialog = () => {
     effective_date: todayLocalISODate()
   }
   dialogVisible.value = true
+  void nextTick(() => rateFormRef.value?.clearValidate())
 }
 
 // 编辑汇率
@@ -466,6 +527,7 @@ const editRate = (rate: RateRow) => {
     effective_date: rate.effective_date
   }
   dialogVisible.value = true
+  void nextTick(() => rateFormRef.value?.clearValidate())
 }
 
 // 提交汇率
@@ -482,13 +544,13 @@ const submitRate = async () => {
         // 更新
         // 只改数值：来源由服务端记为 manual，状态不在此编辑（停用走单独按钮）
         await api.updateExchangeRate(editingRate.value.id, { rate: rateForm.value.rate as number })
-        ElMessage.success('汇率更新成功')
+        ElMessage.success('汇率已更新')
       } else {
         // 创建
         // 来源由服务端固定为 manual（#277：客户端不能再指定来源）
         // 表单校验（rules）保证汇率必填
         await api.createOrUpdateExchangeRate({ ...rateForm.value } as ExchangeRateCreate)
-        ElMessage.success('汇率添加成功')
+        ElMessage.success('汇率已新增')
       }
 
       dialogVisible.value = false
@@ -505,18 +567,17 @@ const submitRate = async () => {
 
 // 停用汇率（#277：删除改为停用，保留审计；折算不再使用它，同日重新录入即恢复）
 const deactivateRate = async (id: number) => {
-  try {
-    await ElMessageBox.confirm(
-      `确定要停用这条汇率吗？停用后折算不再使用它。${GLOBAL_RATE_NOTICE}。`,
-      '停用汇率',
-      { type: 'warning', confirmButtonText: '确定停用', cancelButtonText: '取消' }
-    )
-  } catch {
-    return // 取消
-  }
+  if (
+    !(await confirmAction({
+      title: '停用汇率',
+      message: `确定要停用这条汇率吗？停用后折算不再使用它。${GLOBAL_RATE_NOTICE}。`,
+      confirmText: '停用'
+    }))
+  )
+    return
   try {
     await api.deleteExchangeRate(id)
-    ElMessage.success('已停用')
+    ElMessage.success('汇率已停用')
     // 与 submitRate 对齐：最新汇率卡片也要刷——停用某币种唯一一条汇率后，
     // 卡片不能继续展示已不生效的汇率（E2E 汇率增删改用例锁定此行为）
     await loadLatestRates()
@@ -534,132 +595,224 @@ onMounted(() => {
 <style scoped>
 .exchange-rates-page {
   width: 100%;
+  min-width: 0;
 }
-
-.rate-checks-tip {
-  display: block;
-  margin-bottom: 8px;
-}
-
-.current-rates {
-  margin-bottom: 20px;
-}
-
-.current-rates h3,
-.rate-history h3 {
-  margin-bottom: 15px;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.currency-code {
-  font-weight: bold;
-  color: var(--app-primary);
-  margin-right: 6px;
-}
-
-.rate-card-head {
+.page-heading {
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.rate-caption {
-  font-size: 12px;
-  color: var(--app-text-soft);
-}
-
-.rate-value {
-  margin-top: 8px;
-  font-size: 24px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.rate-unit {
-  font-size: 13px;
-  font-weight: 400;
-  color: var(--app-text-soft);
-}
-
-.rate-card--stale {
-  border-color: var(--app-warning);
-}
-
-.rate-tags {
-  display: inline-flex;
-  gap: 6px;
-}
-
-.global-rate-alert,
-.list-limit-alert {
-  margin-bottom: 14px;
-}
-
-.form-tip {
-  width: 100%;
-  font-size: 12px;
-  color: var(--app-text-soft);
-  margin-top: 4px;
-}
-
-.rate-info {
-  margin-top: 10px;
-  display: flex;
-  gap: 8px;
   justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+.page-intro {
+  max-width: 660px;
+}
+.header-actions,
+.history-actions {
+  display: flex;
   align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
-
-.rate-skeleton-card {
-  min-height: 116px;
+.rate-section {
+  padding: 22px 0;
+  border-top: 1px solid var(--app-border);
 }
-
-.rate-title-skeleton {
-  width: 42%;
-  height: 14px;
-}
-
-.rate-value-skeleton {
-  width: 72%;
-  height: 26px;
-  margin: 12px 0 2px;
-}
-
-.rate-tag-skeleton {
-  width: 52px;
-}
-
-.rate-history {
-  margin-top: 20px;
-}
-
-.history-skeleton {
-  min-height: 300px;
-  padding: 12px 0;
-}
-
-@media (max-width: 900px) {
-  .header-actions {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .rate-info {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
-.history-header {
+.section-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  margin-bottom: 18px;
   flex-wrap: wrap;
 }
+h2 {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  margin: 0;
+}
+.section-caption {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--app-text-muted);
+  margin-left: 8px;
+}
+.section-heading :deep(.n-button) {
+  min-height: 24px;
+}
+.section-description,
+.read-note {
+  color: var(--app-text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 0 0 16px;
+}
+.read-alert {
+  margin-bottom: 14px;
+}
+.read-alert :deep(.n-button) {
+  margin-left: 10px;
+  min-height: 24px;
+}
+.rates-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.rate-card {
+  background: var(--app-surface);
+  padding: 20px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  min-width: 0;
+}
+.rate-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.currency-code {
+  font-weight: 600;
+  color: var(--app-primary-strong);
+}
+.rate-caption,
+.rate-unit {
+  font-size: 12px;
+  color: var(--app-text-muted);
+}
+.rate-value {
+  font-size: 30px;
+  font-weight: 550;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  margin: 14px 0 10px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.effective-date {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  line-height: 1.6;
+  margin: 0 0 10px;
+  font-variant-numeric: tabular-nums;
+}
+.rate-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.stale-note {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--app-warning-text);
+  margin: 10px 0 0;
+}
+.rate-card--stale {
+  border-color: var(--app-warning);
+}
+.inactive-filter {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  min-height: 24px;
+  cursor: pointer;
+}
+.inactive-filter input {
+  accent-color: var(--app-primary-strong);
+  width: 16px;
+  height: 16px;
+}
+.global-rate-alert {
+  margin-bottom: 14px;
+}
+.form-tip {
+  width: 100%;
+  font-size: 12px;
+  color: var(--app-text-muted);
+  line-height: 1.7;
+  margin-top: 4px;
+}
+:deep(.rate-dialog) {
+  --el-text-color-placeholder: var(--app-text-soft);
+}
+@media (max-width: 1280px) {
+  .rates-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .page-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+  .header-actions {
+    width: 100%;
+  }
+  .header-actions :deep(.n-button) {
+    min-height: 44px;
+  }
+  .rate-section {
+    padding: 20px 0;
+  }
+  .section-heading {
+    margin-bottom: 14px;
+  }
+  .section-heading :deep(.n-button),
+  .read-alert :deep(.n-button),
+  .inactive-filter {
+    min-height: 44px;
+  }
+  .rate-card {
+    padding: 16px;
+  }
+  .rate-value {
+    font-size: 28px;
+  }
+  .rate-caption {
+    font-size: 11px;
+  }
+  .rate-card-head {
+    gap: 4px;
+  }
+  .rates-grid {
+    gap: 10px;
+  }
+  :deep(.rate-dialog .el-input__wrapper),
+  :deep(.rate-dialog .el-select__wrapper) {
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  :deep(.rate-dialog .el-input__inner) {
+    height: 40px;
+  }
+  :deep(.rate-dialog .el-input-number) {
+    width: 100%;
+  }
+}
 
-.inactive-tag {
-  margin-left: 4px;
+@media (min-width: 1025px) {
+  .page-heading {
+    margin-bottom: 16px;
+  }
+  .rate-section {
+    padding: 16px 0;
+  }
+  .section-heading {
+    margin-bottom: 12px;
+  }
+  h2 {
+    font-size: 18px;
+  }
+  .rate-card {
+    padding: 16px;
+  }
+  .rate-value {
+    font-size: 26px;
+  }
 }
 </style>
