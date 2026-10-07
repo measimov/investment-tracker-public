@@ -232,8 +232,9 @@ onMounted(load)
         </template>
         <el-descriptions
           v-if="state.status"
+          class="collector-status"
           :column="isMobile ? 1 : 2"
-          :label-width="isMobile ? 80 : undefined"
+          :label-width="100"
           size="small"
           border
         >
@@ -451,7 +452,13 @@ onMounted(load)
   line-height: 1.7;
   padding: 12px 0;
 }
-.collector-detail :deep(.el-descriptions__cell) {
+.collector-status :deep(.el-descriptions__table) {
+  table-layout: fixed;
+}
+.collector-status :deep(.el-descriptions__label.is-bordered-label) {
+  white-space: nowrap;
+}
+.collector-status :deep(.el-descriptions__cell.is-bordered-content) {
   overflow-wrap: anywhere;
 }
 .add-form {
@@ -482,10 +489,6 @@ onMounted(load)
   }
   .collector-actions :deep(.n-button__content) {
     white-space: normal;
-  }
-  .collector-detail :deep(.el-descriptions__label.is-bordered-label) {
-    min-width: 80px;
-    white-space: nowrap;
   }
   .collector-actions :deep(.n-button),
   .add-form :deep(.n-button) {

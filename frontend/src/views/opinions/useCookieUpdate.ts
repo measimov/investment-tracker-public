@@ -23,6 +23,7 @@ export function useCookieUpdate(onUpdated?: () => void) {
   const state = reactive({
     visible: false,
     loading: false,
+    readingFile: false,
     submitting: false,
     loadError: '',
     submitError: '',
@@ -42,6 +43,7 @@ export function useCookieUpdate(onUpdated?: () => void) {
     selection += 1
     state.fileName = ''
     fileContent = ''
+    state.readingFile = false
   }
 
   const formatHint = computed(() =>
@@ -50,6 +52,8 @@ export function useCookieUpdate(onUpdated?: () => void) {
   const canSubmit = computed(
     () =>
       Boolean(state.status?.writable) &&
+      !state.loading &&
+      !state.readingFile &&
       !state.submitting &&
       (state.fileName ? true : cookieContentError(state.text) === null)
   )
@@ -87,8 +91,11 @@ export function useCookieUpdate(onUpdated?: () => void) {
   }
 
   async function selectFile(file: File | null | undefined) {
+    if (state.submitting) return
     // 新的选择一开始就作废上一份文件：B 不合格时不能留着 A 还显示「已选择 A」、还能提交 A
     dropFile()
+    // 选择文件即切换输入来源；不能在异步读取期间仍允许提交之前粘贴的 Cookie。
+    state.text = ''
     const current = selection
     state.submitError = ''
     if (!file) return
@@ -101,11 +108,14 @@ export function useCookieUpdate(onUpdated?: () => void) {
       return
     }
     let text: string
+    state.readingFile = true
     try {
       text = await file.text()
     } catch {
       if (current === selection) state.submitError = '读取文件失败，请重新选择'
       return
+    } finally {
+      if (current === selection) state.readingFile = false
     }
     if (current !== selection) return // 期间又选了别的文件（或清空/关闭）：丢弃
     const error = cookieContentError(text)
@@ -123,6 +133,7 @@ export function useCookieUpdate(onUpdated?: () => void) {
   }
 
   async function submit() {
+    if (!state.status?.writable || state.loading || state.readingFile || state.submitting) return
     const content = state.fileName ? fileContent : state.text
     const localError = cookieContentError(content)
     if (localError) {

@@ -271,6 +271,30 @@ describe('useCookieUpdate', () => {
     expect(mocked.updateXueqiuCookie).toHaveBeenCalledWith({ content: contentB, probe: false })
   })
 
+  it('粘贴旧 Cookie 后改选文件：文件读完前不得提交旧内容', async () => {
+    const dialog = await openDialog()
+    dialog.state.text = HEADER
+    let resolveFile!: (text: string) => void
+    const reading = new Promise<string>((resolve) => {
+      resolveFile = resolve
+    })
+    const content = JSON.stringify({
+      cookies: [{ name: 'xq_a_token', value: 'SYNTH_NEW_FILE_TOKEN' }]
+    })
+
+    const pending = dialog.selectFile(fileWithText('new.json', reading))
+    expect(dialog.canSubmit.value).toBe(false)
+    await dialog.submit()
+    expect(mocked.updateXueqiuCookie).not.toHaveBeenCalled()
+
+    resolveFile(content)
+    await pending
+    expect(dialog.canSubmit.value).toBe(true)
+    await dialog.submit()
+    expect(mocked.updateXueqiuCookie).toHaveBeenCalledTimes(1)
+    expect(mocked.updateXueqiuCookie).toHaveBeenCalledWith({ content, probe: false })
+  })
+
   it('读文件期间关闭对话框：读完也不写回', async () => {
     const dialog = await openDialog()
     let resolveA!: (text: string) => void

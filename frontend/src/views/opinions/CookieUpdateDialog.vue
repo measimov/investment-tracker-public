@@ -105,7 +105,7 @@ defineExpose({ open })
         v-model="state.text"
         type="textarea"
         :rows="6"
-        :disabled="Boolean(state.fileName) || state.submitting"
+        :disabled="Boolean(state.fileName) || state.readingFile || state.submitting"
         aria-label="雪球 Cookie 内容"
         autocomplete="off"
         spellcheck="false"
@@ -118,6 +118,7 @@ defineExpose({ open })
           ref="uploadRef"
           :auto-upload="false"
           :show-file-list="false"
+          :disabled="state.submitting"
           accept=".json,.txt"
           :on-change="onFileChange"
         >
@@ -128,6 +129,9 @@ defineExpose({ open })
           <el-button link type="primary" size="small" @click="removeFile">移除</el-button>
         </span>
       </div>
+      <p v-if="state.readingFile" class="hint" data-testid="xueqiu-cookie-file-reading">
+        正在读取文件，请稍候…
+      </p>
       <el-checkbox v-model="state.probe" :disabled="state.submitting">
         更新后探活（发一次真实请求确认登录态，约 2–4 秒）
       </el-checkbox>
